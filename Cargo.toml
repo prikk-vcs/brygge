@@ -1,0 +1,13 @@
+[package]
+name        = "brygge-git"
+description = "A migration support tool for prikk."
+readme      = "./README.md"
+
+version             = "0.0.0"
+edition             = "2024"
+rust-version        = "1.85"
+license             = "Apache-2.0"
+authors             = ["nabbisen"]
+repository          = "https://github.com/prikk-vcs/brygge"
+
+[dependencies]
