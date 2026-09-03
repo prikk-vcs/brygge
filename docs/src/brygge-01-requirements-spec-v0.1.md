@@ -3,13 +3,15 @@
 | | |
 |---|---|
 | Document | brygge Requirements (what it must do, must never do, and must decide) |
-| Version | v0.1 (draft for review) |
-| Date | 2026-08-31 |
-| Basis | RFC 113 (History import foundations, Proposed) as the governing import contract; prikk 0.27.1 reality per the 2026-08-31 audit; project rules in `.git-exclude/rules/` |
-| Not | a design, a schema, an API, or code. Where a decision belongs to a human, it is named in §11 and left there. |
+| Version | v0.2 (draft for review) |
+| Date | 2026-09-03 |
+| Basis | RFC 113 (History import foundations, Proposed) as the governing import contract; prikk reality per the 2026-08-31 audit (then 0.27.1; the live core has since moved to 0.28 — the prikk-side dependencies §11 are to be **re-verified against the current prikk when encoder design begins**, and none of them gate the decode/IR half); project rules in `.git-exclude/rules/` |
+| Not | a design, a schema, an API, or code. Where a decision belongs to a human, it is named in §11/§12 and left there. |
 | ID scheme | `PU-` purpose · `NG-` non-goal · `PR-` preserve rule · `HO-` honesty rule · `VF-` verification · `ID-` idempotence · `FA-` failure · `BN-` boundary · `IR-` IR obligation · `SRC-` per-source · `UD-` prikk-side dependency · `OQ-` open question |
 
-**brygge** (Norwegian: *wharf* — where cargo is landed) carries version-control history **out of** existing systems (Git, Subversion, CVS) and **into** a different one, through an **intermediate representation (IR)** that belongs to no particular system. The pipeline is two deliberately separated halves: **decode** a source into the IR; **encode** a target from the IR. The first target is prikk; the IR and decoders are meant to be reusable so other version-control projects can write their own encoders and get Git/SVN/CVS import "for free."
+**brygge** (Norwegian: *wharf* — where cargo is landed) carries version-control history **out of** existing systems (Git, Mercurial, Subversion, CVS — and, by design, others) and **into** a different one, through an **intermediate representation (IR)** that belongs to no particular system. The pipeline is two deliberately separated halves: **decode** a source into the IR; **encode** a target from the IR. The first target is prikk; the IR and decoders are meant to be reusable so other version-control projects can write their own encoders and get import "for free," and so a new *source* is a new decoder against the same IR, not a redesign.
+
+**Two halves, versioned separately (v0.2).** The **decode → IR half depends on the source systems, which are decades-stable, and on nothing in prikk.** It can therefore be built, tested, and **stabilized to a durable contract now**, while the **encode-to-prikk half waits on prikk-side decisions still open** (§11 UD, §12 OQ). This document keeps the two halves' obligations separable so the first half can reach stability independently — that separation is a requirement (PU-6), not merely a schedule.
 
 The governing sentence, inherited from RFC 113 and binding on everything below: **facts derive, judgment is authored, and the join is checked.** A migration tool that silently guesses produces history nobody can trust; where approximation is unavoidable, it must be labelled; and every requirement here is written to survive a hostile reader asking *"how would anyone know if this were wrong?"*
 
@@ -17,7 +19,7 @@ The governing sentence, inherited from RFC 113 and binding on everything below: 
 
 ## 0. The two things a reader must hold before the requirements make sense
 
-**(a) prikk records what these systems do not, and cannot be made more precise than its source.** prikk's atom is an *operation against node identity* — a stable identity for a file across renames and edits. Git has no node identity (renames are inferred at read time); SVN records path copies, not node identity; CVS has no atomic commit at all. So an importer must either **infer** what prikk requires or **admit it did not have it** — and inference is a guess, which prikk's whole proposition forbids doing silently. This is not a difficulty to engineer away; it is a boundary to record.
+**(a) prikk records what these systems do not, and cannot be made more precise than its source.** prikk's atom is an *operation against node identity* — a stable identity for a file across renames and edits. Git has no node identity (renames are inferred at read time); **Mercurial records a rename when the author used `hg mv`/`hg cp` — a stated fact brygge can carry — but not otherwise, and even then it is a path-level copy, not prikk's stable cross-history node identity**; SVN records path copies, not node identity; CVS has no atomic commit at all. So an importer must either **infer** what prikk requires or **admit it did not have it** — and inference is a guess, which prikk's whole proposition forbids doing silently. Mercurial narrows *how often* brygge must infer; it does not remove the boundary. This is not a difficulty to engineer away; it is a boundary to record.
 
 **(b) prikk's receiving surface for imports is *ruled but not built*.** This is the single most important fact for scoping brygge, and it is easy to get wrong. RFC 113 §4.1/§4.2 and §3.1 are *ruled*; the runnable prikk surface behind them is not:
 
@@ -34,15 +36,16 @@ The honest reading: brygge can be built and be genuinely useful **now** for deco
 
 ## 1. Purpose (PU-…)
 
-- **PU-1 — Carry history out of Git, SVN, and CVS into an IR that belongs to no system.** Decode is the first half of the value and stands on its own: a faithful IR of a source repository is useful before any encoder exists.
+- **PU-1 — Carry history out of Git, Mercurial, SVN, and CVS (and further sources over time) into an IR that belongs to no system.** Decode is the first half of the value and stands on its own: a faithful IR of a source repository is useful before any encoder exists.
 - **PU-2 — Encode prikk from the IR** as the first target, satisfying prikk's import contract (RFC 113) once its receiving surface exists (UD-1…UD-3). Until then, encode a *reviewable proposal*, not sealed history.
-- **PU-3 — Be a reusable VCS-abstraction, not a prikk-only feeder.** The IR and decoders are the reusable core; a second target's encoder must be writable against the IR alone, without reading brygge's prikk encoder and without brygge changing. prikk is the **first and most demanding** client (it needs node identity and provenance), not the only one; a snapshot-based target must also be encodable from the same IR.
+- **PU-3 — Be a reusable VCS-abstraction, not a prikk-only feeder — in both directions.** The IR is the reusable core. **Targets:** a second target's encoder must be writable against the IR alone, without reading brygge's prikk encoder and without brygge changing; prikk is the **first and most demanding** client (it needs node identity and provenance), not the only one, and a snapshot-based target must also be encodable from the same IR. **Sources:** a new source (the owner names Git, Mercurial, Subversion, CVS, *"etc."*) must be a **new decoder implemented against the shared IR obligations (§10)**, not a modification of the IR or of existing decoders. Source-extensibility and target-extensibility are symmetric properties of the same IR; neither may bake in the other side's assumptions (IR-1/IR-6).
 - **PU-4 — Make the fidelity of an import legible to the person who ran it and to a later third party** — the honesty and verification requirements (§4, §5) are the product, as much as the bytes.
 - **PU-5 — Carry the dependency weight prikk refuses to.** brygge exists *because* a Git decoder needs `gix` (~100 crates) or `libgit2` (C), which would be a step change in prikk's five-crate audited surface. brygge owns that weight so prikk stays small; this is a purpose because it governs brygge's boundaries (§8) — brygge's output must be checkable by a prikk that never links a single brygge dependency.
+- **PU-6 — The decode → IR half is independently stabilizable, and stability is a deliverable.** Because decode depends only on the (decades-stable) source systems and not on prikk, the decode/IR half must be able to reach a **durable, versioned contract** (IX-07 for the IR; a stable tool surface for `decode`/`inspect`/`verify`) **before** the encode-to-prikk half is finished — indeed before prikk's receiving surface exists at all. Every requirement is written so that decode, the IR, inspection, and internal/against-source verification form a complete product on their own (PU-1), with the encoder as a separable consumer. "Stabilize the first half" is therefore a property the requirements must not obstruct: no decode/IR obligation may be defined in terms of a prikk-side dependency (§11).
 
 ## 2. Non-goals (NG-…) — stated as firmly as the goals
 
-- **NG-1 — Not a Git/SVN/CVS compatibility or interoperability layer.** One-way import, never a wrapper, never reading `.git/` as live storage for a running prikk. (RFC 113 §7.)
+- **NG-1 — Not a Git/Mercurial/SVN/CVS compatibility or interoperability layer.** One-way import, never a wrapper, never reading `.git/`/`.hg/` as live storage for a running prikk. (RFC 113 §7.)
 - **NG-2 — Not round-tripping.** Exporting prikk (or any target) history *back* to a source system is a separate project and not implied here.
 - **NG-3 — Not authorship laundering.** No mechanism may make imported history appear natively authored or natively verified. Imported authorship is `Unverifiable` by construction, and brygge must never present it otherwise. This is the failure RFC 110 §4 names ("manufactured verification"), and it is the one brygge is most able to commit by accident.
 - **NG-4 — Not a promise of completeness.** A refusal of an unsupportable source feature is a *feature* (§7's floor), not a bug.
@@ -87,7 +90,7 @@ Honesty is not a report brygge *offers*; it is a property of every object brygge
 - **VF-2 — Round-checkable against the source.** Because the source's own identifiers and signatures are preserved opaquely (PR-4), a third party holding the *original source repository* can check that brygge's output corresponds to it — commit-by-commit / revision-by-revision — without trusting brygge. This is the strongest form of "faithful" available, and it is the reason PR-4 is non-negotiable.
 - **VF-3 — Internally checkable without the source.** A reader holding only the import can check: that every derived record is marked (HO-1); that the loss boundary is stated (HO-2); that authorship is `Unverifiable` (HO-3); that content and ancestry are internally consistent; and that the provenance record names its source and parameters (PR-6). This does not prove faithfulness-to-source (only VF-2 can), but it proves brygge did not *hide* anything, which is a distinct and checkable property.
 - **VF-4 — The two claims are never conflated.** "prikk verified this" and "this was faithfully imported and prikk verified nothing about its authorship" must be distinguishable by any reader at any time (RFC 113 §3, third point). brygge must make the second claim in a form the target already distinguishes from the first — for prikk, that is `Unverifiable` plus provenance-in-an-attestation, *not* history that looks native.
-- **VF-5 — Faithfulness is defined per source, and the definition is published.** Because Git, SVN, and CVS guaranteed different things, "faithful" means something different for each (§7). brygge must state, per source, what faithfulness *can* mean for it and what it explicitly cannot — so a user's expectation is set before they run, not corrected after.
+- **VF-5 — Faithfulness is defined per source, and the definition is published.** Because Git, Mercurial, SVN, and CVS guaranteed different things, "faithful" means something different for each (§7). brygge must state, per source, what faithfulness *can* mean for it and what it explicitly cannot — so a user's expectation is set before they run, not corrected after.
 
 ## 6. Idempotence and re-runs (ID-…)
 
@@ -96,14 +99,22 @@ Honesty is not a report brygge *offers*; it is a property of every object brygge
 - **ID-3 — Provenance makes double-import detectable by the target.** Because each import records what it was made from (PR-6), a target *can* recognize that two imports share a source; whether it deduplicates, refuses, or admits both is the **target's** decision (BN-3), not brygge's — but brygge must supply enough provenance for the target to make it.
 - **ID-4 — Content-addressed determinism caveat.** For a content-addressed target (prikk), identical input objects yield identical ids *only if every identity-bearing field is itself deterministic*. brygge must therefore make every field it controls deterministic (VF-1) and must **name every field it cannot** (e.g., an import timestamp, if the target's provenance object carries authoritative time) as a stated non-determinism, not let it silently perturb ids. See UD-4.
 
-## 7. The three sources are not one problem (SRC-…)
+## 7. The sources are not one problem (SRC-…)
 
-brygge must treat them separately and publish, per source, what faithfulness can mean (VF-5) and what is refused rather than approximated (the floor — an owner decision, OQ-3/§11).
+brygge must treat each source separately and publish, per source, what faithfulness can mean (VF-5) and what is refused rather than approximated (the floor — an owner decision, OQ-3/§11). Git, Mercurial, SVN, and CVS differ enormously in what they *guaranteed*, and the IR (§10) exists precisely so those differences are recorded, not flattened. A future source ("etc.", PU-3) is added as a new decoder that answers these same questions in its own terms.
+
+The four named sources form a **difficulty gradient**, which is also the recommended build order: Git (a real DAG, identity inferred) → **Mercurial** (a real DAG, identity *often stated*) → SVN (revisions atomic, branches by convention) → CVS (no atomic commit at all). Each earlier source de-risks the IR before the next stresses it.
 
 ### SRC-Git — hard but tractable
 - **SRC-G1** Content-addressed, atomic commits, a real DAG: content, ancestry, and messages import faithfully as *claims*.
 - **SRC-G2** The two hard problems are **identity inference** (renames: Git records delete+create, prikk wants a node identity — every inferred rename is marked derived with its similarity parameters, HO-1) and the **feature floor** (submodules, octopus merges beyond the target's parent limit, replace refs, grafts, shallow clones — refused, not approximated; the exact list is the owner's, OQ-3).
 - **SRC-G3** GPG-signed commits: the signature is preserved opaquely (PR-4) and verifies *nothing in the target*; brygge must never present a GPG-signed Git commit as a verified prikk author (NG-3).
+
+### SRC-Hg (Mercurial) — tractable, and epistemically *closer* to prikk than Git
+- **SRC-H1** Like Git, Mercurial has content-addressed, atomic changesets and a real DAG, so content, ancestry, and messages import faithfully as *claims* (PR-1/2/3) with the same discipline as SRC-Git.
+- **SRC-H2 — Renames are frequently *stated*, not inferred, and this must be honoured.** Mercurial records copy/rename metadata in filelogs (via `hg mv`/`hg cp`, or commit-time similarity the *source* chose to record). Where the source **recorded** a rename, it is a **source-stated fact** and must be carried as *stated* (not re-derived, not marked derived) — a genuine advantage over Git that reduces the derived-marking burden (HO-1). Where the source did **not** record it (a plain remove+add), brygge carries delete+create as stated, and only marks a rename *derived* if it chooses to infer one — with its parameters (PR-5). The IR must be able to hold both "rename, stated by source" and "rename, derived by brygge" as distinct epistemic states (IR-2); collapsing them would throw away exactly the fidelity Mercurial uniquely offers.
+- **SRC-H3 — Mercurial-specific structure needs floor rulings (OQ-3).** hg carries concepts with no clean prikk analogue: **named branches** (a branch name embedded in the changeset) versus **bookmarks** (movable Git-like refs) — two branch models that may coexist; **phases** (`public`/`draft`/`secret` — largely local workflow state, representation not assertion, PR-7); **obsolescence markers / evolve** (metadata about rewritten changesets — advisory, PR-8); **multiple heads per named branch**; and **`.hgtags`** (tags stored *as versioned history*, a quirk that is itself content to preserve). brygge must map named branches and bookmarks to the IR's branch-identity notion **without silently privileging one**, drop-with-record the representation-only parts (phases, obsmarkers) per HO-2, and refuse-or-flag anything the owner's floor names (OQ-3).
+- **SRC-H4** Mercurial's node ids and any commit signatures are preserved opaquely (PR-4) and verify *nothing in the target* (NG-3).
 
 ### SRC-SVN — different, not easier
 - **SRC-S1** Atomic revisions help ancestry, but **branches and tags are path copies, not first-class refs** — branch identity must be reconstructed by convention (`/trunk`, `/branches/x`, `/tags/x`) that many real repositories violate. Every reconstructed branch is a **derived** record (HO-1); a repository that violates the convention must be **refused or flagged**, never silently mis-branched.
@@ -179,9 +190,10 @@ Per RFC 113 §4.3–§4.5, these belong to the **receiving project's owner**. br
 | Failure behaviour | §9 FA |
 | Boundaries: brygge vs. target | §8 BN (BN-5 the dependency-weight boundary) |
 | The IR's obligations as requirements | §10 IR |
-| Git / SVN / CVS treated separately; CVS honesty | §7 SRC (SRC-C3 the lossy-but-labelled verdict) |
+| Git / Mercurial / SVN / CVS treated separately; hg stated-renames; CVS honesty | §7 SRC (SRC-H2 stated vs derived renames; SRC-C3 the lossy-but-labelled verdict) |
+| Source-extensibility (a new source = a new decoder) and the decode/IR half's independent stability | PU-3 (sources), PU-6, §0 intro |
 | Given decisions honoured (attestation-not-payload; derived-marked; boundary-recorded; Unverifiable) | HO-1, HO-2, HO-3, BN-3, and threaded throughout |
 | Questions not to answer, with downstream effect, then stop | §12 OQ |
 | Uncertainty stated as uncertainty | §0(b), §11 UD, SRC-C3, ID-4 |
 
-*End of brygge Requirements v0.1. This document is the contract a design must satisfy; it deliberately contains no architecture, schema, or API. The open questions in §12 gate any per-source design work, exactly as RFC 113 §4a states — foundations and the IR obligations (§10) can be designed now; Git/SVN/CVS encoders wait on OQ-1…OQ-3.*
+*End of brygge Requirements v0.2. This document is the contract a design must satisfy; it deliberately contains no architecture, schema, or API. What is buildable now vs. gated, precisely: the **decode → IR half** (the IR obligations §10, and the Git/Mercurial/SVN/CVS **decoders**, inspection, and internal/against-source verification) depends only on the source systems and can be designed and **stabilized now** (PU-6). The **encode-to-prikk** path past a reviewable proposal waits on the prikk-side dependencies §11 (UD-1…UD-3) and the owner's open questions §12 (OQ-1…OQ-3), exactly as RFC 113 §4a states. Build order follows the §7 difficulty gradient: foundations → Git → Mercurial → SVN → CVS.*
