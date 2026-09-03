@@ -38,3 +38,13 @@ Numbering is brygge's own. **Track A** (decode → IR) depends on nothing in pri
 
 The list will grow (a second-target encoder RFC to prove PU-3; further sources under "etc."). Each RFC
 is written by the architect and reviewed/approved per `GOVERNANCE.md`.
+
+## State
+
+- **Proposed:** [RFC 001 — IR foundations](proposed/001-ir-foundations.md) (with a handoff under
+  [`handoffs/001-ir-foundations/`](handoffs/001-ir-foundations/ir-foundations-handoff-v1.md)) — the
+  first drafted RFC, awaiting review/acceptance.
+- **Done:** [RFC 000 — RFC lifecycle policy](done/000-rfc-lifecycle-policy.md).
+
+Per the lifecycle policy, the folder is the source of truth for state; this section is the index the
+policy asks each project to keep. Update it in the same commit that moves an RFC between folders.
