@@ -44,8 +44,9 @@ is written by the architect and reviewed/approved per `GOVERNANCE.md`.
 **Phase A0's foundational design set is complete and accepted** — the implementer may build against it.
 
 - **Accepted:**
-  - [RFC 001 — IR foundations](accepted/001-ir-foundations.md) — with a handoff under
-    [`handoffs/001-ir-foundations/`](handoffs/001-ir-foundations/ir-foundations-handoff-v1.md).
+  - [RFC 001 — IR foundations](accepted/001-ir-foundations.md) — handoffs under
+    [`handoffs/001-ir-foundations/`](handoffs/001-ir-foundations/): the design handoff, and the
+    **consolidated `brygge-ir` build spec** (folds in 002/003) that the implementation follows.
   - [RFC 002 — Honesty & provenance machinery](accepted/002-honesty-and-provenance-machinery.md)
   - [RFC 003 — Determinism, format & versioning](accepted/003-determinism-format-and-versioning.md)
     (resolves RFC 001's OQ-A/B/C)
