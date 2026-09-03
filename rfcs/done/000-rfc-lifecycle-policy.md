@@ -1,12 +1,21 @@
 # RFC 000 — RFC lifecycle policy
 
-**Status.** Implemented
+**Status.** Implemented — **brygge adopts the 5-folder variant** (see the adoption note below).
 **Tracks.** Cross-cutting documentation policy. Not tied to any
 single feature; applies to the RFC directory itself.
 **Touches.** `rfcs/` folder structure, the index file at
 `rfcs/README.md`, the Status field convention used inside each
 RFC, any cross-references between RFCs, and optional companion
 handoff documents under `rfcs/handoffs/`.
+
+> **brygge adoption note (2026-09-03).** The body below is the canonical policy, copied verbatim from
+> `.git-exclude/rules/000-rfc-lifecycle-policy.md`. brygge uses the **5-folder variant** described in
+> [§ Folder layout: 5-folder variant](#folder-layout-5-folder-variant): `proposed/` → `accepted/`
+> (review complete; the implementer may start) → `done/`, plus `archive/` and the optional `draft/`,
+> with companion `handoffs/`. This matches the ecosystem's other projects and the three-role team in
+> `GOVERNANCE.md`, where "the design is accepted" (architect + any owner-gated decision) is a distinct
+> event from "the work shipped." Where this note and the canonical body differ on the *number of
+> folders*, this note governs for brygge; the canonical body governs everything else.
 
 ## Summary
 

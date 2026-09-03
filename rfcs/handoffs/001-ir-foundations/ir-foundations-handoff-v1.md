@@ -1,6 +1,7 @@
 # Handoff — IR foundations (v1)
 
-**Companion to:** RFC 001 (Proposed 2026-09-03). Inherits its state.
+**Companion to:** RFC 001 (Accepted 2026-09-03). Inherits its state — the implementer may build against
+this handoff.
 **Realizes:** requirements §10 (`IR-1…IR-6`), external design §2.2 (`IX-01…07`) and §2.3 (`FS-*`), and
 prikk RFC 113 §3.1 / §4.2. ROADMAP Phase A0.
 **Design items:** `IR-1…IR-6`, `IX-01…07`, `PR-1…PR-6`, `HO-1/HO-2/HO-4`, `VF-1/VF-3`, `ID-4`,

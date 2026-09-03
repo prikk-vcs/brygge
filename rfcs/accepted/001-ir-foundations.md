@@ -1,8 +1,9 @@
 # RFC 001 — IR foundations: the intermediate representation
 
-**Status.** Proposed (2026-09-03) — the first brygge RFC, and the substrate every decoder and encoder
-shares. Defines *what the IR is*: its logical model, how epistemic status and provenance are carried,
-why it holds evidence-for-identity rather than identity, and the shape of its durable artifact.
+**Status.** Accepted (2026-09-03) — the first brygge RFC, and the substrate every decoder and encoder
+shares. The design is settled and the implementer may build against it (`brygge-ir` per the handoff).
+Defines *what the IR is*: its logical model, how epistemic status and provenance are carried, why it
+holds evidence-for-identity rather than identity, and the shape of its durable artifact.
 Handoff:
 [`../handoffs/001-ir-foundations/ir-foundations-handoff-v1.md`](../handoffs/001-ir-foundations/ir-foundations-handoff-v1.md).
 **Tracks.** ROADMAP Phase A0 (foundations); requirements §10 (`IR-1…IR-6`), external design §2.2
