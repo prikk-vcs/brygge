@@ -44,6 +44,11 @@ is written by the architect and reviewed/approved per `GOVERNANCE.md`.
 - **Accepted:** [RFC 001 — IR foundations](accepted/001-ir-foundations.md) (with a handoff under
   [`handoffs/001-ir-foundations/`](handoffs/001-ir-foundations/ir-foundations-handoff-v1.md)) — design
   settled; the implementer may build `brygge-ir` against it.
+- **Proposed** (the rest of Phase A0, awaiting review/acceptance):
+  - [RFC 002 — Honesty & provenance machinery](proposed/002-honesty-and-provenance-machinery.md)
+  - [RFC 003 — Determinism, format & versioning](proposed/003-determinism-format-and-versioning.md)
+    (resolves RFC 001's OQ-A/B/C)
+  - [RFC 009 — Dependency-surface & supply-chain policy](proposed/009-dependency-surface-and-supply-chain-policy.md)
 - **Done:** [RFC 000 — RFC lifecycle policy](done/000-rfc-lifecycle-policy.md) (brygge uses the
   **5-folder variant**: `proposed → accepted → done`, plus `archive/` and optional `draft/`).
 
