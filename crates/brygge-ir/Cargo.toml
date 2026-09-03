@@ -1,0 +1,18 @@
+[package]
+name        = "brygge-ir"
+description = "brygge's intermediate representation: the faithfulness-with-provenance model, its canonical content-addressed artifact, and the honesty machinery. The light core that links no source-decoder dependency."
+readme      = "README.md"
+
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+authors.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+
+[dependencies]
+sha2 = { workspace = true }
+
+[lints]
+workspace = true

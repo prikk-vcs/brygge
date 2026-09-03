@@ -1,13 +1,31 @@
-[package]
-name        = "brygge-git"
-description = "A migration support tool for prikk."
-readme      = "./README.md"
+[workspace]
+resolver = "3"
+members  = ["crates/*"]
 
-version             = "0.0.0"
-edition             = "2024"
-rust-version        = "1.85"
-license             = "Apache-2.0"
-authors             = ["nabbisen"]
-repository          = "https://github.com/prikk-vcs/brygge"
+[workspace.package]
+version      = "0.1.0"
+edition      = "2024"
+rust-version = "1.85"
+license      = "Apache-2.0"
+authors      = ["nabbisen"]
+repository   = "https://github.com/prikk-vcs/brygge"
+homepage     = "https://github.com/prikk-vcs/brygge"
 
-[dependencies]
+[workspace.dependencies]
+brygge-ir = { version = "0.1.0", path = "crates/brygge-ir" }
+# The only third-party dependency of the light core (RFC 003 D-3): SHA-256, matching prikk's audited
+# `sha2` usage. brygge-ir links no serialization crate (the codec is hand-rolled) and no decoder library
+# (RFC 009 D-1 — those are isolated in future brygge-decode-* crates).
+sha2 = "0.10"
+
+# Lint discipline mirrors the ecosystem: unsafe is forbidden everywhere except a future dedicated FFI
+# crate (RFC 009 D-3); public items are documented; the panic-prone clippy lints warn so review holds
+# the line — brygge parses untrusted source repositories and must never panic on malformed input.
+[workspace.lints.rust]
+unsafe_code  = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+unwrap_used      = "warn"
+expect_used      = "warn"
+indexing_slicing = "warn"

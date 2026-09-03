@@ -1,0 +1,35 @@
+# cargo-deny policy (RFC 009 D-5/D-6). Run in CI: `cargo deny check`.
+
+[advisories]
+version = 2
+yanked = "deny"
+
+[licenses]
+version = 2
+# brygge is Apache-2.0; dependencies must be permissively licensed. A copyleft C library (e.g. libgit2)
+# is deliberately excluded here (RFC 009 D-5) and would need explicit owner sign-off to add.
+allow = [
+    "Apache-2.0",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# The light core (brygge-ir) must never link a source-decoder or C-git library (RFC 009 D-1/D-2).
+# Prefer pure-Rust `gix` for Git; ban the libgit2 bindings workspace-wide. A future decoder that truly
+# needs a C library adds a scoped, owner-approved exception in its own RFC.
+deny = [
+    { name = "git2" },
+    { name = "libgit2-sys" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
