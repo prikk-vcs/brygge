@@ -41,8 +41,15 @@ is written by the architect and reviewed/approved per `GOVERNANCE.md`.
 
 ## State
 
-**Phase A0's foundational design set is complete and accepted** — the implementer may build against it.
+**Phase A0's foundational design set is complete and accepted, and `brygge-ir` is built against it.**
+**Phase A1 has opened: RFC 004 (the Git decoder) is drafted for owner review.**
 
+- **Proposed:**
+  - [RFC 004 — Git decoder](proposed/004-git-decoder.md) — the object→IR mapping, derived-only rename
+    inference, the floor *mechanism*, determinism, and against-source verify are settled. **Two
+    owner-gated decisions block acceptance** (`GOVERNANCE.md`): adopting **`gix`** as brygge's first heavy
+    dependency (RFC 009 D-6 — owner approval + architect security review) and **the Git feature floor's
+    contents** (OQ-3). On acceptance, the `brygge-decode-git` handoff follows, then M1 (0.1.0).
 - **Accepted:**
   - [RFC 001 — IR foundations](accepted/001-ir-foundations.md) — handoffs under
     [`handoffs/001-ir-foundations/`](handoffs/001-ir-foundations/): the design handoff, and the
@@ -54,7 +61,8 @@ is written by the architect and reviewed/approved per `GOVERNANCE.md`.
 - **Done:** [RFC 000 — RFC lifecycle policy](done/000-rfc-lifecycle-policy.md) (brygge uses the
   **5-folder variant**: `proposed → accepted → done`, plus `archive/` and optional `draft/`).
 
-Next: the `brygge-ir` implementation (RFC 001 + 003), then RFC 004 (the Git decoder) toward ROADMAP M1.
+Next: owner review of RFC 004 (the two gated decisions above); on acceptance, the `brygge-decode-git`
+handoff and implementation toward ROADMAP M1 (0.1.0).
 
 Per the lifecycle policy, the folder is the source of truth for state; this section is the index the
 policy asks each project to keep. Update it in the same commit that moves an RFC between folders.
