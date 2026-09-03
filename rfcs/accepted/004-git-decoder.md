@@ -1,11 +1,13 @@
 # RFC 004 — Git decoder
 
-**Status.** Proposed (2026-09-04). Drafted for owner review. Two decisions in this RFC are the owner's
-and gate acceptance (`GOVERNANCE.md`): **adopting `gix` as brygge's first heavy dependency** (RFC 009
-D-6 — owner approval + architect security review) and **the Git feature floor's contents** (OQ-3). The
+**Status.** Accepted (2026-09-04). The two owner-gated decisions are ruled: the owner **approved `gix`**
+as brygge's first heavy dependency (RFC 009 D-6), backed by the architect security review at
+[`handoffs/004-git-decoder/gix-security-review-v1.md`](../handoffs/004-git-decoder/gix-security-review-v1.md)
+(verdict: adopt; `gix 0.87.1`, MSRV 1.85, no C, no network backend, advisories cleared, one MPL-2.0
+allowlist note); and the owner **ratified the provisional feature floor** (D-4, resolving OQ-C). The
 engineering shape below — the crate boundary, the object→IR mapping, the derived-rename discipline, the
-floor *mechanism*, determinism, and against-source verification — is settled and buildable the moment
-those two rulings land. This RFC does not presume them.
+floor *mechanism*, determinism, and against-source verification — is settled. Next artifact: the
+`brygge-decode-git` program-design handoff, then implementation toward M1 (0.1.0).
 **Tracks.** ROADMAP Phase A1 → milestone **M1 (0.1.0, Git decode → IR)**. Track A — not prikk-gated
 (decode stands alone, PU-1/PU-6). Realizes prikk RFC 113's decoder side for Git.
 **Touches.** A new `brygge-decode-git` crate (the first heavy-dependency crate, RFC 009 D-1); the `brygge
@@ -52,9 +54,12 @@ against-source-check disciplines the milestone rests on.
   `gix` tree is linked: `brygge-ir`, the encoders, and `verify --internal` build and run without it
   (tested, RFC 009 D-7). The crate exposes one narrow function — read a repository path, produce a
   `brygge_ir::Ir` (or a typed decode error) — and holds no honesty/verification logic of its own; all of
-  that already lives in the source-independent core. **This is the owner-gated heavy-dependency adoption
-  (RFC 009 D-6): its acceptance carries an architect security review of the `gix` tree and a `deny.toml`
-  update, and is what moves this RFC to Accepted.**
+  that already lives in the source-independent core. **Owner-approved 2026-09-04 (RFC 009 D-6).** gix is
+  pinned at `0.87` (locked 0.87.1, MSRV 1.85 — no bump to the core), with **default features + `blob-diff`
+  + `revision`** and **no network-client feature**, so no HTTP/TLS/SSH transport backend is linked
+  (INV-3). The architect security review (link in Status) records the surface: 141 crates in the decoder
+  subtree, pure Rust (no C/`*-sys`, no `cc`/`bindgen`), both advisories cleared by resolving forward, and
+  one MPL-2.0 crate (`uluru`, gix-pack's cache) allowlisted with a file-level-weak-copyleft rationale.
 
 - **D-2 — The object → IR mapping, entirely *Stated*.** The faithful core adds no judgment:
   - **Commit → `ChangeAtom`** with `status = Stated`. `parents` are the IR `AtomId`s of the commit's
@@ -87,21 +92,24 @@ against-source-check disciplines the milestone rests on.
   it (RFC 001 D-3). The IR model already enforces this shape; this decision fixes the *policy* (default
   off, parameters mandatory when on). The detection algorithm and its default threshold are **OQ-A**.
 
-- **D-4 — The feature floor: this RFC ships the *mechanism* and a *provisional* list; the owner sets the
-  line (OQ-3).** On encountering a feature it will not approximate, the decoder **refuses with a named
-  reason** and the "hit the floor" outcome class (CL-08/FA-3) — it never guesses. The decoder reads a
-  **floor policy** (CF-03) rather than hardcoding product scope, so the line is set by policy, not by
-  code. The **provisional floor proposed for owner ratification** (SRC-G2), each item *refused* unless
-  the owner rules otherwise:
+- **D-4 — The feature floor: this RFC ships the *mechanism*, and the owner has ratified the list
+  (OQ-3, ruled 2026-09-04).** On encountering a feature it will not approximate, the decoder **refuses
+  with a named reason** and the "hit the floor" outcome class (CL-08/FA-3) — it never guesses. The decoder
+  reads a **floor policy** (CF-03) rather than hardcoding product scope, so the line is set by policy, not
+  by code. The owner **ratified the provisional floor in full for M1** (SRC-G2) — all four items below are
+  **refused**:
   - **submodules** (a pointer to another repository — out of this import's scope);
-  - **octopus merges** beyond the target's parent limit (a prikk/OQ-2 ceiling; until set, carry all
-    parents and let the encoder's floor decide, or refuse above N — owner's call);
+  - **octopus merges** beyond the target's parent limit — refused above N. The ceiling **N is a
+    prikk/OQ-2 value not yet set**; until it is, the decoder **carries all parents** and defers the
+    ceiling to the encoder's floor, so decode itself refuses no merge on parent count alone. (This is the
+    one item whose numeric threshold is still pending; the *stance* — refuse beyond the limit — is ruled.)
   - **replace refs (`refs/replace/*`) and grafts** (they *rewrite* the DAG a reader would otherwise
     see — importing the rewritten view silently would be exactly the laundering the project forbids);
   - **shallow clones** (a truncated history that looks whole — an FA-1 partial masquerading as complete).
 
-  For each, the alternative to *refuse* is *carry-with-a-derived/loss record*; which items move to that
-  column is the owner's OQ-3 ruling. brygge implements whichever line is set.
+  The owner's ruling stands as the M1 floor; a later OQ-3 revision may move an item to
+  *carry-with-a-derived/loss record*, and the read-a-policy mechanism (CF-03) implements whatever line is
+  set without a code change.
 
 - **D-5 — The Git loss boundary (HO-2/PR-7), every drop class-stated, nothing silent (PR-9).**
   Representation-class drops recorded in the `LossBoundary`: **packfile/delta layout and the physical
@@ -143,9 +151,10 @@ against-source-check disciplines the milestone rests on.
   Branches and tags are carried. Proposed: **notes (`refs/notes/*`)** carried as content or
   dropped-with-record; **remote-tracking refs, `FETCH_HEAD`, stash** dropped-with-record;
   **`refs/replace/*`** floor-refused (D-4). Owner/architect to confirm.
-- **OQ-C — The floor's exact contents** (D-4) — the **OQ-3** ruling for Git specifically: which of
-  submodules / octopus-beyond-N / replace+grafts / shallow are *refused* vs *carried-with-record*, and
-  the octopus parent limit N (tied to prikk OQ-2). Product scope; the owner's.
+- **OQ-C — The floor's exact contents** (D-4) — **RESOLVED 2026-09-04:** the owner ratified refusing all
+  four (submodules, octopus-beyond-N, replace+grafts, shallow). The one residual is the **octopus parent
+  limit N**, a prikk/OQ-2 value not yet set; until it is, decode carries all parents and the encoder's
+  floor holds the ceiling (D-4).
 - **OQ-D — Very large repositories** (ties to RFC 003 OQ-B): decode memory/throughput, and whether a
   streaming object read is needed for M1 or deferred. *Leaning:* defer; correctness and determinism
   first, performance once a real large repo demands it.

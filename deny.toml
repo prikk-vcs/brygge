@@ -17,6 +17,12 @@ allow = [
     "Zlib",
     "Unicode-3.0",
     "Unicode-DFS-2016",
+    # MPL-2.0 is a **file-level weak copyleft on a pure-Rust crate** — it obliges sharing changes to that
+    # crate's own files only, and imposes nothing on brygge's code. It reaches the tree solely via
+    # `uluru` (gix-pack's LRU object cache), an unavoidable part of the gix object-database path adopted
+    # under RFC 004 D-1. This is categorically distinct from the copyleft *C library* RFC 009 D-5 flags
+    # for owner sign-off; recorded here as a license-policy note. (gix-security-review-v1.md §Licenses.)
+    "MPL-2.0",
 ]
 
 [bans]

@@ -1,0 +1,19 @@
+[package]
+name        = "brygge-decode-git"
+description = "brygge's Git source decoder: reads a local Git object database with gix and produces a brygge-ir IR, entirely Stated except explicitly-marked derived rename hints. The one crate that links gix (RFC 009 D-1)."
+readme      = "README.md"
+
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+authors.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+
+[dependencies]
+brygge-ir = { workspace = true }
+gix       = { workspace = true }
+
+[lints]
+workspace = true

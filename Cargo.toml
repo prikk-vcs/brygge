@@ -17,6 +17,14 @@ brygge-ir = { version = "0.1.0", path = "crates/brygge-ir" }
 # `sha2` usage. brygge-ir links no serialization crate (the codec is hand-rolled) and no decoder library
 # (RFC 009 D-1 — those are isolated in future brygge-decode-* crates).
 sha2 = "0.10"
+# The Git decoder's heavy dependency (RFC 004 D-1, owner-approved 2026-09-04 under RFC 009 D-6). Pure
+# Rust, MIT/Apache, MSRV 1.85 (no bump to the core). gix's **default features carry no network
+# transport** — the `*-network-client` / `*-http-transport-*` features are opt-in and left off — so
+# brygge links no `gix-transport`/TLS/HTTP stack and performs no network I/O (INV-3, RFC 009 D-4);
+# `blob-diff` (tree→PathOps) and `revision` (ancestry walk) are the only additions on top of defaults.
+# Isolated in `brygge-decode-git`; no other crate links it (RFC 009 D-1).
+# See handoffs/004-git-decoder/gix-security-review-v1.md.
+gix = { version = "0.87", features = ["blob-diff", "revision"] }
 
 # Lint discipline mirrors the ecosystem: unsafe is forbidden everywhere except a future dedicated FFI
 # crate (RFC 009 D-3); public items are documented; the panic-prone clippy lints warn so review holds
