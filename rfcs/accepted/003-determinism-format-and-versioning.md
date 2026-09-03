@@ -1,6 +1,6 @@
 # RFC 003 — Determinism, artifact format &amp; versioning, integrity
 
-**Status.** Proposed (2026-09-03). Resolves RFC 001's three open questions (OQ-A codec, OQ-B snapshot vs
+**Status.** Accepted (2026-09-04). Resolves RFC 001's three open questions (OQ-A codec, OQ-B snapshot vs
 operations, OQ-C versioning/freeze) and specifies the artifact's canonical serialization, determinism
 contract, integrity, and the IR-contract version lifecycle in detail. RFC 001 decided *that* the
 artifact is canonical/content-addressed/versioned/digested; this RFC decides *exactly how*.

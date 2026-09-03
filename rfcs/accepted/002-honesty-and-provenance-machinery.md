@@ -1,6 +1,6 @@
 # RFC 002 — Honesty &amp; provenance machinery
 
-**Status.** Proposed (2026-09-03). Builds on RFC 001 (Accepted): RFC 001 made honesty a property of the
+**Status.** Accepted (2026-09-04). Builds on RFC 001 (Accepted): RFC 001 made honesty a property of the
 IR *model* (`Stated`/`Derived` on every assertion, renames as literal ops + a marked hint, a
 `LossBoundary` and a pure `summary`). This RFC defines the **machinery and contracts** that turn those
 model properties into guaranteed, non-suppressible, comparable, and recoverable *behaviour*: the

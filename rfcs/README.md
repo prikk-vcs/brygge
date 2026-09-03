@@ -41,16 +41,19 @@ is written by the architect and reviewed/approved per `GOVERNANCE.md`.
 
 ## State
 
-- **Accepted:** [RFC 001 — IR foundations](accepted/001-ir-foundations.md) (with a handoff under
-  [`handoffs/001-ir-foundations/`](handoffs/001-ir-foundations/ir-foundations-handoff-v1.md)) — design
-  settled; the implementer may build `brygge-ir` against it.
-- **Proposed** (the rest of Phase A0, awaiting review/acceptance):
-  - [RFC 002 — Honesty & provenance machinery](proposed/002-honesty-and-provenance-machinery.md)
-  - [RFC 003 — Determinism, format & versioning](proposed/003-determinism-format-and-versioning.md)
+**Phase A0's foundational design set is complete and accepted** — the implementer may build against it.
+
+- **Accepted:**
+  - [RFC 001 — IR foundations](accepted/001-ir-foundations.md) — with a handoff under
+    [`handoffs/001-ir-foundations/`](handoffs/001-ir-foundations/ir-foundations-handoff-v1.md).
+  - [RFC 002 — Honesty & provenance machinery](accepted/002-honesty-and-provenance-machinery.md)
+  - [RFC 003 — Determinism, format & versioning](accepted/003-determinism-format-and-versioning.md)
     (resolves RFC 001's OQ-A/B/C)
-  - [RFC 009 — Dependency-surface & supply-chain policy](proposed/009-dependency-surface-and-supply-chain-policy.md)
+  - [RFC 009 — Dependency-surface & supply-chain policy](accepted/009-dependency-surface-and-supply-chain-policy.md)
 - **Done:** [RFC 000 — RFC lifecycle policy](done/000-rfc-lifecycle-policy.md) (brygge uses the
   **5-folder variant**: `proposed → accepted → done`, plus `archive/` and optional `draft/`).
+
+Next: the `brygge-ir` implementation (RFC 001 + 003), then RFC 004 (the Git decoder) toward ROADMAP M1.
 
 Per the lifecycle policy, the folder is the source of truth for state; this section is the index the
 policy asks each project to keep. Update it in the same commit that moves an RFC between folders.

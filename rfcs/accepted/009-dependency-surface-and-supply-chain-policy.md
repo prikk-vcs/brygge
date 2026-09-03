@@ -1,6 +1,6 @@
 # RFC 009 — Dependency-surface &amp; supply-chain policy
 
-**Status.** Proposed (2026-09-03). Phase-A0, brought early because it **gates every decoder's library
+**Status.** Accepted (2026-09-04). Phase-A0, brought early because it **gates every decoder's library
 choice** and is the project's defining risk: brygge exists precisely so prikk needn't take on heavy
 source-parsing dependencies (PU-5). This RFC sets the policy for which dependencies are acceptable, how
 they are isolated, how the source is read without linking risk where possible, and the CI gates that
