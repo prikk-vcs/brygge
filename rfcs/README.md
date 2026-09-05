@@ -61,8 +61,11 @@ is written by the architect and reviewed/approved per `GOVERNANCE.md`.
 - **Done:** [RFC 000 — RFC lifecycle policy](done/000-rfc-lifecycle-policy.md) (brygge uses the
   **5-folder variant**: `proposed → accepted → done`, plus `archive/` and optional `draft/`).
 
-Next: the `brygge-decode-git` program-design handoff (under `handoffs/004-git-decoder/`), then the
-decoder implementation toward ROADMAP M1 (0.1.0).
+RFC 004 is realized in two increments (handoffs under `handoffs/004-git-decoder/`): **increment 1** the
+`brygge-decode-git` decoder (Git → IR), **increment 2** the read-side CLI (`decode`/`inspect`/`verify`/
+`summary`, CL-08 exit classes) + against-source verify (VF-2). Both are built and green.
+Next: rename tuning (OQ-A), ref-namespace confirmations (OQ-B); then RFC 005 (Mercurial) → M2. `encode`
+unblocks when the owner rules GATED-1..3 (RFC 008).
 
 Per the lifecycle policy, the folder is the source of truth for state; this section is the index the
 policy asks each project to keep. Update it in the same commit that moves an RFC between folders.

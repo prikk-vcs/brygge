@@ -13,6 +13,9 @@ homepage.workspace     = true
 
 [dependencies]
 brygge-ir = { workspace = true }
+# The CLI wires decoders in (RFC 009 D-1 permits this for the binary); the IR core and
+# `verify --internal` still link no decoder.
+brygge-decode-git = { workspace = true }
 
 [lints]
 workspace = true
