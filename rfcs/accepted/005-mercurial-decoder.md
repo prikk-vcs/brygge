@@ -1,14 +1,12 @@
 # RFC 005 — Mercurial decoder
 
-**Status.** Proposed (2026-09-06). **Read tier RULED 2026-09-06: Tier 2 — the pure-Rust revlog reader**
-(the owner chose it over the `hg`-CLI subprocess to hold the clean/safe/secure/self-contained line: no
-runtime dependency, no subprocess, `forbid(unsafe)` maximal, smallest trust surface — see D-1/OQ-A).
-**Floor: the architect recommends refusing subrepos + largefiles + censored revisions** (OQ-B/OQ-D);
-this is the proposed line and **awaits the owner's OQ-3 ratification** before acceptance. The engineering
-shape below — the crate boundary, the object→IR mapping, the **stated-rename** discipline, the floor
-mechanism, determinism, and against-source verification — follows the RFC 004 pattern and is settled;
-acceptance waits only on the floor ratification (Tier 2 needs no gix-scale heavy-dependency review — it
-adds at most a small pure-Rust decompression dependency, not an external binary; see OQ-A).
+**Status.** Accepted (2026-09-06). Both owner-gated decisions are ruled: the **read tier is Tier 2 — the
+pure-Rust revlog reader** (chosen over the `hg`-CLI subprocess to hold the clean/safe/secure/self-contained
+line: no runtime dependency, no subprocess, `forbid(unsafe)` maximal, smallest trust surface — D-1/OQ-A),
+and the **hg feature floor is ratified: refuse subrepos + largefiles + censored revisions** (D-4/OQ-B/OQ-D).
+Tier 2 adds no gix-scale heavy dependency (only a small pure-Rust decompression codec), so acceptance
+carries no separate security review — just the `deny.toml`/`cargo-audit` gate and a handoff note. Next
+artifact: the `brygge-decode-hg` program-design handoff, then implementation toward M2.
 **Tracks.** ROADMAP Phase A2 → milestone **M2 (Mercurial decode → IR)**. Track A — not prikk-gated
 (decode stands alone, PU-1/PU-6). Realizes prikk RFC 113's decoder side for Mercurial, and is the
 **IR's second-source validation — the RFC 003 D-7 contract-freeze precondition** (see D-8).
@@ -101,8 +99,9 @@ structure with no clean prikk analogue** — named branches versus bookmarks, ph
   - **`.hgtags`** → carried as **file content** (`Stated`) like any tracked file; whether brygge *also*
     synthesizes tag `RefRecord`s from it (a derived interpretation) is **OQ-C**.
   - On encountering a feature it will not approximate, the decoder **refuses with a named reason** and the
-    CL-08 floor outcome (FA-3), reading a floor policy (CF-03) rather than hardcoding scope. The
-    provisional floor for ratification is **OQ-B/OQ-D** (subrepos, largefiles, censored revisions).
+    CL-08 floor outcome (FA-3), reading a floor policy (CF-03) rather than hardcoding scope. The floor,
+    **owner-ratified 2026-09-06 (OQ-B/OQ-D)**: refuse **subrepos**, **largefiles/lfs** pointers, and
+    **censored revisions**.
 
 - **D-5 — The hg loss boundary (HO-2/PR-7/PR-8), every drop class-stated (PR-9).** Representation-class:
   revlog physical layout and delta chains, the dirstate and working copy, phase roots. Advisory-unreliable:
@@ -140,18 +139,17 @@ structure with no clean prikk analogue** — named branches versus bookmarks, ph
   self-contained decoder. The only dependency is a **pure-Rust decompression** codec for zlib/zstd
   revlog payloads — small and license-clean, not a gix-scale heavy dependency (no separate security
   review; the `deny.toml`/`cargo-audit` gate and a handoff note suffice).
-- **OQ-B — The hg floor contents (owner-gated, OQ-3)** — **architect recommendation, awaiting owner
-  ratification.** Recommended for M2: **refuse** subrepos (hg's submodule analogue — parity with the Git
-  submodule floor, OQ-D), **largefiles/lfs** pointers, and **censored revisions**, each with a named
-  reason (FA-3), rather than approximate them. This is the clean/safe/robust line — a small supported
-  surface — while everything core (changesets, DAG, stated renames, named branches, bookmarks,
-  `.hgtags`-as-content) is carried or dropped-with-record per D-4. Product scope; the owner ratifies, as
-  with the Git floor.
+- **OQ-B — The hg floor contents (OQ-3)** — **RESOLVED 2026-09-06 (owner-ratified):** **refuse** subrepos
+  (hg's submodule analogue — parity with the Git submodule floor, OQ-D), **largefiles/lfs** pointers, and
+  **censored revisions**, each with a named reason (FA-3), rather than approximate them — the clean/safe/
+  robust small-surface line. Everything core (changesets, DAG, stated renames, named branches, bookmarks,
+  `.hgtags`-as-content) is carried or dropped-with-record per D-4. A later OQ-3 revision may move an item;
+  the read-a-policy mechanism (CF-03) implements whatever line is set.
 - **OQ-C — `.hgtags` beyond content.** Carry `.hgtags` as file content only (faithful, `Stated`), or
   *also* synthesize tag `RefRecord`s from parsing it (a `Derived` interpretation of a versioned file)?
   *Leaning:* content-only for M2; derived tag-ref synthesis deferred until there is a consumer for it.
-- **OQ-D — Subrepos.** Refuse (floor) as the Git submodule analogue, for parity (RFC 004 D-4)? *Leaning:*
-  refuse with a named reason; folded into OQ-B for the owner's ruling.
+- **OQ-D — Subrepos** — **RESOLVED 2026-09-06 (owner-ratified, with OQ-B):** refuse with a named reason,
+  as the Git submodule analogue (RFC 004 D-4 parity).
 - **OQ-E — Large repositories / streaming** (ties to RFC 003 OQ-B and RFC 004 OQ-D). *Leaning:* defer;
   correctness and determinism first.
 

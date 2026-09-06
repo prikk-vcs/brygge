@@ -42,18 +42,16 @@ is written by the architect and reviewed/approved per `GOVERNANCE.md`.
 ## State
 
 **Phase A1 (Git) is complete: RFC 004 is accepted and built through the CLI/verify surface, OQ-A/OQ-B**
-**resolved. Phase A2 has opened: RFC 005 (the Mercurial decoder) is drafted for owner review.**
+**resolved. Phase A2 is under way: RFC 005 (the Mercurial decoder) is accepted; `brygge-decode-hg` is next.**
 
-- **Proposed:**
-  - [RFC 005 — Mercurial decoder](proposed/005-mercurial-decoder.md) — the object→IR mapping, the
-    **stated-rename** discipline (hg records renames, carried `Stated` — fewer derived marks than Git),
-    the floor mechanism, determinism, and against-source verify are settled, and it doubles as the IR's
-    **second-source validation (RFC 003 D-7 freeze precondition)** — preliminary finding: the IR holds hg
-    with no contract change. **Read tier ruled 2026-09-06: Tier 2 (pure-Rust revlog reader)** — no runtime
-    dep, no subprocess, no gix-scale heavy dependency (so no separate security review). The **feature
-    floor** (OQ-3) is the remaining gate: architect recommends refusing subrepos + largefiles + censored,
-    awaiting owner ratification. On ratification: accept, then the `brygge-decode-hg` handoff and M2.
 - **Accepted:**
+  - [RFC 005 — Mercurial decoder](accepted/005-mercurial-decoder.md) — accepted 2026-09-06. Both
+    owner-gated decisions ruled: the **read tier is Tier 2** (pure-Rust revlog reader — no runtime dep, no
+    subprocess, no gix-scale heavy dependency, so no separate security review), and the **hg floor is
+    ratified** (refuse subrepos + largefiles + censored). Carries the **stated-rename** discipline (hg
+    records renames → carried `Stated`, fewer derived marks than Git) and doubles as the IR's
+    **second-source validation** — preliminary finding: the IR holds hg with **no contract change** (the
+    RFC 003 D-7 freeze precondition). Next: the `brygge-decode-hg` handoff, then M2.
   - [RFC 004 — Git decoder](accepted/004-git-decoder.md) — accepted 2026-09-04, built through both
     increments; OQ-A (rename detection) and OQ-B (ref/tag fidelity) resolved 2026-09-06. `gix` approved
     with the security review at
@@ -74,9 +72,8 @@ RFC 004 is realized in two increments (handoffs under `handoffs/004-git-decoder/
 `summary`, CL-08 exit classes) + against-source verify (VF-2). Both are built and green, and RFC 004's
 open questions **OQ-A** (rename detection: exact-content 1:1, similarity deferred) and **OQ-B** (ref
 namespace policy + annotated-tag identity preservation) are now **resolved**.
-Next: **owner review of RFC 005's two gated decisions** (the read tier, and the hg floor); on acceptance,
-the `brygge-decode-hg` handoff and implementation toward **M2**. `encode` unblocks when the owner rules
-GATED-1..3 (RFC 008).
+Next: the **`brygge-decode-hg` program-design handoff** (under `handoffs/005-mercurial-decoder/`), then
+the decoder implementation toward **M2**. `encode` unblocks when the owner rules GATED-1..3 (RFC 008).
 
 Per the lifecycle policy, the folder is the source of truth for state; this section is the index the
 policy asks each project to keep. Update it in the same commit that moves an RFC between folders.
