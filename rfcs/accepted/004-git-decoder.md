@@ -142,15 +142,25 @@ against-source-check disciplines the milestone rests on.
 
 ## Open questions
 
-- **OQ-A — Rename-detection algorithm and default threshold** (feeds D-3, CF-01). Exact-content moves vs.
-  similarity (and at what score), and whether copy detection is offered at all. *Leaning:* ship
-  detection **off** for M1; when enabling lands, use content-similarity with a conservative default and a
-  recorded parameter, and tune it only once the prikk (node-identity) encoder actually exercises inferred
-  identity — the consumer that gives the threshold a fitness signal.
-- **OQ-B — Which ref namespaces are carried, dropped-with-record, or floor-refused** (feeds D-2/D-5).
-  Branches and tags are carried. Proposed: **notes (`refs/notes/*`)** carried as content or
-  dropped-with-record; **remote-tracking refs, `FETCH_HEAD`, stash** dropped-with-record;
-  **`refs/replace/*`** floor-refused (D-4). Owner/architect to confirm.
+- **OQ-A — Rename-detection algorithm and default threshold** (feeds D-3, CF-01) — **RESOLVED
+  2026-09-06.** Detection ships **off** by default (D-3). When enabled, the algorithm is
+  **exact-content move, unambiguous 1:1 only**: a blob deleted at exactly one path and re-added at
+  exactly one path becomes a `Derived(InferredRename)` hint (confidence 100), beside the literal
+  delete+add; an ambiguous many-to-many identical-content shuffle is **left unmarked** — brygge declines
+  to guess which path became which, and loses nothing by declining (the literal ops remain). A
+  **similarity** algorithm above exact content (and any threshold below 100) is **deferred** with a
+  named trigger: the **prikk node-identity encoder**, the first consumer that can give a threshold a
+  fitness signal. The `rename_threshold` option already exists as the recorded parameter for that day.
+- **OQ-B — Which ref namespaces are carried, dropped-with-record, or floor-refused** (feeds D-2/D-5) —
+  **RESOLVED 2026-09-06.** `refs/heads/*` → `Branch` (carried); `refs/tags/*` → `Tag` (carried);
+  `refs/remotes/*`, `FETCH_HEAD`, `refs/stash`, and any other namespace → **dropped-with-record**
+  (workflow/representation); `refs/notes/*` → **dropped-with-record** for M1 (notes-as-content
+  preservation deferred); `refs/replace/*` → **floor-refused** (D-4). **Annotated tags:** the tag
+  object's opaque id and any signature are **preserved** in the `RefRecord`'s `source` (`PR-4`/`SRC-G3`);
+  the tag's **tagger and message** have no `RefRecord` slot and are recorded as an **`Other`-class loss**
+  (so a repository with annotated tags imports as an honest *recorded-loss*, CL-08 exit 10, not clean) —
+  never silently omitted (`PR-9`). Full annotated-tag metadata preservation is deferred to a future
+  `brygge-ir` `RefRecord` metadata slot (RFC 001 territory).
 - **OQ-C — The floor's exact contents** (D-4) — **RESOLVED 2026-09-04:** the owner ratified refusing all
   four (submodules, octopus-beyond-N, replace+grafts, shallow). The one residual is the **octopus parent
   limit N**, a prikk/OQ-2 value not yet set; until it is, decode carries all parents and the encoder's

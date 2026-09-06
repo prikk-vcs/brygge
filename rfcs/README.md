@@ -63,9 +63,11 @@ is written by the architect and reviewed/approved per `GOVERNANCE.md`.
 
 RFC 004 is realized in two increments (handoffs under `handoffs/004-git-decoder/`): **increment 1** the
 `brygge-decode-git` decoder (Git → IR), **increment 2** the read-side CLI (`decode`/`inspect`/`verify`/
-`summary`, CL-08 exit classes) + against-source verify (VF-2). Both are built and green.
-Next: rename tuning (OQ-A), ref-namespace confirmations (OQ-B); then RFC 005 (Mercurial) → M2. `encode`
-unblocks when the owner rules GATED-1..3 (RFC 008).
+`summary`, CL-08 exit classes) + against-source verify (VF-2). Both are built and green, and RFC 004's
+open questions **OQ-A** (rename detection: exact-content 1:1, similarity deferred) and **OQ-B** (ref
+namespace policy + annotated-tag identity preservation) are now **resolved**.
+Next: **RFC 005 (Mercurial) → M2** — the cross-source exercise and RFC 003 D-7 contract-freeze
+precondition. `encode` unblocks when the owner rules GATED-1..3 (RFC 008).
 
 Per the lifecycle policy, the folder is the source of truth for state; this section is the index the
 policy asks each project to keep. Update it in the same commit that moves an RFC between folders.

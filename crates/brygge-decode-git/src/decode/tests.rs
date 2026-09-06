@@ -266,12 +266,29 @@ fn loss_boundary_records_representation_drops() {
     let whats: Vec<&str> = ir.loss.dropped.iter().map(|d| d.what.as_str()).collect();
     assert!(whats.iter().any(|w| w.contains("packfile")));
     assert!(whats.iter().any(|w| w.contains("reflogs")));
+    // The representation drops are all Representation-class; the one non-representation drop is the
+    // annotated tag v1's tagger/message (OQ-B), which the RefRecord cannot hold.
     assert!(
         ir.loss
             .dropped
             .iter()
-            .all(|d| matches!(d.class, brygge_ir::LossClass::Representation))
+            .filter(|d| matches!(d.class, brygge_ir::LossClass::Representation))
+            .count()
+            >= 3
     );
+    let other: Vec<&brygge_ir::DropRecord> = ir
+        .loss
+        .dropped
+        .iter()
+        .filter(|d| !matches!(d.class, brygge_ir::LossClass::Representation))
+        .collect();
+    assert_eq!(
+        other.len(),
+        1,
+        "only the annotated-tag metadata is a non-representation drop"
+    );
+    assert!(other[0].what.contains("annotated tag"));
+    assert!(matches!(other[0].class, brygge_ir::LossClass::Other));
 }
 
 #[test]
@@ -366,4 +383,117 @@ fn an_empty_repository_decodes_to_an_empty_ir() {
     let ir = decode(r.path(), &Options::default()).unwrap();
     assert!(ir.atoms.is_empty());
     assert!(ir.refs.is_empty());
+}
+
+// --- OQ-B: annotated-tag identity preservation -------------------------------------------------
+
+#[test]
+fn annotated_tag_preserves_identity_and_records_loss() {
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let r = TempRepo::new();
+    r.write("a.txt", "a\n");
+    r.commit_all("c1");
+    let commit = r.git(&["rev-parse", "HEAD"]);
+    r.git(&["tag", "-a", "rel-1", "-m", "the first release"]);
+    let tag_sha = r.git(&["rev-parse", "rel-1"]); // the annotated tag object's own id
+    assert_ne!(tag_sha, commit, "an annotated tag has its own object id");
+
+    let ir = decode(r.path(), &Options::default()).unwrap();
+    let tag = ir
+        .refs
+        .iter()
+        .find(|rf| rf.name == "rel-1")
+        .expect("tag carried");
+    assert!(matches!(tag.kind, brygge_ir::RefKind::Tag));
+    let src = tag
+        .source
+        .as_ref()
+        .expect("an annotated tag preserves its opaque source identity (PR-4)");
+    let hex: String = src.atom_id.iter().map(|b| format!("{b:02x}")).collect();
+    assert_eq!(
+        hex, tag_sha,
+        "the preserved id is the tag object's sha, not the commit's"
+    );
+    // Its authored tagger/message are recorded as loss, never silently dropped (PR-9).
+    assert!(ir.loss.dropped.iter().any(
+        |d| d.what.contains("annotated tag") && matches!(d.class, brygge_ir::LossClass::Other)
+    ));
+}
+
+#[test]
+fn lightweight_tag_has_no_separate_identity_and_no_tag_loss() {
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let r = TempRepo::new();
+    r.write("a.txt", "a\n");
+    r.commit_all("c1");
+    r.git(&["tag", "light"]); // lightweight — points straight at the commit
+    let ir = decode(r.path(), &Options::default()).unwrap();
+    let tag = ir
+        .refs
+        .iter()
+        .find(|rf| rf.name == "light")
+        .expect("carried");
+    assert!(
+        tag.source.is_none(),
+        "a lightweight tag has no separate object identity"
+    );
+    assert!(
+        !ir.loss
+            .dropped
+            .iter()
+            .any(|d| d.what.contains("annotated tag"))
+    );
+}
+
+// --- OQ-A: exact-content rename detection is 1:1 only ------------------------------------------
+
+#[test]
+fn ambiguous_identical_content_move_is_not_marked() {
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let r = TempRepo::new();
+    r.write("a.txt", "same\n");
+    r.write("b.txt", "same\n"); // identical content -> same blob id
+    r.commit_all("two identical files");
+    std::fs::remove_file(r.path().join("a.txt")).unwrap();
+    std::fs::remove_file(r.path().join("b.txt")).unwrap();
+    r.write("x.txt", "same\n");
+    r.write("y.txt", "same\n"); // same blob id, added at two paths
+    r.commit_all("shuffle identical content");
+
+    let opts = Options {
+        detect_renames: true,
+        rename_threshold: 100,
+    };
+    let ir = decode(r.path(), &opts).unwrap();
+    // A 2->2 identical-content shuffle is ambiguous: brygge does not guess which became which.
+    assert!(
+        ir.atoms.iter().all(|a| a.rename_hints.is_empty()),
+        "ambiguous identical-content moves are left unmarked (OQ-A)"
+    );
+    assert!(brygge_ir::honesty::summary(&ir).derived.is_empty());
+    // The literal delete+add remain, so nothing is lost by declining to guess.
+    let move_atom = ir
+        .atoms
+        .iter()
+        .find(|a| {
+            a.ops
+                .iter()
+                .any(|op| matches!(op, brygge_ir::PathOp::Add { path, .. } if path == "x.txt"))
+        })
+        .expect("the shuffle commit exists");
+    assert!(
+        move_atom
+            .ops
+            .iter()
+            .any(|op| matches!(op, brygge_ir::PathOp::Delete { path, .. } if path == "a.txt"))
+    );
 }

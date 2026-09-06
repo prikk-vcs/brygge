@@ -23,6 +23,9 @@ use crate::{Error, Options, decoder_version, open};
 /// The full path → (blob/link/gitlink object id, mode) contents of a tree.
 type Snapshot = BTreeMap<String, (ObjectId, u32)>;
 
+/// An annotated tag's opaque object id and any signatures, preserved in a ref's `source` (`PR-4`).
+type TagIdentity = (ObjectId, Vec<Vec<u8>>);
+
 const DECODER: &str = "brygge-decode-git";
 
 fn read_err(e: impl std::fmt::Display) -> Error {
@@ -127,23 +130,41 @@ pub fn decode(path: &Path, opts: &Options) -> Result<Ir, Error> {
         sha_to_atom.insert(*id, atom_id);
     }
 
-    // Refs and the dropped-namespace loss records.
+    // Refs, the dropped-namespace loss records, and annotated-tag identity preservation (OQ-B).
     let mut dropped_namespaces: BTreeSet<&'static str> = BTreeSet::new();
+    let mut annotated_tags = 0u64;
     for r in &refs {
         match &r.kind {
-            ScannedKind::Branch(name) | ScannedKind::Tag(name) => {
+            ScannedKind::Branch(name) => {
                 if let Some(target) = r.commit.and_then(|c| sha_to_atom.get(&c).copied()) {
-                    let kind = if matches!(r.kind, ScannedKind::Branch(_)) {
-                        RefKind::Branch
-                    } else {
-                        RefKind::Tag
-                    };
                     builder.add_ref(RefRecord {
                         name: name.clone(),
-                        kind,
+                        kind: RefKind::Branch,
                         target,
                         status: EpistemicStatus::Stated,
                         source: None,
+                    })?;
+                }
+            }
+            ScannedKind::Tag(name) => {
+                if let Some(target) = r.commit.and_then(|c| sha_to_atom.get(&c).copied()) {
+                    // An annotated tag preserves its own opaque object id + signature (PR-4/SRC-G3);
+                    // its tagger and message have no slot in the RefRecord and are recorded as loss.
+                    let source = r.tag_identity.as_ref().map(|(tag_id, signatures)| {
+                        annotated_tags += 1;
+                        SourceIdentity {
+                            kind: SourceKind::Git,
+                            repo_id: repo_id.clone(),
+                            atom_id: tag_id.as_bytes().to_vec(),
+                            signatures: signatures.clone(),
+                        }
+                    });
+                    builder.add_ref(RefRecord {
+                        name: name.clone(),
+                        kind: RefKind::Tag,
+                        target,
+                        status: EpistemicStatus::Stated,
+                        source,
                     })?;
                 }
             }
@@ -153,7 +174,7 @@ pub fn decode(path: &Path, opts: &Options) -> Result<Ir, Error> {
         }
     }
 
-    builder.set_loss(loss_boundary(&dropped_namespaces));
+    builder.set_loss(loss_boundary(&dropped_namespaces, annotated_tags));
     builder.finish().map_err(Error::Ir)
 }
 
@@ -162,6 +183,9 @@ struct ScannedRef {
     kind: ScannedKind,
     /// The commit it (ultimately) points at, if any.
     commit: Option<ObjectId>,
+    /// For an **annotated** tag: the tag object's own id and any signature (`PR-4`/`SRC-G3`), preserved
+    /// opaquely in the ref's `source`. `None` for branches and lightweight tags.
+    tag_identity: Option<TagIdentity>,
 }
 
 enum ScannedKind {
@@ -188,14 +212,18 @@ fn scan_refs(repo: &gix::Repository) -> Result<Vec<ScannedRef>, Error> {
             });
         }
 
+        // The ref's *direct* target (the tag object itself for an annotated tag), before peeling.
+        let direct = r.id().detach();
         let commit = r.peel_to_id().ok().map(|id| id.detach()).filter(|id| {
             repo.find_object(*id)
                 .is_ok_and(|o| matches!(o.kind, gix::objs::Kind::Commit))
         });
 
+        let mut tag_identity = None;
         let kind = if let Some(b) = name.strip_prefix("refs/heads/") {
             ScannedKind::Branch(b.to_string())
         } else if let Some(t) = name.strip_prefix("refs/tags/") {
+            tag_identity = annotated_tag_identity(repo, direct)?;
             ScannedKind::Tag(t.to_string())
         } else if name.starts_with("refs/remotes/") {
             ScannedKind::Dropped("remote-tracking")
@@ -207,9 +235,37 @@ fn scan_refs(repo: &gix::Repository) -> Result<Vec<ScannedRef>, Error> {
             // HEAD and any other odd ref namespace: not authored history.
             ScannedKind::Dropped("other")
         };
-        out.push(ScannedRef { kind, commit });
+        out.push(ScannedRef {
+            kind,
+            commit,
+            tag_identity,
+        });
     }
     Ok(out)
+}
+
+/// If `direct` is an **annotated** tag object, return its id and any GPG signature, preserved opaquely
+/// (`PR-4`/`SRC-G3` — the tag verifies nothing in any target, but is the cryptographic link back to the
+/// source). Returns `None` for a lightweight tag (whose direct target is the commit itself).
+fn annotated_tag_identity(
+    repo: &gix::Repository,
+    direct: ObjectId,
+) -> Result<Option<TagIdentity>, Error> {
+    let Ok(object) = repo.find_object(direct) else {
+        return Ok(None);
+    };
+    if !matches!(object.kind, gix::objs::Kind::Tag) {
+        return Ok(None);
+    }
+    let tag = object.try_into_tag().map_err(read_err)?;
+    let signatures = tag
+        .decode()
+        .map_err(read_err)?
+        .signature
+        .map(|s| s.to_vec())
+        .into_iter()
+        .collect();
+    Ok(Some((direct, signatures)))
 }
 
 /// Map each commit to its parents that are within `set` (external parents become roots).
@@ -385,24 +441,30 @@ fn diff_to_ops(
 
     let mut hints = Vec::new();
     if opts.detect_renames {
+        // Exact-content moves only (RFC 004 D-3, OQ-A). A hint is emitted **only** when a blob deleted
+        // at exactly one path reappears added at exactly one path — an unambiguous 1:1 move. An
+        // ambiguous many-to-many identical-content case (the same bytes deleted at several paths and
+        // added at several) is left unmarked: brygge does not guess which path became which. Nothing is
+        // lost by declining — the literal delete+add ops remain (D-3). Similarity-based detection above
+        // exact content is OQ-A, deferred until a consumer can give a threshold a fitness signal.
         for (oid, froms) in &deleted_by_oid {
-            if let Some(tos) = added_by_oid.get(oid) {
-                for from in froms {
-                    for to in tos {
-                        hints.push(RenameHint {
-                            from: from.clone(),
-                            to: to.clone(),
-                            status: EpistemicStatus::Derived(Derivation {
-                                kind: DerivationKind::InferredRename,
-                                by: DECODER.to_string(),
-                                decoder_version: decoder_version().to_string(),
-                                params: opts.as_params(),
-                                confidence: Some(100),
-                            }),
-                        });
-                    }
-                }
-            }
+            let [from] = froms.as_slice() else {
+                continue; // this blob was deleted at several paths — ambiguous, decline to guess
+            };
+            let Some([to]) = added_by_oid.get(oid).map(Vec::as_slice) else {
+                continue; // not re-added, or re-added at several paths — decline to guess
+            };
+            hints.push(RenameHint {
+                from: from.clone(),
+                to: to.clone(),
+                status: EpistemicStatus::Derived(Derivation {
+                    kind: DerivationKind::InferredRename,
+                    by: DECODER.to_string(),
+                    decoder_version: decoder_version().to_string(),
+                    params: opts.as_params(),
+                    confidence: Some(100),
+                }),
+            });
         }
     }
     Ok((ops, hints))
@@ -447,8 +509,10 @@ fn extract_signatures(commit: &gix::Commit<'_>) -> Result<Vec<Vec<u8>>, Error> {
     })
 }
 
-/// The Git loss boundary (RFC 004 D-5): the representation-class drops, every one class-stated.
-fn loss_boundary(dropped_namespaces: &BTreeSet<&'static str>) -> LossBoundary {
+/// The Git loss boundary (RFC 004 D-5): the representation-class drops, every one class-stated, plus the
+/// annotated-tag metadata that the IR `RefRecord` cannot yet hold — recorded, never silently omitted
+/// (`PR-9`).
+fn loss_boundary(dropped_namespaces: &BTreeSet<&'static str>, annotated_tags: u64) -> LossBoundary {
     let mut dropped = vec![
         DropRecord {
             class: LossClass::Representation,
@@ -472,6 +536,20 @@ fn loss_boundary(dropped_namespaces: &BTreeSet<&'static str>) -> LossBoundary {
             class: LossClass::Representation,
             what: format!("{ns} refs"),
             reason: "workflow/representation refs, not authored history (RFC 004 D-5, OQ-B)"
+                .to_string(),
+        });
+    }
+    if annotated_tags > 0 {
+        // The annotated tag's object id and signature ARE preserved (in the ref's source, PR-4/SRC-G3);
+        // its tagger and message are authored content the RefRecord has no slot for — so this is an
+        // `Other`-class (not representation) drop, and it makes the import an honest "recorded loss"
+        // (CL-08) rather than clean. A future brygge-ir RefRecord metadata slot would close it.
+        dropped.push(DropRecord {
+            class: LossClass::Other,
+            what: format!("annotated tag tagger and message ({annotated_tags} tag(s))"),
+            reason: "authored tag metadata with no RefRecord slot in this IR contract; the tag's \
+                     object id and signature are preserved as source identity, the rest is recorded \
+                     here rather than silently omitted (PR-9, RFC 004 OQ-B)"
                 .to_string(),
         });
     }
