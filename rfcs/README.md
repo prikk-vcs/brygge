@@ -49,10 +49,10 @@ is written by the architect and reviewed/approved per `GOVERNANCE.md`.
     **stated-rename** discipline (hg records renames, carried `Stated` — fewer derived marks than Git),
     the floor mechanism, determinism, and against-source verify are settled, and it doubles as the IR's
     **second-source validation (RFC 003 D-7 freeze precondition)** — preliminary finding: the IR holds hg
-    with no contract change. **Two owner-gated decisions block acceptance** (`GOVERNANCE.md`): the **read
-    tier** (revlog reader [tier 2] vs `hg` CLI subprocess [tier 3], RFC 009 D-2/D-6) and the **hg feature
-    floor** (OQ-3). On acceptance: the `brygge-decode-hg` handoff (and a security review if the tier
-    adopts a heavy dep/subprocess), then M2.
+    with no contract change. **Read tier ruled 2026-09-06: Tier 2 (pure-Rust revlog reader)** — no runtime
+    dep, no subprocess, no gix-scale heavy dependency (so no separate security review). The **feature
+    floor** (OQ-3) is the remaining gate: architect recommends refusing subrepos + largefiles + censored,
+    awaiting owner ratification. On ratification: accept, then the `brygge-decode-hg` handoff and M2.
 - **Accepted:**
   - [RFC 004 — Git decoder](accepted/004-git-decoder.md) — accepted 2026-09-04, built through both
     increments; OQ-A (rename detection) and OQ-B (ref/tag fidelity) resolved 2026-09-06. `gix` approved

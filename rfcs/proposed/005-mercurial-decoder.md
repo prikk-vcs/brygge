@@ -1,12 +1,14 @@
 # RFC 005 — Mercurial decoder
 
-**Status.** Proposed (2026-09-06). Drafted for owner review. Two decisions are the owner's and gate
-acceptance (`GOVERNANCE.md`, RFC 009 D-2/D-6): **how brygge reads a Mercurial repository** — the on-disk
-**revlog format directly** (tier 2, pure Rust, no runtime dependency) versus **driving the `hg` CLI in a
-locked-down subprocess** (tier 3, a declared runtime dependency) — and **the Mercurial feature floor's
-contents** (OQ-3). The engineering shape below — the crate boundary, the object→IR mapping, the
-**stated-rename** discipline, the floor mechanism, determinism, and against-source verification — follows
-the RFC 004 pattern and is settled once those two rulings land. This RFC does not presume them.
+**Status.** Proposed (2026-09-06). **Read tier RULED 2026-09-06: Tier 2 — the pure-Rust revlog reader**
+(the owner chose it over the `hg`-CLI subprocess to hold the clean/safe/secure/self-contained line: no
+runtime dependency, no subprocess, `forbid(unsafe)` maximal, smallest trust surface — see D-1/OQ-A).
+**Floor: the architect recommends refusing subrepos + largefiles + censored revisions** (OQ-B/OQ-D);
+this is the proposed line and **awaits the owner's OQ-3 ratification** before acceptance. The engineering
+shape below — the crate boundary, the object→IR mapping, the **stated-rename** discipline, the floor
+mechanism, determinism, and against-source verification — follows the RFC 004 pattern and is settled;
+acceptance waits only on the floor ratification (Tier 2 needs no gix-scale heavy-dependency review — it
+adds at most a small pure-Rust decompression dependency, not an external binary; see OQ-A).
 **Tracks.** ROADMAP Phase A2 → milestone **M2 (Mercurial decode → IR)**. Track A — not prikk-gated
 (decode stands alone, PU-1/PU-6). Realizes prikk RFC 113's decoder side for Mercurial, and is the
 **IR's second-source validation — the RFC 003 D-7 contract-freeze precondition** (see D-8).
@@ -54,11 +56,16 @@ structure with no clean prikk analogue** — named branches versus bookmarks, ph
   crate is the only place the hg read path (a revlog reader and/or an `hg`-subprocess driver) lives;
   `brygge-ir`, the encoders, and `verify --internal` build and run without it (the RFC 009 D-7 isolation
   property, already tested for Git, generalizes). It exposes one narrow function — read a repository path,
-  produce a `brygge_ir::Ir` (or a typed error). **The read tier is the owner-gated decision (OQ-A):**
-  tier 2 (revlog reader) keeps brygge free of a runtime dependency and of C; tier 3 (`hg` CLI) trades a
-  declared runtime dependency for battle-tested parsing. Either way the untrusted-read guardrails (D-6)
-  bind, and a new heavy Rust dependency or the subprocess-execution posture carries an architect security
-  review on acceptance (RFC 009 D-6), as gix did.
+  produce a `brygge_ir::Ir` (or a typed error). **Read tier: Tier 2 — a pure-Rust revlog reader
+  (owner-ruled 2026-09-06).** brygge reads hg's on-disk revlog/filelog/manifest format directly, in
+  process: no external `hg` binary, no subprocess, no runtime dependency, `forbid(unsafe)` stays maximal
+  — the smallest, most self-contained trust surface, chosen to hold the clean/safe/secure line over the
+  faster-to-build `hg`-CLI alternative. The one unavoidable dependency is **decompression** (revlogs are
+  zlib-compressed, some zstd): a **pure-Rust** codec (e.g. `miniz_oxide`/`flate2` with the Rust backend,
+  and a pure-Rust zstd if needed) — small and license-clean, **not** a gix-scale heavy dependency, so
+  acceptance needs no separate security review, only the usual `deny.toml`/`cargo-audit` gate and a note
+  in the handoff. The revlog reader is **bounds-checked and panic-free** on malformed input (untrusted
+  source, T-2/INV-2), in brygge's hand-rolled-codec spirit.
 
 - **D-2 — The object → IR mapping, mostly *Stated*.** Mirroring RFC 004 D-2:
   - **Changeset → `ChangeAtom`** with `status = Stated`. `parents` are the IR `AtomId`s of the
@@ -127,20 +134,19 @@ structure with no clean prikk analogue** — named branches versus bookmarks, ph
 
 ## Open questions
 
-- **OQ-A — The read tier (owner-gated, RFC 009 D-2/D-6).** Tier 2 (**revlog reader**, pure Rust, reads
-  hg's documented on-disk revlog/filelog/manifest format directly) versus tier 3 (**`hg` CLI** in a
-  locked-down subprocess). *Trade-off:* tier 2 adds **no runtime dependency and no C**, keeps
-  `forbid(unsafe)` maximal, and reads exactly what the store holds — at a higher implementation cost
-  (the format is stable and documented, but there is no mature pure-Rust hg *library*, so this is largely
-  a hand-rolled reader in brygge's own codec spirit). Tier 3 is **faster to build and uses hg's own
-  battle-tested parsing**, at the cost of a **declared runtime `hg` dependency** and a subprocess-execution
-  posture (guardrails per D-6). *Leaning (RFC 009 D-2's stated order):* **tier 2**, because it keeps the
-  dependency and trust surface smallest and the read fully in-process — but the effort is real, and the
-  owner may prefer tier 3 to reach M2 sooner. **The owner rules.**
-- **OQ-B — The hg floor contents (owner-gated, OQ-3).** Which hg features are *refused* versus
-  *carried-with-record*: **subrepos** (hg's submodule analogue — parity with the Git submodule floor
-  argues refuse, see OQ-D), **largefiles / lfs** pointers, **censored revisions**, and any convention a
-  repository violates. Product scope; the owner's, as the Git floor was.
+- **OQ-A — The read tier** — **RESOLVED 2026-09-06: Tier 2, the pure-Rust revlog reader** (D-1). The
+  owner chose it over the `hg`-CLI subprocess to keep the dependency and trust surface smallest and the
+  read fully in-process, accepting the higher implementation effort as the cost of a clean/safe/
+  self-contained decoder. The only dependency is a **pure-Rust decompression** codec for zlib/zstd
+  revlog payloads — small and license-clean, not a gix-scale heavy dependency (no separate security
+  review; the `deny.toml`/`cargo-audit` gate and a handoff note suffice).
+- **OQ-B — The hg floor contents (owner-gated, OQ-3)** — **architect recommendation, awaiting owner
+  ratification.** Recommended for M2: **refuse** subrepos (hg's submodule analogue — parity with the Git
+  submodule floor, OQ-D), **largefiles/lfs** pointers, and **censored revisions**, each with a named
+  reason (FA-3), rather than approximate them. This is the clean/safe/robust line — a small supported
+  surface — while everything core (changesets, DAG, stated renames, named branches, bookmarks,
+  `.hgtags`-as-content) is carried or dropped-with-record per D-4. Product scope; the owner ratifies, as
+  with the Git floor.
 - **OQ-C — `.hgtags` beyond content.** Carry `.hgtags` as file content only (faithful, `Stated`), or
   *also* synthesize tag `RefRecord`s from parsing it (a `Derived` interpretation of a versioned file)?
   *Leaning:* content-only for M2; derived tag-ref synthesis deferred until there is a consumer for it.
