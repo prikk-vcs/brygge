@@ -15,7 +15,7 @@
 
 ## 1. Assets (A-…)
 
-- **A-IMPORT — the integrity and *honesty* of the produced IR and target proposal.** This is the primary asset: downstream readers and the target trust it. Its value is not just correct bytes but the truthful marking of what was stated vs derived, what was preserved vs dropped, and that authorship is unverified (HO-1…HO-4).
+- **A-IMPORT — the integrity and *honesty* of the produced IR (intermediate representation) and target proposal.** This is the primary asset: downstream readers and the target trust it. Its value is not just correct bytes but the truthful marking of what was stated vs derived, what was preserved vs dropped, and that authorship is unverified (HO-1…HO-4).
 - **A-HOST — the operator's machine and the brygge process.** brygge parses attacker-controlled repositories with large parsers; a compromise or crash here is a real cost.
 - **A-TARGET-TRUST — the target's trust boundary.** The target (prikk first) decides admission/seal (BN-2); brygge must never produce output that induces the target — or a human reviewing it — to over-trust imported history.
 - **A-SUPPLY — brygge's dependency supply chain.** The heavy decoder libraries are both the enabling asset and the largest attack/audit surface.
