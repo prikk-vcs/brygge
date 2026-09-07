@@ -12,11 +12,22 @@ pub enum Format {
     Machine,
 }
 
+/// A source kind for `decode` (external design CL-01: the set is open by design).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceKind {
+    /// Git (`brygge-decode-git`).
+    Git,
+    /// Mercurial (`brygge-decode-hg`).
+    Hg,
+}
+
 /// A parsed command.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
-    /// `decode git <path> [--ir <out>] [--detect-renames] [--format …]`
+    /// `decode <git|hg> <path> [--ir <out>] [--detect-renames] [--format …]`
     Decode {
+        /// Which source decoder to use.
+        kind: SourceKind,
         /// The source repository path.
         path: PathBuf,
         /// Where to write the IR artifact, if given.
@@ -69,7 +80,7 @@ pub const USAGE: &str = "\
 brygge — carry version-control history into an intermediate representation (IR).
 
 USAGE:
-  brygge decode git <path> [--ir <out>] [--detect-renames] [--format human|machine]
+  brygge decode <git|hg> <path> [--ir <out>] [--detect-renames] [--format human|machine]
   brygge inspect --ir <file> [--format human|machine]
   brygge verify --internal --import <file> [--format human|machine]
   brygge verify --against-source <repo> --import <file> [--format human|machine]
@@ -77,7 +88,7 @@ USAGE:
   brygge --version | --help
 
 COMMANDS:
-  decode   read a source repository into an IR artifact (Git only in this build)
+  decode   read a source repository into an IR artifact (git or hg in this build)
   inspect  list atoms with their epistemic status, source ids, and the loss boundary
   verify   --internal: honesty checks provable with no source (VF-3);
            --against-source: re-derive from the source and confirm correspondence (VF-2)
@@ -131,15 +142,18 @@ fn parse_decode(args: &[String]) -> Result<Command, String> {
         return Ok(Command::Help);
     }
     let mut it = args.iter();
-    match it.next().map(String::as_str) {
-        Some("git") => {}
+    let kind = match it.next().map(String::as_str) {
+        Some("git") => SourceKind::Git,
+        Some("hg") => SourceKind::Hg,
         Some(other) => {
             return Err(format!(
-                "source kind '{other}' is not supported (only 'git' in this build)"
+                "source kind '{other}' is not supported (git or hg in this build)"
             ));
         }
-        None => return Err("decode needs a source kind and path: decode git <path>".to_string()),
-    }
+        None => {
+            return Err("decode needs a source kind and path: decode <git|hg> <path>".to_string());
+        }
+    };
     let mut path: Option<PathBuf> = None;
     let mut out = None;
     let mut detect_renames = false;
@@ -153,8 +167,9 @@ fn parse_decode(args: &[String]) -> Result<Command, String> {
             other => path = Some(PathBuf::from(other)),
         }
     }
-    let path = path.ok_or_else(|| "decode git needs a repository path".to_string())?;
+    let path = path.ok_or_else(|| "decode needs a repository path".to_string())?;
     Ok(Command::Decode {
+        kind,
         path,
         out,
         detect_renames,

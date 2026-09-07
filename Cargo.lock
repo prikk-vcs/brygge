@@ -64,6 +64,7 @@ name = "brygge"
 version = "0.1.0"
 dependencies = [
  "brygge-decode-git",
+ "brygge-decode-hg",
  "brygge-ir",
 ]
 

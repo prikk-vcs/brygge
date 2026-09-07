@@ -43,11 +43,12 @@ fn run(cmd: Command) -> i32 {
             exit::FAILURE
         }
         Command::Decode {
+            kind,
             path,
             out,
             detect_renames,
             format,
-        } => commands::run_decode(&path, out.as_deref(), detect_renames, format),
+        } => commands::run_decode(kind, &path, out.as_deref(), detect_renames, format),
         Command::Inspect { ir, format } => commands::run_inspect(&ir, format),
         Command::VerifyInternal { import, format } => {
             commands::run_verify_internal(&import, format)

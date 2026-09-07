@@ -35,11 +35,13 @@ fn decode_git_full() {
     .unwrap();
     match c {
         Command::Decode {
+            kind,
             path,
             out,
             detect_renames,
             format,
         } => {
+            assert_eq!(kind, SourceKind::Git);
             assert_eq!(path, PathBuf::from("/repo"));
             assert_eq!(out, Some(PathBuf::from("out.ir")));
             assert!(detect_renames);
@@ -53,20 +55,27 @@ fn decode_git_full() {
 fn decode_defaults_and_kind_guard() {
     match parse(&v(&["decode", "git", "/r"])).unwrap() {
         Command::Decode {
+            kind,
             out,
             detect_renames,
             format,
             ..
         } => {
+            assert_eq!(kind, SourceKind::Git);
             assert_eq!(out, None);
             assert!(!detect_renames);
             assert_eq!(format, Format::Human);
         }
         other => panic!("got {other:?}"),
     }
+    // hg is now supported; svn is not.
+    match parse(&v(&["decode", "hg", "/r"])).unwrap() {
+        Command::Decode { kind, .. } => assert_eq!(kind, SourceKind::Hg),
+        other => panic!("got {other:?}"),
+    }
     assert!(
-        parse(&v(&["decode", "hg", "/r"])).is_err(),
-        "only git supported"
+        parse(&v(&["decode", "svn", "/r"])).is_err(),
+        "svn not supported yet"
     );
     assert!(parse(&v(&["decode", "git"])).is_err(), "path required");
 }

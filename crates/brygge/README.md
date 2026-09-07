@@ -12,7 +12,7 @@ join is checked* — a migration tool that silently guesses produces history nob
 ## Commands (read side — RFC 004 increment 2)
 
 ```
-brygge decode git <path> [--ir <out>] [--detect-renames] [--format human|machine]
+brygge decode <git|hg> <path> [--ir <out>] [--detect-renames] [--format human|machine]
 brygge inspect --ir <file> [--format human|machine]
 brygge verify --internal --import <file>              # honesty checks, no source needed (VF-3)
 brygge verify --against-source <repo> --import <file> # re-derive & confirm correspondence (VF-2)

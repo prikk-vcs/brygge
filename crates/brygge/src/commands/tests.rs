@@ -9,7 +9,7 @@ use std::process::Command as PCommand;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::*;
-use crate::cli::Format;
+use crate::cli::{Format, SourceKind};
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -98,7 +98,13 @@ fn decode_inspect_verify_summary_roundtrip() {
     let out = repo.dir.join("out.ir");
 
     assert_eq!(
-        run_decode(repo.path(), Some(&out), false, Format::Machine),
+        run_decode(
+            SourceKind::Git,
+            repo.path(),
+            Some(&out),
+            false,
+            Format::Machine
+        ),
         exit::CLEAN
     );
     assert!(out.exists(), "the artifact was written");
@@ -121,7 +127,13 @@ fn verify_internal_catches_tamper_with_no_source() {
     let repo = simple_repo("y");
     let out = repo.dir.join("out.ir");
     assert_eq!(
-        run_decode(repo.path(), Some(&out), false, Format::Machine),
+        run_decode(
+            SourceKind::Git,
+            repo.path(),
+            Some(&out),
+            false,
+            Format::Machine
+        ),
         exit::CLEAN
     );
 
@@ -147,7 +159,13 @@ fn verify_against_source_detects_a_mismatch() {
     let other = simple_repo("z"); // different content and history
     let other_out = other.dir.join("o.ir");
     assert_eq!(
-        run_decode(other.path(), Some(&other_out), false, Format::Machine),
+        run_decode(
+            SourceKind::Git,
+            other.path(),
+            Some(&other_out),
+            false,
+            Format::Machine
+        ),
         exit::CLEAN
     );
 
@@ -182,7 +200,13 @@ fn decode_of_a_submodule_exits_floor_refusal() {
     ]);
     let out = repo.dir.join("out.ir");
     assert_eq!(
-        run_decode(repo.path(), Some(&out), false, Format::Human),
+        run_decode(
+            SourceKind::Git,
+            repo.path(),
+            Some(&out),
+            false,
+            Format::Human
+        ),
         exit::FLOOR_REFUSAL
     );
     assert!(!out.exists(), "no artifact is written on a refusal");

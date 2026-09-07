@@ -4,12 +4,13 @@
 use std::fmt::Write as _;
 use std::path::Path;
 
-use brygge_decode_git::{Error as GitError, Options};
+use brygge_decode_git::Error as GitError;
+use brygge_decode_hg::Error as HgError;
 use brygge_ir::model::PathOp;
 use brygge_ir::status::EpistemicStatus;
 use brygge_ir::{Ir, LossClass};
 
-use crate::cli::Format;
+use crate::cli::{Format, SourceKind};
 use crate::exit;
 
 const VERIFY_VERSION: u32 = 1;
@@ -48,61 +49,102 @@ fn read_ir(path: &Path) -> Result<Ir, String> {
     brygge_ir::from_bytes(&bytes).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-fn options_from_provenance(ir: &Ir) -> Options {
-    let p = &ir.provenance.params;
-    Options {
-        detect_renames: p
-            .get("detect_renames")
-            .map(|v| v == "true")
-            .unwrap_or(false),
-        rename_threshold: p
-            .get("rename_threshold")
-            .and_then(|v| v.parse::<u8>().ok())
-            .unwrap_or(100),
+/// Whether the IR's provenance says its source was decoded with rename inference on.
+fn detect_renames_from_provenance(ir: &Ir) -> bool {
+    ir.provenance
+        .params
+        .get("detect_renames")
+        .map(|v| v == "true")
+        .unwrap_or(false)
+}
+
+/// The `decode` source kind recorded in an IR's provenance, if this build has a decoder for it.
+fn source_kind_of(ir: &Ir) -> Option<SourceKind> {
+    match ir.provenance.source.kind {
+        brygge_ir::SourceKind::Git => Some(SourceKind::Git),
+        brygge_ir::SourceKind::Hg => Some(SourceKind::Hg),
+        _ => None,
     }
 }
 
-/// `decode git <path>` (CL-01, FL-01).
-pub fn run_decode(path: &Path, out: Option<&Path>, detect_renames: bool, format: Format) -> i32 {
-    let opts = Options {
-        detect_renames,
-        rename_threshold: 100,
+/// Decode `repo` with the chosen source decoder, mapping decoder errors to a `(exit code, message)`.
+/// A refused format/feature is a clean refusal (`FLOOR_REFUSAL`), not a generic failure.
+fn decode_source(kind: SourceKind, repo: &Path, detect_renames: bool) -> Result<Ir, (i32, String)> {
+    match kind {
+        SourceKind::Git => {
+            let opts = brygge_decode_git::Options {
+                detect_renames,
+                rename_threshold: 100,
+            };
+            brygge_decode_git::decode(repo, &opts).map_err(|e| match e {
+                GitError::FloorRefusal { feature, reason } => (
+                    exit::FLOOR_REFUSAL,
+                    format!("refused Git feature '{feature}' below the floor: {reason}"),
+                ),
+                other => (exit::FAILURE, format!("decode failed: {other}")),
+            })
+        }
+        SourceKind::Hg => {
+            let opts = brygge_decode_hg::Options {
+                detect_renames,
+                rename_threshold: 100,
+            };
+            brygge_decode_hg::decode(repo, &opts).map_err(|e| match e {
+                HgError::FloorRefusal { feature, reason } => (
+                    exit::FLOOR_REFUSAL,
+                    format!("refused Mercurial feature '{feature}' below the floor: {reason}"),
+                ),
+                HgError::UnsupportedFormat {
+                    requirement,
+                    reason,
+                } => (
+                    exit::FLOOR_REFUSAL,
+                    format!("unsupported Mercurial format '{requirement}': {reason}"),
+                ),
+                other => (exit::FAILURE, format!("decode failed: {other}")),
+            })
+        }
+    }
+}
+
+/// `decode <git|hg> <path>` (CL-01, FL-01/FL-10).
+pub fn run_decode(
+    kind: SourceKind,
+    path: &Path,
+    out: Option<&Path>,
+    detect_renames: bool,
+    format: Format,
+) -> i32 {
+    let ir = match decode_source(kind, path, detect_renames) {
+        Ok(ir) => ir,
+        Err((code, msg)) => {
+            eprintln!("{msg}");
+            return code;
+        }
     };
-    match brygge_decode_git::decode(path, &opts) {
-        Ok(ir) => {
-            if let Some(out) = out {
-                let bytes = brygge_ir::to_bytes(&ir);
-                if let Err(e) = std::fs::write(out, &bytes) {
-                    eprintln!("cannot write {}: {e}", out.display());
-                    return exit::FAILURE;
-                }
-                eprintln!("wrote {} ({} bytes)", out.display(), bytes.len());
-            }
-            let report = brygge_ir::honesty::summary(&ir);
-            match format {
-                Format::Human => print!("{}", report.render_human()),
-                Format::Machine => print!("{}", report.render_machine()),
-            }
-            // Exit class: recorded loss only if a non-representation drop exists (handoff D-B).
-            if ir
-                .loss
-                .dropped
-                .iter()
-                .any(|d| !matches!(d.class, LossClass::Representation))
-            {
-                exit::RECORDED_LOSS
-            } else {
-                exit::CLEAN
-            }
+    if let Some(out) = out {
+        let bytes = brygge_ir::to_bytes(&ir);
+        if let Err(e) = std::fs::write(out, &bytes) {
+            eprintln!("cannot write {}: {e}", out.display());
+            return exit::FAILURE;
         }
-        Err(GitError::FloorRefusal { feature, reason }) => {
-            eprintln!("refused Git feature '{feature}' below the floor: {reason}");
-            exit::FLOOR_REFUSAL
-        }
-        Err(e) => {
-            eprintln!("decode failed: {e}");
-            exit::FAILURE
-        }
+        eprintln!("wrote {} ({} bytes)", out.display(), bytes.len());
+    }
+    let report = brygge_ir::honesty::summary(&ir);
+    match format {
+        Format::Human => print!("{}", report.render_human()),
+        Format::Machine => print!("{}", report.render_machine()),
+    }
+    // Exit class: recorded loss only if a non-representation drop exists (handoff D-B).
+    if ir
+        .loss
+        .dropped
+        .iter()
+        .any(|d| !matches!(d.class, LossClass::Representation))
+    {
+        exit::RECORDED_LOSS
+    } else {
+        exit::CLEAN
     }
 }
 
@@ -197,16 +239,18 @@ pub fn run_verify_against_source(repo: &Path, import: &Path, format: Format) -> 
             return exit::VERIFY_FAILED;
         }
     };
-    let opts = options_from_provenance(&ir1);
-    let ir2 = match brygge_decode_git::decode(repo, &opts) {
+    let Some(kind) = source_kind_of(&ir1) else {
+        eprintln!(
+            "against-source verify is not implemented for this IR's source kind ({:?})",
+            ir1.provenance.source.kind
+        );
+        return exit::FAILURE;
+    };
+    let ir2 = match decode_source(kind, repo, detect_renames_from_provenance(&ir1)) {
         Ok(ir) => ir,
-        Err(GitError::FloorRefusal { feature, reason }) => {
-            eprintln!("source refused Git feature '{feature}': {reason}");
-            return exit::FLOOR_REFUSAL;
-        }
-        Err(e) => {
-            eprintln!("cannot re-decode source: {e}");
-            return exit::FAILURE;
+        Err((code, msg)) => {
+            eprintln!("cannot re-decode source: {msg}");
+            return code;
         }
     };
 
@@ -317,7 +361,7 @@ fn render_inspect_human(ir: &Ir) -> String {
             .unwrap_or("");
         let _ = writeln!(
             s,
-            "  {}  [{}]  git:{}  {} op(s)  {subject}",
+            "  {}  [{}]  src:{}  {} op(s)  {subject}",
             short_hex(&atom.id.0),
             status_label(&atom.status),
             short_hex(&atom.source.atom_id),

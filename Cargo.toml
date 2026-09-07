@@ -14,6 +14,7 @@ homepage     = "https://github.com/prikk-vcs/brygge"
 [workspace.dependencies]
 brygge-ir = { version = "0.1.0", path = "crates/brygge-ir" }
 brygge-decode-git = { version = "0.1.0", path = "crates/brygge-decode-git" }
+brygge-decode-hg = { version = "0.1.0", path = "crates/brygge-decode-hg" }
 # The only third-party dependency of the light core (RFC 003 D-3): SHA-256, matching prikk's audited
 # `sha2` usage. brygge-ir links no serialization crate (the codec is hand-rolled) and no decoder library
 # (RFC 009 D-1 — those are isolated in future brygge-decode-* crates).
