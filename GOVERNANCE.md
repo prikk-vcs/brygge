@@ -25,8 +25,8 @@ them alone:
   the project's defining risk (INV-4, threat T-4).
 - **Direction, themes, and the acceptance of an RFC as "the next theme."**
 
-The architect *does* settle the design-level rulings that are the architect's under RFC 113 §4a (the IR
-atom, derived-marking, provenance-in-attestation-not-payload) and everything in the design set that is
+The architect *does* settle the design-level rulings that are the architect's under RFC 113 §4a (the IR —
+intermediate representation — atom, derived-marking, provenance-in-attestation-not-payload) and everything in the design set that is
 not on the owner-only list.
 
 ## Approval flow

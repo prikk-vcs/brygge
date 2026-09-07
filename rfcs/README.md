@@ -41,11 +41,11 @@ is written by the architect and reviewed/approved per `GOVERNANCE.md`.
 
 ## State
 
-**Phase A1 (Git, M1) and Phase A2 (Mercurial, M2) are both built.** RFC 004 and RFC 005 are accepted and
-implemented through the CLI/verify surface; `brygge decode git|hg`, `inspect`, `verify`, and `summary` all
-work, validated against real `git` and `hg`. **The RFC 003 D-7 contract-freeze precondition is met:** the
-IR contract 0.1.0 holds **two** sources (Git and Mercurial) with **no change** — empirically, an hg import
-round-trips under the current contract and hg's source-recorded renames are carried `Stated` (SRC-H2).
+**Phase A1 (Git, M1) and Phase A2 (Mercurial, M2) are both built, and the IR contract is FROZEN at 1.0.0**
+**(RFC 003 D-7, executed 2026-09-08).** RFC 004 and RFC 005 are accepted and implemented through the
+CLI/verify surface; `brygge decode git|hg`, `inspect`, `verify`, and `summary` all work, validated against
+real `git` and `hg`. The freeze precondition was met empirically — the IR held a **second** source
+(Mercurial) with **no change** — so the contract is now `1.0.0`, additive-only within major 1.
 
 - **Accepted:**
   - [RFC 005 — Mercurial decoder](accepted/005-mercurial-decoder.md) — accepted 2026-09-06; **built and
@@ -78,9 +78,9 @@ namespace policy + annotated-tag identity preservation) are now **resolved**.
 RFC 005 (Mercurial) is realized in three parts (handoff under `handoffs/005-mercurial-decoder/`): the
 format-safety gate, the ground-truth-validated revlog reader, and the object layer + `decode()` — all
 built and green, plus CLI `decode hg` and against-source dispatch.
-Next, the owner's choice: **the RFC 003 D-7 contract freeze** (its precondition — two sources holding the
-IR unchanged — is now met), or **RFC 006 (Subversion) → M3**, or the RFC 005 follow-ups (OQ-A/OQ-C/OQ-E).
-`encode` unblocks when the owner rules GATED-1..3 (RFC 008).
+The **RFC 003 D-7 contract freeze is done** (IR `1.0.0`, 2026-09-08). Next, the owner's choice:
+**RFC 006 (Subversion) → M3**, or the RFC 005 follow-ups (OQ-A rename inference / OQ-C `.hgtags` /
+OQ-E large repos). `encode` unblocks when the owner rules GATED-1..3 (RFC 008).
 
 Per the lifecycle policy, the folder is the source of truth for state; this section is the index the
 policy asks each project to keep. Update it in the same commit that moves an RFC between folders.

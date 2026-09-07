@@ -10,7 +10,7 @@ model). The governing upstream is prikk **RFC 113** (the import contract).
 
 - **Design before implementation.** Requirements → external design → threat model → **RFC + handoff** →
   implementation → tests → example. Never inverted. (Owner's standing directive.)
-- **Two tracks, deliberately decoupled.** The **decode → IR track** depends only on the (decades-stable)
+- **Two tracks, deliberately decoupled.** The **decode → IR (intermediate representation) track** depends only on the (decades-stable)
   source systems and on nothing in prikk, so it is what brygge **stabilizes first** (PU-6). The
   **encode-to-prikk track** is gated on prikk's open decisions (UD-1…UD-3, OQ-1…OQ-3) and advances only
   as they land; it never blocks the first track.

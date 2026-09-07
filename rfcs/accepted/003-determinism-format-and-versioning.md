@@ -4,6 +4,15 @@
 operations, OQ-C versioning/freeze) and specifies the artifact's canonical serialization, determinism
 contract, integrity, and the IR-contract version lifecycle in detail. RFC 001 decided *that* the
 artifact is canonical/content-addressed/versioned/digested; this RFC decides *exactly how*.
+
+**D-7 FREEZE EXECUTED — the IR contract is 1.0.0 as of 2026-09-08 (owner-ruled).** The precondition
+D-7 set is met: **Git (M1) and Mercurial (M2) both exercise the IR, and it held a second source with no
+change** — an hg import round-trips under the same contract, using only fields the IR already had
+(`SourceKind::Hg`, `RefKind::{Bookmark,NamedBranch}`, a `Stated` `RenameHint`, `LossClass::AdvisoryUnreliable`).
+`brygge_ir::version::CURRENT` is now `1.0.0`; the contract is **additive-only within major 1** (new
+optional fields / new versioned enum variants only), a pre-freeze `0.x` artifact stays readable, and a
+breaking change would be a deliberate contract `2.0` shipped with a converter. No format bytes changed at
+the freeze — 1.0.0 is byte-identical to the 0.1.0 it declares stable.
 **Tracks.** ROADMAP Phase A0; requirements §5 (`VF-1`), §6 (`ID-4`), §10 (`IX-07`); external design
 §2.2 (`IX-01/IX-07`), `OP-01`; threat model `C-3b`, `INV-6`. Track A — not prikk-gated.
 **Touches.** `brygge-ir`'s `artifact` module (codec, container, manifest, digest) and the determinism

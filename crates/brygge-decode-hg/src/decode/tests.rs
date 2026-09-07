@@ -215,7 +215,7 @@ fn decode_is_deterministic_and_the_ir_contract_holds_a_second_source() {
         "two decodes of the same repo are byte-identical (VF-1)"
     );
 
-    // D-8: the IR (contract 0.1.0) holds Mercurial with no contract change -> a full round-trip.
+    // D-8: the current IR contract holds Mercurial with no change -> a full round-trip (the freeze basis).
     let ir = decode(r.path(), &Options::default()).unwrap();
     assert_eq!(ir.contract_version, brygge_ir::version::CURRENT);
     let round = brygge_ir::from_bytes(&brygge_ir::to_bytes(&ir)).unwrap();

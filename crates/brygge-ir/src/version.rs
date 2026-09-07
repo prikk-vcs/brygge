@@ -2,8 +2,10 @@
 //!
 //! The contract version is **independent of the brygge tool version** and travels in every artifact's
 //! manifest. A reader **refuses an unknown major** rather than misread it — the same discipline as
-//! prikk's format gates. Pre-1.0 the contract may change with a minor bump; after the freeze (once Git
-//! and Mercurial have exercised it — ROADMAP) it is additive-only within a major.
+//! prikk's format gates. **Frozen at 1.0 (RFC 003 D-7, 2026-09-08)** — Git (M1) and Mercurial (M2)
+//! exercised the contract with no change, so it is now **additive-only within major 1**: new optional
+//! fields and new versioned enum variants only, never a field removed or repurposed. A breaking change
+//! would be a deliberate, rare contract 2.0 shipped with a converter.
 
 use crate::Error;
 
@@ -31,15 +33,9 @@ impl ContractVersion {
 
     /// True when a build supporting up to [`CURRENT`] may read an artifact declaring `self`
     /// (RFC 003 D-7): the major must be known. A newer minor/patch within a known major is readable
-    /// (additive-only forward compatibility).
+    /// (additive-only forward compatibility), and a pre-freeze major-0 artifact stays readable under the
+    /// frozen major 1.
     #[must_use]
-    #[allow(
-        clippy::absurd_extreme_comparisons,
-        reason = "CURRENT.major is 0 today, so this reads as `major <= 0`, a type-extreme \
-                  comparison clippy flags. The `<=` is deliberate forward-compatibility: it keeps \
-                  admitting known (lower-or-equal) majors once CURRENT advances, and must not be \
-                  narrowed to `==`."
-    )]
     pub const fn is_readable(self) -> bool {
         self.major <= CURRENT.major
     }
@@ -51,9 +47,9 @@ impl std::fmt::Display for ContractVersion {
     }
 }
 
-/// The IR contract version this build writes and reads. Pre-freeze (`0.x`): may change with a minor
-/// bump and a stated migration (RFC 003 D-7).
-pub const CURRENT: ContractVersion = ContractVersion::new(0, 1, 0);
+/// The IR contract version this build writes and reads. **Frozen at 1.0.0** (RFC 003 D-7, 2026-09-08):
+/// additive-only within major 1 from here; a breaking change is a deliberate contract 2.0 with a converter.
+pub const CURRENT: ContractVersion = ContractVersion::new(1, 0, 0);
 
 /// Check that an artifact's declared contract version is readable, else [`Error::UnsupportedContractMajor`].
 ///
