@@ -20,14 +20,10 @@ fn empty_and_blank_lines_are_ignored() {
 }
 
 #[test]
-fn zstd_compression_is_refused_as_unsupported_format() {
-    let body = "revlogv1\nstore\nrevlog-compression-zstd\n";
-    match check(body) {
-        Err(Error::UnsupportedFormat { requirement, .. }) => {
-            assert_eq!(requirement, "revlog-compression-zstd");
-        }
-        other => panic!("expected UnsupportedFormat, got {other:?}"),
-    }
+fn zstd_compression_is_supported() {
+    // Modern hg defaults to zstd; the reader reads it (ruzstd), so the gate must accept it.
+    let body = "revlogv1\nstore\nrevlog-compression-zstd\ngeneraldelta\n";
+    assert!(check(body).is_ok());
 }
 
 #[test]

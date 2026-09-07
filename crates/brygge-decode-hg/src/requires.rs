@@ -17,6 +17,7 @@ const SUPPORTED: &[&str] = &[
     "generaldelta",            // delta base is an arbitrary prior rev — handled
     "sparserevlog",            // affects delta-chain selection only; reading is unchanged
     "revlog-compression-zlib", // explicit zlib (also the default when unstated)
+    "revlog-compression-zstd", // zstd chunks — read via the pure-Rust ruzstd decoder
     "persistent-nodemap",      // an auxiliary index file; the revlog is read without it
     "share-safe",              // requires may live in .hg/store/requires; handled by the reader
 ];
@@ -52,10 +53,6 @@ pub fn check(requires_body: &str) -> Result<(), Error> {
             });
         }
         let reason = match req {
-            "revlog-compression-zstd" => {
-                "zstd revlog compression is not read by this build (zlib only for M2); \
-                 refused rather than misread"
-            }
             "revlogv2" | "changelogv2" | "exp-revlogv2.2" | "exp-revlogv2.1" | "exp-revlogv2.0" => {
                 "revlogv2-family formats are a different on-disk layout this reader does not implement"
             }

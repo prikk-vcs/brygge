@@ -16,7 +16,14 @@
 
 pub mod requires;
 
+mod changelog;
+mod decode;
+mod filelog;
+mod fncache;
+mod manifest;
 mod options;
+mod util;
+pub use decode::decode;
 pub use options::Options;
 
 /// The low-level Mercurial revlog reader (index + delta chains + decompression). Public so the decode
