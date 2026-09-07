@@ -1,0 +1,18 @@
+[package]
+name        = "brygge-decode-hg"
+description = "brygge's Mercurial source decoder: reads a local hg repository's revlog store directly (pure Rust, no hg binary) and produces a brygge-ir IR, mostly Stated including source-recorded renames. The one crate that reads hg (RFC 009 D-1)."
+readme      = "README.md"
+
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+authors.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+
+[dependencies]
+brygge-ir = { workspace = true }
+
+[lints]
+workspace = true
