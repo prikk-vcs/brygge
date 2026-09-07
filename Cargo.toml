@@ -26,6 +26,11 @@ sha2 = "0.10"
 # Isolated in `brygge-decode-git`; no other crate links it (RFC 009 D-1).
 # See handoffs/004-git-decoder/gix-security-review-v1.md.
 gix = { version = "0.87", features = ["blob-diff", "revision"] }
+# The Mercurial decoder's revlog decompression (RFC 005 D-1, Tier 2 pure-Rust reader). Both are pure Rust
+# (no C): flate2 with the `rust_backend` (miniz_oxide) for zlib chunks, ruzstd for zstd chunks (the modern
+# hg default). Small, decompression-only; isolated in `brygge-decode-hg` (RFC 009 D-1). No gix-scale review.
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+ruzstd = "0.7"
 
 # Lint discipline mirrors the ecosystem: unsafe is forbidden everywhere except a future dedicated FFI
 # crate (RFC 009 D-3); public items are documented; the panic-prone clippy lints warn so review holds

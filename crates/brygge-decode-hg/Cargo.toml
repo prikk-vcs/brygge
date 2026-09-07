@@ -13,6 +13,8 @@ homepage.workspace     = true
 
 [dependencies]
 brygge-ir = { workspace = true }
+flate2 = { workspace = true }
+ruzstd = { workspace = true }
 
 [lints]
 workspace = true

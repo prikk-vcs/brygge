@@ -19,6 +19,10 @@ pub mod requires;
 mod options;
 pub use options::Options;
 
+/// The low-level Mercurial revlog reader (index + delta chains + decompression). Public so the decode
+/// layer and integration tests can drive it; most callers want `decode()` instead.
+pub mod revlog;
+
 /// The decoder id and version recorded into IR provenance (`PR-6`) and every derivation (`HO-1`).
 #[must_use]
 pub fn decoder_version() -> &'static str {
