@@ -56,9 +56,10 @@ real `git` and `hg`. The freeze precondition was met empirically — the IR held
     `svnadmin dump` (no FFI, no network; over hand-rolling FSFS/BDB or linking libsvn, OQ-A); **floor** —
     `svn:externals` refused, and a convention-violating layout **imported with a loud `Derived` record, not
     refused** (widest honest migration reach, OQ-B). First **post-freeze** source, so it must fit IR 1.0.0
-    additive-only (RFC 003 D-7; preliminary finding: it does, D-9). Next artifacts: the
-    `brygge-decode-svn` handoff, an **architect security review against `brygge-03`** (new untrusted
-    dumpstream parser + `svnadmin` subprocess), and the D-9 additive-fit confirmation.
+    additive-only (RFC 003 D-7). **D-9 confirmed: SVN fits IR 1.0.0 with zero contract changes**, and the
+    **`brygge-decode-svn` program-design handoff** is written (Tier D needs no new crate dependency; the
+    dumpstream is backend-uniform). Remaining before build: the **architect security review against
+    `brygge-03`** (new untrusted dumpstream parser + `svnadmin` subprocess), which the handoff §6 tees up.
   - [RFC 005 — Mercurial decoder](accepted/005-mercurial-decoder.md) — accepted 2026-09-06; **built and
     delivered (M2)**. Read tier Tier 2 (pure-Rust revlog reader: index + delta chains + zlib/zstd via
     flate2/ruzstd, no C, no hg binary), ground-truth-validated against `hg debugdata`/`debugindex`. The

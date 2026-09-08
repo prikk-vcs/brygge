@@ -280,9 +280,13 @@ working-copy bytes, and `svn:externals`.
   discipline — now **demonstrated, not merely asserted**: the D-9 additive-fit confirmation (below) finds
   SVN fits IR 1.0.0 with **zero** contract changes. The freeze is turned from a claim into a property its
   first post-freeze source exhibited.
-- Now accepted, the immediate artifacts are the **`brygge-decode-svn` program-design handoff** and an
-  **architect security review against `brygge-03`** — required because Tier D adds a **new untrusted-input
-  parser** (the dumpstream) and a **subprocess posture** (`svnadmin`), even though it adds no gix-scale
-  heavy dependency (GOVERNANCE security gate; RFC 009 D-6). The **D-9 additive-fit confirmation is done**
-  ([`handoffs/006-subversion-decoder/d9-additive-fit-confirmation.md`](../handoffs/006-subversion-decoder/d9-additive-fit-confirmation.md)):
-  zero IR changes, so the build spec assumes the frozen types as-is.
+- Now accepted, two of the three acceptance artifacts are done: the **D-9 additive-fit confirmation**
+  ([`handoffs/006-subversion-decoder/d9-additive-fit-confirmation.md`](../handoffs/006-subversion-decoder/d9-additive-fit-confirmation.md))
+  — zero IR changes, build against the frozen types as-is — and the **`brygge-decode-svn` program-design
+  handoff**
+  ([`handoffs/006-subversion-decoder/svn-decoder-implementation-handoff-v1.md`](../handoffs/006-subversion-decoder/svn-decoder-implementation-handoff-v1.md)),
+  which finds Tier D needs **no new crate dependency** (the dumpstream is uncompressed) and that
+  `svnadmin dump` emits a uniform stream from FSFS or BDB (dissolving the BDB concern). The remaining
+  artifact is the **architect security review against `brygge-03`** — required because Tier D adds a **new
+  untrusted-input parser** (the dumpstream) and a **subprocess posture** (`svnadmin`), even though it adds
+  no gix-scale heavy dependency (GOVERNANCE security gate; RFC 009 D-6); the handoff §6 tees it up.
