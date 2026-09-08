@@ -188,22 +188,29 @@ working-copy bytes, and `svn:externals`.
   one; the against-source guarantee is relative to that input (stated on the surface, VF-5).
 
 - **D-9 — The freeze test: SVN must fit additive-only within IR major 1 (RFC 003 D-7). This RFC is the
-  freeze's first exercise under discipline.** Most of SVN maps onto the *existing* 1.0.0 contract, which is
-  the design working as intended (IR-6): a linear `Stated` spine, `Stated` copies via `RenameHint`,
-  `Derived` `RefRecord`s for reconstructed branches, `LossClass::AdvisoryUnreliable` for mergeinfo, and a new
-  `SourceKind::Svn`. **Preliminary finding: no *breaking* change is required.** The candidate *additive*
-  needs — surfaced now for owner review, not slipped in — are:
-  1. a way to record that a `Derived` branch/tag came from **path convention** with the convention as its
-     parameter (may already be expressible via the existing derived-parameter field, PR-5 — to confirm);
-  2. a way to record the **"tag not guaranteed immutable"** caveat on a derived tag (D-4);
-  3. possibly a `RefKind` or ref-attribute distinguishing a convention-derived branch from a first-class one
-     (may already fold into `RefKind` + `Derived` status — to confirm).
+  freeze's first exercise under discipline.** **CONFIRMED against the shipped `brygge-ir` (40181f3): SVN
+  fits IR 1.0.0 with ZERO contract changes — not even an additive minor bump** (full finding:
+  [`handoffs/006-subversion-decoder/d9-additive-fit-confirmation.md`](../handoffs/006-subversion-decoder/d9-additive-fit-confirmation.md)).
+  Every construct maps onto an *existing* 1.0.0 type: a linear `Stated` spine, `Stated` copies via
+  `RenameHint`, `LossClass::AdvisoryUnreliable` for mergeinfo, `SourceKind::Svn`, and — for the derived
+  branch/tag layer — the purpose-built `EpistemicStatus::Derived(Derivation { kind:
+  DerivationKind::ReconstructedBranch, params, … })`, whose taxonomy doc already names SVN and mandates the
+  convention in `params`. The three candidate needs are all **already expressible**, not additions:
+  1. **convention as a parameter (PR-5)** — carried per-ref in `Derivation.params`; the `ReconstructedBranch`
+     variant is defined for exactly this. No change.
+  2. **"tag not guaranteed immutable" caveat** — carried in the derived tag's `Derivation.params`,
+     recoverable from the object (HO-4). No change. One within-contract decoder choice remains — which
+     `DerivationKind` a reconstructed *tag* uses (recommend reusing `ReconstructedBranch`; a first-class
+     `ReconstructedTag` is the deferred additive if a consumer ever needs the distinction, OQ-D discipline).
+  3. **convention-derived vs first-class branch** — already carried by `status` orthogonally to `kind`
+     (`RefKind::Branch` + `Derived` vs `+ Stated`); a new `RefKind` would wrongly fold status into kind. No
+     change.
 
-  Each, if needed, is an **additive** optional field or enum variant an existing 1.0.0 reader ignores (or
-  refuses under the read gate) — permitted within major 1. **Anything that would require a 1.0.0 reader to
-  change to stay correct is out of scope for M3 and is deferred, not done** (RFC 003 D-7). Whether items 1–3
-  need *any* new field, or are already expressible, is settled during the handoff against the shipped
-  `brygge-ir`, and recorded here.
+  The derived branch/tag layer surfaces on the fidelity report (FL-10): `honesty::summary` counts derived
+  ref statuses by taxonomy label, so a reconstructed branch shows as `derived.reconstructed-branch=N`.
+  **Nothing SVN needs would require a 1.0.0 reader to change to stay correct**, so nothing is deferred on
+  additive grounds — the strongest freeze outcome. (A separate, non-blocking note in the finding flags a
+  doc/message refinement to `version.rs`'s forward-compat story, unrelated to SVN.)
 
 ## Open questions
 
@@ -270,11 +277,12 @@ working-copy bytes, and `svn:externals`.
   layer beside the literal ops, read-a-policy floor, against-source verify), confirming the pattern
   generalizes to a source with **no DAG and no first-class refs** (IR-5) — with CVS (RFC 007) to follow.
 - It is the **first post-freeze source**, and so the first real exercise of RFC 003 D-7's additive-only
-  discipline: the handoff confirms SVN fits IR 1.0.0 with at most additive changes (D-9), and any construct
-  that would break a 1.0.0 reader is deferred — turning the freeze from a claim into a demonstrated property.
-- Now accepted, the immediate artifacts are the **`brygge-decode-svn` program-design handoff**; an
+  discipline — now **demonstrated, not merely asserted**: the D-9 additive-fit confirmation (below) finds
+  SVN fits IR 1.0.0 with **zero** contract changes. The freeze is turned from a claim into a property its
+  first post-freeze source exhibited.
+- Now accepted, the immediate artifacts are the **`brygge-decode-svn` program-design handoff** and an
   **architect security review against `brygge-03`** — required because Tier D adds a **new untrusted-input
   parser** (the dumpstream) and a **subprocess posture** (`svnadmin`), even though it adds no gix-scale
-  heavy dependency (GOVERNANCE security gate; RFC 009 D-6); and the **D-9 additive-fit confirmation** against
-  the shipped `brygge-ir` (do items 1–3 need any new 1.0.0-additive field, or are they already
-  expressible); then implementation toward M3.
+  heavy dependency (GOVERNANCE security gate; RFC 009 D-6). The **D-9 additive-fit confirmation is done**
+  ([`handoffs/006-subversion-decoder/d9-additive-fit-confirmation.md`](../handoffs/006-subversion-decoder/d9-additive-fit-confirmation.md)):
+  zero IR changes, so the build spec assumes the frozen types as-is.
