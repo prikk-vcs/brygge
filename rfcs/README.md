@@ -67,6 +67,16 @@ real `git` and `hg`. The freeze precondition was met empirically — the IR held
   - [RFC 003 — Determinism, format & versioning](accepted/003-determinism-format-and-versioning.md)
     (resolves RFC 001's OQ-A/B/C)
   - [RFC 009 — Dependency-surface & supply-chain policy](accepted/009-dependency-surface-and-supply-chain-policy.md)
+- **Proposed:**
+  - [RFC 006 — Subversion decoder](proposed/006-subversion-decoder.md) — proposed 2026-09-08 (M3). The
+    gradient's third source and the IR's **derived-side** stress test: SVN revisions are atomic and linear
+    (a `Stated` spine), but branches and tags are directory copies by *convention* — reconstructed only as
+    `Derived`, and refused or flagged where a repository violates the convention (SRC-S1/FA-2, the
+    derived-marking archetype). It is the **first post-freeze source**, so it must fit IR 1.0.0
+    **additive-only** (RFC 003 D-7); the preliminary finding is that it does. **Owner rulings needed before
+    acceptance:** OQ-A the **read tier** (architect leaning: a pure-Rust *dumpstream* parser fed by a
+    user-supplied dumpfile or a read-only local `svnadmin dump` — no FFI, no network; over hand-rolling
+    FSFS/BDB or linking libsvn), and OQ-B the **SVN floor** (externals, convention-violating layouts).
 - **Done:** [RFC 000 — RFC lifecycle policy](done/000-rfc-lifecycle-policy.md) (brygge uses the
   **5-folder variant**: `proposed → accepted → done`, plus `archive/` and optional `draft/`).
 
@@ -78,9 +88,11 @@ namespace policy + annotated-tag identity preservation) are now **resolved**.
 RFC 005 (Mercurial) is realized in three parts (handoff under `handoffs/005-mercurial-decoder/`): the
 format-safety gate, the ground-truth-validated revlog reader, and the object layer + `decode()` — all
 built and green, plus CLI `decode hg` and against-source dispatch.
-The **RFC 003 D-7 contract freeze is done** (IR `1.0.0`, 2026-09-08). Next, the owner's choice:
-**RFC 006 (Subversion) → M3**, or the RFC 005 follow-ups (OQ-A rename inference / OQ-C `.hgtags` /
-OQ-E large repos). `encode` unblocks when the owner rules GATED-1..3 (RFC 008).
+The **RFC 003 D-7 contract freeze is done** (IR `1.0.0`, 2026-09-08). **RFC 006 (Subversion → M3) is now
+drafted and proposed** as the next theme; it awaits the owner's ruling on the **read tier** (OQ-A) and the
+**SVN floor** (OQ-B) before it can move `proposed → accepted`. The RFC 005 follow-ups (rename inference /
+`.hgtags` / large repos) remain available as an alternative or parallel track. `encode` unblocks when the
+owner rules GATED-1..3 (RFC 008).
 
 Per the lifecycle policy, the folder is the source of truth for state; this section is the index the
 policy asks each project to keep. Update it in the same commit that moves an RFC between folders.
