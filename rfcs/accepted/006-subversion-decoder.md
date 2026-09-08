@@ -1,9 +1,18 @@
 # RFC 006 — Subversion decoder
 
-**Status.** **PROPOSED 2026-09-08.** Not accepted; nothing may be implemented from it. Its owner-gated
-questions — the **read tier** (OQ-A) above all, and the **SVN floor** (OQ-B) — are unresolved, and per
-`GOVERNANCE.md` the read tier is an owner decision (RFC 009: the decoder's dependency surface is the
-project's defining risk). This RFC states the design and hands the owner the rulings to make.
+**Status.** **Accepted (2026-09-08).** Both owner-gated decisions are ruled. The **read tier is Tier D —
+a pure-Rust parser of the SVN *dumpstream*, fed by a user-supplied dumpfile or a read-only local
+`svnadmin dump`** (chosen over hand-rolling FSFS/BDB, driving the `svn` CLI, or linking `libsvn` — the
+smallest pure-Rust surface with no FFI and no network; OQ-A). The **SVN floor is ratified: a repository
+that violates the trunk/branches/tags convention is imported with every branch/tag reconstruction
+recorded as a `Derived` judgment the user must accept and the violation named loudly on the fidelity
+surface — not refused** (widest honest migration reach; OQ-B), while **`svn:externals` is refused with a
+named reason** (INV-3). Tier D adds no gix-scale heavy dependency, so acceptance carries no separate
+*dependency* security review — but it introduces a **new untrusted-input parser** (the dumpstream) and a
+**subprocess posture** (`svnadmin`), so the `brygge-decode-svn` handoff carries an **architect security
+review against `brygge-03`** (GOVERNANCE security gate; RFC 009 D-6) plus the `deny.toml`/`cargo-audit`
+gate for any decompression codec. Next artifact: the `brygge-decode-svn` program-design handoff, then
+implementation toward M3.
 
 **Tracks.** ROADMAP Phase A3 → milestone **M3 (Subversion decode → IR)**. Track A — not prikk-gated
 (decode stands alone, PU-1/PU-6). Realizes prikk RFC 113's decoder side for Subversion.
@@ -78,8 +87,8 @@ working-copy bytes, and `svn:externals`.
 
 ## Decisions
 
-- **D-1 — A new `brygge-decode-svn` crate; nothing else in the workspace reads SVN. The read tier is
-  owner-gated (OQ-A) and is the central decision of this RFC.** Per RFC 009 D-1 the crate is the only place
+- **D-1 — A new `brygge-decode-svn` crate; nothing else in the workspace reads SVN. Read tier: Tier D,
+  the dumpstream parser (owner-ruled 2026-09-08, OQ-A) — the central decision of this RFC.** Per RFC 009 D-1 the crate is the only place
   the SVN read path lives; the RFC 009 D-7 isolation property (already tested for Git and hg) generalizes.
   It exposes one narrow function — read a Subversion source, produce a `brygge_ir::Ir` (or a typed error).
   **The tier choice is genuinely harder than hg's, and the hg answer does not transfer.** For Mercurial,
@@ -87,19 +96,22 @@ working-copy bytes, and `svn:externals`.
   Subversion, a pure-Rust on-disk reader is the *reckless* choice: the native store is **FSFS** (a complex,
   multi-version format) with a legacy **BDB** backend that is effectively a Berkeley-DB C artifact — a large,
   versioned, untrusted parser, or an FFI dependency, exactly the surface RFC 009 exists to contain. The
-  honest clean-equivalent for SVN is not the on-disk format but the **dumpstream** (§ OQ-A):
+  honest clean-equivalent for SVN is not the on-disk format but the **dumpstream**:
 
-  > **Architect recommendation (OQ-A leaning): Tier D — a pure-Rust parser of the SVN *dumpstream*, fed by
-  > a user-supplied dumpfile or a read-only local `svnadmin dump`.** The dumpstream is a documented, stable,
+  > **Tier D — a pure-Rust parser of the SVN *dumpstream*, fed by a user-supplied dumpfile or a read-only
+  > local `svnadmin dump` (owner-ruled 2026-09-08, OQ-A).** The dumpstream is a documented, stable,
   > framed format; parsing it is pure Rust, bounds-checked and panic-free on malformed input (untrusted —
   > a dumpfile may be attacker-controlled, T-2/INV-2). No FFI, no linked SVN library, **no network** (a
   > local `svnadmin dump` reads a local repository; `svnrdump` over a URL is **excluded** by INV-3). Any C
   > lives only in the `svnadmin` *producer* — a read-only subprocess outside brygge's trust boundary and
   > absent from the produced artifact (BN-5) — or is avoided entirely when the user supplies the dumpfile.
+  > The parser must handle the dumpstream format versions (v1/v2/v3).
 
-  The owner rules; the alternatives and their costs are laid out in OQ-A. The one dependency any tier may
-  add (a decompression codec, or a subprocess driver) stays pure-Rust and license-clean where possible, and
-  a heavy or FFI dependency triggers the RFC 009 D-6 architect security review before acceptance.
+  The rejected alternatives and their costs are in OQ-A. Tier D adds **no gix-scale heavy dependency**, so
+  it needs no separate *dependency* security review; but the dumpstream is a **new untrusted-input path**
+  and `svnadmin` is a **subprocess**, so the handoff carries an architect security review against
+  `brygge-03` (GOVERNANCE security gate; RFC 009 D-6), and any decompression codec passes the
+  `deny.toml`/`cargo-audit` gate.
 
 - **D-2 — Revision → `ChangeAtom`, `Stated`; the spine is linear.** Each SVN revision → one `ChangeAtom`
   with `status = Stated`. **`parents` is the immediately preceding revision** (SVN's repository history is a
@@ -126,9 +138,12 @@ working-copy bytes, and `svn:externals`.
     and tag structure — `/branches/x` → a `Derived` `RefRecord`, `/tags/y` → a `Derived` tag — under a
     **configurable layout policy** whose assumed convention is recorded as the derivation's parameter (PR-5).
     Standard `trunk`/`branches`/`tags` is the default policy, but many real repositories violate it, so:
-    - a repository whose layout the active policy **cannot resolve** is **refused with a named reason**
-      (FA-2/FA-3, CL-08) or imported with the violation recorded as a derived judgment the user must accept —
-      the owner's floor sets which (OQ-B/OQ-C);
+    - a repository whose layout the active policy **cannot resolve is imported with the violation recorded
+      as a `Derived` judgment the user must accept and named loudly on the fidelity surface — not refused**
+      (owner-ruled 2026-09-08, OQ-B: widest honest migration reach; the stated linear spine always imports,
+      only the interpretation is marked and consented, FA-2/HO-1/FL-10). The refuse-outright posture was
+      considered and rejected as narrowing migration further than honesty requires; the derived record,
+      loudly surfaced, keeps the same "never silently mis-branched" guarantee (SRC-S1);
     - a **`Derived` tag carries the recorded caveat that SVN tags are not guaranteed immutable** (they are
       ordinary directories and may have been committed to after creation) — an honesty fact 1.0.0 must be
       able to express (D-9 candidate).
@@ -139,9 +154,9 @@ working-copy bytes, and `svn:externals`.
 - **D-5 — SVN properties → mapped, dropped-with-record, or refused; every drop class-stated (PR-9).**
   - `svn:executable` → IR executable mode (`Stated`); `svn:special` → IR symlink (`Stated`).
   - `svn:mergeinfo` → **`AdvisoryUnreliable`, dropped-with-record, never a merge parent** (SRC-S2/PR-8).
-  - `svn:externals` → **refused with a named reason** (or dropped-with-record, per the floor): it references
+  - `svn:externals` → **refused with a named reason** (owner-ruled 2026-09-08, OQ-B): it references
     other repositories/paths — a network and trust surface, the SVN analogue of submodules/subrepos
-    (INV-3; parallels RFC 004/005 submodule/subrepo floors). Owner-gated (OQ-B).
+    (INV-3; parallels RFC 004/005 submodule/subrepo floors).
   - `svn:eol-style`, `svn:keywords` → **workflow / representation, dropped-with-record**: they rewrite
     working-copy bytes; brygge carries the stored normal-form bytes and records the expansion as dropped
     (NG-5, the silent-content-change guardrail).
@@ -192,9 +207,10 @@ working-copy bytes, and `svn:externals`.
 
 ## Open questions
 
-- **OQ-A — The read tier (owner-gated; the central decision).** Options, with costs:
+- **OQ-A — The read tier** — **RESOLVED 2026-09-08 (owner-ruled): Tier D, the dumpstream parser** (D-1).
+  The options weighed, with costs:
   - **Tier D — dumpstream parser (pure Rust), fed by a user-supplied dumpfile or a read-only local
-    `svnadmin dump`** — *architect recommendation* (D-1). Smallest pure-Rust honest surface; no FFI, no
+    `svnadmin dump`** — **chosen.** Smallest pure-Rust honest surface; no FFI, no
     linked SVN library, no network; any C confined to the `svnadmin` producer outside brygge (BN-5). Cost:
     depends on `svnadmin` being available at decode time (a tool, not a linked dependency, and not in the
     artifact), or on the user producing a dumpfile; the dumpstream has format versions (v1/v2/v3) the parser
@@ -208,22 +224,26 @@ working-copy bytes, and `svn:externals`.
     surface; brygge must invoke with no config, no hooks, no network (INV-2/INV-3).
   - **Tier L — link `libsvn` (FFI).** Complete and battle-tested. Cost: a heavy C dependency and FFI — the
     surface RFC 009 most wants to avoid; **owner-only**, and would require the RFC 009 D-6 security review.
-    Not recommended.
-  The owner rules; RFC 009 and GOVERNANCE make this an owner decision because the decoder's dependency
-  surface is the project's defining risk.
+    Rejected. RFC 009 and GOVERNANCE make this an owner decision because the decoder's dependency surface is
+    the project's defining risk; the owner chose the smallest pure-Rust surface (Tier D).
 
-- **OQ-B — The SVN floor contents (OQ-3, owner-gated).** Which features are **refused** rather than
-  approximated. Candidates: `svn:externals` (reaches other repositories, INV-3); layouts the active
-  convention policy cannot resolve (SRC-S1/FA-2 — refuse vs import-with-loud-derived-record); BDB-backend
-  repositories if the tier cannot read them; very old or partial dump formats. The owner sets the line;
-  brygge implements it via the read-a-policy mechanism (CF-03) and refuses cleanly below it (FA-3).
+- **OQ-B — The SVN floor contents (OQ-3)** — **RESOLVED 2026-09-08 (owner-ruled):**
+  - **`svn:externals` → refused** with a named reason (reaches other repositories, INV-3).
+  - **A layout the active convention policy cannot resolve → imported with the violation recorded as a
+    `Derived` judgment the user must accept and named loudly (D-4), not refused** — the widest honest
+    migration reach; the stated linear spine always imports, only the interpretation is marked and consented
+    (SRC-S1/FA-2/HO-1). Refuse-outright was considered and rejected as narrowing migration further than
+    honesty requires.
+  - Still deferred to the handoff, not floor-blocking: BDB-backend repositories the dump path cannot read,
+    and very old/partial dump formats — handled by refusing cleanly below the line (FA-3) via the
+    read-a-policy mechanism (CF-03).
 
-- **OQ-C — Branch/tag layout policy.** Default to standard `trunk`/`branches`/`tags`; how configurable
-  should the policy be (custom roots, nested layouts, per-project trunks)? And does derived branch/tag
-  **`RefRecord` synthesis ship in M3**, or does M3 carry only the stated directory-copy truth with
-  reconstruction deferred (parallel to hg OQ-C `.hgtags`)? *Leaning:* ship reconstruction under the standard
-  policy, **off by default**, always `Derived` and always with the immutability caveat on tags; refuse
-  unresolvable layouts per OQ-B.
+- **OQ-C — Branch/tag layout policy.** OQ-B settles the shape: **derived `RefRecord` reconstruction ships
+  in M3**, under the standard `trunk`/`branches`/`tags` policy, **off by default**, always `Derived`, always
+  with the immutability caveat on tags, and unresolvable layouts imported-with-loud-derived-record (not
+  refused). **Still open (handoff-level, not owner-gated):** how configurable the policy should be — custom
+  roots, nested layouts, per-project trunks. *Leaning:* the standard policy plus a simple configurable root
+  set for M3; richer layout grammars deferred until a repository needs one.
 
 - **OQ-D — Custom (user-defined) properties.** Drop-with-record for M3 (leaning — do not grow the frozen IR
   speculatively, D-9), or carry them in an IR sidecar? Defer carrying until a consumer exists.
@@ -244,14 +264,17 @@ working-copy bytes, and `svn:externals`.
   byte-rewriting properties, externals) at scale.
 - The **derived-marking discipline** becomes a shipped, checkable property on its archetype (FA-2): SVN
   branches/tags are carried as `Derived` over a `Stated` linear spine, convention-violating repositories are
-  refused or flagged, and the fidelity surface (FL-10) shows exactly what was reconstructed versus recorded.
+  imported with the violation recorded as a derived judgment and named loudly (OQ-B), and the fidelity
+  surface (FL-10) shows exactly what was reconstructed versus recorded.
 - SVN follows the **RFC 004/005 decoder pattern** (isolated crate, all-`Stated` core mapping, opt-in derived
   layer beside the literal ops, read-a-policy floor, against-source verify), confirming the pattern
   generalizes to a source with **no DAG and no first-class refs** (IR-5) — with CVS (RFC 007) to follow.
 - It is the **first post-freeze source**, and so the first real exercise of RFC 003 D-7's additive-only
   discipline: the handoff confirms SVN fits IR 1.0.0 with at most additive changes (D-9), and any construct
   that would break a 1.0.0 reader is deferred — turning the freeze from a claim into a demonstrated property.
-- On acceptance, the immediate artifacts are the **`brygge-decode-svn` program-design handoff**, an
-  **architect security review if the tier ruling adopts a heavy or FFI dependency or a subprocess posture**
-  (RFC 009 D-6), and the D-9 additive-fit confirmation against the shipped `brygge-ir`; then implementation
-  toward M3.
+- Now accepted, the immediate artifacts are the **`brygge-decode-svn` program-design handoff**; an
+  **architect security review against `brygge-03`** — required because Tier D adds a **new untrusted-input
+  parser** (the dumpstream) and a **subprocess posture** (`svnadmin`), even though it adds no gix-scale
+  heavy dependency (GOVERNANCE security gate; RFC 009 D-6); and the **D-9 additive-fit confirmation** against
+  the shipped `brygge-ir` (do items 1–3 need any new 1.0.0-additive field, or are they already
+  expressible); then implementation toward M3.

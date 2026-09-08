@@ -48,6 +48,17 @@ real `git` and `hg`. The freeze precondition was met empirically — the IR held
 (Mercurial) with **no change** — so the contract is now `1.0.0`, additive-only within major 1.
 
 - **Accepted:**
+  - [RFC 006 — Subversion decoder](accepted/006-subversion-decoder.md) — accepted 2026-09-08 (M3), **not
+    yet built**. The gradient's third source and the IR's **derived-side** stress test: SVN revisions are
+    atomic and linear (a `Stated` spine), but branches and tags are directory copies by *convention* —
+    reconstructed only as `Derived` (SRC-S1/FA-2, the derived-marking archetype). Owner rulings: **read
+    tier Tier D** — a pure-Rust *dumpstream* parser fed by a user-supplied dumpfile or a read-only local
+    `svnadmin dump` (no FFI, no network; over hand-rolling FSFS/BDB or linking libsvn, OQ-A); **floor** —
+    `svn:externals` refused, and a convention-violating layout **imported with a loud `Derived` record, not
+    refused** (widest honest migration reach, OQ-B). First **post-freeze** source, so it must fit IR 1.0.0
+    additive-only (RFC 003 D-7; preliminary finding: it does, D-9). Next artifacts: the
+    `brygge-decode-svn` handoff, an **architect security review against `brygge-03`** (new untrusted
+    dumpstream parser + `svnadmin` subprocess), and the D-9 additive-fit confirmation.
   - [RFC 005 — Mercurial decoder](accepted/005-mercurial-decoder.md) — accepted 2026-09-06; **built and
     delivered (M2)**. Read tier Tier 2 (pure-Rust revlog reader: index + delta chains + zlib/zstd via
     flate2/ruzstd, no C, no hg binary), ground-truth-validated against `hg debugdata`/`debugindex`. The
@@ -67,16 +78,6 @@ real `git` and `hg`. The freeze precondition was met empirically — the IR held
   - [RFC 003 — Determinism, format & versioning](accepted/003-determinism-format-and-versioning.md)
     (resolves RFC 001's OQ-A/B/C)
   - [RFC 009 — Dependency-surface & supply-chain policy](accepted/009-dependency-surface-and-supply-chain-policy.md)
-- **Proposed:**
-  - [RFC 006 — Subversion decoder](proposed/006-subversion-decoder.md) — proposed 2026-09-08 (M3). The
-    gradient's third source and the IR's **derived-side** stress test: SVN revisions are atomic and linear
-    (a `Stated` spine), but branches and tags are directory copies by *convention* — reconstructed only as
-    `Derived`, and refused or flagged where a repository violates the convention (SRC-S1/FA-2, the
-    derived-marking archetype). It is the **first post-freeze source**, so it must fit IR 1.0.0
-    **additive-only** (RFC 003 D-7); the preliminary finding is that it does. **Owner rulings needed before
-    acceptance:** OQ-A the **read tier** (architect leaning: a pure-Rust *dumpstream* parser fed by a
-    user-supplied dumpfile or a read-only local `svnadmin dump` — no FFI, no network; over hand-rolling
-    FSFS/BDB or linking libsvn), and OQ-B the **SVN floor** (externals, convention-violating layouts).
 - **Done:** [RFC 000 — RFC lifecycle policy](done/000-rfc-lifecycle-policy.md) (brygge uses the
   **5-folder variant**: `proposed → accepted → done`, plus `archive/` and optional `draft/`).
 
@@ -88,11 +89,12 @@ namespace policy + annotated-tag identity preservation) are now **resolved**.
 RFC 005 (Mercurial) is realized in three parts (handoff under `handoffs/005-mercurial-decoder/`): the
 format-safety gate, the ground-truth-validated revlog reader, and the object layer + `decode()` — all
 built and green, plus CLI `decode hg` and against-source dispatch.
-The **RFC 003 D-7 contract freeze is done** (IR `1.0.0`, 2026-09-08). **RFC 006 (Subversion → M3) is now
-drafted and proposed** as the next theme; it awaits the owner's ruling on the **read tier** (OQ-A) and the
-**SVN floor** (OQ-B) before it can move `proposed → accepted`. The RFC 005 follow-ups (rename inference /
-`.hgtags` / large repos) remain available as an alternative or parallel track. `encode` unblocks when the
-owner rules GATED-1..3 (RFC 008).
+The **RFC 003 D-7 contract freeze is done** (IR `1.0.0`, 2026-09-08). **RFC 006 (Subversion → M3) is
+accepted** (2026-09-08): read tier Tier D (dumpstream parser), floor ruled (externals refused,
+convention-violations imported-with-loud-derived-record). The next artifact is the **`brygge-decode-svn`
+program-design handoff** (with its architect security review against `brygge-03` and the D-9 additive-fit
+confirmation), then implementation toward M3. The RFC 005 follow-ups (rename inference / `.hgtags` / large
+repos) remain available as a parallel track. `encode` unblocks when the owner rules GATED-1..3 (RFC 008).
 
 Per the lifecycle policy, the folder is the source of truth for state; this section is the index the
 policy asks each project to keep. Update it in the same commit that moves an RFC between folders.
