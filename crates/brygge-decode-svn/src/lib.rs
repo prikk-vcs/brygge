@@ -44,6 +44,11 @@ pub fn decoder_version() -> &'static str {
 /// The decoder id recorded into IR provenance and derivations.
 pub const DECODER: &str = "brygge-decode-svn";
 
+/// The `what` of the loss record written when branch/tag reconstruction was requested but the layout was
+/// not found (RFC 006 OQ-B — the loud convention-violation record). A CLI maps its presence to the CL-08
+/// convention-violation exit class.
+pub const LAYOUT_UNMATCHED: &str = "trunk/branches/tags layout not found";
+
 /// Everything the Subversion decoder can fail with. A refused feature, an unreadable format, or a
 /// resource ceiling is a **typed outcome**, never a panic and never an approximation (`FA-3`, RFC 006).
 #[derive(Debug)]

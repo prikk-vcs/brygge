@@ -12,11 +12,8 @@ pub const FAILURE: i32 = 1;
 pub const RECORDED_LOSS: i32 = 10;
 /// A source feature below the floor was refused (`FA-3`).
 pub const FLOOR_REFUSAL: i32 = 20;
-/// A source violated its own conventions and was not resolved (`FA-2`) — reserved (SVN); not reached by Git.
-#[allow(
-    dead_code,
-    reason = "reserved CL-08 outcome class, reached by later sources (SVN convention violations)"
-)]
+/// A source violated its own conventions and was not resolved (`FA-2`) — svn ref reconstruction found no
+/// trunk/branches/tags layout (RFC 006 OQ-B); not reached by Git.
 pub const CONVENTION_VIOLATION: i32 = 30;
 /// A partial/interrupted import (`FA-1`) — reserved.
 #[allow(

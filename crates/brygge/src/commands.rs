@@ -6,6 +6,9 @@ use std::path::Path;
 
 use brygge_decode_git::Error as GitError;
 use brygge_decode_hg::Error as HgError;
+use brygge_decode_svn::{
+    Error as SvnError, LayoutPolicy, Options as SvnOptions, Source as SvnSource,
+};
 use brygge_ir::model::PathOp;
 use brygge_ir::status::EpistemicStatus;
 use brygge_ir::{Ir, LossClass};
@@ -63,14 +66,63 @@ fn source_kind_of(ir: &Ir) -> Option<SourceKind> {
     match ir.provenance.source.kind {
         brygge_ir::SourceKind::Git => Some(SourceKind::Git),
         brygge_ir::SourceKind::Hg => Some(SourceKind::Hg),
+        brygge_ir::SourceKind::Svn => Some(SourceKind::Svn),
         _ => None,
     }
 }
 
+/// Whether the IR's provenance says its SVN source was decoded with ref reconstruction on.
+fn reconstruct_refs_from_provenance(ir: &Ir) -> bool {
+    ir.provenance
+        .params
+        .get("reconstruct_refs")
+        .map(|v| v == "true")
+        .unwrap_or(false)
+}
+
+/// The SVN layout policy recorded in the IR's provenance (default if absent/unparsable).
+fn layout_from_provenance(ir: &Ir) -> LayoutPolicy {
+    ir.provenance
+        .params
+        .get("layout")
+        .and_then(|l| LayoutPolicy::from_label(l))
+        .unwrap_or_default()
+}
+
 /// Decode `repo` with the chosen source decoder, mapping decoder errors to a `(exit code, message)`.
-/// A refused format/feature is a clean refusal (`FLOOR_REFUSAL`), not a generic failure.
-fn decode_source(kind: SourceKind, repo: &Path, detect_renames: bool) -> Result<Ir, (i32, String)> {
+/// A refused format/feature is a clean refusal (`FLOOR_REFUSAL`), not a generic failure. `detect_renames`
+/// governs git/hg rename inference; `reconstruct_refs`/`layout` govern the svn branch/tag layer.
+fn decode_source(
+    kind: SourceKind,
+    repo: &Path,
+    detect_renames: bool,
+    reconstruct_refs: bool,
+    layout: LayoutPolicy,
+) -> Result<Ir, (i32, String)> {
     match kind {
+        SourceKind::Svn => {
+            // A directory is a repository (dumped read-only via `svnadmin dump`); a file is a dumpfile.
+            let src = if repo.is_file() {
+                SvnSource::DumpFile(repo.to_path_buf())
+            } else {
+                SvnSource::LocalRepo(repo.to_path_buf())
+            };
+            let opts = SvnOptions {
+                reconstruct_refs,
+                layout,
+            };
+            brygge_decode_svn::decode(&src, &opts).map_err(|e| match e {
+                SvnError::FloorRefusal { feature, reason } => (
+                    exit::FLOOR_REFUSAL,
+                    format!("refused Subversion feature '{feature}' below the floor: {reason}"),
+                ),
+                SvnError::UnsupportedFormat { what, reason } => (
+                    exit::FLOOR_REFUSAL,
+                    format!("unsupported Subversion dump form '{what}': {reason}"),
+                ),
+                other => (exit::FAILURE, format!("decode failed: {other}")),
+            })
+        }
         SourceKind::Git => {
             let opts = brygge_decode_git::Options {
                 detect_renames,
@@ -107,15 +159,22 @@ fn decode_source(kind: SourceKind, repo: &Path, detect_renames: bool) -> Result<
     }
 }
 
-/// `decode <git|hg> <path>` (CL-01, FL-01/FL-10).
+/// `decode <git|hg|svn> <path>` (CL-01, FL-01/FL-10).
 pub fn run_decode(
     kind: SourceKind,
     path: &Path,
     out: Option<&Path>,
     detect_renames: bool,
+    reconstruct_refs: bool,
     format: Format,
 ) -> i32 {
-    let ir = match decode_source(kind, path, detect_renames) {
+    let ir = match decode_source(
+        kind,
+        path,
+        detect_renames,
+        reconstruct_refs,
+        LayoutPolicy::default(),
+    ) {
         Ok(ir) => ir,
         Err((code, msg)) => {
             eprintln!("{msg}");
@@ -135,8 +194,16 @@ pub fn run_decode(
         Format::Human => print!("{}", report.render_human()),
         Format::Machine => print!("{}", report.render_machine()),
     }
-    // Exit class: recorded loss only if a non-representation drop exists (handoff D-B).
+    // Exit class (CL-08): a convention violation (svn ref reconstruction found no layout, FA-2) takes
+    // precedence; else recorded loss if any non-representation drop exists (handoff D-B); else clean.
     if ir
+        .loss
+        .dropped
+        .iter()
+        .any(|d| d.what == brygge_decode_svn::LAYOUT_UNMATCHED)
+    {
+        exit::CONVENTION_VIOLATION
+    } else if ir
         .loss
         .dropped
         .iter()
@@ -246,7 +313,13 @@ pub fn run_verify_against_source(repo: &Path, import: &Path, format: Format) -> 
         );
         return exit::FAILURE;
     };
-    let ir2 = match decode_source(kind, repo, detect_renames_from_provenance(&ir1)) {
+    let ir2 = match decode_source(
+        kind,
+        repo,
+        detect_renames_from_provenance(&ir1),
+        reconstruct_refs_from_provenance(&ir1),
+        layout_from_provenance(&ir1),
+    ) {
         Ok(ir) => ir,
         Err((code, msg)) => {
             eprintln!("cannot re-decode source: {msg}");

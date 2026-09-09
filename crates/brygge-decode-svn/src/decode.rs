@@ -233,7 +233,7 @@ impl Loss {
         if self.layout_unmatched {
             dropped.push(DropRecord {
                 class: LossClass::Other,
-                what: "trunk/branches/tags layout not found".to_string(),
+                what: crate::LAYOUT_UNMATCHED.to_string(),
                 reason: "ref reconstruction was requested but the repository does not follow the \
                          convention; no branch/tag ref was fabricated (RFC 006 OQ-B, the loud \
                          convention-violation record)"

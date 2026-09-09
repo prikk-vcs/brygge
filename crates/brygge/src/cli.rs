@@ -19,21 +19,26 @@ pub enum SourceKind {
     Git,
     /// Mercurial (`brygge-decode-hg`).
     Hg,
+    /// Subversion (`brygge-decode-svn`) — a repository directory or a dumpfile.
+    Svn,
 }
 
 /// A parsed command.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
-    /// `decode <git|hg> <path> [--ir <out>] [--detect-renames] [--format …]`
+    /// `decode <git|hg|svn> <path> [--ir <out>] [--detect-renames] [--reconstruct-refs] [--format …]`
     Decode {
         /// Which source decoder to use.
         kind: SourceKind,
-        /// The source repository path.
+        /// The source repository path (for svn: a repository directory or a dumpfile).
         path: PathBuf,
         /// Where to write the IR artifact, if given.
         out: Option<PathBuf>,
-        /// Turn on opt-in, always-marked rename inference.
+        /// Turn on opt-in, always-marked rename inference (git/hg; ignored for svn).
         detect_renames: bool,
+        /// Reconstruct branch/tag refs from the trunk/branches/tags convention, marking each `Derived`
+        /// (svn only; off by default).
+        reconstruct_refs: bool,
         /// Output format.
         format: Format,
     },
@@ -80,7 +85,7 @@ pub const USAGE: &str = "\
 brygge — carry version-control history into an intermediate representation (IR).
 
 USAGE:
-  brygge decode <git|hg> <path> [--ir <out>] [--detect-renames] [--format human|machine]
+  brygge decode <git|hg|svn> <path> [--ir <out>] [--detect-renames] [--reconstruct-refs] [--format human|machine]
   brygge inspect --ir <file> [--format human|machine]
   brygge verify --internal --import <file> [--format human|machine]
   brygge verify --against-source <repo> --import <file> [--format human|machine]
@@ -88,7 +93,9 @@ USAGE:
   brygge --version | --help
 
 COMMANDS:
-  decode   read a source repository into an IR artifact (git or hg in this build)
+  decode   read a source into an IR artifact (git, hg, or svn in this build). For svn, <path> is a
+           repository directory (dumped read-only via `svnadmin dump`) or a dumpfile; --reconstruct-refs
+           turns on the opt-in Derived branch/tag layer (trunk/branches/tags convention)
   inspect  list atoms with their epistemic status, source ids, and the loss boundary
   verify   --internal: honesty checks provable with no source (VF-3);
            --against-source: re-derive from the source and confirm correspondence (VF-2)
@@ -145,23 +152,28 @@ fn parse_decode(args: &[String]) -> Result<Command, String> {
     let kind = match it.next().map(String::as_str) {
         Some("git") => SourceKind::Git,
         Some("hg") => SourceKind::Hg,
+        Some("svn") => SourceKind::Svn,
         Some(other) => {
             return Err(format!(
-                "source kind '{other}' is not supported (git or hg in this build)"
+                "source kind '{other}' is not supported (git, hg, or svn in this build)"
             ));
         }
         None => {
-            return Err("decode needs a source kind and path: decode <git|hg> <path>".to_string());
+            return Err(
+                "decode needs a source kind and path: decode <git|hg|svn> <path>".to_string(),
+            );
         }
     };
     let mut path: Option<PathBuf> = None;
     let mut out = None;
     let mut detect_renames = false;
+    let mut reconstruct_refs = false;
     let mut format = Format::Human;
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--ir" => out = Some(need_value(&mut it, "--ir")?),
             "--detect-renames" => detect_renames = true,
+            "--reconstruct-refs" => reconstruct_refs = true,
             "--format" => format = parse_format(&mut it)?,
             other if other.starts_with('-') => return Err(format!("unknown flag '{other}'")),
             other => path = Some(PathBuf::from(other)),
@@ -173,6 +185,7 @@ fn parse_decode(args: &[String]) -> Result<Command, String> {
         path,
         out,
         detect_renames,
+        reconstruct_refs,
         format,
     })
 }

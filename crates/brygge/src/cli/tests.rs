@@ -39,12 +39,14 @@ fn decode_git_full() {
             path,
             out,
             detect_renames,
+            reconstruct_refs,
             format,
         } => {
             assert_eq!(kind, SourceKind::Git);
             assert_eq!(path, PathBuf::from("/repo"));
             assert_eq!(out, Some(PathBuf::from("out.ir")));
             assert!(detect_renames);
+            assert!(!reconstruct_refs);
             assert_eq!(format, Format::Machine);
         }
         other => panic!("expected Decode, got {other:?}"),
@@ -68,15 +70,29 @@ fn decode_defaults_and_kind_guard() {
         }
         other => panic!("got {other:?}"),
     }
-    // hg is now supported; svn is not.
+    // hg and svn are both supported now.
     match parse(&v(&["decode", "hg", "/r"])).unwrap() {
         Command::Decode { kind, .. } => assert_eq!(kind, SourceKind::Hg),
         other => panic!("got {other:?}"),
     }
-    assert!(
-        parse(&v(&["decode", "svn", "/r"])).is_err(),
-        "svn not supported yet"
-    );
+    match parse(&v(&["decode", "svn", "/r"])).unwrap() {
+        Command::Decode {
+            kind,
+            reconstruct_refs,
+            ..
+        } => {
+            assert_eq!(kind, SourceKind::Svn);
+            assert!(!reconstruct_refs); // off by default
+        }
+        other => panic!("got {other:?}"),
+    }
+    // the svn ref-reconstruction flag parses.
+    match parse(&v(&["decode", "svn", "/r", "--reconstruct-refs"])).unwrap() {
+        Command::Decode {
+            reconstruct_refs, ..
+        } => assert!(reconstruct_refs),
+        other => panic!("got {other:?}"),
+    }
     assert!(parse(&v(&["decode", "git"])).is_err(), "path required");
 }
 

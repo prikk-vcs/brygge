@@ -16,13 +16,16 @@ implementation**, controls bound as tests) — all under
 [`handoffs/006-subversion-decoder/`](../handoffs/006-subversion-decoder/). **Implementation toward M3 may
 begin.**
 
-**Implementation status.** **Increment 1 built and green** (`crates/brygge-decode-svn`): `decode(Source, &Options)`
-reads a dumpstream (a supplied dumpfile or a read-only local `svnadmin dump`) into an `Ir` — a `Stated`
-linear spine with `Stated` copies, and an opt-in `Derived` branch/tag layer. **Zero new crate dependencies**
-(verified: `brygge-decode-svn` links only `brygge-ir`), the security review's guardrails ship as tests
-(untrusted-parser bounds, panic-free, externals/URL/delta refusals, mergeinfo-never-a-parent,
-derived-marked reconstruction, determinism), and D-9 holds in the build (no IR change). **Queued:** the CLI
-`decode svn` dispatch and `verify --against-source` (small); delta/svndiff dumps; large-repo streaming (OQ-F).
+**Implementation status.** **Increments 1 and 2 built and green.** Increment 1 (`crates/brygge-decode-svn`):
+`decode(Source, &Options)` reads a dumpstream (a supplied dumpfile or a read-only local `svnadmin dump`)
+into an `Ir` — a `Stated` linear spine with `Stated` copies, and an opt-in `Derived` branch/tag layer.
+**Zero new crate dependencies** (verified: `brygge-decode-svn` links only `brygge-ir`), the security
+review's guardrails ship as tests, and D-9 holds (no IR change). Increment 2 (CLI): `brygge decode svn <repo|dumpfile>
+[--reconstruct-refs]` and `verify --against-source` dispatch on the svn source kind (a directory →
+`svnadmin dump` subprocess, a file → dumpfile); against-source reproduces the recorded `reconstruct_refs`
+and layout from provenance; a requested reconstruction that finds no layout exits **CL-08 convention
+violation (30)** — the reserved SVN outcome, now reached. Validated end-to-end against real `svnadmin`
+1.14.5. **Queued:** delta/svndiff dumps; large-repo streaming (OQ-F).
 
 **Tracks.** ROADMAP Phase A3 → milestone **M3 (Subversion decode → IR)**. Track A — not prikk-gated
 (decode stands alone, PU-1/PU-6). Realizes prikk RFC 113's decoder side for Subversion.

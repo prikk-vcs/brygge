@@ -17,6 +17,7 @@ brygge-ir = { workspace = true }
 # `verify --internal` still link no decoder.
 brygge-decode-git = { workspace = true }
 brygge-decode-hg = { workspace = true }
+brygge-decode-svn = { workspace = true }
 
 [lints]
 workspace = true

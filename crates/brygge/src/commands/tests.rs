@@ -103,6 +103,7 @@ fn decode_inspect_verify_summary_roundtrip() {
             repo.path(),
             Some(&out),
             false,
+            false,
             Format::Machine
         ),
         exit::CLEAN
@@ -131,6 +132,7 @@ fn verify_internal_catches_tamper_with_no_source() {
             SourceKind::Git,
             repo.path(),
             Some(&out),
+            false,
             false,
             Format::Machine
         ),
@@ -163,6 +165,7 @@ fn verify_against_source_detects_a_mismatch() {
             SourceKind::Git,
             other.path(),
             Some(&other_out),
+            false,
             false,
             Format::Machine
         ),
@@ -205,6 +208,7 @@ fn decode_of_a_submodule_exits_floor_refusal() {
             repo.path(),
             Some(&out),
             false,
+            false,
             Format::Human
         ),
         exit::FLOOR_REFUSAL
@@ -217,4 +221,206 @@ fn missing_artifact_is_a_plain_failure() {
     let missing = std::env::temp_dir().join("brygge-cli-nope-does-not-exist.ir");
     assert_eq!(run_inspect(&missing, Format::Human), exit::FAILURE);
     assert_eq!(run_summary(&missing, Format::Machine), exit::FAILURE);
+}
+
+// ---- Subversion (RFC 006) -------------------------------------------------------------------------
+
+fn svnadmin_available() -> bool {
+    PCommand::new("svnadmin")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// A property block (`K <len>\n<key>\nV <len>\n<value>\n...PROPS-END\n`).
+fn svn_props(pairs: &[(&str, &str)]) -> Vec<u8> {
+    let mut b = Vec::new();
+    for (k, v) in pairs {
+        b.extend(format!("K {}\n", k.len()).into_bytes());
+        b.extend(k.as_bytes());
+        b.push(b'\n');
+        b.extend(format!("V {}\n", v.len()).into_bytes());
+        b.extend(v.as_bytes());
+        b.push(b'\n');
+    }
+    b.extend(b"PROPS-END\n");
+    b
+}
+
+fn svn_revision(buf: &mut Vec<u8>, num: u64, props: &[(&str, &str)]) {
+    let p = svn_props(props);
+    buf.extend(format!("Revision-number: {num}\n").into_bytes());
+    buf.extend(format!("Prop-content-length: {}\n", p.len()).into_bytes());
+    buf.extend(format!("Content-length: {}\n\n", p.len()).into_bytes());
+    buf.extend(p);
+    buf.extend(b"\n");
+}
+
+fn svn_add_file(buf: &mut Vec<u8>, path: &str, content: &[u8]) {
+    let p = svn_props(&[]);
+    buf.extend(format!("Node-path: {path}\nNode-kind: file\nNode-action: add\n").into_bytes());
+    buf.extend(format!("Prop-content-length: {}\n", p.len()).into_bytes());
+    buf.extend(format!("Text-content-length: {}\n", content.len()).into_bytes());
+    buf.extend(format!("Content-length: {}\n\n", p.len() + content.len()).into_bytes());
+    buf.extend(p);
+    buf.extend(content);
+    buf.extend(b"\n\n");
+}
+
+fn svn_add_dir(buf: &mut Vec<u8>, path: &str, copyfrom: Option<(u64, &str)>) {
+    buf.extend(format!("Node-path: {path}\nNode-kind: dir\nNode-action: add\n").into_bytes());
+    if let Some((r, p)) = copyfrom {
+        buf.extend(format!("Node-copyfrom-rev: {r}\nNode-copyfrom-path: {p}\n").into_bytes());
+    }
+    buf.extend(b"\n\n");
+}
+
+/// A dump with a trunk and a branch copy (so ref reconstruction has something to find).
+fn svn_dump_with_branch() -> Vec<u8> {
+    let mut b = Vec::new();
+    b.extend(b"SVN-fs-dump-format-version: 2\n\n");
+    b.extend(b"UUID: 33333333-4444-5555-6666-777777777777\n\n");
+    svn_revision(&mut b, 0, &[("svn:date", "2024-02-01T00:00:00.000000Z")]);
+    svn_revision(
+        &mut b,
+        1,
+        &[
+            ("svn:author", "carol"),
+            ("svn:date", "2024-02-02T00:00:00.000000Z"),
+            ("svn:log", "trunk"),
+        ],
+    );
+    svn_add_dir(&mut b, "trunk", None);
+    svn_add_file(&mut b, "trunk/a.txt", b"one\n");
+    svn_revision(
+        &mut b,
+        2,
+        &[
+            ("svn:author", "carol"),
+            ("svn:date", "2024-02-03T00:00:00.000000Z"),
+            ("svn:log", "branch"),
+        ],
+    );
+    svn_add_dir(&mut b, "branches", None);
+    svn_add_dir(&mut b, "branches/x", Some((1, "trunk")));
+    b
+}
+
+fn write_temp_dump(bytes: &[u8]) -> PathBuf {
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let path = std::env::temp_dir().join(format!("brygge-cli-svn-{}-{n}.dump", std::process::id()));
+    std::fs::write(&path, bytes).unwrap();
+    path
+}
+
+#[test]
+fn decode_svn_from_a_dumpfile_reconstructs_refs_and_verifies() {
+    let dump = write_temp_dump(&svn_dump_with_branch());
+    let out = std::env::temp_dir().join(format!("brygge-cli-svn-{}.ir", std::process::id()));
+
+    // decode with --reconstruct-refs (a file path selects the DumpFile source).
+    let code = run_decode(
+        SourceKind::Svn,
+        &dump,
+        Some(&out),
+        false,
+        true,
+        Format::Machine,
+    );
+    // trunk + branch reconstruction is Derived; mergeinfo/custom absent, so at most representation drops.
+    assert!(
+        code == exit::CLEAN || code == exit::RECORDED_LOSS,
+        "unexpected exit {code}"
+    );
+    assert!(out.exists());
+
+    assert_eq!(run_inspect(&out, Format::Human), exit::CLEAN);
+    assert_eq!(run_verify_internal(&out, Format::Machine), exit::CLEAN);
+    // against-source re-decodes the same dumpfile, reproducing the reconstruct_refs/layout from provenance.
+    assert_eq!(
+        run_verify_against_source(&dump, &out, Format::Human),
+        exit::CLEAN,
+        "the artifact corresponds to its dumpfile (VF-2)"
+    );
+
+    let _ = std::fs::remove_file(&dump);
+    let _ = std::fs::remove_file(&out);
+}
+
+#[test]
+fn decode_svn_flat_layout_with_reconstruct_is_a_convention_violation() {
+    // A flat layout (no trunk/branches/tags) with reconstruction requested → CL-08 convention violation.
+    let mut b = Vec::new();
+    b.extend(b"SVN-fs-dump-format-version: 2\n\n");
+    b.extend(b"UUID: 88888888-9999-0000-1111-222222222222\n\n");
+    svn_revision(&mut b, 0, &[("svn:date", "2024-02-01T00:00:00.000000Z")]);
+    svn_revision(
+        &mut b,
+        1,
+        &[
+            ("svn:log", "flat"),
+            ("svn:date", "2024-02-02T00:00:00.000000Z"),
+        ],
+    );
+    svn_add_file(&mut b, "main.c", b"x\n");
+    let dump = write_temp_dump(&b);
+
+    let code = run_decode(SourceKind::Svn, &dump, None, false, true, Format::Machine);
+    assert_eq!(code, exit::CONVENTION_VIOLATION);
+    let _ = std::fs::remove_file(&dump);
+}
+
+#[test]
+fn decode_svn_from_a_live_repository_via_svnadmin() {
+    if !svnadmin_available() {
+        eprintln!("skipping: svnadmin not on PATH");
+        return;
+    }
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let repo = std::env::temp_dir().join(format!("brygge-cli-svnrepo-{}-{n}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&repo);
+    assert!(
+        PCommand::new("svnadmin")
+            .arg("create")
+            .arg(&repo)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    );
+    // Load a dump so the repo has real history, then decode the repo directory (svnadmin dump subprocess).
+    use std::io::Write as _;
+    let mut child = PCommand::new("svnadmin")
+        .arg("load")
+        .arg(&repo)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn svnadmin load");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(&svn_dump_with_branch())
+        .unwrap();
+    assert!(child.wait().map(|s| s.success()).unwrap_or(false));
+
+    let out = repo.join("out.ir");
+    let code = run_decode(
+        SourceKind::Svn,
+        &repo,
+        Some(&out),
+        false,
+        true,
+        Format::Machine,
+    );
+    assert!(
+        code == exit::CLEAN || code == exit::RECORDED_LOSS,
+        "unexpected exit {code}"
+    );
+    assert!(out.exists());
+    assert_eq!(run_verify_internal(&out, Format::Machine), exit::CLEAN);
+
+    let _ = std::fs::remove_dir_all(&repo);
 }

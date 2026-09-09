@@ -35,6 +35,27 @@ impl LayoutPolicy {
             self.trunk, self.branches, self.tags
         )
     }
+
+    /// Parse a [`label`](Self::label) back into a policy — for reproducing an import from its recorded
+    /// provenance (`verify --against-source`). `None` if the label is not in `label` form.
+    #[must_use]
+    pub fn from_label(s: &str) -> Option<Self> {
+        let (mut trunk, mut branches, mut tags) = (None, None, None);
+        for part in s.split(',') {
+            let (k, v) = part.split_once('=')?;
+            match k {
+                "trunk" => trunk = Some(v.to_string()),
+                "branches" => branches = Some(v.to_string()),
+                "tags" => tags = Some(v.to_string()),
+                _ => {}
+            }
+        }
+        Some(Self {
+            trunk: trunk?,
+            branches: branches?,
+            tags: tags?,
+        })
+    }
 }
 
 /// How the Subversion decoder should behave.
