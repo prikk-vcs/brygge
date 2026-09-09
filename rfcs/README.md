@@ -48,8 +48,9 @@ real `git` and `hg`. The freeze precondition was met empirically — the IR held
 (Mercurial) with **no change** — so the contract is now `1.0.0`, additive-only within major 1.
 
 - **Accepted:**
-  - [RFC 006 — Subversion decoder](accepted/006-subversion-decoder.md) — accepted 2026-09-08 (M3), **not
-    yet built**. The gradient's third source and the IR's **derived-side** stress test: SVN revisions are
+  - [RFC 006 — Subversion decoder](accepted/006-subversion-decoder.md) — accepted 2026-09-08 (M3);
+    **increment 1 built and green** (`brygge-decode-svn`, zero new crate dependencies). The gradient's third
+    source and the IR's **derived-side** stress test: SVN revisions are
     atomic and linear (a `Stated` spine), but branches and tags are directory copies by *convention* —
     reconstructed only as `Derived` (SRC-S1/FA-2, the derived-marking archetype). Owner rulings: **read
     tier Tier D** — a pure-Rust *dumpstream* parser fed by a user-supplied dumpfile or a read-only local
@@ -95,8 +96,9 @@ built and green, plus CLI `decode hg` and against-source dispatch.
 The **RFC 003 D-7 contract freeze is done** (IR `1.0.0`, 2026-09-08). **RFC 006 (Subversion → M3) is
 accepted** (2026-09-08): read tier Tier D (dumpstream parser), floor ruled (externals refused,
 convention-violations imported-with-loud-derived-record). **All three acceptance artifacts are complete**
-(D-9 additive-fit, program-design handoff, security review — verdict proceed), so **`brygge-decode-svn`
-implementation toward M3 is the next build.** The RFC 005 follow-ups (rename inference / `.hgtags` / large
+(D-9 additive-fit, program-design handoff, security review — verdict proceed), and **`brygge-decode-svn`
+increment 1 is built and green** (the `decode` library: dumpstream reader + tree model → IR; CLI dispatch,
+delta dumps, and streaming queued). The RFC 005 follow-ups (rename inference / `.hgtags` / large
 repos) remain available as a parallel track. `encode` unblocks when the owner rules GATED-1..3 (RFC 008).
 
 Per the lifecycle policy, the folder is the source of truth for state; this section is the index the

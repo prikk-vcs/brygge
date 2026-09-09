@@ -16,6 +16,14 @@ implementation**, controls bound as tests) — all under
 [`handoffs/006-subversion-decoder/`](../handoffs/006-subversion-decoder/). **Implementation toward M3 may
 begin.**
 
+**Implementation status.** **Increment 1 built and green** (`crates/brygge-decode-svn`): `decode(Source, &Options)`
+reads a dumpstream (a supplied dumpfile or a read-only local `svnadmin dump`) into an `Ir` — a `Stated`
+linear spine with `Stated` copies, and an opt-in `Derived` branch/tag layer. **Zero new crate dependencies**
+(verified: `brygge-decode-svn` links only `brygge-ir`), the security review's guardrails ship as tests
+(untrusted-parser bounds, panic-free, externals/URL/delta refusals, mergeinfo-never-a-parent,
+derived-marked reconstruction, determinism), and D-9 holds in the build (no IR change). **Queued:** the CLI
+`decode svn` dispatch and `verify --against-source` (small); delta/svndiff dumps; large-repo streaming (OQ-F).
+
 **Tracks.** ROADMAP Phase A3 → milestone **M3 (Subversion decode → IR)**. Track A — not prikk-gated
 (decode stands alone, PU-1/PU-6). Realizes prikk RFC 113's decoder side for Subversion.
 **First source after the IR freeze (RFC 003 D-7, 1.0.0):** where RFC 005 (hg) was the freeze

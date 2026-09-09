@@ -1,0 +1,18 @@
+[package]
+name        = "brygge-decode-svn"
+description = "brygge's Subversion source decoder: reads an SVN history from a dumpstream (a user-supplied dumpfile, or a read-only local `svnadmin dump`) and produces a brygge-ir IR — a Stated linear spine with Stated copies, plus an opt-in Derived branch/tag layer. Pure Rust, no linked SVN library (RFC 006 Tier D). The one crate that reads SVN (RFC 009 D-1)."
+readme      = "README.md"
+
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+authors.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+
+[dependencies]
+brygge-ir = { workspace = true }
+
+[lints]
+workspace = true

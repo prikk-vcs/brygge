@@ -86,6 +86,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "brygge-decode-svn"
+version = "0.1.0"
+dependencies = [
+ "brygge-ir",
+]
+
+[[package]]
 name = "brygge-ir"
 version = "0.1.0"
 dependencies = [
