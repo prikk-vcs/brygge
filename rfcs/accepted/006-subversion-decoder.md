@@ -9,10 +9,12 @@ recorded as a `Derived` judgment the user must accept and the violation named lo
 surface — not refused** (widest honest migration reach; OQ-B), while **`svn:externals` is refused with a
 named reason** (INV-3). Tier D adds no gix-scale heavy dependency, so acceptance carries no separate
 *dependency* security review — but it introduces a **new untrusted-input parser** (the dumpstream) and a
-**subprocess posture** (`svnadmin`), so the `brygge-decode-svn` handoff carries an **architect security
-review against `brygge-03`** (GOVERNANCE security gate; RFC 009 D-6) plus the `deny.toml`/`cargo-audit`
-gate for any decompression codec. Next artifact: the `brygge-decode-svn` program-design handoff, then
-implementation toward M3.
+**subprocess posture** (`svnadmin`), so an **architect security review against `brygge-03`** was required
+(GOVERNANCE security gate; RFC 009 D-6). **All three acceptance artifacts are now done** — the D-9
+additive-fit confirmation, the program-design handoff, and the security review (verdict: **proceed to
+implementation**, controls bound as tests) — all under
+[`handoffs/006-subversion-decoder/`](../handoffs/006-subversion-decoder/). **Implementation toward M3 may
+begin.**
 
 **Tracks.** ROADMAP Phase A3 → milestone **M3 (Subversion decode → IR)**. Track A — not prikk-gated
 (decode stands alone, PU-1/PU-6). Realizes prikk RFC 113's decoder side for Subversion.
@@ -286,7 +288,12 @@ working-copy bytes, and `svn:externals`.
   handoff**
   ([`handoffs/006-subversion-decoder/svn-decoder-implementation-handoff-v1.md`](../handoffs/006-subversion-decoder/svn-decoder-implementation-handoff-v1.md)),
   which finds Tier D needs **no new crate dependency** (the dumpstream is uncompressed) and that
-  `svnadmin dump` emits a uniform stream from FSFS or BDB (dissolving the BDB concern). The remaining
-  artifact is the **architect security review against `brygge-03`** — required because Tier D adds a **new
-  untrusted-input parser** (the dumpstream) and a **subprocess posture** (`svnadmin`), even though it adds
-  no gix-scale heavy dependency (GOVERNANCE security gate; RFC 009 D-6); the handoff §6 tees it up.
+  `svnadmin dump` emits a uniform stream from FSFS or BDB (dissolving the BDB concern). The **architect
+  security review against `brygge-03`**
+  ([`handoffs/006-subversion-decoder/svn-decode-security-review-v1.md`](../handoffs/006-subversion-decoder/svn-decode-security-review-v1.md))
+  is also **done** — verdict **proceed to implementation**: the supply-chain surface *shrinks* (zero new
+  crates), SVN's C-format risk is isolated **by subprocess** rather than linked (a containment advantage
+  over Tier L), and INV-1/2/3/5/6 hold with the §6 bounds bound as tests. It surfaces a threat-model
+  refinement to fold into `brygge-03` (C-4b: a C surface may be isolated to a *subprocess*, not only an
+  FFI crate) plus two residuals (`RR-svn-svnadmin`, `RR-svn-svnadmin-version`). **All acceptance artifacts
+  are complete; implementation toward M3 may begin.**

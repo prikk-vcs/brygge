@@ -56,10 +56,12 @@ real `git` and `hg`. The freeze precondition was met empirically — the IR held
     `svnadmin dump` (no FFI, no network; over hand-rolling FSFS/BDB or linking libsvn, OQ-A); **floor** —
     `svn:externals` refused, and a convention-violating layout **imported with a loud `Derived` record, not
     refused** (widest honest migration reach, OQ-B). First **post-freeze** source, so it must fit IR 1.0.0
-    additive-only (RFC 003 D-7). **D-9 confirmed: SVN fits IR 1.0.0 with zero contract changes**, and the
-    **`brygge-decode-svn` program-design handoff** is written (Tier D needs no new crate dependency; the
-    dumpstream is backend-uniform). Remaining before build: the **architect security review against
-    `brygge-03`** (new untrusted dumpstream parser + `svnadmin` subprocess), which the handoff §6 tees up.
+    additive-only (RFC 003 D-7). **All three acceptance artifacts are done** (under
+    `handoffs/006-subversion-decoder/`): D-9 confirmed SVN fits IR 1.0.0 with **zero contract changes**;
+    the **program-design handoff** (Tier D needs no new crate dependency; the dumpstream is
+    backend-uniform); and the **architect security review against `brygge-03`** (verdict: proceed — the
+    supply-chain surface shrinks, the C-format risk is isolated by *subprocess* not linked, INV-1/2/3/5/6
+    hold as bound tests). **Implementation toward M3 may begin.**
   - [RFC 005 — Mercurial decoder](accepted/005-mercurial-decoder.md) — accepted 2026-09-06; **built and
     delivered (M2)**. Read tier Tier 2 (pure-Rust revlog reader: index + delta chains + zlib/zstd via
     flate2/ruzstd, no C, no hg binary), ground-truth-validated against `hg debugdata`/`debugindex`. The
@@ -92,9 +94,9 @@ format-safety gate, the ground-truth-validated revlog reader, and the object lay
 built and green, plus CLI `decode hg` and against-source dispatch.
 The **RFC 003 D-7 contract freeze is done** (IR `1.0.0`, 2026-09-08). **RFC 006 (Subversion → M3) is
 accepted** (2026-09-08): read tier Tier D (dumpstream parser), floor ruled (externals refused,
-convention-violations imported-with-loud-derived-record). The next artifact is the **`brygge-decode-svn`
-program-design handoff** (with its architect security review against `brygge-03` and the D-9 additive-fit
-confirmation), then implementation toward M3. The RFC 005 follow-ups (rename inference / `.hgtags` / large
+convention-violations imported-with-loud-derived-record). **All three acceptance artifacts are complete**
+(D-9 additive-fit, program-design handoff, security review — verdict proceed), so **`brygge-decode-svn`
+implementation toward M3 is the next build.** The RFC 005 follow-ups (rename inference / `.hgtags` / large
 repos) remain available as a parallel track. `encode` unblocks when the owner rules GATED-1..3 (RFC 008).
 
 Per the lifecycle policy, the folder is the source of truth for state; this section is the index the
