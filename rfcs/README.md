@@ -81,18 +81,19 @@ real `git` and `hg`. The freeze precondition was met empirically — the IR held
   - [RFC 002 — Honesty & provenance machinery](accepted/002-honesty-and-provenance-machinery.md)
   - [RFC 003 — Determinism, format & versioning](accepted/003-determinism-format-and-versioning.md)
     (resolves RFC 001's OQ-A/B/C)
+  - [RFC 007 — CVS decoder](accepted/007-cvs-decoder.md) — accepted 2026-09-10 (M4), **not yet built**, the
+    **last source on the gradient**. The IR's deepest epistemic stress: CVS has **no atomic commit**, so the
+    **changeset itself is reconstructed** — a `Derived(ReconstructedChangeset)` *atom*, not just derived refs
+    (SRC-C1, IR-2). The honest deliverable is **lossy-but-labelled** (SRC-C3): per-file content and history
+    faithful, changeset grouping carried as brygge's derived judgment with its clustering parameters and a
+    confidence, and **changeset-level VF-2 honestly absent** (no source atom to check against). Owner
+    rulings: **read tier Tier R** — a pure-Rust RCS `,v` reader (uncompressed, so a **third
+    zero-new-dependency** decoder, no subprocess; OQ-A); **confidence floor per-changeset** — import the
+    confident majority, loudly flag/refuse the under-floor ones (OQ-B). Second **post-freeze** source, so it
+    must fit IR 1.0.0 additive-only (preliminary D-9: fits — `ReconstructedChangeset` and `confidence`
+    already exist). Next artifacts: the `brygge-decode-cvs` handoff, an architect security review against
+    `brygge-03` (new RCS parser), and the D-9 additive-fit confirmation.
   - [RFC 009 — Dependency-surface & supply-chain policy](accepted/009-dependency-surface-and-supply-chain-policy.md)
-- **Proposed:**
-  - [RFC 007 — CVS decoder](proposed/007-cvs-decoder.md) — proposed 2026-09-09 (M4), the **last source on
-    the gradient**. The IR's deepest epistemic stress: CVS has **no atomic commit**, so the **changeset
-    itself is reconstructed** — a `Derived(ReconstructedChangeset)` *atom*, not just derived refs (SRC-C1,
-    IR-2). The honest deliverable is **lossy-but-labelled** (SRC-C3): per-file content and history faithful,
-    changeset grouping carried as brygge's derived judgment with its clustering parameters and a confidence,
-    and **changeset-level VF-2 honestly absent** (no source atom to check against). Second **post-freeze**
-    source, so it must fit IR 1.0.0 additive-only (preliminary: fits — the `ReconstructedChangeset` kind and
-    `confidence` field already exist). **Owner rulings needed:** OQ-A the **read tier** (architect leaning: a
-    pure-Rust RCS `,v` reader — likely a third zero-dependency decoder), and OQ-B the **confidence floor**
-    (how lossy is too lossy to import — the OQ-3 decision that most rules who can migrate).
 - **Done:** [RFC 000 — RFC lifecycle policy](done/000-rfc-lifecycle-policy.md) (brygge uses the
   **5-folder variant**: `proposed → accepted → done`, plus `archive/` and optional `draft/`).
 
@@ -110,11 +111,13 @@ convention-violations imported-with-loud-derived-record). **All three acceptance
 (D-9 additive-fit, program-design handoff, security review — verdict proceed), and **`brygge-decode-svn`
 increments 1 and 2 are built and green** (the `decode` library — dumpstream reader + tree model → IR — and
 the CLI: `brygge decode svn <repo|dumpfile> [--reconstruct-refs]` + `verify --against-source`, validated
-against real `svnadmin` 1.14.5; delta dumps and streaming queued). **RFC 007 (CVS → M4) is now drafted and
-proposed** as the gradient's last source; it awaits the owner's rulings on the **read tier** (OQ-A) and the
-**confidence floor** (OQ-B) before it can move `proposed → accepted`. The RFC 005 follow-ups (rename
-inference / `.hgtags` / large repos) remain available as a parallel track. `encode` unblocks when the owner
-rules GATED-1..3 (RFC 008).
+against real `svnadmin` 1.14.5; delta dumps and streaming queued). **RFC 007 (CVS → M4) is accepted**
+(2026-09-10): read tier Tier R (pure-Rust RCS reader, zero new deps), confidence floor ruled per-changeset
+(import the confident majority, loudly flag/refuse under-floor). Next artifacts: the `brygge-decode-cvs`
+program-design handoff (with its architect security review against `brygge-03` and the D-9 additive-fit
+confirmation), then implementation toward M4 — the **last source on the gradient**. The RFC 005 follow-ups
+(rename inference / `.hgtags` / large repos) remain available as a parallel track. `encode` unblocks when
+the owner rules GATED-1..3 (RFC 008).
 
 Per the lifecycle policy, the folder is the source of truth for state; this section is the index the
 policy asks each project to keep. Update it in the same commit that moves an RFC between folders.

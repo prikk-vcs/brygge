@@ -1,9 +1,17 @@
 # RFC 007 — CVS decoder
 
-**Status.** **PROPOSED 2026-09-09.** Not accepted; nothing may be implemented from it. Its owner-gated
-questions — the **read tier** (OQ-A) and the **confidence floor** (OQ-B, the CVS analogue of every prior
-floor and the one that decides *how lossy is too lossy to import*) — are unresolved, and per `GOVERNANCE.md`
-the read tier is an owner decision (RFC 009). This RFC states the design and hands the owner the rulings.
+**Status.** **Accepted (2026-09-10).** Both owner-gated decisions are ruled. The **read tier is Tier R — a
+pure-Rust RCS `,v` reader** (chosen over driving the `cvs`/`rlog` CLI or linking an RCS/CVS C library — the
+smallest surface with no C, no FFI, no external tool, no network, and — RCS being uncompressed — no
+decompression codec; a third **zero-new-dependency** decoder, OQ-A). The **confidence floor is ruled
+per-changeset (OQ-B):** import the confidently-reconstructed changesets and **loudly flag/refuse the
+under-floor ones with named reasons**, rather than blocking a mostly-clean history — the SVN OQ-B precedent
+(import-with-loud-record) applied to CVS; the numeric bar and its definition are a configurable default
+settled at the handoff (read-a-policy, CF-03). Tier R adds no heavy dependency, but the RCS reader is a
+**new untrusted-input parser**, so the `brygge-decode-cvs` handoff carries an **architect security review
+against `brygge-03`** (GOVERNANCE security gate; RFC 009 D-6) — and, unlike SVN Tier D, **no subprocess
+posture** (the reader reads the `,v` files directly). Next artifact: the `brygge-decode-cvs` program-design
+handoff, then implementation toward M4.
 
 **Tracks.** ROADMAP Phase A4 → milestone **M4 (CVS decode → IR)** — the **last source on the difficulty
 gradient** (requirements §7: Git → hg → SVN → **CVS**, "no atomic commit at all"). Track A — not
@@ -71,17 +79,18 @@ The two genuinely hard pieces are **reading RCS safely** (the `,v` store — a n
 
 ## Decisions
 
-- **D-1 — A new `brygge-decode-cvs` crate; nothing else reads CVS. Read tier owner-gated (OQ-A).** The
-  RFC 009 D-1 isolation property generalizes. It exposes one narrow function — read a CVS repository (a
+- **D-1 — A new `brygge-decode-cvs` crate; nothing else reads CVS. Read tier: Tier R, the pure-Rust RCS
+  reader (owner-ruled 2026-09-10, OQ-A).** The RFC 009 D-1 isolation property generalizes. It exposes one narrow function — read a CVS repository (a
   directory of RCS `,v` files, with deleted files under `Attic/`), produce a `brygge_ir::Ir`.
-  **Architect recommendation (OQ-A leaning): Tier R — a pure-Rust RCS `,v` reader.** The RCS file format is
+  **Read tier: Tier R — a pure-Rust RCS `,v` reader (owner-ruled 2026-09-10, OQ-A).** The RCS file format is
   documented, text-based (`@`-quoted strings, an admin/delta/deltatext structure, ed-style RCS diffs for
   non-head revisions), and **uncompressed** — so, like SVN Tier D, the decoder needs **no decompression
   codec, no C, no FFI, no network, and no external tool** (it reads the repository's own files directly;
   there is no clean `cvs` "dump" equivalent, and the `cvs` client/server path is messier and needs a
-  working copy). The likely outcome is a **third zero-new-dependency decoder.** The rejected alternatives
-  (driving the `cvs`/`rlog` CLI; linking an RCS/CVS C library) are in OQ-A. The **two genuinely new pieces**
-  are the RCS reader (§ the untrusted parser) and the changeset reconstructor (D-3).
+  working copy). This is a **third zero-new-dependency decoder** — and, unlike SVN Tier D, no subprocess.
+  The rejected alternatives (driving the `cvs`/`rlog` CLI; linking an RCS/CVS C library) are in OQ-A. The
+  **two genuinely new pieces** are the RCS reader (a new untrusted-input parser) and the changeset
+  reconstructor (D-3).
 
 - **D-2 — Read the per-file RCS revisions as the atomic input.** For each `,v` file, the reader yields, per
   revision: the RCS revision number (e.g. `1.3`, or a branch revision `1.1.2.1`), date, author, state
@@ -136,13 +145,16 @@ The two genuinely hard pieces are **reading RCS safely** (the `,v` store — a n
   changeset grouping corresponds to a CVS record** — the surface says so, and the CVS faithfulness statement
   (VF-5) states it before the run. `import_time` stays provenance-only (RFC 003 D-4/ID-4).
 
-- **D-8 — The floor: refuse reconstructions below a confidence bar (OQ-3/OQ-B, owner-gated).** SRC-C3's honest
+- **D-8 — The floor: a per-changeset confidence bar (OQ-3/OQ-B, owner-ruled 2026-09-10).** SRC-C3's honest
   position needs a line: some CVS histories reconstruct cleanly, others are hopeless (pathological timestamp
-  skew, unrecoverable ambiguity). The owner sets a **confidence floor**; a changeset (or an import) whose
-  reconstruction confidence falls below it is **refused with a named reason** (FA-3, the CL-08
-  convention/confidence outcome), never imported as if certain. brygge implements the line via the
-  read-a-policy mechanism (CF-03); it does not set it. This is the CVS analogue of the SVN
-  convention-violation floor, and it is the OQ-3 decision that most directly rules *who can migrate*.
+  skew, unrecoverable ambiguity). **The ruling is per-changeset:** import the confidently-reconstructed
+  changesets, and **loudly flag/refuse the under-floor ones with named reasons** (FA-3, the CL-08
+  convention/confidence outcome — exit class 30), rather than blocking a mostly-clean history on a few
+  ambiguous points. This mirrors the SVN OQ-B precedent (import-with-loud-record) and is the OQ-3 decision
+  that most directly rules *who can migrate*. The **numeric bar and its definition** (a time-spread
+  threshold and an ambiguity measure) are a configurable default settled at the handoff; brygge implements
+  the line via the read-a-policy mechanism (CF-03) and does not hardcode it. An entirely-under-floor import
+  (no confident changeset) is a whole-import refusal.
 
 - **D-9 — Fit IR 1.0.0 additive-only (RFC 003 D-7). Preliminary finding: fits, likely with zero change.**
   The IR anticipated CVS (the model names it): a `Derived` `ChangeAtom` status,
@@ -157,33 +169,35 @@ The two genuinely hard pieces are **reading RCS safely** (the `,v` store — a n
 
 ## Open questions
 
-- **OQ-A — The read tier (owner-gated; the central dependency decision).** Options, with costs:
-  - **Tier R — pure-Rust RCS `,v` reader** — *architect recommendation* (D-1). No C, no FFI, no external
-    tool, no network, and (RCS being uncompressed) no decompression codec — a likely **zero-new-dependency**
-    decoder. Cost: a new untrusted-input parser (RCS format + ed-style delta application) to hand-roll,
-    bounds-checked.
+- **OQ-A — The read tier** — **RESOLVED 2026-09-10 (owner-ruled): Tier R, the pure-Rust RCS `,v` reader**
+  (D-1). The options weighed, with costs:
+  - **Tier R — pure-Rust RCS `,v` reader** — **chosen.** No C, no FFI, no external tool, no network, and
+    (RCS being uncompressed) no decompression codec — a **zero-new-dependency** decoder. Cost: a new
+    untrusted-input parser (RCS format + ed-style delta application) to hand-roll, bounds-checked.
   - **Tier C — drive the `cvs`/`rlog` CLI as a subprocess.** Reuses CVS's own reader. Cost: CVS's
     client/server and working-copy model is awkward for a read-only bulk decode, a runtime tool dependency,
     and content extraction still wants the `,v` files or a checkout; a subprocess posture (re-triggers the
     security review, as SVN Tier D did).
   - **Tier L — link an RCS/CVS C library (FFI).** Cost: a heavy C dependency + FFI — the surface RFC 009
-    most wants to avoid; **owner-only**, needs the RFC 009 D-6 security review. Not recommended.
-- **OQ-B — The confidence floor (OQ-3, owner-gated) — the decision that most shapes the product.** What
-  confidence (and what definition of it — time-spread threshold, ambiguity measure) is *too low to import*?
-  Refuse the whole import, or refuse the individual under-floor changesets and import the rest with a loud
-  record (the SVN OQ-B precedent — import-with-loud-derived-record)? *Leaning:* per-changeset, import the
-  confident majority and refuse (or loudly flag) the under-floor ones with named reasons, so a mostly-clean
-  CVS history is not blocked by a few ambiguous points — but this is squarely the owner's product call.
-- **OQ-C — Rename inference for CVS.** CVS records no renames (worse than Git). Ship **off by default** with
-  no inference (delete+add carried faithfully), matching the maximally-honest default; a Git-style opt-in,
-  always-`Derived` similarity inference is a later increment only if wanted. *Leaning:* no inference in M4.
-- **OQ-D — Per-file revision preservation (D-9).** Pack `(path@rev)` into the opaque `atom_id` for M4
-  (leaning), or add a structured per-op source-revision field (an additive minor bump, deferred until a
-  consumer needs it)?
-- **OQ-E — Timestamp skew and clustering robustness.** CVS timestamps are client-side and can be skewed;
-  the clustering window and tie-breaking must be deterministic and documented (PR-5). *Leaning:* a fixed
-  default window with the value recorded in provenance; adaptive windowing deferred.
-- **OQ-F — Large repositories / streaming** (ties to RFC 003 OQ-B and the prior sources). *Leaning:* defer;
+    most wants to avoid; **owner-only**, needs the RFC 009 D-6 security review. Rejected in favour of the
+    smallest pure-Rust surface (Tier R).
+- **OQ-B — The confidence floor (OQ-3)** — **RESOLVED 2026-09-10 (owner-ruled): per-changeset** (D-8).
+  Import the confidently-reconstructed changesets and **loudly flag/refuse the under-floor ones with named
+  reasons** (exit class 30), rather than blocking a mostly-clean history — the SVN OQ-B precedent
+  (import-with-loud-record). An entirely-under-floor import is a whole-import refusal. The **numeric bar and
+  its definition** (a time-spread threshold + an ambiguity measure) are a configurable default settled at
+  the handoff via the read-a-policy mechanism (CF-03); brygge does not hardcode it.
+- **OQ-C — Rename inference for CVS** (architect-settled leaning; not owner-gated). CVS records no renames
+  (worse than Git). **Off by default with no inference for M4** (delete+add carried faithfully, the
+  maximally-honest default); a Git-style opt-in, always-`Derived` similarity inference is a later increment
+  only if wanted.
+- **OQ-D — Per-file revision preservation (D-9)** (handoff-level). **Pack `(path@rev)` into the opaque
+  `atom_id` for M4**; a structured per-op source-revision field is an additive minor bump, deferred until a
+  consumer needs it — confirmed against the shipped `brygge-ir` at the D-9 additive-fit step.
+- **OQ-E — Timestamp skew and clustering robustness** (handoff-level). CVS timestamps are client-side and
+  can be skewed; the clustering window and tie-breaking must be deterministic and documented (PR-5). **A
+  fixed default window with the value recorded in provenance for M4**; adaptive windowing deferred.
+- **OQ-F — Large repositories / streaming** (ties to RFC 003 OQ-B and the prior sources). Deferred;
   correctness and determinism first.
 
 ## Consequences
