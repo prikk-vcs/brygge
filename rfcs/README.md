@@ -41,11 +41,13 @@ is written by the architect and reviewed/approved per `GOVERNANCE.md`.
 
 ## State
 
-**Phase A1 (Git, M1) and Phase A2 (Mercurial, M2) are both built, and the IR contract is FROZEN at 1.0.0**
-**(RFC 003 D-7, executed 2026-09-08).** RFC 004 and RFC 005 are accepted and implemented through the
-CLI/verify surface; `brygge decode git|hg`, `inspect`, `verify`, and `summary` all work, validated against
-real `git` and `hg`. The freeze precondition was met empirically — the IR held a **second** source
-(Mercurial) with **no change** — so the contract is now `1.0.0`, additive-only within major 1.
+**All four sources on the gradient are built, and the IR contract is FROZEN at 1.0.0 (RFC 003 D-7, executed
+2026-09-08).** RFC 004 (Git), 005 (Mercurial), 006 (Subversion), and 007 (CVS) are accepted and implemented
+through the CLI/verify surface; `brygge decode git|hg|svn|cvs`, `inspect`, `verify`, and `summary` all work
+(Git/hg/SVN validated against real `git`/`hg`/`svnadmin`; CVS against hand-built RCS `,v` fixtures). The
+freeze held across every source **with no contract change** — Git and hg were the pre-freeze basis; SVN
+(convention-derived refs) and CVS (a `Derived` changeset *atom*, the deepest stress) were post-freeze and
+fit **additive-only, needing nothing added**. The contract is `1.0.0`, additive-only within major 1.
 
 - **Accepted:**
   - [RFC 006 — Subversion decoder](accepted/006-subversion-decoder.md) — accepted 2026-09-08 (M3);
@@ -81,8 +83,8 @@ real `git` and `hg`. The freeze precondition was met empirically — the IR held
   - [RFC 002 — Honesty & provenance machinery](accepted/002-honesty-and-provenance-machinery.md)
   - [RFC 003 — Determinism, format & versioning](accepted/003-determinism-format-and-versioning.md)
     (resolves RFC 001's OQ-A/B/C)
-  - [RFC 007 — CVS decoder](accepted/007-cvs-decoder.md) — accepted 2026-09-10 (M4), **not yet built**, the
-    **last source on the gradient**. The IR's deepest epistemic stress: CVS has **no atomic commit**, so the
+  - [RFC 007 — CVS decoder](accepted/007-cvs-decoder.md) — accepted 2026-09-10 (M4), **built and green**
+    (`brygge-decode-cvs` + CLI, zero new crate dependencies), the **last source on the gradient**. The IR's deepest epistemic stress: CVS has **no atomic commit**, so the
     **changeset itself is reconstructed** — a `Derived(ReconstructedChangeset)` *atom*, not just derived refs
     (SRC-C1, IR-2). The honest deliverable is **lossy-but-labelled** (SRC-C3): per-file content and history
     faithful, changeset grouping carried as brygge's derived judgment with its clustering parameters and a
@@ -115,11 +117,12 @@ increments 1 and 2 are built and green** (the `decode` library — dumpstream re
 the CLI: `brygge decode svn <repo|dumpfile> [--reconstruct-refs]` + `verify --against-source`, validated
 against real `svnadmin` 1.14.5; delta dumps and streaming queued). **RFC 007 (CVS → M4) is accepted**
 (2026-09-10): read tier Tier R (pure-Rust RCS reader, zero new deps), confidence floor ruled per-changeset
-(import the confident majority, loudly flag/refuse under-floor). **All three acceptance artifacts are
-complete** (D-9 additive-fit — zero IR change, program-design handoff, security review — verdict proceed),
-so **`brygge-decode-cvs` implementation toward M4 is the next build** — the **last source on the gradient**. The RFC 005 follow-ups
-(rename inference / `.hgtags` / large repos) remain available as a parallel track. `encode` unblocks when
-the owner rules GATED-1..3 (RFC 008).
+(import the confident majority, loudly flag/refuse under-floor). **`brygge-decode-cvs` is built and green**
+(CLI wired; `verify --against-source` checks per-file content + deterministic reproduction, not changeset
+correspondence, D-7). **M4 is delivered, and the difficulty gradient is complete: Git, hg, SVN, and CVS have
+all been decoded into the IR with no contract change** — the strongest evidence for PU-1/PU-3 and the
+RFC 003 D-7 freeze. The RFC 005 follow-ups (rename inference / `.hgtags` / large repos) remain available as
+a parallel track. `encode` unblocks when the owner rules GATED-1..3 (RFC 008).
 
 Per the lifecycle policy, the folder is the source of truth for state; this section is the index the
 policy asks each project to keep. Update it in the same commit that moves an RFC between folders.

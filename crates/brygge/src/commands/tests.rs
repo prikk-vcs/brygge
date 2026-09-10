@@ -424,3 +424,141 @@ fn decode_svn_from_a_live_repository_via_svnadmin() {
 
     let _ = std::fs::remove_dir_all(&repo);
 }
+
+// ---- CVS (RFC 007) --------------------------------------------------------------------------------
+
+/// A single-revision (`1.1`) RCS `,v` with full text.
+fn cvs_single_rev(author: &str, date: &str, log: &str, content: &str) -> Vec<u8> {
+    format!(
+        "head\t1.1;\naccess;\nsymbols;\nlocks; strict;\n\n\n\
+1.1\ndate\t{date};\tauthor {author};\tstate Exp;\nbranches;\nnext\t;\n\n\n\
+desc\n@@\n\n\n\
+1.1\nlog\n@{log}@\ntext\n@{content}@\n"
+    )
+    .into_bytes()
+}
+
+fn cvs_repo() -> TempRepo {
+    // Reuse TempRepo's temp dir (it runs `git init`, which is harmless here — we only add ,v files).
+    TempRepo::new()
+}
+
+fn write_vfile(repo: &TempRepo, rel: &str, bytes: &[u8]) {
+    let p = repo.dir.join(format!("{rel},v"));
+    if let Some(parent) = p.parent() {
+        std::fs::create_dir_all(parent).unwrap();
+    }
+    std::fs::write(p, bytes).unwrap();
+}
+
+#[test]
+fn decode_cvs_reconstructs_derived_changesets_and_reproduces() {
+    let repo = cvs_repo();
+    write_vfile(
+        &repo,
+        "a.c",
+        &cvs_single_rev("alice", "2024.01.01.12.00.00", "add", "aaa\n"),
+    );
+    write_vfile(
+        &repo,
+        "b.c",
+        &cvs_single_rev("alice", "2024.01.01.12.00.01", "add", "bbb\n"),
+    );
+    let out = repo.dir.join("out.ir");
+
+    let code = run_decode(
+        SourceKind::Cvs,
+        repo.path(),
+        Some(&out),
+        false,
+        false,
+        Format::Machine,
+    );
+    // Every atom is a Derived reconstruction; no under-floor/mergeinfo here, so at most representation drops.
+    assert!(
+        code == exit::CLEAN || code == exit::RECORDED_LOSS,
+        "unexpected exit {code}"
+    );
+    assert!(out.exists());
+
+    assert_eq!(run_inspect(&out, Format::Human), exit::CLEAN);
+    assert_eq!(run_verify_internal(&out, Format::Machine), exit::CLEAN);
+    // against-source for CVS re-decodes and checks per-file content + deterministic reproduction (D-7).
+    assert_eq!(
+        run_verify_against_source(repo.path(), &out, Format::Human),
+        exit::CLEAN,
+        "the CVS reconstruction reproduces from its repository (VF-1)"
+    );
+}
+
+#[test]
+fn decode_cvs_whole_import_under_floor_is_refused() {
+    let repo = cvs_repo();
+    // Ten files, same author/log, chained 60s apart: one wide, low-confidence changeset.
+    for i in 0..10 {
+        let date = format!("2024.03.01.00.{:02}.00", i);
+        write_vfile(
+            &repo,
+            &format!("f{i}.c"),
+            &cvs_single_rev("alice", &date, "big", "x\n"),
+        );
+    }
+    // The whole-import-under-floor refusal (no confident changeset) is a FLOOR_REFUSAL at decode time.
+    let code = run_decode(
+        SourceKind::Cvs,
+        repo.path(),
+        None,
+        false,
+        false,
+        Format::Machine,
+    );
+    assert_eq!(code, exit::FLOOR_REFUSAL);
+}
+
+#[test]
+fn decode_cvs_partial_under_floor_imports_and_exits_convention_violation() {
+    let repo = cvs_repo();
+    // A tight, confident changeset ("tidy": two files one second apart) ...
+    write_vfile(
+        &repo,
+        "x.c",
+        &cvs_single_rev("alice", "2024.01.01.00.00.00", "tidy", "x\n"),
+    );
+    write_vfile(
+        &repo,
+        "y.c",
+        &cvs_single_rev("alice", "2024.01.01.00.00.01", "tidy", "y\n"),
+    );
+    // ... and a wide, low-confidence one ("sprawl": three files spread 100s apart, span 200 > 0 penalty).
+    write_vfile(
+        &repo,
+        "p.c",
+        &cvs_single_rev("bob", "2024.02.01.00.00.00", "sprawl", "p\n"),
+    );
+    write_vfile(
+        &repo,
+        "q.c",
+        &cvs_single_rev("bob", "2024.02.01.00.01.40", "sprawl", "q\n"),
+    );
+    write_vfile(
+        &repo,
+        "r.c",
+        &cvs_single_rev("bob", "2024.02.01.00.03.20", "sprawl", "r\n"),
+    );
+
+    let out = repo.dir.join("out.ir");
+    // Confident changesets exist, so the import proceeds; the under-floor one is flagged → exit 30.
+    let code = run_decode(
+        SourceKind::Cvs,
+        repo.path(),
+        Some(&out),
+        false,
+        false,
+        Format::Machine,
+    );
+    assert_eq!(code, exit::CONVENTION_VIOLATION);
+    assert!(
+        out.exists(),
+        "the import still writes (confident changesets imported)"
+    );
+}

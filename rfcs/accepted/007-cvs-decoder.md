@@ -13,7 +13,19 @@ against `brygge-03`** (GOVERNANCE security gate; RFC 009 D-6) — and, unlike SV
 posture** (the reader reads the `,v` files directly). **All three acceptance artifacts are now done** — the
 D-9 additive-fit confirmation (zero IR change), the program-design handoff, and the security review (verdict:
 **proceed to implementation**, controls bound as tests) — all under
-[`handoffs/007-cvs-decoder/`](../handoffs/007-cvs-decoder/). **Implementation toward M4 may begin.**
+[`handoffs/007-cvs-decoder/`](../handoffs/007-cvs-decoder/).
+
+**Implementation status.** **Built and green — M4 delivered, the gradient complete.** `brygge-decode-cvs`
+(`decode(Source, &Options) -> Ir`) reads a CVS repository's RCS `,v` files (pure Rust, **zero new crate
+dependencies** — verified: it links only `brygge-ir`; no `cvs` tool, no subprocess) and reconstructs
+changesets: every atom is `Derived(ReconstructedChangeset)` with its clustering params and confidence, over
+a faithful per-file `Add`/`Modify`/`Delete` spine, with the opt-in `Derived` tag/branch layer. The CLI is
+wired: `brygge decode cvs <repo> [--reconstruct-refs]`, and `verify --against-source` dispatches on the CVS
+kind and honestly checks **per-file content + deterministic reproduction, not changeset correspondence**
+(D-7). A partial under-floor import is flagged and exits CL-08 convention/confidence (30); a whole-import
+under-floor is refused (20). D-9 held in the build (no IR change). The security review's guardrails ship as
+tests (RCS parser bounds + panic-freedom, determinism, refusals, every-atom-derived). **Queued:** adaptive
+clustering windows (OQ-E), rename inference (OQ-C), large-repo streaming (OQ-F).
 
 **Tracks.** ROADMAP Phase A4 → milestone **M4 (CVS decode → IR)** — the **last source on the difficulty
 gradient** (requirements §7: Git → hg → SVN → **CVS**, "no atomic commit at all"). Track A — not

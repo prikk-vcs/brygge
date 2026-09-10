@@ -1,0 +1,18 @@
+[package]
+name        = "brygge-decode-cvs"
+description = "brygge's CVS source decoder: reads a CVS repository's RCS `,v` files directly (pure Rust, no cvs tool) and reconstructs changesets by clustering per-file revisions, producing a brygge-ir IR whose changeset atoms are Derived (RFC 007, Tier R). The one crate that reads CVS (RFC 009 D-1)."
+readme      = "README.md"
+
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+authors.workspace      = true
+repository.workspace   = true
+homepage.workspace     = true
+
+[dependencies]
+brygge-ir = { workspace = true }
+
+[lints]
+workspace = true

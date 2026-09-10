@@ -21,6 +21,8 @@ pub enum SourceKind {
     Hg,
     /// Subversion (`brygge-decode-svn`) — a repository directory or a dumpfile.
     Svn,
+    /// CVS (`brygge-decode-cvs`) — a local repository directory of RCS `,v` files.
+    Cvs,
 }
 
 /// A parsed command.
@@ -85,7 +87,7 @@ pub const USAGE: &str = "\
 brygge — carry version-control history into an intermediate representation (IR).
 
 USAGE:
-  brygge decode <git|hg|svn> <path> [--ir <out>] [--detect-renames] [--reconstruct-refs] [--format human|machine]
+  brygge decode <git|hg|svn|cvs> <path> [--ir <out>] [--detect-renames] [--reconstruct-refs] [--format human|machine]
   brygge inspect --ir <file> [--format human|machine]
   brygge verify --internal --import <file> [--format human|machine]
   brygge verify --against-source <repo> --import <file> [--format human|machine]
@@ -93,9 +95,10 @@ USAGE:
   brygge --version | --help
 
 COMMANDS:
-  decode   read a source into an IR artifact (git, hg, or svn in this build). For svn, <path> is a
-           repository directory (dumped read-only via `svnadmin dump`) or a dumpfile; --reconstruct-refs
-           turns on the opt-in Derived branch/tag layer (trunk/branches/tags convention)
+  decode   read a source into an IR artifact (git, hg, svn, or cvs in this build). For svn, <path> is a
+           repository directory (dumped read-only via `svnadmin dump`) or a dumpfile. For cvs, <path> is a
+           local repository directory of RCS ,v files (reconstructed changesets are Derived). For svn/cvs,
+           --reconstruct-refs turns on the opt-in Derived branch/tag layer
   inspect  list atoms with their epistemic status, source ids, and the loss boundary
   verify   --internal: honesty checks provable with no source (VF-3);
            --against-source: re-derive from the source and confirm correspondence (VF-2)
@@ -153,14 +156,15 @@ fn parse_decode(args: &[String]) -> Result<Command, String> {
         Some("git") => SourceKind::Git,
         Some("hg") => SourceKind::Hg,
         Some("svn") => SourceKind::Svn,
+        Some("cvs") => SourceKind::Cvs,
         Some(other) => {
             return Err(format!(
-                "source kind '{other}' is not supported (git, hg, or svn in this build)"
+                "source kind '{other}' is not supported (git, hg, svn, or cvs in this build)"
             ));
         }
         None => {
             return Err(
-                "decode needs a source kind and path: decode <git|hg|svn> <path>".to_string(),
+                "decode needs a source kind and path: decode <git|hg|svn|cvs> <path>".to_string(),
             );
         }
     };
