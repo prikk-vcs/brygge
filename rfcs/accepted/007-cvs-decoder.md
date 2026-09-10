@@ -156,16 +156,21 @@ The two genuinely hard pieces are **reading RCS safely** (the `,v` store — a n
   the line via the read-a-policy mechanism (CF-03) and does not hardcode it. An entirely-under-floor import
   (no confident changeset) is a whole-import refusal.
 
-- **D-9 — Fit IR 1.0.0 additive-only (RFC 003 D-7). Preliminary finding: fits, likely with zero change.**
-  The IR anticipated CVS (the model names it): a `Derived` `ChangeAtom` status,
-  `DerivationKind::ReconstructedChangeset` (doc: "Params must include the clustering keys"),
-  `Derivation.confidence: Option<u8>`, `DerivationKind::ReconstructedBranch` for tags/branches, and
-  `SourceKind::Cvs` all **already exist** in the frozen contract. The one candidate to confirm at the handoff:
-  **per-file revision preservation (PR-4)** — a reconstructed changeset packs its `(path@rev)` set into the
-  opaque `SourceIdentity.atom_id` (which the model doc already anticipates: "a CVS revision tag"); whether a
-  *structured* per-op source-revision field is ever wanted is deferred until a consumer needs it (OQ-D
-  discipline), and would be an **additive** field then, never a break. Anything that would require a 1.0.0
-  reader to change is out of scope for M4.
+- **D-9 — Fit IR 1.0.0 additive-only (RFC 003 D-7). CONFIRMED against the shipped `brygge-ir` (66b52d8):
+  CVS fits with ZERO contract changes** (full finding:
+  [`handoffs/007-cvs-decoder/d9-additive-fit-confirmation.md`](../handoffs/007-cvs-decoder/d9-additive-fit-confirmation.md)).
+  The IR anticipated CVS by name: a `Derived` `ChangeAtom` status (`model.rs:159`),
+  `DerivationKind::ReconstructedChangeset` (`status.rs:44-45`, doc: "A changeset reconstructed from per-file
+  revisions (CVS). Params must include the clustering keys"), `Derivation.confidence: Option<u8>`
+  (`status.rs:36`), `DerivationKind::ReconstructedBranch` for tags/branches, and `SourceKind::Cvs`
+  (`model.rs:32`) all **already exist**. `honesty::summary` counts `atom.status` (`honesty.rs:48`), so every
+  CVS atom shows as `derived.reconstructed-changeset` — SRC-C2's prominent uncertainty as a checkable
+  property. The one within-contract choice (OQ-D): a reconstructed changeset packs its source-native
+  `(path@rev)` set into the opaque `SourceIdentity.atom_id` (which the field doc anticipates: "a CVS
+  revision tag"); a *structured* per-op source-revision field is the deferred **additive** minor bump, never
+  a break. The honest **absence of changeset-level VF-2** (D-7) needs no IR construct — it is a verify-surface
+  and faithfulness-statement matter. Anything that would require a 1.0.0 reader to change is out of scope
+  for M4 — and nothing does.
 
 ## Open questions
 
