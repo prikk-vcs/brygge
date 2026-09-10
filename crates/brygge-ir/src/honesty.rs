@@ -99,39 +99,57 @@ impl FidelityReport {
         s
     }
 
-    /// A human-facing rendering. Authorship is always shown `Unverified` (`VF-4/HO-3`).
+    /// A human-facing rendering. Authorship is always shown `Unverified` (`VF-4/HO-3`), and the report
+    /// makes the stated-vs-derived distinction plain — a newcomer should be able to tell what the source
+    /// recorded from what brygge judged, and see that nothing was silently lost (`HO-4`, SRC-C2).
     #[must_use]
     pub fn render_human(&self) -> String {
         use std::fmt::Write as _;
         let mut s = String::new();
         let _ = writeln!(
             s,
-            "fidelity report (v{}) — authorship: Unverified (imported, not verified by any target)",
+            "fidelity report (v{}) — what brygge imported, and how much is the source's own record",
             self.report_version
         );
+        let _ = writeln!(
+            s,
+            "vs brygge's judgment. Authorship is Unverified (imported, not verified by any target)."
+        );
+        let _ = writeln!(s);
         let _ = writeln!(
             s,
             "  preserved: {} atom(s), {} ref(s), {} blob(s), {} content byte(s)",
             self.atoms, self.refs, self.blobs, self.content_bytes
         );
         if self.derived.is_empty() {
-            let _ = writeln!(s, "  derived:   (none — every assertion is source-stated)");
+            let _ = writeln!(
+                s,
+                "  derived:   none — every assertion is source-stated (the source recorded it; \
+                 brygge inferred nothing)"
+            );
         } else {
-            let _ = writeln!(s, "  derived:");
+            let _ = writeln!(
+                s,
+                "  derived:   brygge's judgment, not the source's fact — a later brygge version could \
+                 differ; `inspect` shows where each is marked:"
+            );
             for (kind, n) in &self.derived {
                 let _ = writeln!(s, "    {kind}: {n}");
             }
         }
         if self.dropped.is_empty() {
-            let _ = writeln!(s, "  dropped:   (nothing dropped)");
+            let _ = writeln!(s, "  dropped:   nothing dropped");
         } else {
-            let _ = writeln!(s, "  dropped:");
+            let _ = writeln!(s, "  dropped:   recorded here, never silently lost:");
             for (class, n) in &self.dropped {
                 let _ = writeln!(s, "    {class}: {n}");
             }
         }
         if !self.refused.is_empty() {
-            let _ = writeln!(s, "  refused:");
+            let _ = writeln!(
+                s,
+                "  refused:   a source feature below the floor — refused rather than guessed:"
+            );
             for r in &self.refused {
                 let _ = writeln!(s, "    {r}");
             }
