@@ -91,8 +91,10 @@ real `git` and `hg`. The freeze precondition was met empirically — the IR held
     zero-new-dependency** decoder, no subprocess; OQ-A); **confidence floor per-changeset** — import the
     confident majority, loudly flag/refuse the under-floor ones (OQ-B). Second **post-freeze** source, so it
     must fit IR 1.0.0 additive-only (preliminary D-9: fits — `ReconstructedChangeset` and `confidence`
-    already exist). Next artifacts: the `brygge-decode-cvs` handoff, an architect security review against
-    `brygge-03` (new RCS parser), and the D-9 additive-fit confirmation.
+    already exist). **All three acceptance artifacts are done** (under `handoffs/007-cvs-decoder/`): D-9
+    confirmed CVS fits IR 1.0.0 with **zero contract changes**; the **program-design handoff** (zero new
+    dependency, no subprocess, pure Rust); and the **architect security review** (verdict proceed — the
+    cleanest surface of any decoder, INV-1 at its purest). **Implementation toward M4 may begin.**
   - [RFC 009 — Dependency-surface & supply-chain policy](accepted/009-dependency-surface-and-supply-chain-policy.md)
 - **Done:** [RFC 000 — RFC lifecycle policy](done/000-rfc-lifecycle-policy.md) (brygge uses the
   **5-folder variant**: `proposed → accepted → done`, plus `archive/` and optional `draft/`).
@@ -113,9 +115,9 @@ increments 1 and 2 are built and green** (the `decode` library — dumpstream re
 the CLI: `brygge decode svn <repo|dumpfile> [--reconstruct-refs]` + `verify --against-source`, validated
 against real `svnadmin` 1.14.5; delta dumps and streaming queued). **RFC 007 (CVS → M4) is accepted**
 (2026-09-10): read tier Tier R (pure-Rust RCS reader, zero new deps), confidence floor ruled per-changeset
-(import the confident majority, loudly flag/refuse under-floor). Next artifacts: the `brygge-decode-cvs`
-program-design handoff (with its architect security review against `brygge-03` and the D-9 additive-fit
-confirmation), then implementation toward M4 — the **last source on the gradient**. The RFC 005 follow-ups
+(import the confident majority, loudly flag/refuse under-floor). **All three acceptance artifacts are
+complete** (D-9 additive-fit — zero IR change, program-design handoff, security review — verdict proceed),
+so **`brygge-decode-cvs` implementation toward M4 is the next build** — the **last source on the gradient**. The RFC 005 follow-ups
 (rename inference / `.hgtags` / large repos) remain available as a parallel track. `encode` unblocks when
 the owner rules GATED-1..3 (RFC 008).
 

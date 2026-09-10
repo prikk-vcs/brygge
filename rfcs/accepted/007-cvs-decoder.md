@@ -10,8 +10,10 @@ under-floor ones with named reasons**, rather than blocking a mostly-clean histo
 settled at the handoff (read-a-policy, CF-03). Tier R adds no heavy dependency, but the RCS reader is a
 **new untrusted-input parser**, so the `brygge-decode-cvs` handoff carries an **architect security review
 against `brygge-03`** (GOVERNANCE security gate; RFC 009 D-6) — and, unlike SVN Tier D, **no subprocess
-posture** (the reader reads the `,v` files directly). Next artifact: the `brygge-decode-cvs` program-design
-handoff, then implementation toward M4.
+posture** (the reader reads the `,v` files directly). **All three acceptance artifacts are now done** — the
+D-9 additive-fit confirmation (zero IR change), the program-design handoff, and the security review (verdict:
+**proceed to implementation**, controls bound as tests) — all under
+[`handoffs/007-cvs-decoder/`](../handoffs/007-cvs-decoder/). **Implementation toward M4 may begin.**
 
 **Tracks.** ROADMAP Phase A4 → milestone **M4 (CVS decode → IR)** — the **last source on the difficulty
 gradient** (requirements §7: Git → hg → SVN → **CVS**, "no atomic commit at all"). Track A — not
@@ -217,7 +219,11 @@ The two genuinely hard pieces are **reading RCS safely** (the `,v` store — a n
   layer beside it, read-a-policy floor) while introducing the new shape of a **`Derived` atom** and the
   **honest absence of changeset-level VF-2** — confirming the IR carries a source with *no atomic record at
   all* (IR-2/IR-5) without a contract change.
-- On acceptance, the immediate artifacts are the **`brygge-decode-cvs` program-design handoff**; an
-  **architect security review against `brygge-03`** for the new RCS untrusted-input parser (and any
-  subprocess, if a tier other than R is chosen); and the **D-9 additive-fit confirmation** against the
-  shipped `brygge-ir`; then implementation toward M4.
+- Now accepted, all three acceptance artifacts are done (under
+  [`handoffs/007-cvs-decoder/`](../handoffs/007-cvs-decoder/)): the **D-9 additive-fit confirmation** (CVS
+  fits IR 1.0.0 with zero change), the **`brygge-decode-cvs` program-design handoff** (Tier R: zero new
+  dependency, no subprocess, pure Rust; the RCS reader and the changeset reconstructor as the two new
+  pieces), and the **architect security review against `brygge-03`** (verdict proceed — the cleanest surface
+  of any decoder; INV-1 at its purest, with the changeset atom itself `Derived` and changeset-level VF-2
+  honestly declined; it surfaces one residual, `RR-cvs-reconstruction`, to fold into `brygge-03`).
+  **Implementation toward M4 may begin.**
