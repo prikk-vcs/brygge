@@ -96,7 +96,8 @@ module style (`foo.rs` + `foo/`, no `mod.rs`), tests as siblings (`#[cfg(test)] 
 **The RFC set** (all accepted unless noted; `rfcs/README.md` is authoritative):
 001 IR foundations · 002 honesty & provenance · 003 determinism, format & versioning (the freeze, D-7) ·
 004 Git decoder · 005 Mercurial decoder · 006 Subversion decoder · 007 CVS decoder · 009 dependency &
-supply-chain policy · 010 bounded memory & streaming. **008 (prikk encoder) is the gated Track-B RFC.**
+supply-chain policy · 010 bounded memory & streaming (increment 1 done). **008 is the reserved number for
+the gated Track-B prikk-encoder RFC — not yet written; its design begins when prikk unblocks it (§8.6).**
 000 (RFC lifecycle policy) is in `done/`.
 
 ## 6. Governance and method (unchanged by the handover)
