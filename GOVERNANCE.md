@@ -3,6 +3,13 @@
 How decisions are made and who approves what. brygge is developed by the same three-role team as the
 rest of the ecosystem, and follows the same design-first method (`ROADMAP.md`, `rfcs/`).
 
+> **Handover (2026-09-12).** The **architect/designer/reviewer** and **implementer/tester/reviewee** roles
+> pass from the founding architect to the incoming team; the **owner/PM/authorizer** (the human) is
+> unchanged and continues to rule the owner-only decisions and to solely authorize every release, tag,
+> publish, and irreversible or outward-facing act. Nothing else in this policy changes — the gates, the
+> owner-only list, the security gate, and the design-first method all carry over. New team: start at
+> [`HANDOFF.md`](HANDOFF.md).
+
 ## Roles
 
 | Role | Who | Authority |

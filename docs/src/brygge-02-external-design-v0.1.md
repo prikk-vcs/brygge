@@ -10,6 +10,13 @@
 | Not | internal architecture, the IR's byte schema (the requirements forbid a schema), APIs, or code. |
 | ID scheme | `BD-` boundary · `AC-` actor · `CL-` command surface · `IX-` IR external contract · `FS-` fidelity/honesty surface · `PX-` provenance-to-target interface · `CF-` configuration · `FL-` flow · `CT-` external data contract · `OP-` operational behaviour · `GATED-` a surface that cannot be designed until an owner question is answered. (`DC-` avoided — it collides with prikk's RFC numbering.) |
 
+> **Delivery status (2026-09-12).** The designed command surface is **shipped**: `decode <git|hg|svn|cvs>`,
+> `inspect`, `verify --internal` / `--against-source`, and `summary`, with human + machine output (CL-07)
+> and the CL-08 outcome-class exit codes. The **IR external contract (IX-*) is frozen at 1.0.0** (RFC 003
+> D-7) and held all four sources with no change. The **GATED-** surfaces (the prikk encoder) remain
+> owner/prikk-gated (§8; RFC 008). See [`../../HANDOFF.md`](../../HANDOFF.md). This document remains the
+> black-box contract the CLI satisfies.
+
 Design stance carried from requirements: **facts derive, judgment is authored, the join is checked** — so every user-visible surface makes the derived-vs-stated distinction inescapable (HO-1), makes loss legible (HO-2), and never lets honesty be turned off (HO-5). Where a Git mental model expects "just import it," the surface redirects to "decode, review fidelity, then encode a proposal."
 
 ---

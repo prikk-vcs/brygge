@@ -85,6 +85,9 @@ floor) · `50` a `verify` check failed · `1` bad arguments or unreadable input.
   surface), `-03-threat-model` (what it defends and how). brygge parses untrusted input; the threat model
   is a first-class deliverable.
 - **Decisions:** `rfcs/` — one RFC per source decoder (004 Git, 005 Mercurial, 006 Subversion, 007 CVS),
-  the IR foundations (001/002/003), and the dependency-surface policy (009).
+  the IR foundations (001/002/003), the dependency-surface policy (009), and bounded memory (010).
+- **Contributing / maintaining:** start at [`HANDOFF.md`](HANDOFF.md) (status, invariants, architecture,
+  the backlog, and how to build and gate), then [`GOVERNANCE.md`](GOVERNANCE.md) (who decides what) and
+  [`ROADMAP.md`](ROADMAP.md).
 - **`encode` is gated** pending the prikk import surface and the owner's open questions (RFC 008); this
   build is decode + inspect + verify + summary.

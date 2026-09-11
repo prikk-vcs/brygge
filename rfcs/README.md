@@ -3,6 +3,9 @@
 Design decisions for brygge are recorded as RFCs, following the ecosystem's **five-folder lifecycle**
 (the same one prikk and stikk use; the canonical policy is `done/000-rfc-lifecycle-policy.md`).
 
+> New to brygge? Start at [`../HANDOFF.md`](../HANDOFF.md) for the whole map; this file is the authoritative
+> record of RFC **state** (the folder an RFC lives in is the source of truth).
+
 ```
 proposed/   a decision drafted for review, not yet settled
 accepted/   settled — an implementer may build against it (each gets a handoff under handoffs/NNN-slug/)

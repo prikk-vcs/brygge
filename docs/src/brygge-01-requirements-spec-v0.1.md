@@ -9,6 +9,12 @@
 | Not | a design, a schema, an API, or code. Where a decision belongs to a human, it is named in §11/§12 and left there. |
 | ID scheme | `PU-` purpose · `NG-` non-goal · `PR-` preserve rule · `HO-` honesty rule · `VF-` verification · `ID-` idempotence · `FA-` failure · `BN-` boundary · `IR-` IR obligation · `SRC-` per-source · `UD-` prikk-side dependency · `OQ-` open question |
 
+> **Delivery status (2026-09-12).** The **decode → IR half is delivered** against these requirements for all
+> four named sources (Git, hg, SVN, CVS) — see [`../../HANDOFF.md`](../../HANDOFF.md) and `rfcs/`. This
+> document remains the stable contract those decoders satisfy. The **encode → prikk half** (§11 UD-*, §12
+> OQ-1/OQ-2) is owner/prikk-gated and not yet started past design; its §11 UD table (written at prikk
+> 0.27.1) is to be **re-verified against the current prikk** when encoder design begins.
+
 **brygge** (Norwegian: *wharf* — where cargo is landed) carries version-control history **out of** existing systems (Git, Mercurial, Subversion, CVS — and, by design, others) and **into** a different one, through an **intermediate representation (IR)** that belongs to no particular system. The pipeline is two deliberately separated halves: **decode** a source into the IR; **encode** a target from the IR. The first target is prikk; the IR and decoders are meant to be reusable so other version-control projects can write their own encoders and get import "for free," and so a new *source* is a new decoder against the same IR, not a redesign.
 
 **Two halves, versioned separately (v0.2).** The **decode → IR half depends on the source systems, which are decades-stable, and on nothing in prikk.** It can therefore be built, tested, and **stabilized to a durable contract now**, while the **encode-to-prikk half waits on prikk-side decisions still open** (§11 UD, §12 OQ). This document keeps the two halves' obligations separable so the first half can reach stability independently — that separation is a requirement (PU-6), not merely a schedule.

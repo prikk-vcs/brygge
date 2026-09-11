@@ -6,6 +6,11 @@ design ids (e.g. `PR-4`, `IX-06`, `HO-1`, `INV-2`) refer to the design set in
 [`docs/src/`](docs/src/) (`brygge-01` requirements, `brygge-02` external design, `brygge-03` threat
 model). The governing upstream is prikk **RFC 113** (the import contract).
 
+> **Status (2026-09-12): Track A is delivered.** Phases A0–A4 shipped — all four sources (Git, hg, SVN,
+> CVS) decode into the IR, which is **frozen at 1.0.0** (RFC 003 D-7) and held all four with no contract
+> change. Track B (encode → prikk) remains gated on prikk. For the current state, the invariants, and the
+> prioritized backlog, read [`HANDOFF.md`](HANDOFF.md); this file remains the direction/milestone record.
+
 ## Guiding rules (constant across the roadmap)
 
 - **Design before implementation.** Requirements → external design → threat model → **RFC + handoff** →
@@ -27,7 +32,7 @@ model). The governing upstream is prikk **RFC 113** (the import contract).
 
 The near-term product. Complete and useful with no encoder and no prikk (PU-1).
 
-### Phase A0 — Foundations (the IR and the tool spine)
+### Phase A0 — Foundations (the IR and the tool spine) — ✅ delivered
 The substrate every decoder and encoder shares. No source-specific parsing yet.
 - The **IR internal representation** satisfying `IR-1…IR-6` / `IX-01…07`: faithfulness-with-provenance,
   per-atom epistemic status, opaque source ids first-class, the loss boundary, encoder-agnostic,
@@ -41,7 +46,7 @@ The substrate every decoder and encoder shares. No source-specific parsing yet.
 - The **tool spine**: `decode`/`inspect`/`verify`/`summary` command surface (CL-*), machine-readable
   output (CL-07), outcome-class exit codes (CL-08).
 
-### Phase A1 — Git decoder → **the first stable decode/IR deliverable**
+### Phase A1 — Git decoder → **the first stable decode/IR deliverable** — ✅ delivered (M1)
 - Decode Git → IR: content/ancestry/messages as claims (PR-1/2/3); commit SHAs and GPG signatures
   preserved opaquely (PR-4); **every inferred rename marked derived** with its parameters (HO-1);
   identity inference lives in the (later) encoder, visibly, not hidden in the IR (IR-1).
@@ -50,17 +55,17 @@ The substrate every decoder and encoder shares. No source-specific parsing yet.
   owner-set (OQ-3).
 - **This phase reaches a durable decode/IR contract for Git — the "first half stabilized."**
 
-### Phase A2 — Mercurial decoder
+### Phase A2 — Mercurial decoder — ✅ delivered (M2)
 - Validates the IR's cross-source claim (IX-06) with an epistemically **different** source: hg often
   **states** renames (SRC-H2), so hg imports carry fewer derived marks than Git — a visible, checkable
   consequence. Named branches vs bookmarks, phases, obsmarkers handled per SRC-H3.
 - Proves source-extensibility: a new source is a new decoder against the unchanged IR (PU-3).
 
-### Phase A3 — SVN decoder
+### Phase A3 — SVN decoder — ✅ delivered (M3)
 - Branch identity reconstructed by convention as **derived** records (SRC-S1); mergeinfo
   dropped-with-record or carried-as-advisory, never promoted (SRC-S2). Stresses derived-branch discipline.
 
-### Phase A4 — CVS decoder (honest, lossy, labelled)
+### Phase A4 — CVS decoder (honest, lossy, labelled) — ✅ delivered (M4)
 - Changeset reconstruction by clustering, every changeset marked derived (SRC-C1/C2); the surface states
   **before running** that a VF-2-faithful import is not achievable (SRC-C3/FS-06). The honesty stress test.
 
@@ -85,16 +90,16 @@ The substrate every decoder and encoder shares. No source-specific parsing yet.
 
 ## Milestones & versions
 
-| Milestone | Version | Contents | Track |
-|---|---|---|---|
-| **M0** | 0.1.0-dev | Foundations: IR contract v1, honesty machinery, determinism+integrity, dep policy + supply-chain gates, tool spine | A0 |
-| **M1** | **0.1.0** | **Git decode → IR + inspect + verify (internal & against-source).** The first stable decode/IR deliverable | A1 |
-| **M2** | 0.2.0 | Mercurial decoder; IR cross-source claim validated | A2 |
-| **M3** | 0.3.0 | SVN decoder | A3 |
-| **M4** | 0.4.0 | CVS decoder (lossy, labelled) | A4 |
-| **B0** | ships within 0.x once M1 lands | prikk reviewable-proposal encoder (unsealed) | B0 |
-| **IR-1.0** | — | The **IR contract is frozen** once M1 proves it and M2 validates it cross-source; thereafter additive-only (see release cycles) | A |
-| **1.0.0** | 1.0 | Decode/IR half stable across ≥ 2 sources + prikk proposal encoder + IR contract frozen. (Sealed prikk imports may still be gated — 1.0 is the *decode/IR product's* stability, not the gated encoder's.) | A + B0 |
+| Milestone | Version | Contents | Track | Status |
+|---|---|---|---|---|
+| **M0** | 0.1.0-dev | Foundations: IR contract v1, honesty machinery, determinism+integrity, dep policy + supply-chain gates, tool spine | A0 | ✅ delivered |
+| **M1** | **0.1.0** | **Git decode → IR + inspect + verify (internal & against-source).** The first stable decode/IR deliverable | A1 | ✅ delivered |
+| **M2** | 0.2.0 | Mercurial decoder; IR cross-source claim validated | A2 | ✅ delivered |
+| **M3** | 0.3.0 | SVN decoder | A3 | ✅ delivered |
+| **M4** | 0.4.0 | CVS decoder (lossy, labelled) | A4 | ✅ delivered |
+| **IR-1.0** | — | The **IR contract is frozen** once M1 proves it and M2 validates it cross-source; thereafter additive-only (see release cycles) | A | ✅ **frozen at 1.0.0** (RFC 003 D-7); held all four sources with no change |
+| **B0** | ships within 0.x once designed | prikk reviewable-proposal encoder (unsealed) | B0 | ⏸ gated (RFC 008) |
+| **1.0.0** | 1.0 | Decode/IR half stable across ≥ 2 sources + prikk proposal encoder + IR contract frozen. (Sealed prikk imports may still be gated — 1.0 is the *decode/IR product's* stability, not the gated encoder's.) | A + B0 | pending B0 + release |
 
 The **IR contract version (IX-07) is a first-class compatibility promise, separate from the tool
 version** — a consumer (a foreign encoder, an inspector) pins the IR contract, not the brygge binary.
@@ -132,8 +137,15 @@ only Track B past B0:
   stability + sync. The UD table in `brygge-01` §11 is to be **re-verified against the current prikk**
   (now 0.28) when Track B design begins.
 
-## What to build first
+## What was built, and what is next
 
-Per RFC 113 §4a and the gradient: **RFC 001 (IR foundations) and RFC 009 (dependency policy) first**,
-then RFC 002/003 (honesty + determinism), then the **Git decoder (RFC 004)** to reach M1. Nothing in
-Track A waits on prikk. The architect writes each RFC + handoff; the implementer builds against it.
+The founding build order (delivered): **RFC 001 (IR foundations) + RFC 009 (dependency policy)** → RFC
+002/003 (honesty + determinism) → the four decoders along the gradient (RFC 004 Git → 005 hg → 006 SVN →
+007 CVS), reaching M1–M4, with the IR frozen at 1.0.0 (RFC 003 D-7) after it held every source unchanged.
+Nothing in Track A waited on prikk.
+
+**What is next** is the prioritized backlog in [`HANDOFF.md`](HANDOFF.md) §8: the RFC 010 memory/streaming
+increments (measurement-gated), the queued decoder follow-ups (SVN svndiff, CVS refinements), folding the
+threat-model residuals, the deferred TUI (a separate crate, if pursued), and — owner/prikk-gated —
+Track B (RFC 008, the prikk encoder). The method is unchanged: the architect writes each RFC + handoff; the
+implementer builds against it; the owner rules the owner-only decisions and authorizes every release.
