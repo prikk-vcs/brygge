@@ -98,6 +98,12 @@ fit **additive-only, needing nothing added**. The contract is `1.0.0`, additive-
     dependency, no subprocess, pure Rust); and the **architect security review** (verdict proceed — the
     cleanest surface of any decoder, INV-1 at its purest). **Implementation toward M4 may begin.**
   - [RFC 009 — Dependency-surface & supply-chain policy](accepted/009-dependency-surface-and-supply-chain-policy.md)
+  - [RFC 010 — Bounded memory & streaming](accepted/010-bounded-memory-and-streaming.md) — accepted
+    2026-09-12 (OQ-F), owner-directed. Streaming cannot shrink the IR (the IR *is* the content); it bounds a
+    decoder's **scratch** to ~O(IR) instead of O(IR × depth). **Increment 1 built:** `brygge-decode-svn`
+    retains only the tree snapshots a `copyfrom` names — O(revisions × tree) → O(copy-targets × tree), no
+    format/determinism change. Increments 2–4 (SVN dumpstream iterator, CVS reconstruction bound, and a
+    measurement-gated streaming writer) queued.
 - **Done:** [RFC 000 — RFC lifecycle policy](done/000-rfc-lifecycle-policy.md) (brygge uses the
   **5-folder variant**: `proposed → accepted → done`, plus `archive/` and optional `draft/`).
 

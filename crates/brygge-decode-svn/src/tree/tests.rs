@@ -60,13 +60,11 @@ fn added_paths(ops: &[PathOp]) -> Vec<String> {
 #[test]
 fn a_file_add_produces_an_add_op_and_populates_the_tree() {
     let mut b = builder();
-    let snaps: Vec<Tree> = Vec::new();
-    let idx = HashMap::new();
+    let kept = HashMap::new();
     let applied = apply_revision(
         &Tree::new(),
         vec![file_node("trunk/a.txt", NodeAction::Add, Some(b"hi"))],
-        &snaps,
-        &idx,
+        &kept,
         &mut b,
     )
     .unwrap();
@@ -85,22 +83,19 @@ fn a_directory_copy_expands_to_per_file_adds_with_stated_rename_hints() {
             file_node("trunk/a.txt", NodeAction::Add, Some(b"a")),
             file_node("trunk/sub/c.txt", NodeAction::Add, Some(b"c")),
         ],
-        &[],
         &HashMap::new(),
         &mut b,
     )
     .unwrap();
-    let mut snaps = vec![r0.tree.clone()];
-    let mut idx = HashMap::new();
-    idx.insert(0u64, 0usize);
+    // r0 is referenced by r1's copyfrom, so it is retained (RFC 010 increment 1).
+    let mut kept: HashMap<u64, Tree> = HashMap::new();
+    kept.insert(0u64, r0.tree.clone());
 
     // r1: copy trunk -> branches/x (a branch creation), from r0.
-    let prev = snaps.last().unwrap().clone();
     let r1 = apply_revision(
-        &prev,
+        &r0.tree,
         vec![dir_copy("branches/x", 0, "trunk")],
-        &snaps,
-        &idx,
+        &kept,
         &mut b,
     )
     .unwrap();
@@ -125,13 +120,10 @@ fn a_directory_copy_expands_to_per_file_adds_with_stated_rename_hints() {
             .any(|h| h.from == "trunk/a.txt" && h.to == "branches/x/a.txt")
     );
 
-    snaps.push(r1.tree.clone());
-    idx.insert(1u64, 1usize);
-
-    // r2: delete branches/x (whole subtree) -> Delete ops for both files.
-    let prev2 = snaps.last().unwrap().clone();
+    // r2: delete branches/x (whole subtree) -> Delete ops for both files. No copyfrom, so `kept` is
+    // unchanged; the base is simply the previous tree.
     let r2 = apply_revision(
-        &prev2,
+        &r1.tree,
         vec![NodeRecord {
             path: "branches/x".to_string(),
             kind: None,
@@ -140,8 +132,7 @@ fn a_directory_copy_expands_to_per_file_adds_with_stated_rename_hints() {
             props: None,
             text: None,
         }],
-        &snaps,
-        &idx,
+        &kept,
         &mut b,
     )
     .unwrap();

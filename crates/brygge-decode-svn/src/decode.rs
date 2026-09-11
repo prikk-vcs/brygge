@@ -2,7 +2,7 @@
 //! [`brygge_ir::Ir`] — a `Stated` linear revision spine with `Stated` copies, and an opt-in `Derived`
 //! branch/tag layer. Builds against the frozen IR 1.0.0 with no new field or variant (D-9).
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use brygge_ir::builder::{AtomDraft, IrBuilder};
 use brygge_ir::model::{
@@ -52,11 +52,24 @@ pub fn decode(source: &Source, opts: &Options) -> Result<Ir, Error> {
         return builder.finish().map_err(Error::Ir);
     }
 
-    let mut snapshots: Vec<Tree> = Vec::new();
-    let mut rev_index: HashMap<u64, usize> = HashMap::new();
+    // RFC 010 increment 1 — bound snapshot retention. A `copyfrom` may name any past revision, so a
+    // first pass collects exactly which revisions are referenced; the main pass keeps a tree snapshot only
+    // for those (plus the rolling previous tree, always needed as the next revision's base). This turns
+    // O(revisions × tree) scratch into O(copy-targets × tree) — copy targets are branch/tag creation
+    // points, typically far fewer than revisions — with no change to the atoms produced or their order.
+    let mut needed: HashSet<u64> = HashSet::new();
+    for rev in &dump.revisions {
+        for node in &rev.nodes {
+            if let Some((crev, _)) = &node.copyfrom {
+                needed.insert(*crev);
+            }
+        }
+    }
+
+    let mut kept: HashMap<u64, Tree> = HashMap::new();
+    let mut prev_tree = Tree::new();
     let mut prev_atom: Option<AtomId> = None;
     let mut heads: BTreeMap<String, (Root, AtomId)> = BTreeMap::new();
-    let empty = Tree::new();
 
     for rev in dump.revisions {
         let metadata = metadata_from_props(&rev.props);
@@ -70,8 +83,7 @@ pub fn decode(source: &Source, opts: &Options) -> Result<Ir, Error> {
             Vec::new()
         };
 
-        let prev = snapshots.last().unwrap_or(&empty);
-        let applied = tree::apply_revision(prev, rev.nodes, &snapshots, &rev_index, &mut builder)?;
+        let applied = tree::apply_revision(&prev_tree, rev.nodes, &kept, &mut builder)?;
 
         loss.mergeinfo |= applied.prop_loss.mergeinfo;
         loss.workflow |= applied.prop_loss.workflow;
@@ -98,8 +110,11 @@ pub fn decode(source: &Source, opts: &Options) -> Result<Ir, Error> {
             heads.insert(root.prefix.clone(), (root, atom_id));
         }
 
-        rev_index.insert(number, snapshots.len());
-        snapshots.push(applied.tree);
+        // Retain this revision's tree only if a later copyfrom names it; always carry it forward as `prev`.
+        if needed.contains(&number) {
+            kept.insert(number, applied.tree.clone());
+        }
+        prev_tree = applied.tree;
     }
 
     if opts.reconstruct_refs {

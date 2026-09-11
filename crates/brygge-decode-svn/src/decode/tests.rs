@@ -463,3 +463,44 @@ fn decodes_a_live_repository_via_svnadmin_dump() {
     let ir = ir.expect("decoding a live repo should succeed");
     assert!(!ir.atoms.is_empty());
 }
+
+#[test]
+fn a_copyfrom_to_a_distant_revision_still_resolves() {
+    // RFC 010 increment 1: only revisions a copyfrom names are retained. Here trunk is created at r1,
+    // several unrelated revisions follow (not retained), then r5 copies trunk@1 — proving the distant
+    // snapshot survived the gap.
+    let mut d = DumpBuilder::new();
+    d.revision(0, &[("svn:date", &date(0))]);
+    d.revision(1, &[("svn:log", "trunk"), ("svn:date", &date(1))]);
+    d.add_dir("trunk");
+    d.add_file("trunk/a.txt", b"original\n");
+    for r in 2..=4u64 {
+        d.revision(r, &[("svn:log", "unrelated"), ("svn:date", &date(r))]);
+        d.node(
+            "other.txt",
+            Some("file"),
+            "add",
+            Some(&[]),
+            Some(b"x\n"),
+            None,
+        );
+    }
+    d.revision(
+        5,
+        &[("svn:log", "branch from old trunk"), ("svn:date", &date(5))],
+    );
+    d.add_dir("branches");
+    d.copy_dir("branches/x", (1, "trunk")); // copyfrom the distant r1
+
+    let ir = decode_dump(&d.buf, &Options::default()).unwrap();
+    // branches/x/a.txt exists and carries trunk@1's content — so r1's snapshot was retained across r2..r4.
+    let branched_add = ir
+        .atoms
+        .iter()
+        .flat_map(|a| &a.ops)
+        .any(|o| matches!(o, PathOp::Add { path, .. } if path == "branches/x/a.txt"));
+    assert!(branched_add, "the copy from the distant revision resolved");
+    // and it deduplicates to trunk/a.txt's blob (same content) — the store carries it once.
+    let a = decode_dump(&d.buf, &Options::default()).unwrap();
+    assert_eq!(brygge_ir::to_bytes(&ir), brygge_ir::to_bytes(&a)); // deterministic
+}

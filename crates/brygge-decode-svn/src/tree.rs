@@ -55,8 +55,7 @@ pub struct Applied {
 pub fn apply_revision(
     prev: &Tree,
     nodes: Vec<NodeRecord>,
-    snapshots: &[Tree],
-    rev_index: &HashMap<u64, usize>,
+    kept: &HashMap<u64, Tree>,
     builder: &mut IrBuilder,
 ) -> Result<Applied, Error> {
     let mut tree = prev.clone();
@@ -79,22 +78,17 @@ pub fn apply_revision(
                     remove_subtree(&mut tree, &node.path);
                 }
                 match node.kind {
-                    Some(NodeKind::Dir) => apply_dir(
-                        &mut tree,
-                        &mut hints,
-                        &mut empty_dirs,
-                        snapshots,
-                        rev_index,
-                        node,
-                    )?,
+                    Some(NodeKind::Dir) => {
+                        apply_dir(&mut tree, &mut hints, &mut empty_dirs, kept, node)?;
+                    }
                     Some(NodeKind::File) => {
-                        apply_file(&mut tree, &mut hints, snapshots, rev_index, builder, node)?;
+                        apply_file(&mut tree, &mut hints, kept, builder, node)?;
                     }
                     None => {
                         // A kindless change on an existing file is a property-only change; on a
                         // directory (a tracked-only-by-children path) there is nothing to do.
                         if tree.contains_key(&node.path) {
-                            apply_file(&mut tree, &mut hints, snapshots, rev_index, builder, node)?;
+                            apply_file(&mut tree, &mut hints, kept, builder, node)?;
                         }
                     }
                 }
@@ -116,8 +110,7 @@ pub fn apply_revision(
 fn apply_file(
     tree: &mut Tree,
     hints: &mut Vec<RenameHint>,
-    snapshots: &[Tree],
-    rev_index: &HashMap<u64, usize>,
+    kept: &HashMap<u64, Tree>,
     builder: &mut IrBuilder,
     node: NodeRecord,
 ) -> Result<(), Error> {
@@ -125,7 +118,7 @@ fn apply_file(
     let has_props = node.props.is_some();
 
     let source = match &node.copyfrom {
-        Some((crev, cpath)) => Some(lookup_file(snapshots, rev_index, *crev, cpath)?),
+        Some((crev, cpath)) => Some(lookup_file(kept, *crev, cpath)?),
         None => None,
     };
 
@@ -174,12 +167,11 @@ fn apply_dir(
     tree: &mut Tree,
     hints: &mut Vec<RenameHint>,
     empty_dirs: &mut usize,
-    snapshots: &[Tree],
-    rev_index: &HashMap<u64, usize>,
+    kept: &HashMap<u64, Tree>,
     node: NodeRecord,
 ) -> Result<(), Error> {
     if let Some((crev, cpath)) = &node.copyfrom {
-        let src = snapshot_for(snapshots, rev_index, *crev)?;
+        let src = snapshot_for(kept, *crev)?;
         let prefix = format!("{cpath}/");
         let mut copied = 0usize;
         // Collect first (avoid borrowing `src` while mutating `tree`; they are different maps anyway).
@@ -252,28 +244,18 @@ fn remove_subtree(tree: &mut Tree, path: &str) {
     tree.retain(|k, _| k != path && !k.starts_with(&prefix));
 }
 
-fn snapshot_for<'a>(
-    snapshots: &'a [Tree],
-    rev_index: &HashMap<u64, usize>,
-    rev: u64,
-) -> Result<&'a Tree, Error> {
-    let idx = rev_index.get(&rev).ok_or_else(|| {
+/// The retained snapshot for a revision. Only revisions a `copyfrom` names are retained (RFC 010
+/// increment 1); a reference to a revision not present in this dump is a typed refusal.
+fn snapshot_for(kept: &HashMap<u64, Tree>, rev: u64) -> Result<&Tree, Error> {
+    kept.get(&rev).ok_or_else(|| {
         Error::Read(format!(
             "copyfrom references revision {rev}, which is not present in this dumpstream"
         ))
-    })?;
-    snapshots
-        .get(*idx)
-        .ok_or_else(|| Error::Read("copyfrom snapshot index out of range".to_string()))
+    })
 }
 
-fn lookup_file(
-    snapshots: &[Tree],
-    rev_index: &HashMap<u64, usize>,
-    rev: u64,
-    path: &str,
-) -> Result<FileEntry, Error> {
-    let t = snapshot_for(snapshots, rev_index, rev)?;
+fn lookup_file(kept: &HashMap<u64, Tree>, rev: u64, path: &str) -> Result<FileEntry, Error> {
+    let t = snapshot_for(kept, rev)?;
     t.get(path).cloned().ok_or_else(|| {
         Error::Read(format!(
             "copyfrom source file '{path}' at revision {rev} not found"
