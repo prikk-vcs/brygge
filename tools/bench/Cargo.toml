@@ -1,0 +1,19 @@
+[package]
+name        = "brygge-bench"
+description = "Dev-only measurement harness for brygge's decoders (RFC 010 OQ-F): peak memory and time on synthetic corpora at scale, so streaming increments are gated on evidence. Not published; not part of the shipped surface."
+publish     = false
+
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+authors.workspace      = true
+repository.workspace   = true
+
+[dependencies]
+brygge-ir        = { workspace = true }
+brygge-decode-svn = { workspace = true }
+brygge-decode-cvs = { workspace = true }
+
+[lints]
+workspace = true

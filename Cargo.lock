@@ -71,6 +71,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "brygge-bench"
+version = "0.1.0"
+dependencies = [
+ "brygge-decode-cvs",
+ "brygge-decode-svn",
+ "brygge-ir",
+]
+
+[[package]]
 name = "brygge-decode-cvs"
 version = "0.1.0"
 dependencies = [

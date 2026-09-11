@@ -11,8 +11,10 @@ bounded to the revisions a `copyfrom` names (plus the rolling previous tree), tu
 O(revisions × tree) scratch into O(copy-targets × tree). Local change to `decode.rs`/`tree.rs`, no format
 or determinism change; the atoms produced and their order are unchanged (verified: existing copy/branch/
 determinism tests pass, plus a new test that a `copyfrom` to a *distant* revision resolves across a gap of
-non-retained revisions). **Queued:** increments 2–4 (SVN dumpstream iterator, CVS reconstruction bound, and
-— gated on measurement, OQ-A/D-3 — a streaming artifact writer).
+non-retained revisions). **The measurement harness is built** (`tools/bench`) and confirms the win with a
+same-corpus A/B: peak drops from ~2.8 GiB to ~62 MiB at 20k revisions over a 500-file tree, IR identical
+(OQ-A). **Queued:** increments 2–4 (SVN dumpstream iterator, CVS reconstruction bound, and — gated on
+measurement, OQ-A/D-3 — a streaming artifact writer), each measured with the harness before/after.
 
 **Tracks.** A cross-cutting engineering theme, not a new source. Touches `brygge-decode-svn` (the sharpest
 target), `brygge-decode-cvs`, and potentially `brygge-ir`'s artifact writer. Revisits the threat model's
@@ -99,10 +101,14 @@ building. Ranked by how far each exceeds O(IR):
 
 ## Open questions
 
-- **OQ-A — The measurement.** 1–3 are structurally clear (the allocations are visible in the code), but the
-  *magnitude* on a real large repository is not yet measured. The `tools/corpus`/`tools/benchmarks` harness
-  should record decoder peak memory before/after each increment, so increment 4's gate (D-3) is decided on
-  evidence, not intuition. *Leaning:* land increment 1 (clearly worth it), then measure before 2–4.
+- **OQ-A — The measurement** — **harness built** (`tools/bench`, dev-only, zero-dependency, `/proc`-based
+  peak RSS with one decode per subprocess). It records decoder peak memory + time + IR size on synthetic
+  corpora at scale, so increments 2–4 are gated on evidence. **Increment 1 measured (A/B, same corpus,
+  pre-bound `251ece1` vs post-bound `c7ba7bf`, `svn-revs` = a 500-file tree + n single-file edits):** the IR
+  is identical in both, while peak drops **~145 MiB → ~6 MiB at 1k revisions, ~708 MiB → ~19 MiB at 5k, and
+  ~2.8 GiB → ~62 MiB at 20k** — pre-bound grew O(revisions × tree), post-bound tracks the IR (the reduction
+  widens with scale, as predicted). The remaining targets (2–3) are to be measured with this harness before
+  they are built; increment 4's gate (D-3) is decided on its numbers.
 - **OQ-B — CVS incremental reconstruction vs branches.** Reusing running content down the trunk is
   straightforward; branch revisions (forward deltas off a branch point) complicate a single running buffer.
   *Leaning:* bound the trunk case first, keep branches on the current per-revision reconstruction, measure.

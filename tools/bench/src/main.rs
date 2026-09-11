@@ -1,0 +1,270 @@
+//! Dev-only measurement harness for brygge's decoders (RFC 010 OQ-F).
+//!
+//! Measures **peak resident memory** and **wall time** decoding synthetic corpora at increasing scale, so
+//! the streaming increments (RFC 010) are gated on evidence rather than intuition. Zero new dependencies
+//! and zero `unsafe`: peak memory is read from `/proc/self/status` (`VmHWM`, the process high-water mark)
+//! on Linux, and each scenario runs in its **own subprocess** so the high-water mark reflects that one
+//! decode alone. On non-Linux the memory column reads `n/a` (time and IR stats still report).
+//!
+//! Usage:
+//!   brygge-bench                      # run the full matrix and print a table
+//!   brygge-bench run <scenario> <n>   # run one scenario at scale n; print a machine line (used internally)
+//!
+//! Scenarios:
+//!   svn-revs <n>     — an SVN dump of ~n revisions with tiny per-revision content and one branch copy at
+//!                      r1. Content is ~constant, so peak should track *scratch*, not revision count —
+//!                      the RFC 010 increment-1 property (snapshot retention no longer grows with revisions).
+//!   svn-content <n>  — an SVN dump of a few revisions but n sizeable files. Peak should grow with content
+//!                      (the IR floor: the IR *is* the content).
+//!   cvs <n>          — a CVS repository of n single-revision files. Peak/time for the CVS decode path.
+
+// A dev-only tool: unwrap/expect/indexing are acceptable here and keep the generators readable.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
+
+use std::process::Command;
+use std::time::Instant;
+
+use brygge_decode_cvs::{Options as CvsOpts, Source as CvsSource};
+use brygge_decode_svn::{Options as SvnOpts, Source as SvnSource};
+
+const SCENARIOS: &[(&str, &[u64])] = &[
+    ("svn-revs", &[1_000, 5_000, 20_000]),
+    ("svn-content", &[200, 1_000, 4_000]),
+    ("cvs", &[200, 1_000, 4_000]),
+];
+
+fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    match args.get(1).map(String::as_str) {
+        Some("run") => {
+            let scenario = args.get(2).map(String::as_str).unwrap_or("");
+            let n: u64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(0);
+            run_one(scenario, n);
+        }
+        _ => run_matrix(),
+    }
+}
+
+/// Run every (scenario, scale) as a subprocess and print a table.
+fn run_matrix() {
+    println!("brygge decoder memory/time harness (RFC 010 OQ-F)");
+    println!(
+        "{:<14} {:>8} {:>10} {:>9} {:>8} {:>8} {:>12}",
+        "scenario", "scale", "peak_KiB", "time_ms", "atoms", "blobs", "content_B"
+    );
+    let exe = std::env::current_exe().expect("current exe");
+    for (scenario, scales) in SCENARIOS {
+        for &n in *scales {
+            let out = Command::new(&exe)
+                .args(["run", scenario, &n.to_string()])
+                .output()
+                .expect("spawn self");
+            let line = String::from_utf8_lossy(&out.stdout);
+            let f = parse(&line);
+            println!(
+                "{:<14} {:>8} {:>10} {:>9} {:>8} {:>8} {:>12}",
+                scenario,
+                n,
+                f.get("peak_kb").cloned().unwrap_or_else(|| "n/a".into()),
+                f.get("time_ms").cloned().unwrap_or_default(),
+                f.get("atoms").cloned().unwrap_or_default(),
+                f.get("blobs").cloned().unwrap_or_default(),
+                f.get("bytes").cloned().unwrap_or_default(),
+            );
+        }
+    }
+    println!(
+        "\nreading: svn-revs peak should stay ~flat as scale grows (scratch bounded, RFC 010 inc.1);\n\
+         svn-content peak should grow with scale (the IR floor — the IR is the content)."
+    );
+}
+
+/// Decode one scenario at scale n, then print a machine line with its peak and stats.
+fn run_one(scenario: &str, n: u64) {
+    let dir = std::env::temp_dir().join(format!(
+        "brygge-bench-{}-{scenario}-{n}",
+        std::process::id()
+    ));
+    let _ = std::fs::create_dir_all(&dir);
+
+    let start = Instant::now();
+    let (atoms, blobs, bytes) = match scenario {
+        "svn-revs" => decode_svn(&dir, svn_revs_dump(n)),
+        "svn-content" => decode_svn(&dir, svn_content_dump(n)),
+        "cvs" => decode_cvs(&dir, n),
+        other => {
+            eprintln!("unknown scenario: {other}");
+            return;
+        }
+    };
+    let time_ms = start.elapsed().as_millis();
+    let peak = peak_rss_kib().map_or_else(|| "n/a".to_string(), |k| k.to_string());
+    let _ = std::fs::remove_dir_all(&dir);
+    println!("peak_kb={peak} time_ms={time_ms} atoms={atoms} blobs={blobs} bytes={bytes}");
+}
+
+/// Write an SVN dumpstream to a temp file and decode it, returning (atoms, blobs, content bytes).
+fn decode_svn(dir: &std::path::Path, dump: Vec<u8>) -> (usize, usize, u64) {
+    let path = dir.join("in.dump");
+    std::fs::write(&path, &dump).unwrap();
+    drop(dump); // do not hold the generated bytes across the decode
+    let ir = brygge_decode_svn::decode(&SvnSource::DumpFile(path), &SvnOpts::default())
+        .expect("svn decode");
+    (ir.atoms.len(), ir.content.len(), ir.content.total_bytes())
+}
+
+/// Write a CVS repository of `n` single-revision files and decode it.
+fn decode_cvs(dir: &std::path::Path, n: u64) -> (usize, usize, u64) {
+    for i in 0..n {
+        let vfile = cvs_single_rev(&format!("commit {i}"), &format!("body of file {i}\n"));
+        std::fs::write(dir.join(format!("f{i}.c,v")), vfile).unwrap();
+    }
+    let ir = brygge_decode_cvs::decode(
+        &CvsSource::LocalRepo(dir.to_path_buf()),
+        &CvsOpts::default(),
+    )
+    .expect("cvs decode");
+    (ir.atoms.len(), ir.content.len(), ir.content.total_bytes())
+}
+
+// ---- peak RSS (Linux /proc, no unsafe) -----------------------------------------------------------
+
+fn peak_rss_kib() -> Option<u64> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    for line in status.lines() {
+        if let Some(rest) = line.strip_prefix("VmHWM:") {
+            return rest.split_whitespace().next()?.parse().ok();
+        }
+    }
+    None
+}
+
+// ---- SVN dumpstream generators -------------------------------------------------------------------
+
+fn svn_header(buf: &mut Vec<u8>) {
+    buf.extend(b"SVN-fs-dump-format-version: 2\n\n");
+    buf.extend(b"UUID: 00000000-0000-0000-0000-000000000000\n\n");
+}
+
+fn props_block(pairs: &[(&str, &str)]) -> Vec<u8> {
+    let mut b = Vec::new();
+    for (k, v) in pairs {
+        b.extend(format!("K {}\n{k}\nV {}\n{v}\n", k.len(), v.len()).into_bytes());
+    }
+    b.extend(b"PROPS-END\n");
+    b
+}
+
+fn svn_revision(buf: &mut Vec<u8>, num: u64, log: &str) {
+    let p = props_block(&[
+        ("svn:date", "2024-01-01T00:00:00.000000Z"),
+        ("svn:log", log),
+    ]);
+    buf.extend(format!("Revision-number: {num}\n").into_bytes());
+    buf.extend(
+        format!(
+            "Prop-content-length: {}\nContent-length: {}\n\n",
+            p.len(),
+            p.len()
+        )
+        .into_bytes(),
+    );
+    buf.extend(p);
+    buf.extend(b"\n");
+}
+
+fn svn_add_file(buf: &mut Vec<u8>, path: &str, content: &[u8]) {
+    let p = props_block(&[]);
+    buf.extend(format!("Node-path: {path}\nNode-kind: file\nNode-action: add\n").into_bytes());
+    push_file_body(buf, &p, content);
+}
+
+fn svn_change_file(buf: &mut Vec<u8>, path: &str, content: &[u8]) {
+    let p = props_block(&[]);
+    buf.extend(format!("Node-path: {path}\nNode-kind: file\nNode-action: change\n").into_bytes());
+    push_file_body(buf, &p, content);
+}
+
+fn push_file_body(buf: &mut Vec<u8>, p: &[u8], content: &[u8]) {
+    buf.extend(format!("Prop-content-length: {}\n", p.len()).into_bytes());
+    buf.extend(format!("Text-content-length: {}\n", content.len()).into_bytes());
+    buf.extend(format!("Content-length: {}\n\n", p.len() + content.len()).into_bytes());
+    buf.extend(p);
+    buf.extend(content);
+    buf.extend(b"\n\n");
+}
+
+fn svn_add_dir(buf: &mut Vec<u8>, path: &str, copyfrom: Option<(u64, &str)>) {
+    buf.extend(format!("Node-path: {path}\nNode-kind: dir\nNode-action: add\n").into_bytes());
+    if let Some((r, p)) = copyfrom {
+        buf.extend(format!("Node-copyfrom-rev: {r}\nNode-copyfrom-path: {p}\n").into_bytes());
+    }
+    buf.extend(b"\n\n");
+}
+
+/// A large fixed tree (`TREE_FILES` files) established at r1, one branch copy at r2 (pinning exactly one
+/// snapshot), then ~n revisions each editing a single file. The tree is large so that the pre-increment-1
+/// decoder would have retained O(revisions × TREE_FILES) snapshot entries; with the bound, only r1's
+/// snapshot is kept, so peak should track the IR (initial tree + n edits), *not* revisions × tree.
+fn svn_revs_dump(n: u64) -> Vec<u8> {
+    const TREE_FILES: u64 = 500;
+    let mut b = Vec::new();
+    svn_header(&mut b);
+    svn_revision(&mut b, 0, "init");
+    svn_revision(&mut b, 1, "trunk");
+    svn_add_dir(&mut b, "trunk", None);
+    for i in 0..TREE_FILES {
+        svn_add_file(
+            &mut b,
+            &format!("trunk/f{i}.txt"),
+            format!("v0 of {i}\n").as_bytes(),
+        );
+    }
+    svn_revision(&mut b, 2, "branch");
+    svn_add_dir(&mut b, "branches", None);
+    svn_add_dir(&mut b, "branches/x", Some((1, "trunk"))); // the only retained snapshot
+    for r in 0..n {
+        svn_revision(&mut b, r + 3, "edit");
+        svn_change_file(
+            &mut b,
+            &format!("trunk/f{}.txt", r % TREE_FILES),
+            format!("edit {r}\n").as_bytes(),
+        );
+    }
+    b
+}
+
+/// A few revisions but n sizeable files — content grows with n (the IR floor).
+fn svn_content_dump(n: u64) -> Vec<u8> {
+    let mut b = Vec::new();
+    svn_header(&mut b);
+    svn_revision(&mut b, 0, "init");
+    svn_revision(&mut b, 1, "add files");
+    svn_add_dir(&mut b, "trunk", None);
+    let body = vec![b'x'; 256];
+    for i in 0..n {
+        svn_add_file(&mut b, &format!("trunk/f{i}.txt"), &body);
+    }
+    b
+}
+
+// ---- CVS ,v generator ----------------------------------------------------------------------------
+
+fn cvs_single_rev(log: &str, content: &str) -> Vec<u8> {
+    format!(
+        "head\t1.1;\naccess;\nsymbols;\nlocks; strict;\n\n\n\
+1.1\ndate\t2024.01.01.00.00.00;\tauthor a;\tstate Exp;\nbranches;\nnext\t;\n\n\n\
+desc\n@@\n\n\n\
+1.1\nlog\n@{log}@\ntext\n@{content}@\n"
+    )
+    .into_bytes()
+}
+
+// ---- output parsing ------------------------------------------------------------------------------
+
+fn parse(line: &str) -> std::collections::BTreeMap<String, String> {
+    line.split_whitespace()
+        .filter_map(|kv| kv.split_once('='))
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect()
+}
