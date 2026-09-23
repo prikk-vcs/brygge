@@ -1,48 +1,23 @@
-//! Decoder options (RFC 005 D-3, CF-01). Every option that can change the output is recorded into the IR
-//! provenance (`PR-5`). The defaults are the maximally-honest ones: **no rename inference** — Mercurial's
-//! *source-recorded* renames are carried as `Stated` regardless of this flag (SRC-H2); this flag governs
-//! only whether brygge additionally *infers* renames hg did not record.
+//! Decoder options. Every option that can change the output is recorded into the IR provenance.
+//!
+//! The Mercurial decoder currently has **no** options: Mercurial records its own copies and renames, so
+//! they are carried as `Stated`, and nothing is ever inferred. The type stays so a caller's
+//! `Options::default()` keeps working when an option is added, and so provenance has one place that
+//! renders them.
 
 use std::collections::BTreeMap;
 
-/// How the Mercurial decoder should behave.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Options {
-    /// Infer renames hg did **not** record, and mark them `Derived` (parity with the Git decoder,
-    /// RFC 004 D-3 / OQ-A). **Off by default.** Source-recorded (`hg mv`/`hg cp`) renames are always
-    /// carried as `Stated` and are unaffected by this flag. CLI flag `--infer-renames` (handoff
-    /// `cli-and-verify-handoff-v2.md`).
-    pub infer_renames: bool,
-    /// The similarity percentage recorded as the rename parameter when inference is on (exact-content
-    /// only for now, so `100`).
-    pub rename_threshold: u8,
-}
-
-impl Default for Options {
-    fn default() -> Self {
-        Self {
-            infer_renames: false,
-            rename_threshold: 100,
-        }
-    }
-}
+/// How the Mercurial decoder should behave. There is nothing to configure yet; construct it with
+/// [`Options::default`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Options {}
 
 impl Options {
-    /// Render the options as canonical, sorted key→value strings for the IR provenance (`PR-5/CF-01`).
+    /// Render the options as canonical, sorted key→value strings for the IR provenance. Empty while
+    /// there are no options; the decoder adds its own `floor` entry.
     #[must_use]
     pub fn as_params(&self) -> BTreeMap<String, String> {
-        let mut m = BTreeMap::new();
-        m.insert("infer_renames".to_string(), self.infer_renames.to_string());
-        if self.infer_renames {
-            m.insert(
-                "rename_algorithm".to_string(),
-                "exact-content-move".to_string(),
-            );
-            m.insert(
-                "rename_threshold".to_string(),
-                self.rename_threshold.to_string(),
-            );
-        }
-        m
+        BTreeMap::new()
     }
 }

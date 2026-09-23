@@ -178,10 +178,7 @@ fn a_bookmarked_obsolete_changeset_is_pinned_and_stays_visible() {
         let changelog = r.changelog();
         changelog.entry(0).unwrap().node
     };
-    let precursor_hex = precursor_node
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect::<String>();
+    let precursor_hex = crate::util::hex(&precursor_node);
     r.run(&["commit", "--amend", "-d", "2 0", "-m", "c0 amended"]);
     r.run(&[
         "bookmark",

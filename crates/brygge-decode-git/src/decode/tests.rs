@@ -13,6 +13,15 @@ use crate::Options;
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
+/// Lowercase hex of `bytes` (built with `write!`, not `format!` per byte).
+fn hex_of(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    bytes.iter().fold(String::new(), |mut out, b| {
+        let _ = write!(out, "{b:02x}");
+        out
+    })
+}
+
 fn git_available() -> bool {
     Command::new("git")
         .arg("--version")
@@ -671,7 +680,7 @@ fn annotated_tag_preserves_identity_and_records_loss() {
         .source
         .as_ref()
         .expect("an annotated tag preserves its opaque source identity (PR-4)");
-    let hex: String = src.atom_id.iter().map(|b| format!("{b:02x}")).collect();
+    let hex = hex_of(&src.atom_id);
     assert_eq!(
         hex, tag_sha,
         "the preserved id is the tag object's sha, not the commit's"

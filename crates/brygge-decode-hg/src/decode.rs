@@ -221,8 +221,13 @@ pub fn decode(path: &Path, opts: &Options) -> Result<Ir, Error> {
         node_to_atom.insert(entry.node, atom_id);
     }
 
-    let unresolved_bookmarks =
-        add_refs(&root, &changelog, &branch_of, &node_to_atom, &mut builder)?;
+    let unresolved_bookmarks = add_refs(
+        &view.bookmarks,
+        &changelog,
+        &branch_of,
+        &node_to_atom,
+        &mut builder,
+    )?;
     builder.set_loss(loss_boundary(
         &store,
         view.not_published,
@@ -729,34 +734,28 @@ fn trim_ascii_whitespace(bytes: &[u8]) -> &[u8] {
 /// **served** set only. Returns how many bookmarks named a changeset this build did not import (not
 /// served, or unknown) — counted, never skipped silently (RFC 005 corrections handoff §3).
 fn add_refs(
-    root: &Path,
+    bookmarks: &[(String, [u8; 20])],
     changelog: &Revlog,
     branch_of: &HashMap<usize, String>,
     node_to_atom: &HashMap<[u8; 20], AtomId>,
     builder: &mut IrBuilder,
 ) -> Result<usize, Error> {
     let mut unresolved_bookmarks = 0usize;
-    // Bookmarks: `.hg/bookmarks`, lines "<40-hex-node> <name>".
-    let bookmarks_path = root.join(".hg").join("bookmarks");
-    if let Ok(body) = std::fs::read_to_string(&bookmarks_path) {
-        for line in body.lines() {
-            if let Some((node_hex, name)) = line.trim().split_once(' ') {
-                if let Ok(node) = crate::util::parse_hex20(node_hex) {
-                    match node_to_atom.get(&node) {
-                        Some(target) => {
-                            builder.add_ref(RefRecord {
-                                name: name.trim().to_string(),
-                                kind: RefKind::Bookmark,
-                                target: *target,
-                                status: EpistemicStatus::Stated,
-                                source: None,
-                                annotation: None,
-                            })?;
-                        }
-                        None => unresolved_bookmarks += 1,
-                    }
-                }
+    // Bookmarks come from the published view's single strict, bounded parse of `.hg/bookmarks`; this
+    // function never reads the file itself.
+    for (name, node) in bookmarks {
+        match node_to_atom.get(node) {
+            Some(target) => {
+                builder.add_ref(RefRecord {
+                    name: name.clone(),
+                    kind: RefKind::Bookmark,
+                    target: *target,
+                    status: EpistemicStatus::Stated,
+                    source: None,
+                    annotation: None,
+                })?;
             }
+            None => unresolved_bookmarks += 1,
         }
     }
 

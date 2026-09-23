@@ -693,7 +693,7 @@ fn inspect_atoms_adds_the_listing_and_reads_the_artifact_once() {
     assert!(human.contains("refs:") || ir.refs.is_empty());
     assert!(human.contains("loss boundary:"));
     let machine = render_atoms_machine(&ir);
-    assert!(machine.starts_with("inspect_version=3\n"));
+    assert!(machine.starts_with("inspect_version=4\n"));
     assert!(machine.contains("atom.0.id="));
 }
 
@@ -1649,26 +1649,30 @@ fn cr_07_6_r1_an_svnadmin_version_difference_alone_does_not_fail_verification() 
 
 #[test]
 fn a_version_note_on_success_is_its_own_key_never_a_failure_detail() {
-    // Review 010 F-4: "corresponds" plus a `verify.detail.N` could be read as a problem. The
-    // informational svnadmin-version note is `verify.note.N`, and no `verify.detail` line appears.
+    // Review 010 F-4, re-keyed by part-2 §5.4: "corresponds" plus a detail could be read as a problem, so
+    // the informational svnadmin-version note is `verify.against_source.note`, and no `.detail` appears.
     let checks: Vec<(&'static str, CheckOutcome)> = vec![("integrity", CheckOutcome::Pass)];
     let against = AgainstSourceOutcome::Corresponds(Some("1.14.1 vs 1.14.2".to_string()));
     let verdict = Verdict::from(true, &against);
-    let lines = verify_machine_lines(&checks, true, &against, &verdict);
+    let lines = verify_machine_lines(&checks, true, &against, &verdict, 0);
     assert!(lines.contains(&"verify.against_source=corresponds".to_string()));
-    assert!(lines.contains(&"verify.note.0=1.14.1%20vs%201.14.2".to_string()));
+    assert!(lines.contains(&"verify.against_source.note=1.14.1%20vs%201.14.2".to_string()));
     assert!(lines.contains(&"verify.result=pass".to_string()));
     assert!(
-        !lines.iter().any(|l| l.starts_with("verify.detail")),
+        !lines.iter().any(|l| l.contains(".detail")),
         "a note is not a failure detail: {lines:?}"
     );
 
-    // A failure still uses `verify.detail`, and carries no `note`.
+    // A failure uses `.detail`, and carries no `note`.
     let against = AgainstSourceOutcome::DoesNotCorrespond("atom count differs".to_string());
     let verdict = Verdict::from(true, &against);
-    let lines = verify_machine_lines(&checks, true, &against, &verdict);
-    assert!(lines.iter().any(|l| l.starts_with("verify.detail.0=")));
-    assert!(!lines.iter().any(|l| l.starts_with("verify.note")));
+    let lines = verify_machine_lines(&checks, true, &against, &verdict, 0);
+    assert!(
+        lines
+            .iter()
+            .any(|l| l == "verify.against_source.detail=atom%20count%20differs")
+    );
+    assert!(!lines.iter().any(|l| l.contains(".note")));
 }
 
 // ---- CVS (RFC 007) --------------------------------------------------------------------------------
@@ -2050,4 +2054,436 @@ fn help_lists_flagged_in_the_vocabulary_and_no_internal_ids() {
     for id in ["FS-", "VF-", "CL-", "CR-", "PR-", "INV-", "RFC"] {
         assert!(!help.contains(id), "--help mentions the internal id {id}");
     }
+}
+
+// ---- part-2 §5: the machine output (naming rule, one key one line, raw bytes, details, skips, Other) ----
+
+/// A hand-built IR that exercises every key family the machine output can print: a derived copy, an
+/// `Other` derivation kind on an atom, a copy and a ref, an `Other` ref kind, a non-UTF-8 message, a drop
+/// and a flag.
+fn machine_output_fixture() -> Ir {
+    use brygge_ir::model::{CopyRecord, Flag, FlagKind, LossClass, Text};
+    let other = |name: &str| {
+        EpistemicStatus::Derived(Derivation {
+            kind: DerivationKind::Other(name.to_string()),
+            by: "d".into(),
+            decoder_version: "0".into(),
+            params: BTreeMap::new(),
+            confidence: None,
+        })
+    };
+    let renamed = EpistemicStatus::Derived(Derivation {
+        kind: DerivationKind::InferredRename,
+        by: "d".into(),
+        decoder_version: "0".into(),
+        params: BTreeMap::new(),
+        confidence: Some(90),
+    });
+    let mut b = IrBuilder::new(blank_provenance(
+        brygge_ir::SourceKind::Git,
+        "brygge-decode-git",
+    ));
+    let blob = b.add_blob(b"x".to_vec());
+    let a1 = b
+        .add_atom(AtomDraft {
+            parents: vec![],
+            ops: vec![stated_add("old", blob)],
+            copies: vec![],
+            metadata: MetadataClaims {
+                message: Some(Text {
+                    bytes: b"caf\xe9 100%\nsecond line".to_vec(),
+                    encoding: None,
+                }),
+                ..MetadataClaims::default()
+            },
+            source: src(brygge_ir::SourceKind::Git, b"c1"),
+            status: other("bespoke kind = x"),
+        })
+        .unwrap();
+    let a2 = b
+        .add_atom(AtomDraft {
+            parents: vec![a1],
+            ops: vec![
+                PathOp::Delete {
+                    path: "old".into(),
+                    status: EpistemicStatus::Stated,
+                },
+                stated_add("new", blob),
+            ],
+            copies: vec![
+                CopyRecord {
+                    from: "old".into(),
+                    from_atom: a1,
+                    to: "new".into(),
+                    status: renamed,
+                },
+                CopyRecord {
+                    from: "old".into(),
+                    from_atom: a1,
+                    to: "newer".into(),
+                    status: other("odd copy"),
+                },
+            ],
+            metadata: MetadataClaims::default(),
+            source: src(brygge_ir::SourceKind::Git, b"c2"),
+            status: EpistemicStatus::Stated,
+        })
+        .unwrap();
+    b.add_ref(RefRecord {
+        name: "refs/odd".into(),
+        kind: RefKind::Other("phase: draft".into()),
+        target: a2,
+        status: other("ref made up"),
+        source: None,
+        annotation: None,
+    })
+    .unwrap();
+    b.set_loss(LossBoundary {
+        dropped: vec![DropRecord {
+            class: LossClass::AdvisoryUnreliable,
+            what: "mergeinfo".into(),
+            reason: "advisory".into(),
+        }],
+    });
+    b.add_flag(Flag {
+        kind: FlagKind::BelowConfidenceFloor,
+        what: "changesets".into(),
+        count: 2,
+        reason: "low".into(),
+    });
+    b.finish().unwrap()
+}
+
+/// Every machine line is `key=value` with a key of dot-separated `[a-z0-9_]` segments (hand-rolled: no
+/// regex dependency). Returns the keys, so a test can assert on them.
+fn assert_machine_keys_follow_the_rule(text: &str) -> Vec<String> {
+    let mut keys = Vec::new();
+    for line in text.lines() {
+        let (key, _) = line
+            .split_once('=')
+            .unwrap_or_else(|| panic!("a machine line without `=`: {line:?}"));
+        assert!(!key.is_empty(), "empty key in {line:?}");
+        for seg in key.split('.') {
+            assert!(
+                !seg.is_empty()
+                    && seg
+                        .bytes()
+                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_'),
+                "key {key:?} breaks `^[a-z0-9_]+(\\.[a-z0-9_]+)*$` (line {line:?})"
+            );
+        }
+        keys.push(key.to_string());
+    }
+    keys
+}
+
+fn every_verify_line_shape() -> Vec<String> {
+    // Passing, failing and could-not-run checks, plus a source comparison with a note.
+    let checks: Vec<(&'static str, CheckOutcome)> = CHECK_NAMES
+        .iter()
+        .enumerate()
+        .map(|(i, n)| {
+            let o = match i {
+                0 => CheckOutcome::Pass,
+                1 => CheckOutcome::Fail("a detail = with\nweird bytes".to_string()),
+                _ => CheckOutcome::NotChecked("the artifact failed to decode".to_string()),
+            };
+            (*n, o)
+        })
+        .collect();
+    let against = AgainstSourceOutcome::Corresponds(Some("1.14.1 vs 1.14.2".to_string()));
+    let verdict = Verdict::from(false, &against);
+    verify_machine_lines(&checks, false, &against, &verdict, 2)
+}
+
+#[test]
+fn part2_5_1_keys_that_embed_a_label_are_snake_case_and_values_stay_kebab_case() {
+    let ir = machine_output_fixture();
+    let report = brygge_ir::honesty::summary(&ir).render_machine();
+    for key in [
+        "derived.inferred_rename=",
+        "derived.other=",
+        "dropped.advisory_unreliable=",
+        "flagged.below_confidence_floor=",
+    ] {
+        assert!(
+            report.lines().any(|l| l.starts_with(key)),
+            "{key} in\n{report}"
+        );
+    }
+    let lines = every_verify_line_shape();
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.starts_with("verify.check.source_invariants="))
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.starts_with("verify.check.loss_boundary="))
+    );
+    // Values keep kebab-case: the status value and the not-checked word.
+    let atoms = render_atoms_machine(&ir);
+    assert!(atoms.contains("atom.1.copy.0.status=derived:inferred-rename"));
+    assert!(lines.iter().any(|l| l == "verify.check.replay=not-checked"));
+}
+
+#[test]
+fn part2_5_2_inspect_atoms_does_not_repeat_the_atoms_key() {
+    let ir = machine_output_fixture();
+    let report = brygge_ir::honesty::summary(&ir).render_machine();
+    let atoms = render_atoms_machine(&ir);
+    assert_eq!(
+        report.lines().filter(|l| l.starts_with("atoms=")).count(),
+        1
+    );
+    assert!(
+        !atoms.lines().any(|l| l.starts_with("atoms=")),
+        "the listing repeats `atoms=`:\n{atoms}"
+    );
+    // ... and so the two concatenated (what `inspect --atoms --format machine` prints) have no duplicate key.
+    let all = format!("{report}{atoms}");
+    let keys = assert_machine_keys_follow_the_rule(&all);
+    let mut seen = std::collections::BTreeSet::new();
+    for k in &keys {
+        assert!(seen.insert(k.clone()), "duplicate key {k}");
+    }
+}
+
+#[test]
+fn part2_5_3_atom_message_is_the_raw_bytes_percent_encoded_once() {
+    let ir = machine_output_fixture();
+    let atoms = render_atoms_machine(&ir);
+    // "caf\xe9 100%\nsecond line": the non-UTF-8 byte, the space, the literal `%` and the newline.
+    assert!(
+        atoms.contains("atom.0.message=caf%E9%20100%25%0Asecond%20line\n"),
+        "{atoms}"
+    );
+    // Not prepared for the terminal first (the old form escaped, or replaced non-UTF-8 by a placeholder).
+    assert!(!atoms.contains("byte(s)") && !atoms.contains("\\u{"));
+    // The human form keeps its display escaping: a non-UTF-8 message is not echoed as raw bytes.
+    let human = render_atoms_human(&ir);
+    assert!(!human.contains('\u{fffd}'));
+    // An absent message is an empty value.
+    assert!(atoms.contains("atom.1.message=\n"));
+}
+
+#[test]
+fn part2_5_4_details_belong_to_their_check_and_follow_its_line() {
+    let lines = every_verify_line_shape();
+    let at = |prefix: &str| {
+        lines
+            .iter()
+            .position(|l| l.starts_with(prefix))
+            .unwrap_or_else(|| panic!("no {prefix} in {lines:?}"))
+    };
+    let structure = at("verify.check.structure=");
+    assert_eq!(
+        at("verify.check.structure.detail="),
+        structure + 1,
+        "the detail follows its own check's line"
+    );
+    // A passing check prints no detail.
+    assert!(
+        !lines
+            .iter()
+            .any(|l| l.starts_with("verify.check.integrity.detail"))
+    );
+    // The old numbered form is gone, and the source comparison has its own keys.
+    assert!(
+        !lines
+            .iter()
+            .any(|l| l.starts_with("verify.detail.") || l.starts_with("verify.note."))
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.starts_with("verify.against_source.note="))
+    );
+    assert!(
+        !lines
+            .iter()
+            .any(|l| l.starts_with("verify.against_source.detail"))
+    );
+    // The detail is escaped like every other value.
+    assert!(lines.contains(
+        &"verify.check.structure.detail=a%20detail%20%3D%20with%0Aweird%20bytes".to_string()
+    ));
+}
+
+#[test]
+fn part2_5_5_a_check_that_could_not_run_is_not_checked_never_n_a() {
+    let lines = every_verify_line_shape();
+    assert!(lines.contains(&"verify.check.provenance=not-checked".to_string()));
+    assert!(!lines.iter().any(|l| l.contains("n/a")));
+    assert_eq!(
+        CheckOutcome::NotChecked(String::new()).label(),
+        "not-checked"
+    );
+    // `against_source` uses the same word for "requested but could not run", and `not-run` still means
+    // "not requested".
+    assert_eq!(
+        AgainstSourceOutcome::NotChecked(String::new()).machine_label(),
+        "not-checked"
+    );
+    assert_eq!(AgainstSourceOutcome::NotRun.machine_label(), "not-run");
+}
+
+#[test]
+fn part2_5_6_skipped_non_critical_fields_are_visible_to_machines() {
+    let ir = machine_output_fixture();
+    let report = brygge_ir::honesty::summary(&ir);
+    assert!(
+        report
+            .render_machine()
+            .lines()
+            .any(|l| l == "skipped_non_critical_fields=0")
+    );
+    assert!(
+        report
+            .with_skipped_non_critical_fields(4)
+            .render_machine()
+            .lines()
+            .any(|l| l == "skipped_non_critical_fields=4")
+    );
+    let lines = every_verify_line_shape();
+    assert!(lines.contains(&"verify.skipped_non_critical_fields=2".to_string()));
+    let none = verify_machine_lines(
+        &[("integrity", CheckOutcome::Pass)],
+        true,
+        &AgainstSourceOutcome::NotRun,
+        &Verdict::Pass,
+        0,
+    );
+    assert!(none.contains(&"verify.skipped_non_critical_fields=0".to_string()));
+}
+
+#[test]
+fn part2_5_7_other_is_not_flattened_the_label_is_other_and_the_name_has_a_companion_key() {
+    let ir = machine_output_fixture();
+    let atoms = render_atoms_machine(&ir);
+    for expected in [
+        "atom.0.status=derived:other\n",
+        "atom.0.status_other=bespoke%20kind%20%3D%20x\n",
+        "atom.1.copy.1.status=derived:other\n",
+        "atom.1.copy.1.status_other=odd%20copy\n",
+        "ref.0.kind=other\n",
+        "ref.0.kind_other=phase:%20draft\n",
+        "ref.0.status=derived:other\n",
+        "ref.0.status_other=ref%20made%20up\n",
+    ] {
+        assert!(atoms.contains(expected), "missing {expected:?} in\n{atoms}");
+    }
+    // A named (non-Other) kind or status gets no companion key.
+    assert!(!atoms.contains("atom.1.status_other"));
+    assert!(!atoms.contains("atom.1.copy.0.status_other"));
+}
+
+#[test]
+fn part2_5_versions_are_bumped() {
+    assert_eq!(brygge_ir::honesty::REPORT_VERSION, 3);
+    assert_eq!(INSPECT_VERSION, 4);
+    assert_eq!(VERIFY_VERSION, 4);
+    assert!(every_verify_line_shape().contains(&"verify_version=4".to_string()));
+    assert!(render_atoms_machine(&machine_output_fixture()).starts_with("inspect_version=4\n"));
+}
+
+#[test]
+fn part2_5_every_machine_key_matches_the_key_rule_across_every_key_family() {
+    let ir = machine_output_fixture();
+    let mut keys =
+        assert_machine_keys_follow_the_rule(&brygge_ir::honesty::summary(&ir).render_machine());
+    keys.extend(assert_machine_keys_follow_the_rule(&render_atoms_machine(
+        &ir,
+    )));
+    keys.extend(assert_machine_keys_follow_the_rule(
+        &every_verify_line_shape().join("\n"),
+    ));
+    // The families are all actually present (so the rule is checked on real keys, not on nothing).
+    for family in [
+        "report_version",
+        "skipped_non_critical_fields",
+        "derived.inferred_rename",
+        "dropped.advisory_unreliable",
+        "flagged.below_confidence_floor",
+        "inspect_version",
+        "atom.0.status_other",
+        "atom.1.copy.0.from_atom",
+        "ref.0.kind_other",
+        "loss.0.class",
+        "flag.0.count",
+        "verify.check.source_invariants",
+        "verify.check.structure.detail",
+        "verify.against_source.note",
+        "verify.skipped_non_critical_fields",
+        "verify.result",
+    ] {
+        assert!(
+            keys.iter().any(|k| k == family),
+            "family {family} not exercised: {keys:?}"
+        );
+    }
+}
+
+// ---- part-2 §2: an hg artifact claims no rename inference, because none happens ---------------------
+
+#[test]
+fn an_hg_artifacts_params_carry_no_rename_or_infer_keys() {
+    if !hg_available() {
+        eprintln!("skipping: hg not on PATH");
+        return;
+    }
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let repo = std::env::temp_dir().join(format!("brygge-cli-hg-{}-{n}", std::process::id()));
+    let _guard = CleanupDir(repo.clone());
+    let _ = std::fs::remove_dir_all(&repo);
+    std::fs::create_dir_all(&repo).unwrap();
+    let hg = |args: &[&str]| {
+        let out = PCommand::new("hg")
+            .current_dir(&repo)
+            .args(args)
+            .env("HGRCPATH", "/dev/null")
+            .env("HGUSER", "A U Thor <a@example.com>")
+            .output()
+            .expect("run hg");
+        assert!(
+            out.status.success(),
+            "hg {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    hg(&["init"]);
+    std::fs::write(repo.join("a.txt"), "one\n").unwrap();
+    hg(&["add", "a.txt"]);
+    hg(&["commit", "-d", "0 0", "-m", "c1"]);
+    hg(&["mv", "a.txt", "b.txt"]);
+    hg(&["commit", "-d", "1 0", "-m", "c2 (a recorded rename)"]);
+
+    let out = repo
+        .join("..")
+        .join(format!("brygge-hg-params-{}-{n}.ir", std::process::id()));
+    assert_eq!(
+        run_decode(SourceKind::Hg, &repo, &out, false, false, Format::Machine),
+        exit::CLEAN
+    );
+    let ir = brygge_ir::from_bytes(&std::fs::read(&out).unwrap())
+        .unwrap()
+        .ir;
+    let keys: Vec<&String> = ir.provenance.params.keys().collect();
+    assert!(
+        !keys
+            .iter()
+            .any(|k| k.starts_with("rename_") || k.as_str() == "infer_renames"),
+        "an hg artifact must not claim an inference that never ran: {keys:?}"
+    );
+    // The recorded rename is still carried, as Stated (Mercurial states it).
+    assert!(
+        ir.atoms
+            .iter()
+            .flat_map(|a| &a.copies)
+            .any(|c| c.from == "a.txt" && c.to == "b.txt" && !c.status.is_derived())
+    );
+    // And `verify --against-source` re-decodes it without reading any inference parameter.
+    assert_eq!(run_verify(&out, Some(&repo), Format::Machine), exit::CLEAN);
+    let _ = std::fs::remove_file(&out);
 }

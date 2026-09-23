@@ -128,10 +128,21 @@ cargo test --workspace --locked
 cargo deny check                  # advisories, licenses, banned/duplicate crates (INV-4)
 cargo audit                       # known vulnerabilities in the dependency tree
 ./tools/check-ir-isolation.sh     # brygge-ir's dependency closure matches its allowlist (RFC 009 D-7)
+./tools/check-links.sh            # relative links in every *.md file resolve
+
+# The MSRV run. CI builds on the declared MSRV (1.85), not on your newer local toolchain, so a local
+# "green" says nothing about CI until these two pass too (use a scratch --target-dir):
+cargo +1.85 clippy --workspace --all-targets --all-features --locked -- -D warnings
+cargo +1.85 test --workspace --locked
 
 # The measurement harness (dev-only), before/after any RFC 010 increment:
 cargo run -p brygge-bench --release
 ```
+
+**CI's result for the pushed commit is part of every report** (`gh run list`): a review request states the
+local 1.85 run before the commit, and the CI run id and its result after the push. A red CI blocks the cut and
+is fixed before anything else. `Cargo.lock` holds `human_format` at 1.1.0 for the MSRV (see the root
+`Cargo.toml`); do not update it past that without re-running the 1.85 gates.
 
 Conventions the gates and reviews enforce: **`forbid(unsafe_code)`** in every shipped crate; public items
 documented (`missing_docs = warn`); the panic-prone clippy lints (`unwrap_used`, `expect_used`,

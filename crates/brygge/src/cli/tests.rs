@@ -121,6 +121,48 @@ fn decode_without_out_is_a_usage_error() {
 }
 
 #[test]
+fn infer_renames_for_hg_is_a_usage_error_because_mercurial_records_its_renames() {
+    // Part-2 handoff §2: no hg code infers anything, so accepting the flag would be a silent no-op and
+    // would put a false claim in provenance. Same message shape as `--reconstruct-refs` given to git.
+    let err = parse(&v(&[
+        "decode",
+        "hg",
+        "/r",
+        "--out",
+        "o.ir",
+        "--infer-renames",
+    ]))
+    .unwrap_err();
+    assert!(
+        err.contains("--infer-renames applies to git, not to hg"),
+        "{err}"
+    );
+    assert!(
+        err.contains("run `brygge decode --help` for usage"),
+        "{err}"
+    );
+    let err = parse(&v(&[
+        "decode",
+        "git",
+        "/r",
+        "--out",
+        "o.ir",
+        "--reconstruct-refs",
+    ]))
+    .unwrap_err();
+    assert!(
+        err.contains("--reconstruct-refs applies to svn, cvs, not to git"),
+        "{err}"
+    );
+}
+
+#[test]
+fn help_says_infer_renames_is_a_git_option() {
+    assert!(crate::cli::USAGE.contains("--infer-renames (git) and"));
+    assert!(!crate::cli::USAGE.contains("(git/hg)"));
+}
+
+#[test]
 fn inapplicable_option_is_a_usage_error_with_the_exact_message() {
     let err = parse(&v(&[
         "decode",
@@ -132,7 +174,7 @@ fn inapplicable_option_is_a_usage_error_with_the_exact_message() {
     ]))
     .unwrap_err();
     assert!(
-        err.contains("--infer-renames applies to git, hg, not to svn"),
+        err.contains("--infer-renames applies to git, not to svn"),
         "{err}"
     );
 
@@ -146,7 +188,7 @@ fn inapplicable_option_is_a_usage_error_with_the_exact_message() {
     ]))
     .unwrap_err();
     assert!(
-        err.contains("--infer-renames applies to git, hg, not to cvs"),
+        err.contains("--infer-renames applies to git, not to cvs"),
         "{err}"
     );
 

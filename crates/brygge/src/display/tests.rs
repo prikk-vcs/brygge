@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
+
 use super::*;
 
 #[test]
@@ -113,4 +115,37 @@ fn machine_value_percent_encodes_non_ascii_bytes() {
 #[test]
 fn machine_value_of_a_ref_name_with_equals_matches_the_handoff_example() {
     assert_eq!(machine_value("a=b"), "a%3Db");
+}
+
+/// Percent-decode, for the round-trip test below (a consumer's view of the machine format).
+fn percent_decode(s: &str) -> Vec<u8> {
+    let b = s.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' {
+            out.push(
+                u8::from_str_radix(std::str::from_utf8(&b[i + 1..i + 3]).unwrap(), 16).unwrap(),
+            );
+            i += 3;
+        } else {
+            out.push(b[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
+#[test]
+fn machine_bytes_round_trips_every_byte_value_exactly_once_encoded() {
+    // Part-2 handoff §5.3: the raw bytes, percent-encoded once, so a consumer recovers them exactly —
+    // including non-UTF-8 and a literal `%` (which must be `%25`, never left ambiguous).
+    let all: Vec<u8> = (0..=255u8).collect();
+    let encoded = machine_bytes(&all);
+    assert_eq!(percent_decode(&encoded), all);
+    assert!(!encoded.contains('=') && !encoded.contains('\n'));
+    assert_eq!(machine_bytes(b"100%"), "100%25");
+    assert_eq!(machine_bytes(b"\xff\xfe"), "%FF%FE");
+    // The `&str` form is exactly the byte form of the same text.
+    assert_eq!(machine_value("é ü"), machine_bytes("é ü".as_bytes()));
 }

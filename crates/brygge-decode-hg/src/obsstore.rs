@@ -15,12 +15,13 @@
 //! `hg commit --amend` with core evolution enabled.
 
 use std::collections::HashSet;
+use std::io::Read;
 use std::path::Path;
 
 use crate::Error;
 
-/// The obsstore's own resource ceiling: checked against the file's size before it is read into memory,
-/// so a hostile or corrupt obsstore cannot exhaust the host (RFC 010 D-4 style).
+/// The obsstore's own resource ceiling: enforced while the file is read (never more than the ceiling plus
+/// one byte is held), so a hostile or corrupt obsstore cannot exhaust the host.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Limits {
     pub(crate) max_obsstore_bytes: u64,
@@ -78,19 +79,23 @@ fn byte_at(buf: &[u8], at: usize) -> Result<u8, Error> {
 /// inconsistent record; [`Error::ResourceLimit`] if the file exceeds `limits.max_obsstore_bytes`.
 pub(crate) fn precursor_nodes(store: &Path, limits: &Limits) -> Result<HashSet<[u8; 20]>, Error> {
     let path = store.join("obsstore");
-    let meta = match std::fs::metadata(&path) {
-        Ok(m) => m,
+    // The bound is enforced while reading (`take(max + 1)`, refuse if the extra byte arrives), never as a
+    // size check followed by an unbounded read.
+    let file = match std::fs::File::open(&path) {
+        Ok(f) => f,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(HashSet::new()),
-        Err(e) => return Err(Error::Open(format!("cannot stat {}: {e}", path.display()))),
+        Err(e) => return Err(Error::Open(format!("cannot open {}: {e}", path.display()))),
     };
-    if meta.len() > limits.max_obsstore_bytes {
+    let mut data = Vec::new();
+    file.take(limits.max_obsstore_bytes.saturating_add(1))
+        .read_to_end(&mut data)
+        .map_err(|e| Error::Open(format!("cannot read {}: {e}", path.display())))?;
+    if data.len() as u64 > limits.max_obsstore_bytes {
         return Err(resource_limit(
             "the obsstore file",
             limits.max_obsstore_bytes,
         ));
     }
-    let data = std::fs::read(&path)
-        .map_err(|e| Error::Open(format!("cannot read {}: {e}", path.display())))?;
     if data.is_empty() {
         return Ok(HashSet::new());
     }

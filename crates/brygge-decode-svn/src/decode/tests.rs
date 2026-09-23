@@ -1050,3 +1050,111 @@ fn every_kind_of_artifact_text_this_decoder_writes_is_free_of_internal_reference
     );
     assert_no_internal_references(&ir);
 }
+
+// ---- release prep part 2 §3: author and log are carried as bytes, never dropped -----------------------
+
+/// A revision record whose property values are raw bytes (a dump can hold non-UTF-8 in `svn:author` and
+/// `svn:log`, e.g. after `--bypass-prop-validation` or an old converter).
+fn revision_with_byte_props(d: &mut DumpBuilder, num: u64, props: &[(&str, &[u8])]) {
+    let mut pblock = Vec::new();
+    for (k, v) in props {
+        pblock.extend(format!("K {}\n{k}\nV {}\n", k.len(), v.len()).into_bytes());
+        pblock.extend(*v);
+        pblock.push(b'\n');
+    }
+    pblock.extend(b"PROPS-END\n");
+    d.buf
+        .extend(format!("Revision-number: {num}\n").into_bytes());
+    d.buf
+        .extend(format!("Prop-content-length: {}\n", pblock.len()).into_bytes());
+    d.buf
+        .extend(format!("Content-length: {}\n\n", pblock.len()).into_bytes());
+    d.buf.extend(pblock);
+    d.buf.push(b'\n');
+}
+
+fn latin1_dump() -> Vec<u8> {
+    let mut d = DumpBuilder::new();
+    d.revision(0, &[("svn:date", &date(0))]);
+    revision_with_byte_props(
+        &mut d,
+        1,
+        &[
+            ("svn:author", b"Ren\xe9 M\xfcller"),
+            ("svn:date", date(1).as_bytes()),
+            ("svn:log", b"caf\xe9 \xe0 la carte\n"),
+        ],
+    );
+    d.add_file("a.txt", b"x\n");
+    d.buf
+}
+
+#[test]
+fn a_latin1_author_and_log_are_carried_byte_exact_not_dropped() {
+    let ir = decode_dump(&latin1_dump(), &Options::default()).unwrap();
+    let m = &ir.atoms[1].metadata;
+    let author = m.author.as_ref().expect("the author claim must be present");
+    assert_eq!(author.name.bytes, b"Ren\xe9 M\xfcller");
+    assert_eq!(author.name.encoding, None);
+    assert_eq!(author.email, None);
+    assert_eq!(author.name.as_utf8(), None, "the bytes are not valid UTF-8");
+    let msg = m.message.as_ref().expect("the log claim must be present");
+    assert_eq!(msg.bytes, b"caf\xe9 \xe0 la carte\n");
+    assert_eq!(msg.encoding, None);
+    // Nothing was lost, so nothing is recorded as lost or flagged on this account.
+    assert!(ir.flags.is_empty());
+}
+
+#[test]
+fn a_utf8_author_and_log_are_unchanged() {
+    let mut d = DumpBuilder::new();
+    d.revision(0, &[("svn:date", &date(0))]);
+    d.revision(
+        1,
+        &[
+            ("svn:author", "René"),
+            ("svn:date", &date(1)),
+            ("svn:log", "café"),
+        ],
+    );
+    d.add_file("a.txt", b"x\n");
+    let ir = decode_dump(&d.buf, &Options::default()).unwrap();
+    let m = &ir.atoms[1].metadata;
+    let author = m.author.as_ref().unwrap();
+    assert_eq!(author.name.bytes, "René".as_bytes());
+    assert_eq!(author.name.as_utf8(), Some("René"));
+    assert_eq!(author.name.encoding, None);
+    assert_eq!(m.message.as_ref().unwrap().as_utf8(), Some("café"));
+}
+
+#[test]
+fn an_empty_author_is_still_an_absent_claim_and_an_empty_log_is_kept() {
+    let mut d = DumpBuilder::new();
+    d.revision(0, &[("svn:date", &date(0))]);
+    d.revision(
+        1,
+        &[("svn:author", ""), ("svn:date", &date(1)), ("svn:log", "")],
+    );
+    d.add_file("a.txt", b"x\n");
+    let ir = decode_dump(&d.buf, &Options::default()).unwrap();
+    let m = &ir.atoms[1].metadata;
+    assert!(m.author.is_none(), "an empty author is an anonymous commit");
+    assert_eq!(
+        m.message.as_ref().map(|t| t.bytes.clone()),
+        Some(Vec::new())
+    );
+}
+
+#[test]
+fn decoding_a_non_utf8_author_and_log_is_deterministic() {
+    let dump = latin1_dump();
+    let a = brygge_ir::to_bytes(&decode_dump(&dump, &Options::default()).unwrap());
+    let b = brygge_ir::to_bytes(&decode_dump(&dump, &Options::default()).unwrap());
+    assert_eq!(a, b);
+    // ...and the artifact round-trips with the bytes intact.
+    let back = brygge_ir::from_bytes(&a).unwrap().ir;
+    assert_eq!(
+        back.atoms[1].metadata.author.as_ref().unwrap().name.bytes,
+        b"Ren\xe9 M\xfcller"
+    );
+}

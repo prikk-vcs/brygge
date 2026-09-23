@@ -65,6 +65,10 @@ pub(crate) struct PublishedView {
     pub(crate) not_published: usize,
     /// Obsolete changesets not reachable from anything non-obsolete or pinned — §1.3.
     pub(crate) hidden: usize,
+    /// Every bookmark in `.hg/bookmarks`, as `(name, node)`, from the one strict, bounded parse of that
+    /// file (the same parse that pins bookmark targets). The ref builder uses this list; nothing else
+    /// reads the file.
+    pub(crate) bookmarks: Vec<(String, [u8; 20])>,
 }
 
 /// Compute the published view for `changelog`.
@@ -109,7 +113,10 @@ pub(crate) fn compute(
     // Pinned (review 009 R-4): bookmarks, working-directory parents, and local tags only — `.hgtags`
     // does NOT pin (Mercurial's `repoview.pinnedrevs` never names it; the original handoff was wrong).
     let mut pinned = vec![false; n];
-    mark_pinned_bookmarks(root, &node_to_rev, &limits, &mut pinned)?;
+    let bookmarks = read_bookmarks(root, &limits)?;
+    for (_, node) in &bookmarks {
+        pin(&node_to_rev, &mut pinned, node);
+    }
     mark_pinned_dirstate(root, &node_to_rev, &mut pinned)?;
     mark_pinned_localtags(root, &node_to_rev, &limits, &mut pinned)?;
 
@@ -189,6 +196,7 @@ pub(crate) fn compute(
         served,
         not_published,
         hidden,
+        bookmarks,
     })
 }
 
@@ -206,30 +214,28 @@ fn refuse_unfinished_merge(root: &Path) -> Result<(), Error> {
     Ok(())
 }
 
-fn mark_pinned_bookmarks(
-    root: &Path,
-    node_to_rev: &HashMap<[u8; 20], usize>,
-    limits: &Limits,
-    pinned: &mut [bool],
-) -> Result<(), Error> {
+/// Parse `.hg/bookmarks` strictly (one `<40-hex-node> <name>` per line): a store that cannot say what it
+/// pins must not be read as if it pinned nothing, so a non-UTF-8 file or a malformed line is `Read`. An
+/// absent file means no bookmarks.
+fn read_bookmarks(root: &Path, limits: &Limits) -> Result<Vec<(String, [u8; 20])>, Error> {
     let path = root.join(".hg").join("bookmarks");
     let Some(data) = read_bounded(&path, "the bookmarks file", limits)? else {
-        return Ok(());
+        return Ok(Vec::new());
     };
     let body = std::str::from_utf8(&data)
         .map_err(|_| Error::Read(format!("{} is not valid UTF-8", path.display())))?;
+    let mut out = Vec::new();
     for line in body.lines() {
         let line = line.trim();
         if line.is_empty() {
             continue;
         }
-        let (node_hex, _name) = line
+        let (node_hex, name) = line
             .split_once(' ')
             .ok_or_else(|| Error::Read(format!("malformed bookmarks line {line:?}")))?;
-        let node = parse_hex20(node_hex)?;
-        pin(node_to_rev, pinned, &node);
+        out.push((name.trim().to_string(), parse_hex20(node_hex)?));
     }
-    Ok(())
+    Ok(out)
 }
 
 /// The working-directory parents: `.hg/dirstate`'s first 40 bytes are two 20-byte node ids (p1 then

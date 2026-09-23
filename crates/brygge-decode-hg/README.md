@@ -14,6 +14,9 @@ a [`brygge_ir::Ir`].
   repository with an unresolved merge in progress (`.hg/merge/state2`) is refused rather than guessed at.
   The repository's identity (`repo_id`) is the smallest **root** node among the published changesets, so it
   equals the identity of an `hg clone` of the repository, and a secret root never decides it.
+- **Nothing is inferred, and there are no options.** Mercurial records its own copies and renames, so they
+  are carried as `Stated`; brygge never infers a rename for hg, and an artifact's provenance claims no
+  inference (`brygge decode hg --infer-renames` is a usage error).
 - **What it carries:** a **`Stated`** changelog spine; **`Stated`** copies/renames, each with its **true**
   source atom resolved (RFC 011 D-6: p1, else p2, else the copy's own filelog linkrev, else a
   first-parent ancestry walk — never placed on a guess); bookmarks and named-branch heads as refs, both

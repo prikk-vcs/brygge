@@ -1,6 +1,6 @@
 # Importing a CVS repository
 
-brygge 0.1.0 imports a CVS repository's **main line only** (owner ruling D-2): the trunk, plus — while a
+brygge 0.1.0 imports a CVS repository's **main line only**: the trunk, plus — while a
 vendor branch is set — the revisions `cvs import` put there, since that is what a plain `cvs checkout`
 actually gives you. Branch history proper is not imported yet.
 

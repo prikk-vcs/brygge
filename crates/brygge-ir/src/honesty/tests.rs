@@ -112,7 +112,8 @@ fn summary_counts_derived_and_dropped_and_flagged_by_kind() {
     assert_eq!(r.derived.get("reconstructed-changeset"), Some(&1));
     assert_eq!(r.dropped.get("advisory-unreliable"), Some(&1));
     assert_eq!(r.flagged.get("convention-violation"), Some(&2));
-    assert_eq!(r.report_version, 2);
+    assert_eq!(r.report_version, 3);
+    assert_eq!(r.skipped_non_critical_fields, 0);
 }
 
 #[test]
@@ -127,7 +128,53 @@ fn summary_is_pure_and_render_is_deterministic() {
 #[test]
 fn machine_form_includes_flagged_lines() {
     let machine = summary(&build()).render_machine();
-    assert!(machine.contains("flagged.convention-violation=2"));
+    // Part-2 handoff §5.1: a label embedded in a key is snake_case; the labels themselves (values, and
+    // the grouping keys inside `FidelityReport`) stay kebab-case.
+    assert!(machine.contains("flagged.convention_violation=2"));
+    assert!(machine.contains("derived.inferred_rename=1"));
+    assert!(machine.contains("derived.reconstructed_changeset=1"));
+    assert!(machine.contains("dropped.advisory_unreliable=1"));
+    assert!(
+        !machine.contains('-'),
+        "no kebab-case remains in any key:\n{machine}"
+    );
+}
+
+#[test]
+fn skipped_non_critical_fields_is_always_printed_and_settable_without_touching_summary() {
+    let ir = build();
+    // `summary` is a pure function of the Ir: it cannot know how the artifact was read.
+    assert_eq!(summary(&ir).skipped_non_critical_fields, 0);
+    assert!(
+        summary(&ir)
+            .render_machine()
+            .lines()
+            .any(|l| l == "skipped_non_critical_fields=0")
+    );
+    let with = summary(&ir).with_skipped_non_critical_fields(3);
+    assert!(
+        with.render_machine()
+            .lines()
+            .any(|l| l == "skipped_non_critical_fields=3")
+    );
+    // and it is only that one line that changes.
+    let changed: Vec<String> = with
+        .render_machine()
+        .lines()
+        .map(|l| {
+            if l.starts_with("skipped_non_critical_fields=") {
+                "skipped_non_critical_fields=0".to_string()
+            } else {
+                l.to_string()
+            }
+        })
+        .collect();
+    let plain: Vec<String> = summary(&ir)
+        .render_machine()
+        .lines()
+        .map(str::to_string)
+        .collect();
+    assert_eq!(changed, plain);
 }
 
 #[test]

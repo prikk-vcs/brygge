@@ -22,8 +22,8 @@ use crate::cli::{Format, SourceKind};
 use crate::display;
 use crate::exit;
 
-const VERIFY_VERSION: u32 = 3;
-const INSPECT_VERSION: u32 = 3;
+const VERIFY_VERSION: u32 = 4;
+const INSPECT_VERSION: u32 = 4;
 
 // ---- small shared renderers -------------------------------------------------------------------------
 
@@ -48,6 +48,27 @@ fn ref_kind_label(kind: &RefKind) -> &'static str {
         RefKind::Bookmark => "bookmark",
         RefKind::NamedBranch => "named-branch",
         RefKind::Other(_) => "other",
+    }
+}
+
+/// The name inside a `RefKind::Other(name)`, for the machine form's companion key (`ref.N.kind_other`): the
+/// label stays the fixed word `other`, and the name is carried separately rather than flattened away.
+fn ref_kind_other(kind: &RefKind) -> Option<&str> {
+    match kind {
+        RefKind::Other(name) => Some(name),
+        _ => None,
+    }
+}
+
+/// The name inside a `DerivationKind::Other(name)` of a derived status, for the machine form's companion
+/// key (`…status_other`).
+fn status_other(s: &EpistemicStatus) -> Option<&str> {
+    match s {
+        EpistemicStatus::Derived(d) => match &d.kind {
+            DerivationKind::Other(name) => Some(name),
+            _ => None,
+        },
+        EpistemicStatus::Stated => None,
     }
 }
 
@@ -113,16 +134,6 @@ fn op_status(op: &PathOp) -> &EpistemicStatus {
         | PathOp::Modify { status, .. }
         | PathOp::Delete { status, .. }
         | PathOp::Replace { status, .. } => status,
-    }
-}
-
-/// Render a `Text` for display: its UTF-8 content when valid, else a fixed, non-source-derived
-/// placeholder naming its byte length — the placeholder never echoes raw bytes that failed to validate,
-/// so it cannot itself become a terminal/log-injection vector.
-fn text_display(t: &Text) -> String {
-    match t.as_utf8() {
-        Some(s) => display::human(s).into_owned(),
-        None => format!("<{} byte(s), not valid UTF-8>", t.bytes.len()),
     }
 }
 
@@ -198,7 +209,7 @@ fn layout_from_provenance(ir: &Ir) -> LayoutPolicy {
         .unwrap_or_default()
 }
 
-/// The per-source knobs a decode needs: git/hg use `infer_renames`; svn uses `reconstruct_refs`/`layout`;
+/// The per-source knobs a decode needs: git uses `infer_renames`; svn uses `reconstruct_refs`/`layout`;
 /// cvs uses `reconstruct_refs`/`cvs_window`/`cvs_floor`. Built from CLI flags (decode) or from the
 /// artifact's provenance (against-source, so a re-decode reproduces the recorded import).
 struct SourceOpts {
@@ -348,10 +359,8 @@ fn decode_source(kind: SourceKind, repo: &Path, opts: &SourceOpts) -> Result<Ir,
                 .map_err(map_git_error)
         }
         SourceKind::Hg => {
-            let hg = brygge_decode_hg::Options {
-                infer_renames: opts.infer_renames,
-                rename_threshold: 100,
-            };
+            // Mercurial records its renames, so there is nothing to infer and no inference option.
+            let hg = brygge_decode_hg::Options::default();
             guard_decoder(|| brygge_decode_hg::decode(repo, &hg))
                 .map_err(|fault| (exit::FAILURE, fault))?
                 .map_err(map_hg_error)
@@ -506,7 +515,8 @@ pub fn run_inspect(artifact: &Path, atoms: bool, format: Format) -> i32 {
         );
     }
     let ir = &decoded.ir;
-    let report = brygge_ir::honesty::summary(ir);
+    let report = brygge_ir::honesty::summary(ir)
+        .with_skipped_non_critical_fields(decoded.skipped_non_critical_fields);
     match format {
         Format::Human => {
             print!("{}", report.render_human());
@@ -622,22 +632,30 @@ fn render_atoms_human(ir: &Ir) -> String {
 }
 
 fn render_atoms_machine(ir: &Ir) -> String {
+    // `atoms=` is the fidelity report's line; this listing does not repeat it (one key, one line).
     let mut s = String::new();
     let _ = writeln!(s, "inspect_version={INSPECT_VERSION}");
     let _ = writeln!(s, "contract_version={}", brygge_ir::version::CURRENT);
-    let _ = writeln!(s, "atoms={}", ir.atoms.len());
     for (i, atom) in ir.atoms.iter().enumerate() {
         let _ = writeln!(s, "atom.{i}.id={}", hex(&atom.id.0));
         let _ = writeln!(s, "atom.{i}.status={}", status_label_machine(&atom.status));
+        if let Some(name) = status_other(&atom.status) {
+            let _ = writeln!(s, "atom.{i}.status_other={}", display::machine_value(name));
+        }
         let _ = writeln!(s, "atom.{i}.source_id={}", hex(&atom.source.atom_id));
         let _ = writeln!(s, "atom.{i}.ops={}", atom.ops.len());
         let _ = writeln!(s, "atom.{i}.parents={}", atom.parents.len());
+        // The raw message bytes, percent-encoded once, like every other value: a consumer decodes to the
+        // exact bytes (including non-UTF-8). Display escaping belongs to the human form only.
         let _ = writeln!(
             s,
             "atom.{i}.message={}",
-            display::machine_value(&text_display(
-                atom.metadata.message.as_ref().unwrap_or(&Text::default())
-            ))
+            display::machine_bytes(
+                atom.metadata
+                    .message
+                    .as_ref()
+                    .map_or(&[][..], |m| m.bytes.as_slice())
+            )
         );
         for (j, copy) in atom.copies.iter().enumerate() {
             let _ = writeln!(
@@ -656,14 +674,27 @@ fn render_atoms_machine(ir: &Ir) -> String {
                 "atom.{i}.copy.{j}.status={}",
                 status_label_machine(&copy.status)
             );
+            if let Some(name) = status_other(&copy.status) {
+                let _ = writeln!(
+                    s,
+                    "atom.{i}.copy.{j}.status_other={}",
+                    display::machine_value(name)
+                );
+            }
             let _ = writeln!(s, "atom.{i}.copy.{j}.move={}", atom.is_move(copy));
         }
     }
     for (i, rf) in ir.refs.iter().enumerate() {
         let _ = writeln!(s, "ref.{i}.name={}", display::machine_value(&rf.name));
         let _ = writeln!(s, "ref.{i}.kind={}", ref_kind_label(&rf.kind));
+        if let Some(name) = ref_kind_other(&rf.kind) {
+            let _ = writeln!(s, "ref.{i}.kind_other={}", display::machine_value(name));
+        }
         let _ = writeln!(s, "ref.{i}.target={}", hex(&rf.target.0));
         let _ = writeln!(s, "ref.{i}.status={}", status_label_machine(&rf.status));
+        if let Some(name) = status_other(&rf.status) {
+            let _ = writeln!(s, "ref.{i}.status_other={}", display::machine_value(name));
+        }
     }
     for (i, drop) in ir.loss.dropped.iter().enumerate() {
         let _ = writeln!(s, "loss.{i}.class={}", loss_class_label(drop.class));
@@ -679,12 +710,13 @@ fn render_atoms_machine(ir: &Ir) -> String {
 
 // ---- verify (CL-04, CR-02) -------------------------------------------------------------------------
 
-/// The outcome of one internal check: it can always fail, and `n/a` is reserved for a check that
-/// genuinely cannot apply (and says why) — never a way to hide a failure.
+/// The outcome of one internal check: it can always fail, and `not-checked` is reserved for a check that
+/// could not run (and says why) — never a way to hide a failure. It is the same word `against_source`
+/// uses for "requested but could not run".
 enum CheckOutcome {
     Pass,
     Fail(String),
-    NotApplicable(String),
+    NotChecked(String),
 }
 
 impl CheckOutcome {
@@ -692,13 +724,13 @@ impl CheckOutcome {
         match self {
             Self::Pass => "pass",
             Self::Fail(_) => "fail",
-            Self::NotApplicable(_) => "n/a",
+            Self::NotChecked(_) => "not-checked",
         }
     }
     fn detail(&self) -> Option<&str> {
         match self {
             Self::Pass => None,
-            Self::Fail(d) | Self::NotApplicable(d) => Some(d),
+            Self::Fail(d) | Self::NotChecked(d) => Some(d),
         }
     }
     fn is_fail(&self) -> bool {
@@ -965,7 +997,7 @@ fn check_source_invariants(ir: &Ir) -> CheckOutcome {
         brygge_ir::SourceKind::Svn => "brygge-decode-svn",
         brygge_ir::SourceKind::Cvs => "brygge-decode-cvs",
         brygge_ir::SourceKind::Other(_) => {
-            return CheckOutcome::NotApplicable(
+            return CheckOutcome::NotChecked(
                 "no invariants known for this source kind".to_string(),
             );
         }
@@ -1166,7 +1198,8 @@ fn run_against_source(ir1: &Ir, repo: &Path) -> AgainstSourceOutcome {
         }
     }
     let opts = SourceOpts {
-        infer_renames: infer_renames_from_provenance(ir1),
+        // Only Git infers renames; no other artifact records the parameter, so none is read.
+        infer_renames: kind == SourceKind::Git && infer_renames_from_provenance(ir1),
         reconstruct_refs: reconstruct_refs_from_provenance(ir1),
         layout: layout_from_provenance(ir1),
         cvs_window: cvs_window_from_provenance(ir1),
@@ -1366,7 +1399,7 @@ pub fn run_verify(artifact: &Path, against_source: Option<&Path>, format: Format
         for name in &CHECK_NAMES[1..] {
             checks.push((
                 name,
-                CheckOutcome::NotApplicable(
+                CheckOutcome::NotChecked(
                     "the artifact failed to decode; this check cannot run".to_string(),
                 ),
             ));
@@ -1383,20 +1416,43 @@ pub fn run_verify(artifact: &Path, against_source: Option<&Path>, format: Format
     };
     let verdict = Verdict::from(internal_pass, &against);
 
-    render_verify(format, &checks, internal_pass, &against, &verdict);
+    let skipped = parsed
+        .as_ref()
+        .map_or(0, |decoded| decoded.skipped_non_critical_fields);
+    render_verify(format, &checks, internal_pass, &against, &verdict, skipped);
     verdict.exit_code()
 }
 
-/// The machine-format `verify` lines (a pure function so the exact keys are testable).
+/// A check name as a machine-output key segment: keys are `snake_case` (`source_invariants`); the names
+/// themselves, shown to humans, stay `kebab-case`.
+fn check_key(name: &str) -> String {
+    name.replace('-', "_")
+}
+
+/// The machine-format `verify` lines (a pure function so the exact keys are testable). A check's detail
+/// belongs to that check: `verify.check.<name>.detail` follows its line, and only when it is not `pass`.
+/// The source comparison's explanation is `verify.against_source.detail`, and an informational note that
+/// is not a failure is `verify.against_source.note`.
 fn verify_machine_lines(
     checks: &[(&'static str, CheckOutcome)],
     internal_pass: bool,
     against: &AgainstSourceOutcome,
     verdict: &Verdict,
+    skipped_non_critical_fields: u64,
 ) -> Vec<String> {
-    let mut out = vec![format!("verify_version={VERIFY_VERSION}")];
+    let mut out = vec![
+        format!("verify_version={VERIFY_VERSION}"),
+        format!("verify.skipped_non_critical_fields={skipped_non_critical_fields}"),
+    ];
     for (name, outcome) in checks {
-        out.push(format!("verify.check.{name}={}", outcome.label()));
+        let key = check_key(name);
+        out.push(format!("verify.check.{key}={}", outcome.label()));
+        if let Some(d) = outcome.detail() {
+            out.push(format!(
+                "verify.check.{key}.detail={}",
+                display::machine_value(d)
+            ));
+        }
     }
     out.push("verify.authorship=unverifiable".to_string());
     out.push(format!(
@@ -1404,18 +1460,17 @@ fn verify_machine_lines(
         if internal_pass { "pass" } else { "fail" }
     ));
     out.push(format!("verify.against_source={}", against.machine_label()));
-    let mut i = 0usize;
-    for (_, outcome) in checks {
-        if let Some(d) = outcome.detail() {
-            out.push(format!("verify.detail.{i}={}", display::machine_value(d)));
-            i += 1;
-        }
-    }
     if let Some(d) = against.detail() {
-        out.push(format!("verify.detail.{i}={}", display::machine_value(d)));
+        out.push(format!(
+            "verify.against_source.detail={}",
+            display::machine_value(d)
+        ));
     }
     if let Some(n) = against.note() {
-        out.push(format!("verify.note.0={}", display::machine_value(n)));
+        out.push(format!(
+            "verify.against_source.note={}",
+            display::machine_value(n)
+        ));
     }
     out.push(format!("verify.result={}", verdict.machine_label()));
     out
@@ -1427,10 +1482,17 @@ fn render_verify(
     internal_pass: bool,
     against: &AgainstSourceOutcome,
     verdict: &Verdict,
+    skipped_non_critical_fields: u64,
 ) {
     match format {
         Format::Machine => {
-            for line in verify_machine_lines(checks, internal_pass, against, verdict) {
+            for line in verify_machine_lines(
+                checks,
+                internal_pass,
+                against,
+                verdict,
+                skipped_non_critical_fields,
+            ) {
                 println!("{line}");
             }
         }
@@ -1440,7 +1502,7 @@ fn render_verify(
                 let mark = match outcome {
                     CheckOutcome::Pass => "ok",
                     CheckOutcome::Fail(_) => "FAIL",
-                    CheckOutcome::NotApplicable(_) => "n/a",
+                    CheckOutcome::NotChecked(_) => "not-checked",
                 };
                 println!("  [{mark}] {name}");
                 if let Some(d) = outcome.detail() {

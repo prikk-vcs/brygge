@@ -12,8 +12,9 @@ use crate::model::{FlagKind, Ir, LossClass};
 use crate::status::EpistemicStatus;
 
 /// The machine-report contract version (RFC 002 D-3), independent of the IR contract and the tool.
-/// Bumped to 2 by RFC 011: `refused` is replaced with `flagged`.
-pub const REPORT_VERSION: u32 = 2;
+/// Bumped to 2 by RFC 011 (`refused` replaced with `flagged`), and to 3 by the machine-output cleanup:
+/// keys that embed a label are `snake_case`, and `skipped_non_critical_fields` is always printed.
+pub const REPORT_VERSION: u32 = 3;
 
 /// The `dropped` label for [`LossClass::Representation`] (matches [`class_label`]), used by
 /// [`FidelityReport::render_human`] to split the representation-class count onto its own "not history"
@@ -40,6 +41,11 @@ pub struct FidelityReport {
     pub dropped: BTreeMap<String, u64>,
     /// Flagged conditions, grouped by flag-kind label → summed count (RFC 011 D-8).
     pub flagged: BTreeMap<String, u64>,
+    /// How many fields from a newer contract minor the reader skipped while decoding the artifact
+    /// (always non-critical, so none can change what it claims). This describes the *reading*, not the
+    /// [`Ir`], so [`summary`] leaves it at `0`; a reader that decoded an artifact sets it with
+    /// [`FidelityReport::with_skipped_non_critical_fields`].
+    pub skipped_non_critical_fields: u64,
 }
 
 /// Compute the fidelity report from an [`Ir`] (pure — `FS-02`).
@@ -87,11 +93,28 @@ pub fn summary(ir: &Ir) -> FidelityReport {
         derived,
         dropped,
         flagged,
+        skipped_non_critical_fields: 0,
     }
 }
 
+/// A label as a machine-output key segment: keys are `snake_case`, values (labels) stay `kebab-case`.
+fn key_segment(label: &str) -> String {
+    label.replace('-', "_")
+}
+
 impl FidelityReport {
-    /// A stable, deterministic machine rendering (versioned — a CI gate can pin it, `CL-07/CT-04`).
+    /// Record how many non-critical fields the reader skipped while decoding the artifact this report
+    /// describes. [`summary`] stays a pure function of the [`Ir`]; this is the one reading-time fact that is
+    /// not in it.
+    #[must_use]
+    pub fn with_skipped_non_critical_fields(mut self, skipped: u64) -> Self {
+        self.skipped_non_critical_fields = skipped;
+        self
+    }
+
+    /// A stable, deterministic machine rendering (versioned — a CI gate can pin it, `CL-07/CT-04`). Keys
+    /// are dot-separated `snake_case` segments; a label embedded in a key (`derived.inferred_rename`) is
+    /// written in `snake_case` too, while values stay `kebab-case`.
     #[must_use]
     pub fn render_machine(&self) -> String {
         use std::fmt::Write as _;
@@ -101,14 +124,19 @@ impl FidelityReport {
         let _ = writeln!(s, "refs={}", self.refs);
         let _ = writeln!(s, "blobs={}", self.blobs);
         let _ = writeln!(s, "content_bytes={}", self.content_bytes);
+        let _ = writeln!(
+            s,
+            "skipped_non_critical_fields={}",
+            self.skipped_non_critical_fields
+        );
         for (kind, n) in &self.derived {
-            let _ = writeln!(s, "derived.{kind}={n}");
+            let _ = writeln!(s, "derived.{}={n}", key_segment(kind));
         }
         for (class, n) in &self.dropped {
-            let _ = writeln!(s, "dropped.{class}={n}");
+            let _ = writeln!(s, "dropped.{}={n}", key_segment(class));
         }
         for (kind, n) in &self.flagged {
-            let _ = writeln!(s, "flagged.{kind}={n}");
+            let _ = writeln!(s, "flagged.{}={n}", key_segment(kind));
         }
         s
     }

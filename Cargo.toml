@@ -40,6 +40,12 @@ ruzstd = "0.7"
 # Default features (`oid`, `std`) are off: `oid` would add the `const-oid` crate to the lock file.
 sha1-checked = { version = "0.10.0", default-features = false }
 
+# MSRV note (0.1.0 release preparation, part 2): `Cargo.lock` holds the transitive `human_format` (through
+# `gix-features` -> `prodash`) at 1.1.0. Release 1.2.1 uses let-chains, does not declare a `rust-version`,
+# and so does not build on the declared MSRV (1.85); 1.1.0 is the newest release that does, and `prodash`
+# accepts it (`>=1.0.3`). Lock-only: no new crate. Do not `cargo update` it past 1.1.0 without re-running
+# the 1.85 gates.
+
 # Lint discipline mirrors the ecosystem: unsafe is forbidden everywhere except a future dedicated FFI
 # crate (RFC 009 D-3); public items are documented; the panic-prone clippy lints warn so review holds
 # the line — brygge parses untrusted source repositories and must never panic on malformed input.

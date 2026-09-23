@@ -81,7 +81,7 @@ impl Repo {
 }
 
 fn hex20(node: &[u8; 20]) -> String {
-    node.iter().map(|b| format!("{b:02x}")).collect()
+    crate::util::hex(node)
 }
 
 /// A repo exercising every reader path: a small ('u') file, a large compressible (zstd) file, a delta

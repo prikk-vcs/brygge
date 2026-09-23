@@ -55,7 +55,7 @@ pub enum Command {
         source: PathBuf,
         /// Where to write the IR artifact. Required (CL-01: `decode` never runs without producing it).
         out: PathBuf,
-        /// Turn on opt-in, always-marked rename inference (git/hg only).
+        /// Turn on opt-in, always-marked rename inference (git only; Mercurial records its renames).
         infer_renames: bool,
         /// Reconstruct branch/tag refs by convention or symbol, marking each `Derived` (svn/cvs only).
         reconstruct_refs: bool,
@@ -99,7 +99,7 @@ USAGE:
 COMMANDS:
   decode   read a source into an IR artifact (git, hg, svn, or cvs in this build). --out is required.
            For svn, <source> is a repository directory (dumped read-only via `svnadmin dump`) or a
-           dumpfile; for cvs, a local repository directory of RCS ,v files. --infer-renames (git/hg) and
+           dumpfile; for cvs, a local repository directory of RCS ,v files. --infer-renames (git) and
            --reconstruct-refs (svn/cvs) each turn on an opt-in, always-marked derived layer; giving either
            to a source kind it does not apply to is a usage error
   inspect  print the fidelity report an artifact alone reproduces; --atoms adds the per-atom
@@ -262,10 +262,10 @@ fn parse_decode(args: &[String]) -> Result<Command, String> {
         .ok_or_else(|| usage_error("decode", "decode needs a source: <git|hg|svn|cvs> <source>"))?;
     let out = out.ok_or_else(|| usage_error("decode", "decode needs --out <artifact>"))?;
 
-    if infer_renames && !matches!(kind, SourceKind::Git | SourceKind::Hg) {
+    if infer_renames && !matches!(kind, SourceKind::Git) {
         return Err(usage_error(
             "decode",
-            inapplicable_option("infer-renames", "git, hg", kind),
+            inapplicable_option("infer-renames", "git", kind),
         ));
     }
     if reconstruct_refs && !matches!(kind, SourceKind::Svn | SourceKind::Cvs) {

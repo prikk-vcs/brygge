@@ -9,6 +9,36 @@ own commit.
 
 ## [Unreleased]
 
+### 0.1.0 release preparation, part 2: a green CI on the MSRV, two honesty gaps, a clean machine output
+
+#### Changed
+
+- **Breaking (machine output):** keys are dot-separated `snake_case` segments and values are `kebab-case`, so
+  keys that embed a label change (`derived.inferred-rename` → `derived.inferred_rename`, and every
+  `dropped.*`/`flagged.*`; `verify.check.source-invariants` → `verify.check.source_invariants`,
+  `verify.check.loss-boundary` → `verify.check.loss_boundary`). `atoms` is printed once. `atom.N.message` is
+  the raw bytes percent-encoded once (a consumer can decode non-UTF-8 exactly). A check's explanation is
+  `verify.check.<name>.detail`, the source comparison's is `verify.against_source.detail`, and its note is
+  `verify.against_source.note`. A check that could not run is `not-checked` (was `n/a`). Fields skipped from a
+  newer contract are visible as `skipped_non_critical_fields` (and `verify.skipped_non_critical_fields`). An
+  `Other(name)` status or kind prints the label `other` with a companion `…_other` key. Versions:
+  `report_version` 3, `inspect_version` 4, `verify_version` 4. Exit codes are unchanged.
+- **Breaking:** `--infer-renames` with `hg` is now a usage error (exit 2): Mercurial records its renames, so
+  nothing is inferred, and hg artifacts no longer record `infer_renames`, `rename_algorithm` or
+  `rename_threshold` in their params. `--help` says `--infer-renames (git)`.
+- Subversion: a non-UTF-8 `svn:author` or `svn:log` is now carried byte-exact instead of being dropped without
+  a record.
+- Mercurial: the obsolescence-marker file is read through a bounded reader (no check-then-read), and
+  `.hg/bookmarks` is parsed once, strictly and bounded, instead of twice.
+- The CI build on the declared MSRV (1.85) works again: `Cargo.lock` holds the transitive `human_format` at
+  1.1.0 (1.2.1 does not build on 1.85). Lock-only; no new crate. Six test-code clippy findings that only 1.85
+  reports are fixed.
+
+#### Added
+
+- The local gate list gains the MSRV run (`cargo +1.85 clippy` and `cargo +1.85 test`), and every report
+  states CI's result for the pushed commit.
+
 ### 0.1.0 release preparation: verified Mercurial nodes, one floor vocabulary, plain-language text
 
 #### Changed

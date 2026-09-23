@@ -211,3 +211,33 @@ fn multiple_records_are_all_read() {
     // Same precursor twice still dedups to one entry via the HashSet.
     assert_eq!(precursors.len(), 1);
 }
+
+// ---- release prep part 2 §4: the bound is enforced while reading, never as check-then-read ------------
+
+#[test]
+fn a_file_exactly_at_the_ceiling_is_read_and_one_byte_over_is_refused() {
+    let dir = temp_store(REAL_AMEND_MARKER);
+    let exactly = Limits {
+        max_obsstore_bytes: REAL_AMEND_MARKER.len() as u64,
+    };
+    assert!(precursor_nodes(dir.path(), &exactly).is_ok());
+
+    let one_short = Limits {
+        max_obsstore_bytes: REAL_AMEND_MARKER.len() as u64 - 1,
+    };
+    match precursor_nodes(dir.path(), &one_short) {
+        Err(Error::ResourceLimit { what, .. }) => assert_eq!(what, "the obsstore file"),
+        other => panic!("expected ResourceLimit, got {other:?}"),
+    }
+}
+
+#[test]
+fn an_absent_obsstore_still_means_no_markers() {
+    let dir = temp_store(b"");
+    std::fs::remove_file(dir.path().join("obsstore")).unwrap();
+    assert!(
+        precursor_nodes(dir.path(), &Limits::default())
+            .unwrap()
+            .is_empty()
+    );
+}

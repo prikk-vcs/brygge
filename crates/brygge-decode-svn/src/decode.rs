@@ -235,20 +235,30 @@ fn layout_honesty(final_tree: &Tree, opts: &Options, builder: &mut IrBuilder) {
 }
 
 /// Extract a revision's metadata claims from its properties (`PR-3`, CR-04). `svn:author` may be absent
-/// (anonymous); `svn:date` that will not parse yields no time rather than a wrong one, counted in
+/// (anonymous); author and log are carried byte-exact; `svn:date` that will not parse yields no time rather than a wrong one, counted in
 /// `unparseable_dates`. `svn:date` is UTC by definition, so a parsed time's offset is always `Some(0)`.
 /// Committer and commit time are never stated by SVN and stay absent (the one-claim rule, RFC 011 D-5).
 fn metadata_from_props(
     rev_props: &[(String, Vec<u8>)],
     unparseable_dates: &mut usize,
 ) -> MetadataClaims {
-    let author = props::get_str(rev_props, props::SVN_AUTHOR)
-        .filter(|s| !s.is_empty())
+    // Author and log are carried as the bytes the dump held, whatever they are: Subversion validates
+    // them as UTF-8, but a repository loaded with `--bypass-prop-validation` or converted by an old tool
+    // can hold other bytes, and the IR's text is bytes, so nothing is lost and nothing is refused. An
+    // empty author is still an absent claim (an anonymous commit), as before.
+    let author = props::get(rev_props, props::SVN_AUTHOR)
+        .filter(|b| !b.is_empty())
         .map(|name| Identity {
-            name: Text::utf8(&name),
+            name: Text {
+                bytes: name.to_vec(),
+                encoding: None,
+            },
             email: None,
         });
-    let message = props::get_str(rev_props, props::SVN_LOG).map(|m| Text::utf8(&m));
+    let message = props::get(rev_props, props::SVN_LOG).map(|m| Text {
+        bytes: m.to_vec(),
+        encoding: None,
+    });
     let raw_date = props::get_str(rev_props, props::SVN_DATE);
     let time = raw_date
         .as_deref()

@@ -68,8 +68,16 @@ fn is_safe_machine_byte(b: u8) -> bool {
 /// newline, so it can never forge a line or a key in the line-oriented machine format.
 #[must_use]
 pub fn machine_value(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for &b in s.as_bytes() {
+    machine_bytes(s.as_bytes())
+}
+
+/// The byte-level form of [`machine_value`], for text that is not necessarily UTF-8 (a commit message is
+/// bytes, RFC 011 D-4). Percent-encoded once: a consumer percent-decodes to the **exact** bytes, whatever
+/// they are, and no display escaping is applied first (that belongs to the human form only).
+#[must_use]
+pub fn machine_bytes(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len());
+    for &b in bytes {
         if is_safe_machine_byte(b) {
             out.push(b as char);
         } else {

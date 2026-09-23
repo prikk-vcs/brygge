@@ -407,7 +407,7 @@ fn repo_with_a_secret_smaller_root() -> Option<(Repo, Vec<u8>, Vec<u8>)> {
     {
         return None;
     }
-    let small_hex: String = small.iter().map(|b| format!("{b:02x}")).collect();
+    let small_hex = crate::util::hex(&small);
     x.run(&["phase", "--secret", "--force", "-r", &small_hex]);
     Some((x, small, large))
 }
@@ -704,13 +704,7 @@ fn hg_log_not_secret_nodes(r: &Repo) -> std::collections::BTreeSet<String> {
 fn brygge_imported_nodes(ir: &brygge_ir::Ir) -> std::collections::BTreeSet<String> {
     ir.atoms
         .iter()
-        .map(|a| {
-            a.source
-                .atom_id
-                .iter()
-                .map(|b| format!("{b:02x}"))
-                .collect()
-        })
+        .map(|a| crate::util::hex(&a.source.atom_id))
         .collect()
 }
 
@@ -845,10 +839,7 @@ fn parity_pinned_by_bookmark_fixture_no_secret_ancestor() {
         let changelog = r.changelog();
         changelog.entry(0).unwrap().node
     };
-    let precursor_hex = precursor_node
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect::<String>();
+    let precursor_hex = crate::util::hex(&precursor_node);
     r.run(&["commit", "--amend", "-d", "2 0", "-m", "c0 amended"]);
     r.run(&[
         "bookmark",
@@ -1402,4 +1393,77 @@ fn refusal_messages_are_free_of_internal_references() {
             other => panic!("{req}: expected a refusal, got {other:?}"),
         }
     }
+}
+
+// ---- release prep part 2: hg infers nothing, so provenance claims no inference -----------------------------
+
+#[test]
+fn an_hg_artifact_records_no_rename_inference_params() {
+    if !hg_available() {
+        eprintln!("skipping: hg not on PATH");
+        return;
+    }
+    let r = Repo::new();
+    r.write("a.txt", "a\n");
+    r.commit("1", "c0");
+    r.run(&["mv", "a.txt", "b.txt"]);
+    r.commit("2", "c1 (a stated rename)");
+    let ir = decode(r.path(), &Options::default()).unwrap();
+    let keys: Vec<&String> = ir.provenance.params.keys().collect();
+    assert!(
+        !keys
+            .iter()
+            .any(|k| k.starts_with("rename_") || k.as_str() == "infer_renames"),
+        "no inference param may be claimed, got {keys:?}"
+    );
+    // The stated rename is still carried as Stated, regardless.
+    assert!(
+        ir.atoms
+            .iter()
+            .flat_map(|a| &a.copies)
+            .all(|c| c.status == brygge_ir::EpistemicStatus::Stated)
+    );
+    assert_eq!(
+        Options::default().as_params().len(),
+        0,
+        "the options themselves render nothing"
+    );
+}
+
+// ---- release prep part 2 §4: one bookmarks parse, strict and bounded ------------------------------------
+
+#[test]
+fn a_malformed_bookmark_line_is_a_read_error_through_the_single_path() {
+    if !hg_available() {
+        eprintln!("skipping: hg not on PATH");
+        return;
+    }
+    let r = Repo::new();
+    r.write("a.txt", "a\n");
+    r.commit("1", "c0");
+    r.write(".hg/bookmarks", "this-line-has-no-node-and-no-space\n");
+    match decode(r.path(), &Options::default()) {
+        Err(crate::Error::Read(m)) => assert!(m.contains("malformed bookmarks line"), "{m}"),
+        other => panic!("expected Error::Read, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_bookmark_naming_an_unknown_changeset_is_counted_not_skipped() {
+    if !hg_available() {
+        eprintln!("skipping: hg not on PATH");
+        return;
+    }
+    let r = Repo::new();
+    r.write("a.txt", "a\n");
+    r.commit("1", "c0");
+    r.write(".hg/bookmarks", &format!("{} ghost\n", "0".repeat(40)));
+    let ir = decode(r.path(), &Options::default()).unwrap();
+    assert!(
+        ir.loss
+            .dropped
+            .iter()
+            .any(|d| d.what == "bookmarks naming unimported changesets (1)")
+    );
+    assert!(ir.refs.iter().all(|rf| rf.name != "ghost"));
 }
