@@ -153,8 +153,10 @@ non-UTF-8 ones are refused at decode (owner ruling D-3), since no target can hol
 CopyRecord { from: Path, from_atom: AtomId, to: Path, status: EpistemicStatus }
 ```
 - **Meaning:** `to` was created as a copy of `from` **as it was at atom `from_atom`**. This carries SVN
-  `copyfrom-rev` and hg `copyrev` (mapped to the changeset that introduced that file revision), both of
-  which are lost today.
+  `copyfrom-rev` and hg `copyrev`, both of which are lost today. For hg, `from_atom` is the nearest atom
+  holding that file revision: the parent whose manifest has it, so an `hg mv` is a move, and otherwise the
+  changeset that introduced it. *(Wording clarified 2026-09-23 while writing the hg handoff; the decision
+  is unchanged.)*
 - **A copy is a *move*** exactly when `from_atom` is the atom's first parent **and** the atom deletes
   `from`. This is derived, not stored: one fact, one place. `ChangeAtom::is_move(&CopyRecord)` gives
   consumers the answer, and `verify` checks that `from` exists in `from_atom`'s tree.
