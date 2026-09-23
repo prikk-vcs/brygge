@@ -7,15 +7,13 @@ design ids (e.g. `PR-4`, `IX-06`, `HO-1`, `INV-2`) refer to the design set in
 model). The governing upstream is prikk **RFC 113** (the import contract; accepted, owner-ruled
 2026-09-13).
 
-> **Status (2026-09-23): Track A is built, not yet released.** All four sources (Git, hg, SVN, CVS) decode
-> into the IR, but **no version of brygge has been released**. The incoming architect's intake review
-> found defects in correctness, honesty and contract evolution that must be fixed before a first release.
-> The owner has authorized the release plan below: a correction cycle ending in **0.1.0, the first
-> published release**. brygge is in **v0 development**: breaking changes made to improve or fix it are
-> acceptable. Track B (encode → prikk): **prikk decides, brygge informs proactively**. brygge sends its
-> import requirements to prikk; the encoder is built once prikk's import foundations exist (see Track B).
-> For the invariants, the architecture and how to build, read
-> [`HANDOFF.md`](docs/src/development/handoffs/HANDOFF.md).
+> **Status (2026-09-24): brygge 0.1.0 is released, the first release.** All four sources (Git, hg, SVN,
+> CVS) decode into IR contract 0.2.0, and the intake review's correction cycle is closed (see
+> `CHANGELOG.md`). Next is **0.2.0 (Scale)**. brygge is in **v0 development**: breaking changes made to
+> improve or fix it are acceptable, and are stated in the release notes. Track B (encode → prikk):
+> **prikk decides, brygge informs proactively**. brygge sends its import requirements to prikk; the encoder
+> is built once prikk's import foundations exist (see Track B). For the invariants, the architecture and
+> how to build, read [`HANDOFF.md`](docs/src/development/handoffs/HANDOFF.md).
 
 ## Guiding rules (constant across the roadmap)
 
@@ -143,7 +141,7 @@ design (prikk RFC 113 §6).
 
 | Release | Theme | Scope | Entry | Exit (in addition to the gate suite) |
 |---|---|---|---|---|
-| **0.1.0** — first published release | **Honest decode** | The intake review's correction set: the `verify --internal` checks, CVS mainline-only with its user guidance, text/path integrity, non-history exclusion, resource bounds, output neutralization, the three-verb CLI (`decode`/`inspect`/`verify`), the narrowed public API; **RFC 011 (the IR contract re-cut)**; per-source user guides (the published VF-5 statements); threat model v0.3; `CHANGELOG.md` | The owner's rulings on the intake review (done 2026-09-23) | Every correction closed with its tests; RFCs 001–007 and 009 moved to `done/` as "Implemented (0.1.0)"; release notes; the owner authorizes the cut |
+| **0.1.0** — first published release (**released 2026-09-24**) | **Honest decode** | The intake review's correction set: the `verify --internal` checks, CVS mainline-only with its user guidance, text/path integrity, non-history exclusion, resource bounds, output neutralization, the three-verb CLI (`decode`/`inspect`/`verify`), the narrowed public API; **RFC 011 (the IR contract re-cut)**; per-source user guides (the published VF-5 statements); threat model v0.3; `CHANGELOG.md` | The owner's rulings on the intake review (done 2026-09-23) | Every correction closed with its tests; RFCs 001–007 and 009 moved to `done/` as "Implemented (0.1.0)"; release notes; the owner authorizes the cut |
 | **0.2.0** | **Scale** | RFC 010 increments 2 (SVN dumpstream iterator) and 3 (CVS reconstruction bound); a new increment bounding the Git snapshot cache; a Git scenario in `tools/bench`; increment 4 only if measured | 0.1.0 released | Before/after measurements recorded; byte-identical output |
 | **0.3.0** | **Source reach** | CVS branch-aware import (lifts 0.1.0's mainline-only limit); SVN delta dumps (svndiff); hg hashed long paths; CVS adaptive clustering windows | 0.2.0 released; per-item RFC amendment and security review | Each lifted limit has fixtures against real tools |
 | **B0** | **Requirements to prikk** | Letter 001: an importer's requirements and questions (no code) | RFC 011 accepted | **Done 2026-09-23:** sent and answered (see Track B0) |
@@ -153,7 +151,7 @@ design (prikk RFC 113 §6).
 **0.1.0 also includes the hg *published view*:** secret and hidden changesets are excluded by brygge
 itself, and counted in the report, rather than refused (owner ruling D-4, 2026-09-23).
 
-## Milestones (built, not released)
+## Milestones (built before 0.1.0; released in 0.1.0)
 
 | Milestone | Contents | Status |
 |---|---|---|
@@ -162,7 +160,7 @@ itself, and counted in the report, rather than refused (owner ruling D-4, 2026-0
 | **M2** | Mercurial decoder; IR cross-source claim validated | built |
 | **M3** | SVN decoder | built |
 | **M4** | CVS decoder (lossy, labelled) | built |
-| **IR contract** | Frozen at 1.0.0 on 2026-09-08 as a **pre-release** freeze. It is re-cut by RFC 011 before the first release (owner ruling D-1, 2026-09-23); the released label is settled with RFC 011 | re-cut in 0.1.0 |
+| **IR contract** | A pre-release freeze at 1.0.0 (2026-09-08), re-cut by RFC 011 (owner ruling D-1, 2026-09-23) and released as contract **0.2.0** | released in 0.1.0 |
 
 The **IR contract version (IX-07) is a first-class compatibility promise, separate from the tool
 version**: a consumer (a foreign encoder, an inspector) pins the IR contract, not the brygge binary.
@@ -213,4 +211,4 @@ Re-verified against prikk 0.46.0 on 2026-09-23:
 - **prikk's import theme (theme 17) is unscheduled.** brygge informs it proactively (Track B0); the
   encoder waits for it (Track B1).
 
-`brygge-01` §11 is updated to this state in the 0.1.0 documentation sweep.
+`brygge-01` §11 records this state (updated in the 0.1.0 documentation sweep).

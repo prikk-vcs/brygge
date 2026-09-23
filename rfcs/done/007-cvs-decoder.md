@@ -1,6 +1,6 @@
 # RFC 007 — CVS decoder
 
-**Status.** **Accepted (2026-09-10).** Both owner-gated decisions are ruled. The **read tier is Tier R — a
+**Status.** **Implemented (0.1.0, 2026-09-24)**; shipped in brygge 0.1.0, and kept in `done/` as the historical record. History: **Accepted (2026-09-10).** Both owner-gated decisions are ruled. The **read tier is Tier R — a
 pure-Rust RCS `,v` reader** (chosen over driving the `cvs`/`rlog` CLI or linking an RCS/CVS C library — the
 smallest surface with no C, no FFI, no external tool, no network, and — RCS being uncompressed — no
 decompression codec; a third **zero-new-dependency** decoder, OQ-A). The **confidence floor is ruled
@@ -209,6 +209,13 @@ The two genuinely hard pieces are **reading RCS safely** (the `,v` store — a n
   (import-with-loud-record). An entirely-under-floor import is a whole-import refusal. The **numeric bar and
   its definition** (a time-spread threshold + an ambiguity measure) are a configurable default settled at
   the handoff via the read-a-policy mechanism (CF-03); brygge does not hardcode it.
+- **Floor as built for 0.1.0, ratified by the owner (OQ-B, 2026-09-10; D-3, 2026-09-23; D-A,
+  2026-09-24).** The floor is exactly `crates/brygge-decode-cvs/src/floor.rs`, recorded in every artifact
+  as `params["floor"]`: `remote-source` (the no-network invariant INV-3, enforced at the input),
+  `whole-import-under-confidence-floor` (OQ-B); `non-utf8-path`
+  (D-3); `path-in-attic-and-live`, `symlink-in-repository`, `non-utf8-symbol-name`,
+  `default-branch-with-later-trunk` (D-A). The CVS README's Floor table and `docs/src/guide/cvs.md` state
+  each one's remedy.
 - **OQ-C — Rename inference for CVS** (architect-settled leaning; not owner-gated). CVS records no renames
   (worse than Git). **Off by default with no inference for M4** (delete+add carried faithfully, the
   maximally-honest default); a Git-style opt-in, always-`Derived` similarity inference is a later increment

@@ -7,11 +7,22 @@ belongs to no particular system, so a target — prikk first — can encode from
 and marks — in the object itself — anything it had to *infer*. It reads untrusted repositories, links no
 network, and writes only where you tell it.
 
+## Install
+
+```sh
+cargo install --locked brygge
+```
+
+brygge 0.1.0 needs Rust 1.85 or later to build. `--locked` builds the exact dependency set brygge was
+tested with; without it, cargo may pick newer dependencies that need a newer Rust. Decoding a live
+Subversion repository also needs `svnadmin` on your `PATH`; decoding a dumpfile needs nothing else.
+
 ## Vocabulary
 
 **artifact** the IR file `decode` writes · **source** the repository or dumpfile read · **stated** the
 source's own record · **derived** brygge's judgment, marked as such · **dropped** not carried, and
-recorded · **refused** the whole import declined, so no artifact is written · **Unverifiable** imported
+recorded · **flagged** carried, but recorded as needing your attention · **refused** the whole import
+declined, so no artifact is written · **Unverifiable** imported
 authorship cannot be checked — a property of the claim, not a pending check.
 
 ## 30-second start
@@ -39,7 +50,7 @@ This is the one skill worth learning, because it is how you know a migration is 
 `inspect` prints it:
 
 ```
-fidelity report (v1) — what brygge imported, and how much is the source's own record
+fidelity report (v3) — what brygge imported, and how much is the source's own record
 vs brygge's judgment. Authorship is Unverifiable (carried as the source claimed it; no target can verify it).
 
   preserved: 128 atom(s), 3 ref(s), 512 blob(s), 1048576 content byte(s)
@@ -48,6 +59,8 @@ vs brygge's judgment. Authorship is Unverifiable (carried as the source claimed 
   not history (no content or claim lost): 3
   dropped (recorded loss):
     advisory-unreliable: 2
+  flagged:   recorded, and why this import needs your attention:
+    below-confidence-floor: 4
 ```
 
 - **preserved** — carried faithfully, as the source recorded it.
@@ -59,45 +72,58 @@ vs brygge's judgment. Authorship is Unverifiable (carried as the source claimed 
   nothing was lost, so this is one line, not a list to worry about.
 - **dropped (recorded loss)** — things not carried, but *recorded here*, never silently lost (advisory data
   like SVN `svn:mergeinfo`; working-copy transforms like keyword expansion).
+- **flagged** — carried, but recorded as needing your attention (an SVN layout brygge could not follow,
+  CVS changesets below the confidence floor). A flagged import exits `30`.
 - **Authorship is always `Unverifiable`.** brygge faithfully carries who the source *claimed* authored
   something; it never asserts that claim was verified by anyone.
 
 ## What each source can and cannot promise (before you run)
 
-Faithfulness means something different per source, so brygge tells you up front, before decoding starts:
+Faithfulness means something different per source, so brygge tells you up front, before decoding starts.
+Each source has a user guide with the details, including what it refuses and what you can do about it:
 
-- **Git** — a real history graph; renames are *inferred* only with `--infer-renames`, and are then marked
-  `derived`. Submodules/octopus/grafts/shallow are refused.
-- **Mercurial** — like Git, plus **renames the source recorded** (`hg mv`) come through as *stated*, not
-  guessed. Subrepos, largefiles, and censored revisions are refused.
-- **Subversion** — atomic revisions import as a stated spine; **branches/tags are directory *convention***,
-  so reconstructing them (opt-in, `--reconstruct-refs`) is `derived`. `svn:externals` is refused;
-  `svn:mergeinfo` is dropped-with-record, never a merge parent.
-- **CVS** — **there is no atomic commit**, so brygge *reconstructs* changesets by clustering per-file
-  revisions. **Every CVS changeset is therefore `derived`** — a labelled reconstruction, not the source's
-  record. Content and per-file history are faithful; a low-confidence reconstruction is flagged or refused.
-  For CVS, `verify --against-source` checks *per-file content and deterministic reproduction* — **not**
-  changeset correspondence, because there is no source changeset to check against.
+- **Git** ([guide](docs/src/guide/git.md)) — a real history graph from branches and tags, every object
+  verified against its id. Renames are *inferred* only with `--infer-renames`, and are then marked
+  `derived`. Submodules, replace refs, grafts and shallow clones are among the shapes refused.
+- **Mercurial** ([guide](docs/src/guide/hg.md)) — what the repository would publish (the changesets
+  `hg clone` shares), every revision verified against its node. Renames and copies the source recorded
+  come through as *stated*, not guessed. Subrepositories, largefiles, lfs and censored revisions are among
+  the shapes refused.
+- **Subversion** ([guide](docs/src/guide/svn.md)) — atomic revisions import as a stated spine. **Branches and
+  tags are directory *convention***, so reconstructing them (opt-in, `--reconstruct-refs`) is `derived`.
+  `svn:externals` is refused; `svn:mergeinfo` is dropped-with-record, never a merge parent.
+- **CVS** ([guide](docs/src/guide/cvs.md)) — **there is no atomic commit**, so brygge *reconstructs*
+  changesets by clustering per-file revisions. **Every CVS changeset is therefore `derived`**: a labelled
+  reconstruction, not the source's record. Content and per-file history are faithful; a low-confidence
+  reconstruction is flagged or refused. 0.1.0 imports the **main line** only. For CVS,
+  `verify --against-source` checks *per-file content and deterministic reproduction*, **not** changeset
+  correspondence, because there is no source changeset to check against.
 
 ## Exit codes (for scripts and CI)
 
-`0` clean · `10` recorded loss (advisory/other drops) · `20` a feature below the floor was refused (or a
-resource ceiling was hit) · `30` a convention/confidence line was crossed (an SVN layout not found, or a
-CVS reconstruction below the floor) · `50` a `verify` check failed · `1` a runtime failure (unreadable
-input, I/O, an internal decoder fault) · `2` a usage error (bad arguments, an option given to a source kind
-it does not apply to).
+`0` clean · `10` recorded loss (advisory/other drops) · `20` refused: a floor feature, an unsupported
+format, or a resource ceiling · `30` flagged: a convention/confidence line was crossed (an SVN layout brygge
+could not follow, or a CVS reconstruction below the floor) · `50` a `verify` check failed · `1` a runtime
+failure (unreadable input, I/O, an internal decoder fault), or a `verify` whose requested source comparison
+could not run (`incomplete`) · `2` a usage error (bad arguments, an option given to a source kind it does
+not apply to). The machine output is specified in
+[`docs/src/reference/machine-output.md`](docs/src/reference/machine-output.md).
 
 ## Going deeper
 
 - **Design set:** `docs/src/brygge-01-requirements-spec` (what brygge must do), `-02-external-design` (its
   surface), `-03-threat-model` (what it defends and how). brygge parses untrusted input; the threat model
   is a first-class deliverable.
-- **Decisions:** `rfcs/` — one RFC per source decoder (004 Git, 005 Mercurial, 006 Subversion, 007 CVS),
-  the IR foundations (001/002/003), the dependency-surface policy (009), and bounded memory (010).
+- **Reference:** the IR artifact format ([`docs/src/reference/ir-artifact-format.md`](docs/src/reference/ir-artifact-format.md),
+  contract 0.2.0) and the machine output ([`docs/src/reference/machine-output.md`](docs/src/reference/machine-output.md)).
+- **Decisions:** `rfcs/`: one RFC per source decoder (004 Git, 005 Mercurial, 006 Subversion, 007 CVS),
+  the IR foundations (001/002/003) and their re-cut (011), the dependency-surface policy (009), and bounded
+  memory (010).
+- **Changes:** [`CHANGELOG.md`](CHANGELOG.md).
 - **Contributing / maintaining:** start at
   [`HANDOFF.md`](docs/src/development/handoffs/HANDOFF.md) (status, invariants, architecture, the
   backlog, and how to build and gate), then
   [`GOVERNANCE.md`](docs/src/development/handoffs/GOVERNANCE.md) (who decides what) and
   [`ROADMAP.md`](ROADMAP.md).
-- **`encode` is gated** pending the prikk import surface and the owner's open questions (RFC 008); this
-  build is decode + inspect + verify.
+- **`encode` is not in 0.1.0.** The prikk encoder (RFC 008) waits on prikk's import foundations
+  (`ROADMAP.md`, Track B); this release is decode + inspect + verify.

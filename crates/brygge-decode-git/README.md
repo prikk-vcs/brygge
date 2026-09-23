@@ -70,7 +70,7 @@ the same concept in every decoder.
 | `non-utf8-commit-header-name` | a commit carrying an extra header whose name is not valid UTF-8 | none without rewriting the commit (in a **copy** of the repository); report the repository if it is genuine |
 | `sha256-object-format` | a repository with `extensions.objectFormat = sha256`; this build reads SHA-1 object stores only | convert to a SHA-1 repository, or wait for a release that reads SHA-256. There is no in-place conversion; for example, `git fast-export --all` from the repository into a new SHA-1 repository (`git init --object-format=sha1`, then `git fast-import`) works, and gives every commit a new SHA-1 id |
 
-Status: **Built (ROADMAP M1); not yet released** — commits→atoms, tree-snapshot diff→literal ops,
+Status: **Released in brygge 0.1.0** — commits→atoms, tree-snapshot diff→literal ops,
 opaque SHA/signature, branches+tags, the floor above (refused, never approximated), the representation loss boundary, byte-deterministic (pack-independent) output,
 `verify --against-source`, and the full CLI surface. Rename inference is off by default and, when on,
 marked *Derived* beside the literal ops. A **symbolic ref** (e.g. `refs/remotes/origin/HEAD`, which an

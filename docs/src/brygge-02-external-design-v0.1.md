@@ -10,8 +10,8 @@
 | Not | internal architecture, the IR's byte schema (the requirements forbid a schema), APIs, or code. |
 | ID scheme | `BD-` boundary · `AC-` actor · `CL-` command surface · `IX-` IR external contract · `FS-` fidelity/honesty surface · `PX-` provenance-to-target interface · `CF-` configuration · `FL-` flow · `CT-` external data contract · `OP-` operational behaviour · `GATED-` a surface that cannot be designed until an owner question is answered. (`DC-` avoided — it collides with prikk's RFC numbering.) |
 
-> **Delivery status (2026-09-24).** The command surface of §2.1 is **built** and is being prepared as the
-> first release, **0.1.0**: `decode <git|hg|svn|cvs> <source> --out <artifact>`, `inspect <artifact>` and
+> **Delivery status (2026-09-24).** The command surface of §2.1 is **released in brygge 0.1.0**, the first
+> release: `decode <git|hg|svn|cvs> <source> --out <artifact>`, `inspect <artifact>` and
 > `verify <artifact> [--against-source <source>]`, with human and machine output (CL-07) and the CL-08
 > outcome-class exit codes. The IR external contract is **IR contract 0.2.0** (RFC 011), which replaced the
 > pre-release 1.0.0 freeze; its wire format is published in

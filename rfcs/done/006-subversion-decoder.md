@@ -1,6 +1,6 @@
 # RFC 006 — Subversion decoder
 
-**Status.** **Accepted (2026-09-08).** Both owner-gated decisions are ruled. The **read tier is Tier D —
+**Status.** **Implemented (0.1.0, 2026-09-24)**; shipped in brygge 0.1.0, and kept in `done/` as the historical record. History: **Accepted (2026-09-08).** Both owner-gated decisions are ruled. The **read tier is Tier D —
 a pure-Rust parser of the SVN *dumpstream*, fed by a user-supplied dumpfile or a read-only local
 `svnadmin dump`** (chosen over hand-rolling FSFS/BDB, driving the `svn` CLI, or linking `libsvn` — the
 smallest pure-Rust surface with no FFI and no network; OQ-A). The **SVN floor is ratified: a repository
@@ -260,6 +260,12 @@ working-copy bytes, and `svn:externals`.
     **recorded in every artifact's provenance** (`params["floor"]`, PR-5) — changing it is a reviewed code
     change, never a runtime knob.
 
+- **Floor as built for 0.1.0.** The floor is exactly `crates/brygge-decode-svn/src/floor.rs`, recorded in
+  every artifact as `params["floor"]`: `svn-externals` (OQ-B's ruling) and `remote-source` (the no-network
+  invariant INV-3, enforced at the input; a refusal the design always had, named since the 2026-09-23
+  hygiene handoff). Both use the kebab-case vocabulary shared by all decoders. Delta dumps
+  and unknown dump versions are format refusals, not floor features; a non-UTF-8 path is a malformed
+  dump (a read error). `docs/src/guide/svn.md` states each one's remedy.
 - **OQ-C — Branch/tag layout policy.** OQ-B settles the shape: **derived `RefRecord` reconstruction ships
   in M3**, under the standard `trunk`/`branches`/`tags` policy, **off by default**, always `Derived`, always
   with the immutability caveat on tags, and unresolvable layouts imported-with-loud-derived-record (not

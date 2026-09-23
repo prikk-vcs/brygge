@@ -1,6 +1,6 @@
 # RFC 011 — IR contract re-cut before the first release
 
-**Status.** **Accepted (2026-09-23)** by the owner, under owner ruling **D-1 (a)**. **OQ-A is ruled:** the
+**Status.** **Implemented (0.1.0, 2026-09-24)**; shipped in brygge 0.1.0, and kept in `done/` as the historical record. History: **Accepted (2026-09-23)** by the owner, under owner ruling **D-1 (a)**. **OQ-A is ruled:** the
 released contract label is **`0.2.0`** under D-3's `0.y` rule (the recommendation, accepted with the RFC).
 The implementation handoff is `../handoffs/011-ir-contract-recut/brygge-ir-recut-handoff-v1.md`.
 **Tracks.** ROADMAP release 0.1.0 ("honest decode"). It supersedes parts of RFC 001 (D-3), RFC 002 (D-3)

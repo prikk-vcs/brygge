@@ -1,6 +1,6 @@
 # RFC 004 — Git decoder
 
-**Status.** Accepted (2026-09-04). The two owner-gated decisions are ruled: the owner **approved `gix`**
+**Status.** **Implemented (0.1.0, 2026-09-24)**; shipped in brygge 0.1.0, and kept in `done/` as the historical record. History: Accepted (2026-09-04). The two owner-gated decisions are ruled: the owner **approved `gix`**
 as brygge's first heavy dependency (RFC 009 D-6), backed by the architect security review at
 [`handoffs/004-git-decoder/gix-security-review-v1.md`](../handoffs/004-git-decoder/gix-security-review-v1.md)
 (verdict: adopt; `gix 0.87.1`, MSRV 1.85, no C, no network backend, advisories cleared, one MPL-2.0
@@ -170,6 +170,13 @@ against-source-check disciplines the milestone rests on.
   merits. See `rfcs/handoffs/004-git-decoder/symbolic-ref-panic-correction-handoff-v1.md`. **Superseded in part by RFC 011 D-9 (2026-09-23):** the tagger, time and message are now
   carried in `RefRecord.annotation`, and the `Other`-class loss for them is removed. See
   `rfcs/handoffs/004-git-decoder/git-corrections-batch2-handoff-v1.md` §1.6.
+- **Floor as built for 0.1.0, ratified by the owner (D-3, 2026-09-23; D-A, 2026-09-24).** The floor is
+  exactly `crates/brygge-decode-git/src/floor.rs`, recorded in every artifact as `params["floor"]`. Its
+  identifiers are lowercase kebab-case, and the same concept has the same identifier in every decoder:
+  `submodule`, `replace-ref`, `grafts`, `shallow-clone` (this RFC's OQ-C); `object-alternates`,
+  `redirected-git-directory`, `non-utf8-path` (D-3); `non-utf8-ref-name`, `non-utf8-commit-header-name`,
+  `sha256-object-format` (D-A). The Git README's Floor table and `docs/src/guide/git.md` state each one's
+  remedy.
 - **OQ-C — The floor's exact contents** (D-4) — **RESOLVED 2026-09-04:** the owner ratified refusing all
   four (submodules, octopus-beyond-N, replace+grafts, shallow). The one residual is the **octopus parent
   limit N**, a prikk/OQ-2 value not yet set; until it is, decode carries all parents and the encoder's

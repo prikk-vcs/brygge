@@ -1,13 +1,55 @@
 # Changelog
 
 All notable changes to brygge are recorded here. The format follows
-[Keep a Changelog](https://keepachangelog.com/en/1.1.0/). brygge is in **v0 development** — no version has
-been released yet; see `ROADMAP.md` for the 0.1.0 release plan. Entries are grouped by the commit that
-made them, newest first, so this file is complete for everything since the architect's intake review began
-— it is the source for 0.1.0's release notes. From this point on, every handoff adds its own entry in its
-own commit.
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow the `0.y` rule of
+`ROADMAP.md`: until 1.0, a minor release may make breaking changes, and they are marked **Breaking**. The
+IR contract has its own version, carried in every artifact (`docs/src/reference/ir-artifact-format.md`).
+Every handoff adds its own entry in its own commit.
 
 ## [Unreleased]
+
+## [0.1.0] — 2026-09-24
+
+**The first release.** brygge carries version-control history out of Git, Mercurial, Subversion and CVS
+into an intermediate representation (IR) that belongs to no system. The IR is ready for a target's
+importer, and it is honest about what the source stated, what brygge derived, and what was not carried.
+
+- **Three commands:**
+  - `decode <git|hg|svn|cvs> <source> --out <artifact>`;
+  - `inspect <artifact>`;
+  - `verify <artifact> [--against-source <source>]`.
+
+  Each has human and versioned machine output (`docs/src/reference/machine-output.md`), and exit codes
+  that carry the outcome class.
+- **IR contract 0.2.0,** a published, strict, integrity-checked binary format that can evolve safely
+  (`docs/src/reference/ir-artifact-format.md`).
+- **Faithful by construction:**
+  - text is carried as bytes;
+  - only claims the source stated are made;
+  - source ids are verified against their content;
+  - derived results (inferred renames, CVS changesets, SVN branches) are marked as brygge's judgment;
+  - everything not carried is recorded, or refused with a named reason.
+- **Per source** (user guides in `docs/src/guide/`):
+  - **Git** (pure Rust): full history of branches and tags; signatures, extra headers and annotated tags
+    carried.
+  - **Mercurial** (pure Rust): the published view, the same changesets `hg clone` shares; recorded renames
+    and copies with their true source; extras.
+  - **Subversion:** from a dumpfile, or via `svnadmin dump`; branches and tags reconstructed on request.
+  - **CVS:** the main line, reconstructed into changesets with a recorded confidence.
+- **Not in 0.1.0:**
+  - CVS branch history, SVN delta dumps and Mercurial hashed long paths (0.3.0);
+  - SHA-256 Git repositories;
+  - streaming for very large repositories (memory is bounded by ceilings, not streamed; 0.2.0);
+  - progress and cancellation;
+  - the prikk encoder (it waits on prikk's import foundations).
+- **Install:** `cargo install --locked brygge` (Rust 1.85+). `svnadmin` is needed only for decoding a live
+  SVN repository.
+- **Security model:** `docs/src/brygge-03-threat-model-v0.1.md` (v0.3).
+
+The detailed changes that made up 0.1.0 follow, newest first, grouped by the commit that made them.
+Before 0.1.0 nothing was released, so every **Breaking** mark below is relative to the unreleased
+development state, not to an earlier release.
+
 
 ### 0.1.0 release preparation, part 2: a green CI on the MSRV, two honesty gaps, a clean machine output
 

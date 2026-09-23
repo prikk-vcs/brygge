@@ -5,10 +5,10 @@ map: what brygge is, the state at handover, the invariants you must never regres
 lives, how to build and gate it, and the prioritized backlog. Everything it references is in this
 repository; nothing load-bearing lives only in someone's head.
 
-**Date of handover:** 2026-09-12. **State:** the decode → IR half is **built, not yet released**, for all
-four named sources (see `ROADMAP.md`'s release plan for the 0.1.0 correction cycle and what gates it); the
-IR contract is frozen at 1.0.0; all gates are green. The encode → prikk half is owner/prikk-gated and
-deliberately not started past design (see §8).
+**Date of handover:** 2026-09-12. **Updated for the 0.1.0 release, 2026-09-24.** **State:** brygge
+**0.1.0 is released**: the decode → IR half for all four named sources, on IR contract **0.2.0**. All gates
+are green, and CI enforces them on the declared MSRV. The encode → prikk half waits on prikk's import
+foundations (see §8).
 
 ---
 
@@ -26,13 +26,13 @@ where told. The governing upstream contract is prikk **RFC 113** (History import
 
 | Area | State |
 |---|---|
-| **Decode → IR (Track A)** | **Built for all four sources, not yet released** (`ROADMAP.md`'s release plan). Git (M1), Mercurial (M2), Subversion (M3), CVS (M4). |
-| **IR contract** | **Frozen at 1.0.0** (RFC 003 D-7, 2026-09-08). All four sources fit it **with no contract change** — the strongest possible evidence for the freeze. Post-freeze: additive-only within major 1. |
-| **CLI** | `brygge decode <git\|hg\|svn\|cvs> <path>`, `inspect`, `verify --internal`, `verify --against-source`, `summary`; human + machine output; CL-08 exit classes. |
-| **Encode → prikk (Track B)** | **Gated, not started past design.** Waits on prikk's UD-1…UD-3 / OQ-1…OQ-3 (RFC 008; see §8). |
-| **Gates** | fmt · clippy `-D warnings` · test (**217 passing**) · `cargo deny` · `cargo audit` · `tools/check-ir-isolation.sh` — all green, all `--locked`. |
-| **Toolchain** | Rust 2024, MSRV **1.85**; built/tested on rustc 1.98.1. |
-| **Third-party deps** | `sha2` (core); `gix` (Git); `flate2`+`ruzstd` (hg). SVN and CVS decoders add **zero** third-party deps. |
+| **Decode → IR (Track A)** | **Released in 0.1.0** for all four sources: Git, Mercurial, Subversion, CVS (main line). See `CHANGELOG.md` and the user guides in `docs/src/guide/`. |
+| **IR contract** | **0.2.0** (RFC 011, which replaced the pre-release 1.0.0 freeze). Tagged fields with a critical bit, a strict canonical form, a digest over the stored bytes; published in `docs/src/reference/ir-artifact-format.md`. |
+| **CLI** | `brygge decode <git\|hg\|svn\|cvs> <source> --out <artifact>`, `inspect <artifact> [--atoms]`, `verify <artifact> [--against-source <source>]`; human and versioned machine output (`docs/src/reference/machine-output.md`); CL-08 exit classes. |
+| **Encode → prikk (Track B)** | **Not started past design.** prikk ruled OQ-1…OQ-3 (2026-09-13) and UD-4 (2026-09-23); the encoder waits on prikk building UD-1 and UD-2 (RFC 008; see §8). |
+| **Gates** | fmt · clippy `-D warnings` · test · `cargo deny` · `cargo audit` · `tools/check-ir-isolation.sh` · `tools/check-links.sh`, all `--locked`, on the default toolchain **and** on MSRV 1.85; CI-enforced (§7). |
+| **Toolchain** | Rust 2024, MSRV **1.85** (enforced by CI). |
+| **Third-party deps** | `sha2` (core); `gix` (Git); `flate2`, `ruzstd` and `sha1-checked` (hg); `sha2` (CVS). SVN adds **none**. |
 
 ## 3. The non-negotiables (never regress these)
 
@@ -42,15 +42,15 @@ short form:
 
 - **INV-1 — No manufactured verification.** Imported authorship is `Unverifiable` by construction; the
   derived-marking, loss boundary, and fidelity summary are properties of *every produced object* and are
-  **not configurable off**. This is the whole point of brygge. (See `honesty.rs`; `verify --internal`.)
+  **not configurable off**. This is the whole point of brygge. (See `honesty.rs`; `verify`'s seven checks.)
 - **INV-2 — Source input is untrusted; brygge never executes source-provided code.** No hooks, filters,
   submodule/externals fetches, or scripts. Every parser is bounds-checked and panic-free.
 - **INV-3 — No network I/O; writes only to operator-specified outputs.** (svnrdump-over-network refused;
   `:pserver:` refused; source-declared paths are never write targets.)
 - **INV-4 — The dependency surface is isolated, minimized, pinned, audited;** brygge's own crates
   `forbid(unsafe_code)`; C is isolated to an FFI crate **or a subprocess** (RFC 009; brygge-03 C-4b).
-- **INV-5 — brygge output never enlarges the target's audited surface** — the IR and `verify --internal`
-  link **no** decoder; a target checks an import with only its own dependencies.
+- **INV-5 — brygge output never enlarges the target's audited surface** — the IR and `verify`'s
+  artifact-only checks link **no** decoder; a target checks an import with only its own dependencies.
 - **INV-6 — Determinism + object-carried provenance are integrity controls.** Same input → byte-identical
   IR. Non-determinism is a trust hole (a tamper could hide in it), so it is forbidden, not merely avoided.
 
@@ -62,16 +62,16 @@ surface trade-offs to the owner rather than silently choosing. When in doubt, th
 
 Two-layer design enforced by the dependency graph (RFC 009 D-1): the **light core** (`brygge-ir`) that a
 target can depend on, and the **isolated decoders** that read one source each. **The core links no
-decoder** — verified structurally (`cargo tree`) and by an isolation test.
+decoder**, enforced in CI by `tools/check-ir-isolation.sh` against a declared allowlist.
 
 | Crate | Role | Third-party deps |
 |---|---|---|
 | **`brygge-ir`** | The IR: types, canonical codec, content store, epistemic-status taxonomy, the versioned artifact, the recoverable fidelity report. The durable product boundary (PU-3). | `sha2` only |
-| **`brygge-decode-git`** | Git → IR. Renames inferred (off by default, marked `Derived`). | `gix` (isolated; security-reviewed) |
-| **`brygge-decode-hg`** | Mercurial → IR. Pure-Rust revlog reader; **stated** renames carried as `Stated`. | `flate2`, `ruzstd` (pure-Rust decompression) |
+| **`brygge-decode-git`** | Git → IR. Every object verified against its id; renames inferred only on request (marked `Derived`). | `gix` (isolated; security-reviewed) |
+| **`brygge-decode-hg`** | Mercurial → IR. Pure-Rust revlog reader; the published view; every revision verified against its node; **stated** renames and copies carried as `Stated`. | `flate2`, `ruzstd` (decompression), `sha1-checked` (node verification) |
 | **`brygge-decode-svn`** | Subversion → IR. Pure-Rust dumpstream parser; branches/tags `Derived` by convention; `svnadmin` is an optional producer *subprocess*, not linked. | **none** |
-| **`brygge-decode-cvs`** | CVS → IR. Pure-Rust RCS `,v` reader; **the changeset itself is `Derived`** (no atomic commit). | **none** |
-| **`brygge`** | The CLI. Wires the decoders in (permitted for the binary, RFC 009 D-1); the core + `verify --internal` still link none. | — |
+| **`brygge-decode-cvs`** | CVS → IR. Pure-Rust RCS `,v` reader; main line only; **the changeset itself is `Derived`** (no atomic commit). | `sha2` (the repository fingerprint) |
+| **`brygge`** | The CLI. Wires the decoders in (permitted for the binary, RFC 009 D-1); the core and `verify`'s artifact-only checks still link none. | — |
 | **`tools/bench`** | Dev-only memory/time harness (RFC 010). Not published. | — |
 
 Each decoder exposes one narrow `decode(...) -> Result<brygge_ir::Ir, Error>` and follows the same shape:
@@ -83,9 +83,12 @@ module style (`foo.rs` + `foo/`, no `mod.rs`), tests as siblings (`#[cfg(test)] 
 
 | You want… | Read |
 |---|---|
-| What brygge must do / never do / must decide | `docs/src/brygge-01-requirements-spec-v0.1.md` (requirements, v0.2) |
-| The black-box surface (commands, IR contract, honesty surface, flows) | `docs/src/brygge-02-external-design-v0.1.md` (external design, v0.2) |
-| What brygge defends, against whom, how | `docs/src/brygge-03-threat-model-v0.1.md` (threat model, v0.2) |
+| What brygge must do / never do / must decide | `docs/src/brygge-01-requirements-spec-v0.1.md` (requirements, v0.3) |
+| The black-box surface (commands, IR contract, honesty surface, flows) | `docs/src/brygge-02-external-design-v0.1.md` (external design, v0.3) |
+| What brygge defends, against whom, how | `docs/src/brygge-03-threat-model-v0.1.md` (threat model, v0.3) |
+| How to import from each source, what is carried, refused and why | `docs/src/guide/` (one guide per source) |
+| The machine-readable output (keys, versions, exit codes) | `docs/src/reference/machine-output.md` |
+| The whole docs set as a book | `docs/src/SUMMARY.md` (mdbook) |
 | The exact IR artifact wire format (for a foreign encoder or reader) | `docs/src/reference/ir-artifact-format.md` (contract `0.2.0`, RFC 011, PU-3) |
 | Direction, milestones, release cycles, prikk dependencies | `ROADMAP.md` |
 | How decisions are made, who approves what, the gates | `GOVERNANCE.md` |
@@ -95,12 +98,12 @@ module style (`foo.rs` + `foo/`, no `mod.rs`), tests as siblings (`#[cfg(test)] 
 | What a crate is and how it's bounded | `crates/*/README.md` |
 | Decoder memory/time measurement | `tools/bench/README.md` |
 
-**The RFC set** (all accepted unless noted; `rfcs/README.md` is authoritative):
-001 IR foundations · 002 honesty & provenance · 003 determinism, format & versioning (the freeze, D-7) ·
-004 Git decoder · 005 Mercurial decoder · 006 Subversion decoder · 007 CVS decoder · 009 dependency &
-supply-chain policy · 010 bounded memory & streaming (increment 1 done). **008 is the reserved number for
-the gated Track-B prikk-encoder RFC — not yet written; its design begins when prikk unblocks it (§8.6).**
-000 (RFC lifecycle policy) is in `done/`.
+**The RFC set** (`rfcs/README.md` is authoritative): **in `done/`, implemented in 0.1.0:** 001 IR
+foundations · 002 honesty & provenance · 003 determinism, format & versioning · 004 Git decoder · 005
+Mercurial decoder · 006 Subversion decoder · 007 CVS decoder · 009 dependency & supply-chain policy · 011
+the IR contract re-cut (contract 0.2.0) · and 000, the RFC lifecycle policy. **Accepted:** 010 bounded
+memory & streaming (increment 1 shipped in 0.1.0; increments 2–4 are 0.2.0). **008 is reserved** for the
+Track-B prikk-encoder RFC; its design begins when prikk's import foundations exist (§8).
 
 ## 6. Governance and method (unchanged by the handover)
 
@@ -152,55 +155,62 @@ parses untrusted input and must never panic on malformed bytes.** Tests may `#![
 **To add a new source decoder** (the "etc." in PU-3): write the RFC (following 004–007's shape) → get the
 read-tier ruled by the owner (RFC 009) → the handoff, the `brygge-03` security review, and the D-9
 additive-fit confirmation → a new `brygge-decode-<src>` crate exposing `decode()` → wire it into the CLI's
-`decode_source`/`source_kind_of`. The IR should hold it additively (major 1) or the change is a deliberate,
-owner-approved contract event — never a silent one.
+`decode_source`/`source_kind_of`. The IR should hold it with no contract change, or with a new field under
+RFC 011's rules (a non-critical field is additive; a critical one is a contract version bump). Any
+contract change is a deliberate, owner-approved event, never a silent one.
 
 ## 8. The backlog — what's next, prioritized and honest
 
-Nothing here is required for the built (not yet released) product to be correct; all of it is deferred scope or gated
-work, recorded so the team inherits the reasoning, not just the TODO.
+Nothing here is required for 0.1.0 to be correct; all of it is planned scope or gated work, recorded so
+the team inherits the reasoning, not just the TODO. `ROADMAP.md` is authoritative for scheduling.
 
-**Track A follow-ups (buildable now; each is scoped in its RFC):**
-1. **RFC 010 increments 2–4 — bounded memory / streaming, measurement-gated.** Increment 1 (SVN snapshot
-   bound) is done and measured (~46× peak reduction at 20k revisions). Increment 2 (SVN dumpstream
-   *iterator*, to stop holding the whole parsed dump), 3 (CVS reconstruction bound), and 4 (a streaming
-   artifact *writer* — the only part touching `brygge-ir`, **gated on a measured ~2×IR peak**, RFC 010 D-3).
-   Use `tools/bench` before/after each. **This was the active track at handover.**
-2. **SVN delta dumps** (RFC 006, queued): svndiff support so `svnadmin dump --deltas`/`svnrdump` files are
-   readable; currently refused with a named reason.
-3. **CVS refinements** (RFC 007, queued): branch-aware changeset parenting (the baseline threads linearly),
-   adaptive clustering windows (OQ-E), and optional rename inference (OQ-C, off by default).
-4. **Fold `RR-cvs-reconstruction` into `brygge-03`** at its next revision (identified by the CVS security
-   review; still outstanding). `RR-gix-sha1`, `RR-svn-svnadmin`, `RR-svn-svnadmin-version`, and the C-4b
-   subprocess refinement are already folded (brygge-03 v0.2).
+**0.2.0 — Scale** (RFC 010, measurement-gated; use `tools/bench` before and after each increment):
+1. **RFC 010 increment 2:** an SVN dumpstream *iterator*, to stop holding the whole parsed dump.
+2. **RFC 010 increment 3:** a CVS reconstruction bound.
+3. **A new increment bounding the Git snapshot cache**, and a Git scenario in `tools/bench`.
+4. **Increment 4,** a streaming artifact *writer*, only if measured necessary (RFC 010 D-3).
+5. **Maintenance:**
+   - CI's `actions/checkout@v4` targets the deprecated Node.js 20;
+   - `ubuntu-latest` moves to Ubuntu 26 from 2026-10-19;
+   - `RR-cvs-read-toctou`: compare the opened file's identity with the `lstat` result.
+
+**0.3.0 — Source reach:**
+6. **CVS branch-aware import,** which lifts 0.1.0's main-line-only limit.
+7. **SVN delta dumps** (svndiff), which also closes `RR-svn-special-toggle`.
+8. **Mercurial hashed long paths** (`dh/`).
+9. **CVS adaptive clustering windows.**
 
 **Deferred by explicit owner decision:**
-5. **A TUI** — deferred, *not* rejected (2026-09-12). If pursued, the standing architect recommendation is a
-   **separate `brygge-tui` crate over `brygge-ir`** (never in the decode binary), designed to make
-   derived/dropped/refused *more* visible, not less. Draft an RFC first.
+10. **A TUI:** deferred, *not* rejected (2026-09-12). If pursued, the standing architect recommendation is a
+    **separate `brygge-tui` crate over `brygge-ir`** (never in the decode binary), designed to make
+    derived/dropped/refused *more* visible, not less. Draft an RFC first.
 
-**Track B — encode → prikk (owner/prikk-gated):**
-6. **RFC 008 (prikk encoder).** B0 (a labelled, unsealed, `Unverifiable` reviewable proposal) is buildable
-   once designed; B1 (real/sealed imports) waits on prikk landing UD-1 (import-shaped attestation), UD-2
-   (an authorized import block kind), UD-3/OQ-2 (sealing ruling), OQ-1 (what the importer signs), UD-5
-   (format stability). The `brygge-01` §11 UD table must be **re-verified against the current prikk** when
-   Track B design begins (it was written at prikk 0.27.1; prikk has moved on). These are owner territory.
+**Track B — encode → prikk:**
+11. **RFC 008 (prikk encoder).** prikk decides its import design, and brygge informs it proactively
+    (ROADMAP Track B).
+    - prikk ruled OQ-1…OQ-3 on 2026-09-13: the importer signs, and an adopted maintainer seals.
+    - prikk ruled UD-4 on 2026-09-23. The importer is prikk's own import command.
+    - The encoder waits on prikk building UD-1 (an import-shaped attestation) and UD-2 (an authorized
+      import block kind). `brygge-01` §11 records the state as of prikk 0.46.0.
 
 ## 9. Known limits (set expectations honestly)
 
-- **No encode yet.** This build is decode + inspect + verify + summary. `encode` is gated (§8.6).
-- **CVS is lossy by nature** (SRC-C3): the changeset is brygge's reconstruction, every atom `Derived`;
-  changeset-level `verify --against-source` is *not offered* (there is no source changeset to check
-  against) — only per-file content + deterministic reproduction. This is stated before the run (VF-5).
-- **SVN reads fulltext dumps**; delta-format dumps are refused (§8.2). **CVS reads a local repository**;
+- **No encode yet.** 0.1.0 is decode + inspect + verify (§8, Track B).
+- **CVS is lossy by nature** (SRC-C3): the changeset is brygge's reconstruction, and every atom is
+  `Derived`. Changeset-level `verify --against-source` is *not offered*, because there is no source
+  changeset to check against; only per-file content and deterministic reproduction are. 0.1.0 imports the
+  main line only. All of this is stated before the run (VF-5) and in `docs/src/guide/cvs.md`.
+- **SVN reads fulltext dumps**; delta-format dumps are refused. **CVS reads a local repository**;
   `:pserver:` is refused.
-- **Peak memory is O(content)** — the IR *is* the content; RFC 010 bounds *scratch*, not the IR floor.
-- The design docs are marked "v0.2 (draft for review)"; they are the working contract and are accurate to
-  the delivered decode half. Treat the requirements/external-design as stable and the threat model as the
-  living document (revisited every release).
+- **Git SHA-256 repositories are refused** until the Git dependency reads them.
+- **Peak memory is O(content)**: the IR *is* the content. Ceilings refuse rather than exhaust, but nothing
+  streams yet (0.2.0).
+- **No progress reporting or cancellation.** Interrupting a decode is safe (the artifact write is atomic),
+  but it produces nothing.
+- The threat model is the living document, revisited every release (v0.3 for 0.1.0).
 
 ---
 
-*Handover complete. The gates are green, the invariants hold, and the reasoning behind every decision is in
+*Handover complete, and 0.1.0 released. The gates are green on the MSRV, the invariants hold, and the reasoning behind every decision is in
 the RFCs and their handoffs. Build the next thing the way this was built: design first, refuse rather than
 misread, keep honesty in the object, and measure before you optimize.*

@@ -48,32 +48,33 @@ is written by the architect and reviewed/approved per `GOVERNANCE.md`.
 
 ## State
 
-**All four sources on the gradient are built (not yet released — `ROADMAP.md`), and the IR contract was
-FROZEN at 1.0.0 (RFC 003 D-7, 2026-09-08) and is being re-cut to contract `0.2.0` (RFC 011, D-1(a),
-accepted 2026-09-23; implemented by its handoff).** Per the lifecycle policy, **the folder an RFC lives in
-is the source of truth for its state**; this table is the index the policy asks each project to keep,
-grouped by state as RFC 000 recommends. Update it in the same commit that moves an RFC between folders.
+**brygge 0.1.0 is released (2026-09-24): all four sources on the gradient decode into IR contract
+`0.2.0` (RFC 011).** The RFCs that 0.1.0 implements are in `done/`. RFC 010 stays accepted: its first
+increment (the input ceilings) shipped in 0.1.0, and increments 2–4 (streaming) are planned for 0.2.0.
+Per the lifecycle policy, **the folder an RFC lives in is the source of truth for its state**. This
+table is the index the policy asks each project to keep, grouped by state as RFC 000 recommends. Update it
+in the same commit that moves an RFC between folders.
 
 ### Accepted
 
 | RFC | Scope | Handoff(s) |
 |---|---|---|
-| [001](accepted/001-ir-foundations.md) | IR foundations & obligations | `handoffs/001-ir-foundations/` |
-| [002](accepted/002-honesty-and-provenance-machinery.md) | Honesty & provenance machinery | (folded into 001's handoff) |
-| [003](accepted/003-determinism-format-and-versioning.md) | Determinism, IR artifact format & versioning, integrity digest | (folded into 001's handoff) |
-| [004](accepted/004-git-decoder.md) | Git decoder | `handoffs/004-git-decoder/` |
-| [005](accepted/005-mercurial-decoder.md) | Mercurial decoder | `handoffs/005-mercurial-decoder/` |
-| [006](accepted/006-subversion-decoder.md) | Subversion decoder | `handoffs/006-subversion-decoder/` |
-| [007](accepted/007-cvs-decoder.md) | CVS decoder | `handoffs/007-cvs-decoder/` |
-| [009](accepted/009-dependency-surface-and-supply-chain-policy.md) | Dependency-surface & supply-chain policy | `handoffs/009-dependency-surface-and-supply-chain-policy/` |
-| [010](accepted/010-bounded-memory-and-streaming.md) | Bounded memory & streaming | `handoffs/010-bounded-memory-and-streaming/` |
-| [011](accepted/011-ir-contract-recut.md) | IR contract re-cut before the first release (supersedes parts of 001/002/003; contract `0.2.0`) | `handoffs/011-ir-contract-recut/` |
+| [010](accepted/010-bounded-memory-and-streaming.md) | Bounded memory & streaming (increment 1 shipped in 0.1.0; increments 2–4 in 0.2.0) | `handoffs/010-bounded-memory-and-streaming/` |
 
 ### Done
 
-| RFC | Scope |
-|---|---|
-| [000](done/000-rfc-lifecycle-policy.md) | RFC lifecycle policy — brygge uses the **5-folder variant** (`proposed → accepted → done`, plus `archive/` and optional `draft/`) |
+| RFC | Scope | Handoff(s) |
+|---|---|---|
+| [000](done/000-rfc-lifecycle-policy.md) | RFC lifecycle policy: brygge uses the **5-folder variant** (`proposed → accepted → done`, plus `archive/` and optional `draft/`) | — |
+| [001](done/001-ir-foundations.md) | IR foundations & obligations. Implemented (0.1.0) | `handoffs/001-ir-foundations/` |
+| [002](done/002-honesty-and-provenance-machinery.md) | Honesty & provenance machinery. Implemented (0.1.0) | (folded into 001's handoff) |
+| [003](done/003-determinism-format-and-versioning.md) | Determinism, IR artifact format & versioning, integrity digest. Implemented (0.1.0), as re-cut by RFC 011 | (folded into 001's handoff) |
+| [004](done/004-git-decoder.md) | Git decoder. Implemented (0.1.0) | `handoffs/004-git-decoder/` |
+| [005](done/005-mercurial-decoder.md) | Mercurial decoder. Implemented (0.1.0) | `handoffs/005-mercurial-decoder/` |
+| [006](done/006-subversion-decoder.md) | Subversion decoder. Implemented (0.1.0) | `handoffs/006-subversion-decoder/` |
+| [007](done/007-cvs-decoder.md) | CVS decoder. Implemented (0.1.0) | `handoffs/007-cvs-decoder/` |
+| [009](done/009-dependency-surface-and-supply-chain-policy.md) | Dependency-surface & supply-chain policy. Implemented (0.1.0) | `handoffs/009-dependency-surface-and-supply-chain-policy/` |
+| [011](done/011-ir-contract-recut.md) | IR contract re-cut before the first release (supersedes parts of 001/002/003; contract `0.2.0`). Implemented (0.1.0) | `handoffs/011-ir-contract-recut/` |
 
 ### Proposed
 

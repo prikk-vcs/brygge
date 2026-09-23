@@ -1,6 +1,6 @@
 # RFC 001 — IR foundations: the intermediate representation
 
-**Status.** Accepted (2026-09-03) — the first brygge RFC, and the substrate every decoder and encoder
+**Status.** **Implemented (0.1.0, 2026-09-24)**; shipped in brygge 0.1.0, and kept in `done/` as the historical record. History: Accepted (2026-09-03) — the first brygge RFC, and the substrate every decoder and encoder
 shares. The design is settled and the implementer may build against it (`brygge-ir` per the handoff).
 Defines *what the IR is*: its logical model, how epistemic status and provenance are carried, why it
 holds evidence-for-identity rather than identity, and the shape of its durable artifact.

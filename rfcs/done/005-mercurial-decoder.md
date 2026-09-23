@@ -1,6 +1,6 @@
 # RFC 005 — Mercurial decoder
 
-**Status.** Accepted (2026-09-06). Both owner-gated decisions are ruled: the **read tier is Tier 2 — the
+**Status.** **Implemented (0.1.0, 2026-09-24)**; shipped in brygge 0.1.0, and kept in `done/` as the historical record. History: Accepted (2026-09-06). Both owner-gated decisions are ruled: the **read tier is Tier 2 — the
 pure-Rust revlog reader** (chosen over the `hg`-CLI subprocess to hold the clean/safe/secure/self-contained
 line: no runtime dependency, no subprocess, `forbid(unsafe)` maximal, smallest trust surface — D-1/OQ-A),
 and the **hg feature floor is ratified: refuse subrepos + largefiles + censored revisions** (D-4/OQ-B/OQ-D).
@@ -151,6 +151,12 @@ structure with no clean prikk analogue** — named branches versus bookmarks, ph
   robust small-surface line. Everything core (changesets, DAG, stated renames, named branches, bookmarks,
   `.hgtags`-as-content) is carried or dropped-with-record per D-4. A later OQ-3 revision may move an item;
   the read-a-policy mechanism (CF-03) implements whatever line is set.
+- **Floor as built for 0.1.0, ratified by the owner (OQ-B, 2026-09-06; D-A, 2026-09-24).** The floor is
+  exactly `crates/brygge-decode-hg/src/floor.rs`, recorded in every artifact as `params["floor"]`:
+  `subrepo`, `largefiles`, `lfs`, `censored-revision` (OQ-B); `non-utf8-path`, `non-utf8-extra-key`,
+  `unfinished-merge`, `ellipsis-revision`, `external-storage-revision`, `unknown-revision-flag` (D-A).
+  Format refusals (an unimplemented `.hg/requires` entry, an obsstore other than version 1) are not
+  floor features. The hg README's Floor table and `docs/src/guide/hg.md` state each one's remedy.
 - **OQ-C — `.hgtags` beyond content.** Carry `.hgtags` as file content only (faithful, `Stated`), or
   *also* synthesize tag `RefRecord`s from parsing it (a `Derived` interpretation of a versioned file)?
   *Leaning:* content-only for M2; derived tag-ref synthesis deferred until there is a consumer for it.

@@ -9,8 +9,8 @@
 | Not | a design, a schema, an API, or code. Where a decision belongs to a human, it is named in §11/§12 and left there. |
 | ID scheme | `PU-` purpose · `NG-` non-goal · `PR-` preserve rule · `HO-` honesty rule · `VF-` verification · `ID-` idempotence · `FA-` failure · `BN-` boundary · `IR-` IR obligation · `SRC-` per-source · `UD-` prikk-side dependency · `OQ-` open question |
 
-> **Delivery status (2026-09-24).** The **decode → IR half is built** against these requirements for all
-> four named sources (Git, hg, SVN, CVS) and is being prepared as the first release, **0.1.0** — see
+> **Delivery status (2026-09-24).** The **decode → IR half is released as brygge 0.1.0** against these
+> requirements for all four named sources (Git, hg, SVN, CVS) — see
 > [`development/handoffs/HANDOFF.md`](development/handoffs/HANDOFF.md), `ROADMAP.md` and `rfcs/`. This
 > document remains the stable contract those decoders satisfy. The **encode → prikk half** waits on prikk:
 > §11 and §12 record prikk's state and rulings as re-verified against prikk 0.46.0 on 2026-09-23.
