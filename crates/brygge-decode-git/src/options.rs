@@ -9,8 +9,9 @@ use std::collections::BTreeMap;
 pub struct Options {
     /// Infer renames from identical content and mark them **Derived** (RFC 004 D-3). **Off by default.**
     /// When on, a delete+add of the *same blob* within one commit also emits a marked
-    /// `Derived(InferredRename)` hint — beside, never replacing, the literal delete+add.
-    pub detect_renames: bool,
+    /// `Derived(InferredRename)` hint — beside, never replacing, the literal delete+add. CLI flag
+    /// `--infer-renames` (handoff `cli-and-verify-handoff-v2.md`).
+    pub infer_renames: bool,
     /// The similarity percentage recorded as the rename parameter. M1 detects only exact-content moves,
     /// so this is `100`; it exists so the recorded parameter is explicit and future thresholds fit.
     pub rename_threshold: u8,
@@ -19,7 +20,7 @@ pub struct Options {
 impl Default for Options {
     fn default() -> Self {
         Self {
-            detect_renames: false,
+            infer_renames: false,
             rename_threshold: 100,
         }
     }
@@ -30,11 +31,8 @@ impl Options {
     #[must_use]
     pub fn as_params(&self) -> BTreeMap<String, String> {
         let mut m = BTreeMap::new();
-        m.insert(
-            "detect_renames".to_string(),
-            self.detect_renames.to_string(),
-        );
-        if self.detect_renames {
+        m.insert("infer_renames".to_string(), self.infer_renames.to_string());
+        if self.infer_renames {
             m.insert(
                 "rename_algorithm".to_string(),
                 "exact-content-move".to_string(),

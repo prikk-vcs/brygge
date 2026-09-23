@@ -1,22 +1,22 @@
 //! Decode a Git repository into a brygge IR and print its fidelity report.
 //!
 //! Usage: `cargo run -p brygge-decode-git --example decode_repo -- [path-to-repo]`
-//! (defaults to the current directory). Add `--detect-renames` to turn on the opt-in, always-marked
+//! (defaults to the current directory). Add `--infer-renames` to turn on the opt-in, always-marked
 //! rename inference (RFC 004 D-3).
 
 fn main() {
     let mut path = ".".to_string();
-    let mut detect_renames = false;
+    let mut infer_renames = false;
     for arg in std::env::args().skip(1) {
-        if arg == "--detect-renames" {
-            detect_renames = true;
+        if arg == "--infer-renames" {
+            infer_renames = true;
         } else {
             path = arg;
         }
     }
 
     let opts = brygge_decode_git::Options {
-        detect_renames,
+        infer_renames,
         rename_threshold: 100,
     };
 

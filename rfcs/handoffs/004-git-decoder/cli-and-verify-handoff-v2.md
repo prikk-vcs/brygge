@@ -145,6 +145,16 @@ report prints **two separate result lines**:
 If the internal checks fail, still run against-source; the claims are independent (VF-4). Exit `50` if
 anything fails.
 
+*(Amended after review 003.)*
+- **R-1: "could not be checked" is its own outcome.**
+  - When the source cannot be re-decoded, or its kind has no decoder, report `against-source: could not
+    be checked (<reason>)` (machine: `not-checked`). Never report "does not correspond", which is a
+    claim of mismatch.
+  - Exit `50` if any check genuinely failed. Otherwise, if a requested against-source could not be
+    checked, exit `1`.
+- **R-3: replay takes, rather than clones, a tree whose last first-parent reference is being consumed.**
+  It clones only at branch points. A linear history does no tree clones at all.
+
 ### 3.6 Untrusted text in every output (CR-19)
 
 Add a module `crates/brygge/src/display.rs` (with sibling tests) holding two functions. Use them for
@@ -154,6 +164,8 @@ drop `what` strings, error texts carrying paths) on stdout **and** stderr.
   U+0080–U+009F) and every Unicode bidirectional or invisible format control (U+200B–U+200F,
   U+202A–U+202E, U+2060–U+2069, U+FEFF) with `\u{XXXX}`. Replace a literal backslash with `\\` so the
   escaping cannot be imitated.
+  *(Amended after review 003, R-2: also escape U+00AD, U+061C, U+180E, U+2028, U+2029, U+206A–U+206F
+  and U+FFF9–U+FFFB, which are invisible or line-breaking characters the first list missed.)*
 - **`machine_value(s) -> String`.** Pass through ASCII `A–Z a–z 0–9 - . _ ~ / @ : +`, and percent-encode
   every other byte of the UTF-8 encoding as `%XX` (uppercase hex), including `%`, `=`, space and all
   non-ASCII bytes. A value can then never contain `=` or a newline.
@@ -172,7 +184,7 @@ drop `what` strings, error texts carrying paths) on stdout **and** stderr.
   verify.check.<name>=pass|fail|n/a
   verify.authorship=unverifiable
   verify.internal=pass|fail
-  verify.against_source=corresponds|does-not-correspond|reproduces|does-not-reproduce|not-run
+  verify.against_source=corresponds|does-not-correspond|reproduces|does-not-reproduce|not-checked|not-run
   verify.detail.<i>=<value>
   verify.result=pass|fail
   ```

@@ -409,7 +409,7 @@ fn walk_tree(
 }
 
 /// Diff `base` → `child` into literal path operations (all *Stated*), plus — only if
-/// `opts.detect_renames` — marked *Derived* rename hints for exact-content moves. The literal
+/// `opts.infer_renames` — marked *Derived* rename hints for exact-content moves. The literal
 /// delete+add always remain; a hint sits beside them, never in place of them (RFC 004 D-3).
 fn diff_to_ops(
     repo: &gix::Repository,
@@ -458,7 +458,7 @@ fn diff_to_ops(
     }
 
     let mut hints = Vec::new();
-    if opts.detect_renames {
+    if opts.infer_renames {
         // Exact-content moves only (RFC 004 D-3, OQ-A). A hint is emitted **only** when a blob deleted
         // at exactly one path reappears added at exactly one path — an unambiguous 1:1 move. An
         // ambiguous many-to-many identical-content case (the same bytes deleted at several paths and

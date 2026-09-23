@@ -222,7 +222,7 @@ fn renames_off_by_default_on_marks_derived() {
 
     // On: a Derived InferredRename hint appears beside the still-present literal ops.
     let opts = Options {
-        detect_renames: true,
+        infer_renames: true,
         rename_threshold: 100,
     };
     let ir = decode(r.path(), &opts).unwrap();
@@ -689,7 +689,7 @@ fn ambiguous_identical_content_move_is_not_marked() {
     r.commit_all("shuffle identical content");
 
     let opts = Options {
-        detect_renames: true,
+        infer_renames: true,
         rename_threshold: 100,
     };
     let ir = decode(r.path(), &opts).unwrap();

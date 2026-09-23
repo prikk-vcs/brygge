@@ -7,21 +7,28 @@ belongs to no particular system, so a target — prikk first — can encode from
 and marks — in the object itself — anything it had to *infer*. It reads untrusted repositories, links no
 network, and writes only where you tell it.
 
+## Vocabulary
+
+**artifact** the IR file `decode` writes · **source** the repository or dumpfile read · **stated** the
+source's own record · **derived** brygge's judgment, marked as such · **dropped** not carried, and
+recorded · **refused** the whole import declined, so no artifact is written · **Unverifiable** imported
+authorship cannot be checked — a property of the claim, not a pending check.
+
 ## 30-second start
 
 ```sh
-# Decode a source repository into an IR artifact:
-brygge decode git  /path/to/repo            --ir out.ir     # or hg | svn | cvs
-brygge decode svn  /path/to/repo-or-dumpfile --ir out.ir --reconstruct-refs
-brygge decode cvs  /path/to/cvsroot/module   --ir out.ir
+# Decode a source repository into an IR artifact (--out is required):
+brygge decode git  /path/to/repo            --out out.ir     # or hg | svn | cvs
+brygge decode svn  /path/to/repo-or-dumpfile --out out.ir --reconstruct-refs
+brygge decode cvs  /path/to/cvsroot/module   --out out.ir
 
 # Read what you got:
-brygge inspect --ir out.ir            # atoms, their status, source ids, the loss boundary
-brygge summary --import out.ir        # the fidelity report (below)
+brygge inspect out.ir            # the fidelity report (below)
+brygge inspect out.ir --atoms    # + atoms, their status, source ids, the loss boundary
 
 # Check it:
-brygge verify --internal        --import out.ir   # honesty holds, no source needed
-brygge verify --against-source /path/to/repo --import out.ir   # re-derive and compare
+brygge verify out.ir                                   # the honesty checks; no source needed
+brygge verify out.ir --against-source /path/to/repo     # + re-derive and compare
 ```
 
 Add `--format machine` to any of these for stable, line-oriented output a script or CI can read.
@@ -29,39 +36,38 @@ Add `--format machine` to any of these for stable, line-oriented output a script
 ## Reading the fidelity report
 
 This is the one skill worth learning, because it is how you know a migration is safe. Every `decode` and
-`summary` prints it:
+`inspect` prints it:
 
 ```
 fidelity report (v1) — what brygge imported, and how much is the source's own record
-vs brygge's judgment. Authorship is Unverified (imported, not verified by any target).
+vs brygge's judgment. Authorship is Unverifiable (carried as the source claimed it; no target can verify it).
 
   preserved: 128 atom(s), 3 ref(s), 512 blob(s), 1048576 content byte(s)
   derived:   brygge's judgment, not the source's fact — a later brygge version could differ; ...
     reconstructed-changeset: 128
-  dropped:   recorded here, never silently lost:
-    representation: 2
-  refused:   a source feature below the floor — refused rather than guessed:
-    ...
+  not history (no content or claim lost): 3
+  dropped (recorded loss):
+    advisory-unreliable: 2
 ```
 
 - **preserved** — carried faithfully, as the source recorded it.
 - **derived** — brygge's *judgment*, not the source's fact (an inferred rename, a reconstructed CVS
   changeset, a convention-guessed SVN branch). A different brygge version might judge differently, so it is
-  marked *in the object* — `inspect` shows exactly where. **If this section is non-empty, part of your
-  import is brygge's interpretation, and you should know which part.**
-- **dropped** — things not carried, but *recorded here*, never silently lost (physical storage layout;
-  advisory data like SVN `svn:mergeinfo`; working-copy transforms like keyword expansion).
-- **refused** — a source feature brygge will not approximate, refused with a named reason rather than
-  guessed at.
-- **Authorship is always `Unverified`.** brygge faithfully carries who the source *claimed* authored
+  marked *in the object* — `inspect --atoms` shows exactly where. **If this section is non-empty, part of
+  your import is brygge's interpretation, and you should know which part.**
+- **not history** — ordinary storage layout brygge doesn't carry (packfiles, the working copy, reflogs):
+  nothing was lost, so this is one line, not a list to worry about.
+- **dropped (recorded loss)** — things not carried, but *recorded here*, never silently lost (advisory data
+  like SVN `svn:mergeinfo`; working-copy transforms like keyword expansion).
+- **Authorship is always `Unverifiable`.** brygge faithfully carries who the source *claimed* authored
   something; it never asserts that claim was verified by anyone.
 
 ## What each source can and cannot promise (before you run)
 
-Faithfulness means something different per source, so brygge tells you up front:
+Faithfulness means something different per source, so brygge tells you up front, before decoding starts:
 
-- **Git** — a real history graph; renames are *inferred* (off by default, and marked `derived` when on).
-  Submodules/octopus/grafts/shallow are refused.
+- **Git** — a real history graph; renames are *inferred* only with `--infer-renames`, and are then marked
+  `derived`. Submodules/octopus/grafts/shallow are refused.
 - **Mercurial** — like Git, plus **renames the source recorded** (`hg mv`) come through as *stated*, not
   guessed. Subrepos, largefiles, and censored revisions are refused.
 - **Subversion** — atomic revisions import as a stated spine; **branches/tags are directory *convention***,
@@ -75,9 +81,11 @@ Faithfulness means something different per source, so brygge tells you up front:
 
 ## Exit codes (for scripts and CI)
 
-`0` clean · `10` recorded loss (advisory/other drops) · `20` a feature below the floor was refused ·
-`30` a convention/confidence line was crossed (an SVN layout not found, or a CVS reconstruction below the
-floor) · `50` a `verify` check failed · `1` bad arguments or unreadable input.
+`0` clean · `10` recorded loss (advisory/other drops) · `20` a feature below the floor was refused (or a
+resource ceiling was hit) · `30` a convention/confidence line was crossed (an SVN layout not found, or a
+CVS reconstruction below the floor) · `50` a `verify` check failed · `1` a runtime failure (unreadable
+input, I/O, an internal decoder fault) · `2` a usage error (bad arguments, an option given to a source kind
+it does not apply to).
 
 ## Going deeper
 
@@ -86,8 +94,10 @@ floor) · `50` a `verify` check failed · `1` bad arguments or unreadable input.
   is a first-class deliverable.
 - **Decisions:** `rfcs/` — one RFC per source decoder (004 Git, 005 Mercurial, 006 Subversion, 007 CVS),
   the IR foundations (001/002/003), the dependency-surface policy (009), and bounded memory (010).
-- **Contributing / maintaining:** start at [`HANDOFF.md`](HANDOFF.md) (status, invariants, architecture,
-  the backlog, and how to build and gate), then [`GOVERNANCE.md`](GOVERNANCE.md) (who decides what) and
+- **Contributing / maintaining:** start at
+  [`HANDOFF.md`](docs/src/development/handoffs/HANDOFF.md) (status, invariants, architecture, the
+  backlog, and how to build and gate), then
+  [`GOVERNANCE.md`](docs/src/development/handoffs/GOVERNANCE.md) (who decides what) and
   [`ROADMAP.md`](ROADMAP.md).
 - **`encode` is gated** pending the prikk import surface and the owner's open questions (RFC 008); this
-  build is decode + inspect + verify + summary.
+  build is decode + inspect + verify.

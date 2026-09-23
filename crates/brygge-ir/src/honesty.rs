@@ -13,6 +13,11 @@ use crate::status::EpistemicStatus;
 /// The machine-report contract version (RFC 002 D-3), independent of the IR contract and the tool.
 pub const REPORT_VERSION: u32 = 1;
 
+/// The `dropped` label for [`LossClass::Representation`] (matches [`class_label`]), used by
+/// [`FidelityReport::render_human`] to split the representation-class count onto its own "not history"
+/// line (handoff `cli-and-verify-handoff-v2.md` §3.4).
+const REPRESENTATION_LABEL: &str = "representation";
+
 /// What an import preserved, derived, dropped, and refused. Grouped counts are in sorted-key order for
 /// deterministic rendering.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -99,9 +104,12 @@ impl FidelityReport {
         s
     }
 
-    /// A human-facing rendering. Authorship is always shown `Unverified` (`VF-4/HO-3`), and the report
+    /// A human-facing rendering. Authorship is always shown `Unverifiable` (`VF-4/HO-3`), and the report
     /// makes the stated-vs-derived distinction plain — a newcomer should be able to tell what the source
-    /// recorded from what brygge judged, and see that nothing was silently lost (`HO-4`, SRC-C2).
+    /// recorded from what brygge judged, and see that nothing was silently lost (`HO-4`, SRC-C2). The
+    /// dropped section is split (handoff `cli-and-verify-handoff-v2.md` §3.4) so a newcomer is not alarmed
+    /// by ordinary storage-layout drops: representation-class drops (nothing lost — packfiles, working
+    /// copy, reflogs and the like) are one line; everything else is genuine recorded loss.
     #[must_use]
     pub fn render_human(&self) -> String {
         use std::fmt::Write as _;
@@ -113,7 +121,8 @@ impl FidelityReport {
         );
         let _ = writeln!(
             s,
-            "vs brygge's judgment. Authorship is Unverified (imported, not verified by any target)."
+            "vs brygge's judgment. Authorship is Unverifiable (carried as the source claimed it; no \
+             target can verify it)."
         );
         let _ = writeln!(s);
         let _ = writeln!(
@@ -131,17 +140,27 @@ impl FidelityReport {
             let _ = writeln!(
                 s,
                 "  derived:   brygge's judgment, not the source's fact — a later brygge version could \
-                 differ; `inspect` shows where each is marked:"
+                 differ; `inspect --atoms` shows where each is marked:"
             );
             for (kind, n) in &self.derived {
                 let _ = writeln!(s, "    {kind}: {n}");
             }
         }
-        if self.dropped.is_empty() {
-            let _ = writeln!(s, "  dropped:   nothing dropped");
+        let representation_n = self.dropped.get(REPRESENTATION_LABEL).copied().unwrap_or(0);
+        let _ = writeln!(
+            s,
+            "  not history (no content or claim lost): {representation_n}"
+        );
+        let recorded_loss: Vec<(&String, &u64)> = self
+            .dropped
+            .iter()
+            .filter(|(class, _)| class.as_str() != REPRESENTATION_LABEL)
+            .collect();
+        if recorded_loss.is_empty() {
+            let _ = writeln!(s, "  dropped (recorded loss): nothing");
         } else {
-            let _ = writeln!(s, "  dropped:   recorded here, never silently lost:");
-            for (class, n) in &self.dropped {
+            let _ = writeln!(s, "  dropped (recorded loss):");
+            for (class, n) in recorded_loss {
                 let _ = writeln!(s, "    {class}: {n}");
             }
         }

@@ -307,6 +307,14 @@ and fields 2–7).
   - shows signatures by label and extras by label (the bytes as a length, not a dump), all neutralized
     through `display`.
 - Machine formats: `inspect_version=3` and `verify_version=3` (the record names change).
+- **The verdict is three-valued** (carried from review 003, R-5; mandatory).
+  - When a requested `--against-source` could not be checked (`not-checked`) and nothing that ran
+    failed, the verdict is **`incomplete`**: human `=> INCOMPLETE (a requested check could not run)`,
+    machine `verify.result=incomplete`, exit `1`.
+  - `pass` means everything requested ran and held. `fail` means something that ran did not hold
+    (exit `50`, which takes precedence).
+  - The verdict must never read `PASS` when the exit code is not `0`.
+  - Test: the nonexistent-source case prints `INCOMPLETE` and `verify.result=incomplete`, and exits 1.
 
 ## 5. Mechanical decoder adaptation (keep behaviour; fill what is directly at hand)
 

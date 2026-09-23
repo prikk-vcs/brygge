@@ -25,7 +25,7 @@ println!("{}", brygge_ir::honesty::summary(&ir).render_human());
 Or run the example against any repository:
 
 ```
-cargo run -p brygge-decode-git --example decode_repo -- /path/to/repo [--detect-renames]
+cargo run -p brygge-decode-git --example decode_repo -- /path/to/repo [--infer-renames]
 ```
 
 Status: **Built (ROADMAP M1); not yet released** — commits→atoms, tree-snapshot diff→literal ops,

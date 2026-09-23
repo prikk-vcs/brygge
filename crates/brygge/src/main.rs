@@ -1,13 +1,16 @@
 //! The brygge command-line tool: carry version-control history into an intermediate representation.
 //!
-//! This increment implements the **read side** (RFC 004 increment 2, external design CL-01..08): `decode`
-//! (Git), `inspect`, `verify` (`--internal` VF-3 / `--against-source` VF-2), and `summary`, with human and
-//! machine output and the CL-08 exit-code classes. `encode` is gated pending the prikk import surface
-//! (RFC 008). The IR core and `verify --internal` link no decoder (RFC 009 D-1); `decode` and
-//! `verify --against-source` wire in `brygge-decode-git`.
+//! The three-verb surface (external design v0.3 CL-01…CL-08, handoff `cli-and-verify-handoff-v2.md`):
+//! `decode` (git, hg, svn, cvs), `inspect` (the fidelity report, `--atoms` for the reviewer's detail), and
+//! `verify` (always the internal honesty checks; `--against-source` additionally re-derives and compares,
+//! VF-2). `encode` is not part of the surface until prikk's import foundations exist (Track B1). The IR
+//! core and `verify`'s internal checks link no decoder (RFC 009 D-1); `decode` and
+//! `verify --against-source` wire in the four decoder crates. Every string that can originate in a source
+//! repository is neutralized before it reaches stdout or stderr (`display`, CR-19).
 
 mod cli;
 mod commands;
+mod display;
 mod exit;
 
 use cli::Command;
@@ -18,7 +21,7 @@ fn main() {
         Ok(cmd) => run(cmd),
         Err(usage) => {
             eprintln!("{usage}");
-            exit::FAILURE
+            exit::USAGE
         }
     };
     std::process::exit(code);
@@ -35,37 +38,23 @@ fn run(cmd: Command) -> i32 {
             println!("{}", cli::USAGE);
             exit::CLEAN
         }
-        Command::EncodeGated => {
-            eprintln!(
-                "the prikk encoder is gated pending owner decisions (RFC 008, GATED-1..3); \
-                 not available in this build"
-            );
-            exit::FAILURE
-        }
         Command::Decode {
             kind,
-            path,
+            source,
             out,
-            detect_renames,
+            infer_renames,
             reconstruct_refs,
             format,
-        } => commands::run_decode(
-            kind,
-            &path,
-            out.as_deref(),
-            detect_renames,
-            reconstruct_refs,
+        } => commands::run_decode(kind, &source, &out, infer_renames, reconstruct_refs, format),
+        Command::Inspect {
+            artifact,
+            atoms,
             format,
-        ),
-        Command::Inspect { ir, format } => commands::run_inspect(&ir, format),
-        Command::VerifyInternal { import, format } => {
-            commands::run_verify_internal(&import, format)
-        }
-        Command::VerifyAgainstSource {
-            repo,
-            import,
+        } => commands::run_inspect(&artifact, atoms, format),
+        Command::Verify {
+            artifact,
+            against_source,
             format,
-        } => commands::run_verify_against_source(&repo, &import, format),
-        Command::Summary { import, format } => commands::run_summary(&import, format),
+        } => commands::run_verify(&artifact, against_source.as_deref(), format),
     }
 }

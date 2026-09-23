@@ -10,8 +10,9 @@ use std::collections::BTreeMap;
 pub struct Options {
     /// Infer renames hg did **not** record, and mark them `Derived` (parity with the Git decoder,
     /// RFC 004 D-3 / OQ-A). **Off by default.** Source-recorded (`hg mv`/`hg cp`) renames are always
-    /// carried as `Stated` and are unaffected by this flag.
-    pub detect_renames: bool,
+    /// carried as `Stated` and are unaffected by this flag. CLI flag `--infer-renames` (handoff
+    /// `cli-and-verify-handoff-v2.md`).
+    pub infer_renames: bool,
     /// The similarity percentage recorded as the rename parameter when inference is on (exact-content
     /// only for now, so `100`).
     pub rename_threshold: u8,
@@ -20,7 +21,7 @@ pub struct Options {
 impl Default for Options {
     fn default() -> Self {
         Self {
-            detect_renames: false,
+            infer_renames: false,
             rename_threshold: 100,
         }
     }
@@ -31,11 +32,8 @@ impl Options {
     #[must_use]
     pub fn as_params(&self) -> BTreeMap<String, String> {
         let mut m = BTreeMap::new();
-        m.insert(
-            "detect_renames".to_string(),
-            self.detect_renames.to_string(),
-        );
-        if self.detect_renames {
+        m.insert("infer_renames".to_string(), self.infer_renames.to_string());
+        if self.infer_renames {
             m.insert(
                 "rename_algorithm".to_string(),
                 "exact-content-move".to_string(),

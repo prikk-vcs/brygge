@@ -1,5 +1,11 @@
-//! A small hand-rolled argument parser for brygge's read-side command surface (external design CL-01..07,
-//! handoff D-A). No `clap`: the surface is small and brygge keeps its dependency surface small (RFC 009).
+//! A small hand-rolled argument parser for brygge's three-verb command surface (external design v0.3
+//! CL-01…CL-08, handoff `cli-and-verify-handoff-v2.md`). No `clap`: the surface is small and brygge keeps
+//! its dependency surface small (RFC 009).
+//!
+//! `decode`, `inspect`, `verify` — one noun per concept, nothing silently ignored. Every usage problem
+//! (an unknown command, an unknown or missing flag, a missing value, a missing positional, a repeated
+//! flag, or an option given to a source kind it does not apply to) is a parse error that `main` turns into
+//! exit `USAGE` (2), naming the problem and pointing to `brygge <command> --help`.
 
 use std::path::PathBuf;
 
@@ -25,90 +31,98 @@ pub enum SourceKind {
     Cvs,
 }
 
+impl SourceKind {
+    /// The lowercase label used on the command line and in messages.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Git => "git",
+            Self::Hg => "hg",
+            Self::Svn => "svn",
+            Self::Cvs => "cvs",
+        }
+    }
+}
+
 /// A parsed command.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
-    /// `decode <git|hg|svn> <path> [--ir <out>] [--detect-renames] [--reconstruct-refs] [--format …]`
+    /// `decode <git|hg|svn|cvs> <source> --out <artifact> [--infer-renames | --reconstruct-refs] [--format …]`
     Decode {
         /// Which source decoder to use.
         kind: SourceKind,
         /// The source repository path (for svn: a repository directory or a dumpfile).
-        path: PathBuf,
-        /// Where to write the IR artifact, if given.
-        out: Option<PathBuf>,
-        /// Turn on opt-in, always-marked rename inference (git/hg; ignored for svn).
-        detect_renames: bool,
-        /// Reconstruct branch/tag refs from the trunk/branches/tags convention, marking each `Derived`
-        /// (svn only; off by default).
+        source: PathBuf,
+        /// Where to write the IR artifact. Required (CL-01: `decode` never runs without producing it).
+        out: PathBuf,
+        /// Turn on opt-in, always-marked rename inference (git/hg only).
+        infer_renames: bool,
+        /// Reconstruct branch/tag refs by convention or symbol, marking each `Derived` (svn/cvs only).
         reconstruct_refs: bool,
         /// Output format.
         format: Format,
     },
-    /// `inspect --ir <file> [--format …]`
+    /// `inspect <artifact> [--atoms] [--format …]`
     Inspect {
         /// The IR artifact to read.
-        ir: PathBuf,
+        artifact: PathBuf,
+        /// Append the per-atom listing (the reviewer's detail) to the default fidelity report.
+        atoms: bool,
         /// Output format.
         format: Format,
     },
-    /// `verify --internal --import <file> [--format …]`
-    VerifyInternal {
+    /// `verify <artifact> [--against-source <source>] [--format …]`
+    Verify {
         /// The IR artifact to check.
-        import: PathBuf,
+        artifact: PathBuf,
+        /// If given, additionally re-derive from this source and confirm correspondence (VF-2).
+        against_source: Option<PathBuf>,
         /// Output format.
         format: Format,
     },
-    /// `verify --against-source <repo> --import <file> [--format …]`
-    VerifyAgainstSource {
-        /// The original source repository.
-        repo: PathBuf,
-        /// The IR artifact to check against it.
-        import: PathBuf,
-        /// Output format.
-        format: Format,
-    },
-    /// `summary --import <file> [--format …]`
-    Summary {
-        /// The IR artifact whose fidelity summary to reproduce.
-        import: PathBuf,
-        /// Output format.
-        format: Format,
-    },
-    /// `encode …` — gated pending the prikk import surface (RFC 008).
-    EncodeGated,
     /// `--version`.
     Version,
-    /// `--help` or no arguments.
+    /// `--help`, `<command> --help`, or no arguments.
     Help,
 }
 
-/// The top-level usage text.
+/// The top-level usage text. Lists only commands that exist (CL-06).
 pub const USAGE: &str = "\
 brygge — carry version-control history into an intermediate representation (IR).
 
 USAGE:
-  brygge decode <git|hg|svn|cvs> <path> [--ir <out>] [--detect-renames] [--reconstruct-refs] [--format human|machine]
-  brygge inspect --ir <file> [--format human|machine]
-  brygge verify --internal --import <file> [--format human|machine]
-  brygge verify --against-source <repo> --import <file> [--format human|machine]
-  brygge summary --import <file> [--format human|machine]
-  brygge --version | --help
+  brygge decode <git|hg|svn|cvs> <source> --out <artifact> [--infer-renames | --reconstruct-refs] [--format human|machine]
+  brygge inspect <artifact> [--atoms] [--format human|machine]
+  brygge verify <artifact> [--against-source <source>] [--format human|machine]
+  brygge --version | --help | <command> --help
 
 COMMANDS:
-  decode   read a source into an IR artifact (git, hg, svn, or cvs in this build). For svn, <path> is a
-           repository directory (dumped read-only via `svnadmin dump`) or a dumpfile. For cvs, <path> is a
-           local repository directory of RCS ,v files (reconstructed changesets are Derived). For svn/cvs,
-           --reconstruct-refs turns on the opt-in Derived branch/tag layer
-  inspect  list atoms with their epistemic status, source ids, and the loss boundary
-  verify   --internal: honesty checks provable with no source (VF-3);
-           --against-source: re-derive from the source and confirm correspondence (VF-2)
-  summary  reproduce the fidelity summary from an artifact alone (FS-02)
-  encode   GATED — the prikk encoder awaits owner decisions (RFC 008); not in this build";
+  decode   read a source into an IR artifact (git, hg, svn, or cvs in this build). --out is required.
+           For svn, <source> is a repository directory (dumped read-only via `svnadmin dump`) or a
+           dumpfile; for cvs, a local repository directory of RCS ,v files. --infer-renames (git/hg) and
+           --reconstruct-refs (svn/cvs) each turn on an opt-in, always-marked derived layer; giving either
+           to a source kind it does not apply to is a usage error
+  inspect  print the fidelity report an artifact alone reproduces (FS-02); --atoms adds the per-atom
+           listing: epistemic status, source ids, derived parameters, and the loss boundary
+  verify   the honesty checks any reader can run with no source (always); with --against-source, also
+           re-derive from the source and confirm correspondence (VF-2) — the two results are reported
+           separately, never merged
+
+VOCABULARY: artifact, source, stated, derived, dropped, refused, Unverifiable.";
+
+fn usage_error(command: &str, problem: impl std::fmt::Display) -> String {
+    format!("{problem}\n\nrun `brygge {command} --help` for usage")
+}
+
+fn inapplicable_option(option: &str, kinds: &str, kind: SourceKind) -> String {
+    format!("--{option} applies to {kinds}, not to {}", kind.label())
+}
 
 /// Parse arguments (those after the program name) into a [`Command`].
 ///
 /// # Errors
-/// Returns a usage message on a malformed or unknown invocation.
+/// Returns a usage message — the problem, then a pointer to `brygge <command> --help` — on a malformed or
+/// unknown invocation. The caller exits `USAGE` (2) on this path.
 pub fn parse(args: &[String]) -> Result<Command, String> {
     let mut it = args.iter();
     let Some(first) = it.next() else {
@@ -117,12 +131,17 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
     match first.as_str() {
         "--version" | "-V" => Ok(Command::Version),
         "--help" | "-h" => Ok(Command::Help),
-        "encode" => Ok(Command::EncodeGated),
         "decode" => parse_decode(args.get(1..).unwrap_or(&[])),
         "inspect" => parse_inspect(args.get(1..).unwrap_or(&[])),
         "verify" => parse_verify(args.get(1..).unwrap_or(&[])),
-        "summary" => parse_summary(args.get(1..).unwrap_or(&[])),
-        other => Err(format!("unknown command '{other}'\n\n{USAGE}")),
+        "encode" => Err(
+            "'encode' is not available yet: the prikk encoder follows prikk's import foundations \
+             (see ROADMAP)"
+                .to_string(),
+        ),
+        other => Err(format!(
+            "unknown command '{other}'\n\nrun `brygge --help` for usage"
+        )),
     }
 }
 
@@ -130,21 +149,29 @@ fn wants_help(args: &[String]) -> bool {
     args.iter().any(|a| a == "--help" || a == "-h")
 }
 
-fn parse_format(rest: &mut std::slice::Iter<'_, String>) -> Result<Format, String> {
+fn parse_format(rest: &mut std::slice::Iter<'_, String>, command: &str) -> Result<Format, String> {
     match rest.next().map(String::as_str) {
         Some("human") => Ok(Format::Human),
         Some("machine") => Ok(Format::Machine),
-        Some(other) => Err(format!(
-            "--format expects 'human' or 'machine', got '{other}'"
+        Some(other) => Err(usage_error(
+            command,
+            format!("--format expects 'human' or 'machine', got '{other}'"),
         )),
-        None => Err("--format needs a value ('human' or 'machine')".to_string()),
+        None => Err(usage_error(
+            command,
+            "--format needs a value ('human' or 'machine')",
+        )),
     }
 }
 
-fn need_value(rest: &mut std::slice::Iter<'_, String>, flag: &str) -> Result<PathBuf, String> {
+fn need_value(
+    rest: &mut std::slice::Iter<'_, String>,
+    flag: &str,
+    command: &str,
+) -> Result<PathBuf, String> {
     rest.next()
         .map(PathBuf::from)
-        .ok_or_else(|| format!("{flag} needs a value"))
+        .ok_or_else(|| usage_error(command, format!("{flag} needs a value")))
 }
 
 fn parse_decode(args: &[String]) -> Result<Command, String> {
@@ -158,37 +185,101 @@ fn parse_decode(args: &[String]) -> Result<Command, String> {
         Some("svn") => SourceKind::Svn,
         Some("cvs") => SourceKind::Cvs,
         Some(other) => {
-            return Err(format!(
-                "source kind '{other}' is not supported (git, hg, svn, or cvs in this build)"
+            return Err(usage_error(
+                "decode",
+                format!(
+                    "source kind '{other}' is not supported (git, hg, svn, or cvs in this build)"
+                ),
             ));
         }
         None => {
-            return Err(
-                "decode needs a source kind and path: decode <git|hg|svn|cvs> <path>".to_string(),
-            );
+            return Err(usage_error(
+                "decode",
+                "decode needs a source kind and a source: decode <git|hg|svn|cvs> <source> --out <artifact>",
+            ));
         }
     };
-    let mut path: Option<PathBuf> = None;
-    let mut out = None;
-    let mut detect_renames = false;
+    let mut source: Option<PathBuf> = None;
+    let mut out: Option<PathBuf> = None;
+    let mut out_seen = false;
+    let mut infer_renames = false;
+    let mut infer_renames_seen = false;
     let mut reconstruct_refs = false;
+    let mut reconstruct_refs_seen = false;
     let mut format = Format::Human;
+    let mut format_seen = false;
     while let Some(arg) = it.next() {
         match arg.as_str() {
-            "--ir" => out = Some(need_value(&mut it, "--ir")?),
-            "--detect-renames" => detect_renames = true,
-            "--reconstruct-refs" => reconstruct_refs = true,
-            "--format" => format = parse_format(&mut it)?,
-            other if other.starts_with('-') => return Err(format!("unknown flag '{other}'")),
-            other => path = Some(PathBuf::from(other)),
+            "--out" => {
+                if out_seen {
+                    return Err(usage_error("decode", "--out given more than once"));
+                }
+                out_seen = true;
+                out = Some(need_value(&mut it, "--out", "decode")?);
+            }
+            "--infer-renames" => {
+                if infer_renames_seen {
+                    return Err(usage_error(
+                        "decode",
+                        "--infer-renames given more than once",
+                    ));
+                }
+                infer_renames_seen = true;
+                infer_renames = true;
+            }
+            "--reconstruct-refs" => {
+                if reconstruct_refs_seen {
+                    return Err(usage_error(
+                        "decode",
+                        "--reconstruct-refs given more than once",
+                    ));
+                }
+                reconstruct_refs_seen = true;
+                reconstruct_refs = true;
+            }
+            "--format" => {
+                if format_seen {
+                    return Err(usage_error("decode", "--format given more than once"));
+                }
+                format_seen = true;
+                format = parse_format(&mut it, "decode")?;
+            }
+            other if other.starts_with('-') => {
+                return Err(usage_error("decode", format!("unknown flag '{other}'")));
+            }
+            other => {
+                if source.is_some() {
+                    return Err(usage_error(
+                        "decode",
+                        format!("unexpected extra argument '{other}'"),
+                    ));
+                }
+                source = Some(PathBuf::from(other));
+            }
         }
     }
-    let path = path.ok_or_else(|| "decode needs a repository path".to_string())?;
+    let source = source
+        .ok_or_else(|| usage_error("decode", "decode needs a source: <git|hg|svn|cvs> <source>"))?;
+    let out = out.ok_or_else(|| usage_error("decode", "decode needs --out <artifact>"))?;
+
+    if infer_renames && !matches!(kind, SourceKind::Git | SourceKind::Hg) {
+        return Err(usage_error(
+            "decode",
+            inapplicable_option("infer-renames", "git, hg", kind),
+        ));
+    }
+    if reconstruct_refs && !matches!(kind, SourceKind::Svn | SourceKind::Cvs) {
+        return Err(usage_error(
+            "decode",
+            inapplicable_option("reconstruct-refs", "svn, cvs", kind),
+        ));
+    }
+
     Ok(Command::Decode {
         kind,
-        path,
+        source,
         out,
-        detect_renames,
+        infer_renames,
         reconstruct_refs,
         format,
     })
@@ -199,17 +290,47 @@ fn parse_inspect(args: &[String]) -> Result<Command, String> {
         return Ok(Command::Help);
     }
     let mut it = args.iter();
-    let mut ir: Option<PathBuf> = None;
+    let mut artifact: Option<PathBuf> = None;
+    let mut atoms = false;
+    let mut atoms_seen = false;
     let mut format = Format::Human;
+    let mut format_seen = false;
     while let Some(arg) = it.next() {
         match arg.as_str() {
-            "--ir" => ir = Some(need_value(&mut it, "--ir")?),
-            "--format" => format = parse_format(&mut it)?,
-            other => return Err(format!("unknown argument '{other}' for inspect")),
+            "--atoms" => {
+                if atoms_seen {
+                    return Err(usage_error("inspect", "--atoms given more than once"));
+                }
+                atoms_seen = true;
+                atoms = true;
+            }
+            "--format" => {
+                if format_seen {
+                    return Err(usage_error("inspect", "--format given more than once"));
+                }
+                format_seen = true;
+                format = parse_format(&mut it, "inspect")?;
+            }
+            other if other.starts_with('-') => {
+                return Err(usage_error("inspect", format!("unknown flag '{other}'")));
+            }
+            other => {
+                if artifact.is_some() {
+                    return Err(usage_error(
+                        "inspect",
+                        format!("unexpected extra argument '{other}'"),
+                    ));
+                }
+                artifact = Some(PathBuf::from(other));
+            }
         }
     }
-    let ir = ir.ok_or_else(|| "inspect needs --ir <file>".to_string())?;
-    Ok(Command::Inspect { ir, format })
+    let artifact = artifact.ok_or_else(|| usage_error("inspect", "inspect needs an <artifact>"))?;
+    Ok(Command::Inspect {
+        artifact,
+        atoms,
+        format,
+    })
 }
 
 fn parse_verify(args: &[String]) -> Result<Command, String> {
@@ -217,50 +338,50 @@ fn parse_verify(args: &[String]) -> Result<Command, String> {
         return Ok(Command::Help);
     }
     let mut it = args.iter();
-    let mut internal = false;
-    let mut against: Option<PathBuf> = None;
-    let mut import: Option<PathBuf> = None;
+    let mut artifact: Option<PathBuf> = None;
+    let mut against_source: Option<PathBuf> = None;
+    let mut against_source_seen = false;
     let mut format = Format::Human;
+    let mut format_seen = false;
     while let Some(arg) = it.next() {
         match arg.as_str() {
-            "--internal" => internal = true,
-            "--against-source" => against = Some(need_value(&mut it, "--against-source")?),
-            "--import" => import = Some(need_value(&mut it, "--import")?),
-            "--format" => format = parse_format(&mut it)?,
-            other => return Err(format!("unknown argument '{other}' for verify")),
+            "--against-source" => {
+                if against_source_seen {
+                    return Err(usage_error(
+                        "verify",
+                        "--against-source given more than once",
+                    ));
+                }
+                against_source_seen = true;
+                against_source = Some(need_value(&mut it, "--against-source", "verify")?);
+            }
+            "--format" => {
+                if format_seen {
+                    return Err(usage_error("verify", "--format given more than once"));
+                }
+                format_seen = true;
+                format = parse_format(&mut it, "verify")?;
+            }
+            other if other.starts_with('-') => {
+                return Err(usage_error("verify", format!("unknown flag '{other}'")));
+            }
+            other => {
+                if artifact.is_some() {
+                    return Err(usage_error(
+                        "verify",
+                        format!("unexpected extra argument '{other}'"),
+                    ));
+                }
+                artifact = Some(PathBuf::from(other));
+            }
         }
     }
-    let import = import.ok_or_else(|| "verify needs --import <file>".to_string())?;
-    match (internal, against) {
-        (true, Some(_)) => {
-            Err("verify takes either --internal or --against-source, not both".to_string())
-        }
-        (true, None) => Ok(Command::VerifyInternal { import, format }),
-        (false, Some(repo)) => Ok(Command::VerifyAgainstSource {
-            repo,
-            import,
-            format,
-        }),
-        (false, None) => Err("verify needs --internal or --against-source <repo>".to_string()),
-    }
-}
-
-fn parse_summary(args: &[String]) -> Result<Command, String> {
-    if wants_help(args) {
-        return Ok(Command::Help);
-    }
-    let mut it = args.iter();
-    let mut import: Option<PathBuf> = None;
-    let mut format = Format::Human;
-    while let Some(arg) = it.next() {
-        match arg.as_str() {
-            "--import" => import = Some(need_value(&mut it, "--import")?),
-            "--format" => format = parse_format(&mut it)?,
-            other => return Err(format!("unknown argument '{other}' for summary")),
-        }
-    }
-    let import = import.ok_or_else(|| "summary needs --import <file>".to_string())?;
-    Ok(Command::Summary { import, format })
+    let artifact = artifact.ok_or_else(|| usage_error("verify", "verify needs an <artifact>"))?;
+    Ok(Command::Verify {
+        artifact,
+        against_source,
+        format,
+    })
 }
 
 #[cfg(test)]
