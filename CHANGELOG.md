@@ -8,6 +8,41 @@ Every handoff adds its own entry in its own commit.
 
 ## [Unreleased]
 
+### Windows support, CI on every platform, and an owner-approved release workflow (RFC 012)
+
+#### Fixed
+
+- **brygge now builds and runs on Windows.** 0.1.0 could not be built there: the CVS decoder used a Unix-only
+  path API. Paths are now read through `OsStr::as_encoded_bytes`, so a Windows name that is not valid Unicode
+  (an unpaired surrogate) is refused as `non-utf8-path`, exactly as a non-UTF-8 Unix name is. Nothing changes on
+  Unix: every input decodes to the same bytes as before.
+
+#### Added
+
+- **CI proves every supported platform:** fmt, clippy `-D warnings` and test run on Linux x86_64, Linux arm64,
+  macOS (Apple Silicon) and Windows, on stable; the MSRV (1.85) run, the supply-chain checks and the link
+  check stay on Linux. The Mercurial and Subversion suites run where `hg` and `svnadmin` are installed (Linux
+  x86_64) and skip elsewhere. Tests that need the Unix file API are `cfg(unix)`; read confinement is now
+  tested on Windows too (file and directory symlinks, and directory junctions, are refused in the CVS
+  scanner; a redirected `.git`, `objects`, `objects/info` or `objects/pack` is refused in Git).
+- **A release workflow** (`.github/workflows/release.yml`): a pushed tag `X.Y.Z` is verified (annotated, on
+  `main`, equal to the workspace version, one CHANGELOG heading), gated by the same jobs as CI, built for four
+  platforms, and then, on the owner's approval of the `release` environment in GitHub, published to crates.io
+  by trusted publishing (no stored secret), installed and smoke-tested from crates.io, compared byte for
+  byte with the tag, and released on GitHub with checksums and build-provenance attestations. It is safe to
+  re-run. The procedure and the one-time setup are in `docs/src/development/releasing.md`.
+- **Release tools** in `tools/`, each with tests (`tools/test-release-tools.sh`, run by CI):
+  `release-notes.sh`, `check-release-tag.sh`, `check-release-absent.sh`, `crate-published.sh`,
+  `publish-crates.sh`, `check-published.sh` and `smoke-test.sh`. `check-published.sh` and
+  `release-notes.sh` also serve the manual fallback.
+- **A weekly `cargo audit`** against a fresh advisory database (`security-audit.yml`).
+- A `.gitattributes`: test data is never line-ending converted; shell scripts and Rust sources keep LF.
+
+#### Changed
+
+- CI's actions are on their current majors (`actions/checkout` v7, off Node.js 20), and its workflow
+  permissions are `contents: read`. Nothing in CI depended on `ubuntu-latest` being Ubuntu 24.
+
 ## [0.1.0] — 2026-09-24
 
 **The first release.** brygge carries version-control history out of Git, Mercurial, Subversion and CVS

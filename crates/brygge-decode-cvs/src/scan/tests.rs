@@ -65,19 +65,59 @@ fn fresh_root(tag: &str) -> std::path::PathBuf {
     root
 }
 
-#[test]
-fn a_symlink_anywhere_under_the_root_is_refused() {
-    let root = fresh_root("symlink");
-    std::fs::write(
-        root.join("real.c,v"),
-        minimal_rcs("1.1", "2024.01.01.00.00.00"),
-    )
-    .unwrap();
-    let link = root.join("link.c,v");
-    std::os::unix::fs::symlink(root.join("real.c,v"), &link).unwrap();
+/// Create a link `link` → `target` of the given kind, or say why it could not be. A test that cannot make the
+/// link (Windows without the symlink privilege) is skipped with a message on a developer machine, and
+/// **fails on CI**, so a skip can never hide a missing proof there.
+fn link_created(what: &str, result: std::io::Result<()>) -> bool {
+    match result {
+        Ok(()) => true,
+        Err(e) if std::env::var_os("CI").is_none() => {
+            eprintln!("SKIPPED: cannot create {what} here: {e}");
+            false
+        }
+        Err(e) => panic!("cannot create {what} on CI: {e}"),
+    }
+}
 
-    let result = scan(&root);
-    let _ = std::fs::remove_dir_all(&root);
+#[cfg(unix)]
+fn symlink_file(target: &std::path::Path, link: &std::path::Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(target, link)
+}
+
+#[cfg(unix)]
+fn symlink_dir(target: &std::path::Path, link: &std::path::Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(target, link)
+}
+
+#[cfg(windows)]
+fn symlink_file(target: &std::path::Path, link: &std::path::Path) -> std::io::Result<()> {
+    std::os::windows::fs::symlink_file(target, link)
+}
+
+#[cfg(windows)]
+fn symlink_dir(target: &std::path::Path, link: &std::path::Path) -> std::io::Result<()> {
+    std::os::windows::fs::symlink_dir(target, link)
+}
+
+/// A directory junction (`mklink /J`): a reparse point that is not a symlink and needs no privilege.
+#[cfg(windows)]
+fn junction(target: &std::path::Path, link: &std::path::Path) -> std::io::Result<()> {
+    let status = std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(link)
+        .arg(target)
+        .stdout(std::process::Stdio::null())
+        .status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(format!(
+            "mklink /J exited with {status}"
+        )))
+    }
+}
+
+fn assert_symlink_refusal(result: Result<Vec<CvsFile>, crate::Error>) {
     match result {
         Err(crate::Error::FloorRefusal { feature, .. }) => {
             assert_eq!(feature, crate::floor::SYMLINK_IN_REPOSITORY);
@@ -88,21 +128,74 @@ fn a_symlink_anywhere_under_the_root_is_refused() {
 }
 
 #[test]
+fn a_symlink_anywhere_under_the_root_is_refused() {
+    let root = fresh_root("symlink");
+    std::fs::write(
+        root.join("real.c,v"),
+        minimal_rcs("1.1", "2024.01.01.00.00.00"),
+    )
+    .unwrap();
+    let link = root.join("link.c,v");
+    let made = link_created(
+        "a file symlink",
+        symlink_file(&root.join("real.c,v"), &link),
+    );
+
+    let result = if made { Some(scan(&root)) } else { None };
+    let _ = std::fs::remove_dir_all(&root);
+    if let Some(result) = result {
+        assert_symlink_refusal(result);
+    }
+}
+
+#[test]
 fn a_symlinked_directory_is_refused() {
     let root = fresh_root("symlinkdir");
     let real_dir = root.join("real_dir");
     std::fs::create_dir_all(&real_dir).unwrap();
-    std::os::unix::fs::symlink(&real_dir, root.join("link_dir")).unwrap();
+    let made = link_created(
+        "a directory symlink",
+        symlink_dir(&real_dir, &root.join("link_dir")),
+    );
+
+    let result = if made { Some(scan(&root)) } else { None };
+    let _ = std::fs::remove_dir_all(&root);
+    if let Some(result) = result {
+        assert_symlink_refusal(result);
+    }
+}
+
+/// RFC 012 D-9 / threat model C-2c: a directory junction is refused like a symlink. `std` reports a
+/// junction as a symlink (its reparse tag is a "name surrogate"), so no Windows-specific product code is
+/// needed; this test is the proof, and it runs on `windows-latest`.
+#[cfg(windows)]
+#[test]
+fn a_directory_junction_is_refused() {
+    let root = fresh_root("junction");
+    let real_dir = root.join("real_dir");
+    std::fs::create_dir_all(&real_dir).unwrap();
+    std::fs::write(
+        real_dir.join("f.c,v"),
+        minimal_rcs("1.1", "2024.01.01.00.00.00"),
+    )
+    .unwrap();
+    let link = root.join("junction_dir");
+    assert!(link_created(
+        "a directory junction",
+        junction(&real_dir, &link)
+    ));
+    // What `std` says about it, so the review can quote it.
+    let ft = std::fs::symlink_metadata(&link).unwrap().file_type();
+    eprintln!(
+        "junction: is_symlink={} is_dir={} is_file={}",
+        ft.is_symlink(),
+        ft.is_dir(),
+        ft.is_file()
+    );
 
     let result = scan(&root);
     let _ = std::fs::remove_dir_all(&root);
-    match result {
-        Err(crate::Error::FloorRefusal { feature, .. }) => {
-            assert_eq!(feature, crate::floor::SYMLINK_IN_REPOSITORY);
-        }
-        Ok(_) => panic!("expected FloorRefusal(symlink-in-repository), got Ok"),
-        Err(other) => panic!("expected FloorRefusal(symlink-in-repository), got {other}"),
-    }
+    assert_symlink_refusal(result);
 }
 
 #[test]
@@ -131,15 +224,34 @@ fn the_same_path_in_attic_and_live_is_refused() {
     }
 }
 
+/// A `,v` file name that is not valid Unicode: raw bytes on Unix, an unpaired surrogate on Windows.
+#[cfg(unix)]
+fn non_unicode_name() -> std::ffi::OsString {
+    use std::os::unix::ffi::OsStrExt as _;
+    std::ffi::OsStr::from_bytes(b"bad_\xff_name,v").to_owned()
+}
+
+#[cfg(windows)]
+fn non_unicode_name() -> std::ffi::OsString {
+    use std::os::windows::ffi::OsStringExt as _;
+    let mut wide: Vec<u16> = "bad_".encode_utf16().collect();
+    wide.push(0xD800); // an unpaired high surrogate
+    wide.extend("_name,v".encode_utf16());
+    std::ffi::OsString::from_wide(&wide)
+}
+
+/// The escaped form of the offending byte(s) that the refusal must show: `0xFF` on Unix; on Windows the
+/// unpaired surrogate U+D800 is WTF-8 `ED A0 80`.
+#[cfg(unix)]
+const NON_UNICODE_ESCAPED: &str = "\\xFF";
+#[cfg(windows)]
+const NON_UNICODE_ESCAPED: &str = "\\xED\\xA0\\x80";
+
 #[test]
 fn a_non_utf8_path_component_is_refused_and_shown_as_escaped_bytes() {
-    use std::ffi::OsStr;
-    use std::os::unix::ffi::OsStrExt as _;
-
     let root = fresh_root("nonutf8");
-    let bad_name = OsStr::from_bytes(b"bad_\xff_name,v");
     std::fs::write(
-        root.join(bad_name),
+        root.join(non_unicode_name()),
         minimal_rcs("1.1", "2024.01.01.00.00.00"),
     )
     .unwrap();
@@ -149,11 +261,21 @@ fn a_non_utf8_path_component_is_refused_and_shown_as_escaped_bytes() {
     match result {
         Err(crate::Error::FloorRefusal { feature, reason }) => {
             assert_eq!(feature, crate::floor::NON_UTF8_PATH);
-            assert!(reason.contains("\\xFF"), "reason: {reason}");
+            assert!(reason.contains(NON_UNICODE_ESCAPED), "reason: {reason}");
         }
         Ok(_) => panic!("expected FloorRefusal(non-utf8-path), got Ok"),
         Err(other) => panic!("expected FloorRefusal(non-utf8-path), got {other}"),
     }
+}
+
+/// Platform-independent: the escape of the WTF-8 bytes of an unpaired surrogate (what
+/// `as_encoded_bytes` yields on Windows) is lossless and names every byte.
+#[test]
+fn an_unpaired_surrogate_in_wtf8_is_escaped_byte_by_byte() {
+    assert_eq!(
+        escape_invalid_utf8(b"bad_\xED\xA0\x80_name,v"),
+        "bad_\\xED\\xA0\\x80_name,v"
+    );
 }
 
 #[test]

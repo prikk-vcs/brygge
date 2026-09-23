@@ -60,6 +60,7 @@ in the same commit that moves an RFC between folders.
 | RFC | Scope | Handoff(s) |
 |---|---|---|
 | [010](accepted/010-bounded-memory-and-streaming.md) | Bounded memory & streaming (increment 1 shipped in 0.1.0; increments 2–4 in 0.2.0) | `handoffs/010-bounded-memory-and-streaming/` |
+| [012](accepted/012-release-automation.md) | Release automation: CI on Linux, macOS and Windows; tag-triggered, owner-approved publication (crates.io trusted publishing); binaries with provenance; GitHub release from the CHANGELOG | `handoffs/012-release-automation/` |
 
 ### Done
 

@@ -6,7 +6,6 @@
 
 use std::collections::BTreeSet;
 use std::io::Read;
-use std::os::unix::ffi::OsStrExt as _;
 use std::path::Path;
 
 use crate::rcs::{self, MAX_RCS_BYTES, RcsFile};
@@ -112,10 +111,13 @@ pub(crate) fn scan_with(root: &Path, limits: &Limits) -> Result<Vec<CvsFile>, Er
     Ok(out)
 }
 
-/// True when `path`'s final component ends in `,v`, checked on raw bytes (never a lossy conversion).
+/// True when `path`'s final component ends in `,v`, checked on the platform's encoded bytes (never a lossy
+/// conversion). `OsStr::as_encoded_bytes` is portable: raw bytes on Unix, and on Windows WTF-8, where a
+/// name that is valid Unicode is plain UTF-8 and an unpaired surrogate is three bytes that are not (so it is
+/// refused as `non-utf8-path`, exactly as a non-UTF-8 Unix name is).
 fn ends_with_comma_v(path: &Path) -> bool {
     path.file_name()
-        .is_some_and(|n| n.as_bytes().ends_with(b",v"))
+        .is_some_and(|n| n.as_encoded_bytes().ends_with(b",v"))
 }
 
 /// Read a `,v` file into memory, refusing before allocation if its size already exceeds
@@ -180,7 +182,7 @@ pub(crate) fn escape_invalid_utf8(bytes: &[u8]) -> String {
 /// A path rendered for a refusal/error message: valid UTF-8 verbatim, invalid bytes escaped (never a
 /// lossy conversion — CR-03).
 fn display_path(path: &Path) -> String {
-    escape_invalid_utf8(path.as_os_str().as_bytes())
+    escape_invalid_utf8(path.as_os_str().as_encoded_bytes())
 }
 
 #[cfg(test)]
@@ -194,7 +196,7 @@ fn repo_path(root: &Path, file: &Path) -> Result<String, Error> {
     let rel = file.strip_prefix(root).unwrap_or(file);
     let mut parts: Vec<String> = Vec::new();
     for c in rel.components() {
-        let bytes = c.as_os_str().as_bytes();
+        let bytes = c.as_os_str().as_encoded_bytes();
         match std::str::from_utf8(bytes) {
             Ok(s) => parts.push(s.to_string()),
             Err(_) => {

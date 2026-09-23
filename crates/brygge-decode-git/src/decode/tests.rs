@@ -959,33 +959,97 @@ fn unique_temp_dir(label: &str) -> PathBuf {
     ))
 }
 
-#[cfg(unix)]
-#[test]
-fn a_symlinked_git_directory_is_refused() {
-    if !git_available() {
-        eprintln!("skipping: git not on PATH");
-        return;
+/// Create a link of the given kind, or say why it could not be. A test that cannot make the link (Windows
+/// without the symlink privilege) is skipped with a message on a developer machine, and **fails on CI**, so
+/// a skip can never hide a missing proof there.
+fn link_created(what: &str, result: std::io::Result<()>) -> bool {
+    match result {
+        Ok(()) => true,
+        Err(e) if std::env::var_os("CI").is_none() => {
+            eprintln!("SKIPPED: cannot create {what} here: {e}");
+            false
+        }
+        Err(e) => panic!("cannot create {what} on CI: {e}"),
     }
-    let target = TempRepo::new();
-    target.write("a.txt", "a\n");
-    target.commit_all("c1");
+}
 
-    let outer = unique_temp_dir("symlink-outer");
-    std::fs::create_dir_all(&outer).unwrap();
-    std::os::unix::fs::symlink(target.path().join(".git"), outer.join(".git")).unwrap();
+#[cfg(unix)]
+fn symlink_dir(target: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(target, link)
+}
 
-    match decode(&outer, &Options::default()) {
+#[cfg(unix)]
+fn symlink_file(target: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(target, link)
+}
+
+#[cfg(windows)]
+fn symlink_dir(target: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::windows::fs::symlink_dir(target, link)
+}
+
+#[cfg(windows)]
+fn symlink_file(target: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::windows::fs::symlink_file(target, link)
+}
+
+/// A directory junction (`mklink /J`): a reparse point that is not a symlink and needs no privilege.
+#[cfg(windows)]
+fn junction(target: &Path, link: &Path) -> std::io::Result<()> {
+    let status = Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(link)
+        .arg(target)
+        .stdout(std::process::Stdio::null())
+        .status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(format!(
+            "mklink /J exited with {status}"
+        )))
+    }
+}
+
+fn assert_redirected(result: Result<brygge_ir::Ir, crate::Error>) {
+    match result {
         Err(crate::Error::FloorRefusal { feature, .. }) => {
             assert_eq!(feature, "redirected-git-directory");
         }
         other => panic!("expected a redirected-git-directory refusal, got {other:?}"),
     }
-    let _ = std::fs::remove_dir_all(&outer);
 }
 
-#[cfg(unix)]
-#[test]
-fn a_symlinked_objects_directory_is_refused() {
+/// Which directory of a repository is replaced by a link to the same directory of another repository.
+#[derive(Clone, Copy, Debug)]
+enum Redirected {
+    GitDir,
+    Objects,
+    ObjectsInfo,
+    ObjectsPack,
+}
+
+impl Redirected {
+    /// The path of this directory inside `repo`, relative to the repository's working directory.
+    fn inside(self, repo: &Path) -> PathBuf {
+        let git = repo.join(".git");
+        match self {
+            Self::GitDir => git,
+            Self::Objects => git.join("objects"),
+            Self::ObjectsInfo => git.join("objects").join("info"),
+            Self::ObjectsPack => git.join("objects").join("pack"),
+        }
+    }
+}
+
+/// Replace `which` of a fresh repository by a link (made by `link`) to the same directory of another
+/// repository, then decode it: it must be refused as `redirected-git-directory`. Returns without a
+/// verdict only when the link could not be made (see [`link_created`]).
+fn refuse_a_redirected_directory(
+    which: Redirected,
+    what: &str,
+    link: impl Fn(&Path, &Path) -> std::io::Result<()>,
+) {
     if !git_available() {
         eprintln!("skipping: git not on PATH");
         return;
@@ -993,23 +1057,109 @@ fn a_symlinked_objects_directory_is_refused() {
     let target = TempRepo::new();
     target.write("a.txt", "a\n");
     target.commit_all("c1");
+    // `objects/pack` exists only after a repack; make sure both repositories have every directory.
+    target.git(&["repack", "-a", "-d", "-q"]);
+    std::fs::create_dir_all(Redirected::ObjectsInfo.inside(target.path())).unwrap();
 
     let r = TempRepo::new();
     r.write("b.txt", "b\n");
     r.commit_all("c1");
-    let objects = r.path().join(".git").join("objects");
-    std::fs::remove_dir_all(&objects).unwrap();
-    std::os::unix::fs::symlink(target.path().join(".git").join("objects"), &objects).unwrap();
+    r.git(&["repack", "-a", "-d", "-q"]);
+    std::fs::create_dir_all(Redirected::ObjectsInfo.inside(r.path())).unwrap();
 
-    match decode(r.path(), &Options::default()) {
-        Err(crate::Error::FloorRefusal { feature, .. }) => {
-            assert_eq!(feature, "redirected-git-directory");
-        }
-        other => panic!("expected a redirected-git-directory refusal, got {other:?}"),
+    // For `GitDir` the link stands in for `.git` of an otherwise empty directory (the repository under
+    // test is that directory); for the others it replaces the directory inside `r`.
+    let (subject, replaced) = if matches!(which, Redirected::GitDir) {
+        let outer = unique_temp_dir("redirected-outer");
+        std::fs::create_dir_all(&outer).unwrap();
+        let replaced = which.inside(&outer);
+        (outer, replaced)
+    } else {
+        let replaced = which.inside(r.path());
+        std::fs::remove_dir_all(&replaced).unwrap();
+        (r.path().to_path_buf(), replaced)
+    };
+    let made = link_created(what, link(&which.inside(target.path()), &replaced));
+    let result = if made {
+        Some(decode(&subject, &Options::default()))
+    } else {
+        None
+    };
+    if matches!(which, Redirected::GitDir) {
+        let _ = std::fs::remove_dir_all(&subject);
+    }
+    if let Some(result) = result {
+        assert_redirected(result);
     }
 }
 
-#[cfg(unix)]
+#[test]
+fn a_symlinked_git_directory_is_refused() {
+    refuse_a_redirected_directory(Redirected::GitDir, "a directory symlink", symlink_dir);
+}
+
+#[test]
+fn a_symlinked_objects_directory_is_refused() {
+    refuse_a_redirected_directory(Redirected::Objects, "a directory symlink", symlink_dir);
+}
+
+#[test]
+fn a_symlinked_objects_info_directory_is_refused() {
+    refuse_a_redirected_directory(Redirected::ObjectsInfo, "a directory symlink", symlink_dir);
+}
+
+#[test]
+fn a_symlinked_objects_pack_directory_is_refused() {
+    refuse_a_redirected_directory(Redirected::ObjectsPack, "a directory symlink", symlink_dir);
+}
+
+/// RFC 012 D-9 / threat model C-2c: on Windows a directory junction is treated like a symlink in every
+/// one of Git's redirected-directory checks. `std` reports a junction as a symlink (its reparse tag is a
+/// "name surrogate"), so no Windows-specific product code is needed; these tests are the proof.
+#[cfg(windows)]
+mod junctions {
+    use super::*;
+
+    #[test]
+    fn a_junctioned_git_directory_is_refused() {
+        refuse_a_redirected_directory(Redirected::GitDir, "a directory junction", junction);
+    }
+
+    #[test]
+    fn a_junctioned_objects_directory_is_refused() {
+        refuse_a_redirected_directory(Redirected::Objects, "a directory junction", junction);
+    }
+
+    #[test]
+    fn a_junctioned_objects_info_directory_is_refused() {
+        refuse_a_redirected_directory(Redirected::ObjectsInfo, "a directory junction", junction);
+    }
+
+    #[test]
+    fn a_junctioned_objects_pack_directory_is_refused() {
+        refuse_a_redirected_directory(Redirected::ObjectsPack, "a directory junction", junction);
+    }
+
+    #[test]
+    fn std_reports_a_junction_as_a_symlink() {
+        // Recorded for the review: what `std` actually says about a junction on this runner.
+        let dir = unique_temp_dir("junction-std");
+        let real = dir.join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        let link = dir.join("link");
+        assert!(link_created("a directory junction", junction(&real, &link)));
+        let ft = std::fs::symlink_metadata(&link).unwrap().file_type();
+        eprintln!(
+            "junction: is_symlink={} is_dir={} is_file={}",
+            ft.is_symlink(),
+            ft.is_dir(),
+            ft.is_file()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(ft.is_symlink());
+    }
+}
+
 #[test]
 fn a_symlinked_pack_file_is_refused() {
     if !git_available() {
@@ -1031,17 +1181,15 @@ fn a_symlinked_pack_file_is_refused() {
     let name = victim.file_name().unwrap().to_owned();
     std::fs::remove_file(&victim).unwrap();
     // The symlink need not resolve; detection is of the symlink itself (`symlink_metadata`).
-    std::os::unix::fs::symlink(
-        pack_dir.join("does-not-exist").with_file_name(name),
-        &victim,
-    )
-    .unwrap();
-
-    match decode(r.path(), &Options::default()) {
-        Err(crate::Error::FloorRefusal { feature, .. }) => {
-            assert_eq!(feature, "redirected-git-directory");
-        }
-        other => panic!("expected a redirected-git-directory refusal, got {other:?}"),
+    let made = link_created(
+        "a file symlink",
+        symlink_file(
+            &pack_dir.join("does-not-exist").with_file_name(name),
+            &victim,
+        ),
+    );
+    if made {
+        assert_redirected(decode(r.path(), &Options::default()));
     }
 }
 
@@ -1886,6 +2034,10 @@ fn a_branch_pointing_at_a_tag_object_counts_that_tag_as_not_carried() {
     );
 }
 
+// A Git ref name is bytes in the repository, but reaching it through the `git` command line with a non-UTF-8
+// name is a Unix-only act (a Windows command line is UTF-16), so this test is `cfg(unix)`; the same
+// property on a Windows *path* is proved in the CVS scanner's tests.
+#[cfg(unix)]
 #[test]
 fn a_non_utf8_replace_ref_name_is_refused_with_escaped_bytes() {
     // Review 011 F-3: the replace-ref refusal must not convert the name lossily.

@@ -1,43 +1,136 @@
 name: CI
 
+# The gates (RFC 012 D-9). This workflow is also called by release.yml (`workflow_call`), which runs the
+# very same gates on a release tag, so the release gates cannot drift from CI's.
+
 on:
+  # Branches only: a release tag is gated by the run release.yml calls, not by a second, duplicate run.
   push:
+    branches: ["**"]
   pull_request:
+  workflow_call:
+    inputs:
+      ref:
+        description: "The git ref to check out and test (the release tag, as refs/tags/X.Y.Z). Empty: the event's own ref."
+        type: string
+        required: false
+        default: ""
+      linux-only:
+        description: "Run the gate job on ubuntu-latest only. For a release whose binaries are not built (an old tag that predates the other platforms)."
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
 
 jobs:
   gates:
-    name: fmt · clippy · test
-    runs-on: ubuntu-latest
+    name: fmt · clippy · test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # Every platform brygge supports and ships a binary for (RFC 012 D-9, D-10). `linux-only` narrows
+        # this to the first for a release without binaries.
+        os: ${{ fromJSON(inputs.linux-only == true && '["ubuntu-latest"]' || '["ubuntu-latest","ubuntu-24.04-arm","macos-latest","windows-latest"]') }}
+    runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - name: Install Rust (pinned MSRV)
-        uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@v7
         with:
-          toolchain: "1.85"
+          ref: ${{ inputs.ref }}
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: stable
           components: rustfmt, clippy
+      # The Mercurial and Subversion suites drive `hg` and `svnadmin`, and skip cleanly when a tool is
+      # absent. They really run only where the tools are installed: this job, on Linux x86_64. On the other
+      # runners they skip (the decoders are the same code; Git, CVS and the CLI suites run everywhere).
+      - name: Install Mercurial and Subversion (Linux x86_64)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes mercurial subversion
+          hg --version | head -n 1
+          svnadmin --version | head -n 1
       - name: Format
         run: cargo fmt --all -- --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - name: Test
         run: cargo test --workspace --locked
-      - name: Relative links in documentation
-        run: ./tools/check-links.sh
+
+  msrv:
+    name: clippy · test (MSRV 1.85)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+      - name: Install Rust (the declared MSRV)
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: "1.85"
+          components: clippy
+      - name: Install Mercurial and Subversion
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes mercurial subversion
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - name: Test
+        run: cargo test --workspace --locked
 
   supply-chain:
     name: cargo-deny · cargo-audit · ir-isolation
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
       - name: cargo-deny (advisories, licenses, bans, sources)
         uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check
-      - name: Install cargo-audit
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: stable
       - name: cargo-audit
         run: |
           cargo install cargo-audit --locked
           cargo audit
       - name: brygge-ir dependency isolation (RFC 009 D-7)
         run: ./tools/check-ir-isolation.sh
+
+  # Checks of the repository itself, not of a platform: they run on Linux only.
+  repository:
+    name: links · release tools
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+          # The release-tool tests compare the published 0.1.0 crates with the `0.1.0` tag.
+          fetch-depth: 0
+      - name: Relative links in documentation
+        run: ./tools/check-links.sh
+      # The tests of the release tools (RFC 012 §4), and the smoke test the release runs on the crates.io
+      # build, run here on this tree's own build, so both are proven on every push and not only at a
+      # release. A release run tests the tagged tree with the gates above and skips these: the tools it
+      # uses come from the workflow's own commit, tested when that commit was pushed, and an older tag does
+      # not contain them.
+      - name: Install Rust (stable)
+        if: ${{ !inputs.ref }}
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: stable
+      - name: Release tools (tests)
+        if: ${{ !inputs.ref }}
+        run: ./tools/test-release-tools.sh
+      - name: Smoke test (this tree's binary)
+        if: ${{ !inputs.ref }}
+        run: |
+          cargo build -p brygge --locked
+          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "brygge") | .version')
+          ./tools/smoke-test.sh "$version" target/debug/brygge

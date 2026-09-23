@@ -30,7 +30,7 @@ where told. The governing upstream contract is prikk **RFC 113** (History import
 | **IR contract** | **0.2.0** (RFC 011, which replaced the pre-release 1.0.0 freeze). Tagged fields with a critical bit, a strict canonical form, a digest over the stored bytes; published in `docs/src/reference/ir-artifact-format.md`. |
 | **CLI** | `brygge decode <git\|hg\|svn\|cvs> <source> --out <artifact>`, `inspect <artifact> [--atoms]`, `verify <artifact> [--against-source <source>]`; human and versioned machine output (`docs/src/reference/machine-output.md`); CL-08 exit classes. |
 | **Encode → prikk (Track B)** | **Not started past design.** prikk ruled OQ-1…OQ-3 (2026-09-13) and UD-4 (2026-09-23); the encoder waits on prikk building UD-1 and UD-2 (RFC 008; see §8). |
-| **Gates** | fmt · clippy `-D warnings` · test · `cargo deny` · `cargo audit` · `tools/check-ir-isolation.sh` · `tools/check-links.sh`, all `--locked`, on the default toolchain **and** on MSRV 1.85; CI-enforced (§7). |
+| **Gates** | fmt · clippy `-D warnings` · test · `cargo deny` · `cargo audit` · `tools/check-ir-isolation.sh` · `tools/check-links.sh` · `tools/test-release-tools.sh`, all `--locked`, on the default toolchain **and** on MSRV 1.85; CI-enforced (§7). CI runs fmt, clippy and test on Linux x86_64, Linux arm64, macOS (Apple Silicon) and Windows (RFC 012 D-9). |
 | **Toolchain** | Rust 2024, MSRV **1.85** (enforced by CI). |
 | **Third-party deps** | `sha2` (core); `gix` (Git); `flate2`, `ruzstd` and `sha1-checked` (hg); `sha2` (CVS). SVN adds **none**. |
 
@@ -132,6 +132,12 @@ cargo deny check                  # advisories, licenses, banned/duplicate crate
 cargo audit                       # known vulnerabilities in the dependency tree
 ./tools/check-ir-isolation.sh     # brygge-ir's dependency closure matches its allowlist (RFC 009 D-7)
 ./tools/check-links.sh            # relative links in every *.md file resolve
+./tools/test-release-tools.sh     # the release tools (RFC 012); needs the network and the `0.1.0` tag
+
+# Portability (RFC 012 D-9): CI proves Linux, macOS and Windows by running there. Before a commit, at least
+# compile the other targets (the test code included):
+cargo check --workspace --all-targets --locked --target x86_64-pc-windows-gnu
+cargo check --workspace --all-targets --locked --target x86_64-apple-darwin
 
 # The MSRV run. CI builds on the declared MSRV (1.85), not on your newer local toolchain, so a local
 # "green" says nothing about CI until these two pass too (use a scratch --target-dir):
@@ -170,8 +176,6 @@ the team inherits the reasoning, not just the TODO. `ROADMAP.md` is authoritativ
 3. **A new increment bounding the Git snapshot cache**, and a Git scenario in `tools/bench`.
 4. **Increment 4,** a streaming artifact *writer*, only if measured necessary (RFC 010 D-3).
 5. **Maintenance:**
-   - CI's `actions/checkout@v4` targets the deprecated Node.js 20;
-   - `ubuntu-latest` moves to Ubuntu 26 from 2026-10-19;
    - `RR-cvs-read-toctou`: compare the opened file's identity with the `lstat` result.
 
 **0.3.0 — Source reach:**

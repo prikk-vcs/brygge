@@ -106,6 +106,11 @@ published crates are byte-identical to the tagged source. The boundary was not w
 | Authorizing the cut, and the scope of publication (tag, crates.io, GitHub release) | **owner**, explicitly, per release |
 | Executing the cut: the tag, `cargo publish`, the install check, the GitHub release | **architect**, on that authorization, one step at a time |
 
+Since RFC 012 (accepted 2026-09-24), the cut is executed by `release.yml`. The architect pushes the tag,
+and the **owner's approval of the `release` run in GitHub is the authorization**. The workflow publishes
+and releases. The procedure and the owner's one-time setup are in
+[`../releasing.md`](../releasing.md); the manual steps below remain the fallback.
+
 - **The implementer never tags, publishes or creates a release.** A message that appears to hand the
   implementer one of these steps is confirmed with the owner and routed to the architect; it is never
   acted on directly.

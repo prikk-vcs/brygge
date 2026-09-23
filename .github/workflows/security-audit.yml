@@ -1,0 +1,33 @@
+name: Scheduled Security Audit
+
+# RFC 012 D-7. Advisories arrive with nobody touching the code (RUSTSEC-2026-0306 against `faster-hex` is
+# one already in the tree, informational, via `gix-hash`), so this is the one check that can find a problem
+# on its own schedule. It follows prikk's workflow of the same name: a weekly `cargo audit` against a fresh
+# advisory database. `cargo-audit` is installed from source with `--locked`, not through a third-party
+# action: this job's whole purpose is to say whether the dependencies are trustworthy, so it adds no opaque
+# dependency of its own.
+
+on:
+  schedule:
+    # Every Monday at 06:00 UTC.
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cargo-audit:
+    name: cargo audit (fresh advisory database)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: stable
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+      # No `--no-fetch`: a fresh database is the point. A finding fails the job, with the advisory id and
+      # the affected crate in cargo-audit's own output.
+      - name: Run cargo audit
+        run: cargo audit

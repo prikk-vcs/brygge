@@ -1,0 +1,10 @@
+# Test data must survive a checkout byte for byte, on every platform (RFC 012 D-9): no line-ending
+# conversion, no textual diff or merge. The Mercurial SHAmbles vector is compared by content and hash.
+*.bin binary
+**/testdata/** -text
+
+# Repository tools are bash scripts; a Windows checkout must not give them CRLF line endings.
+*.sh text eol=lf
+
+# Rust sources keep LF on a Windows checkout, so `cargo fmt --check` sees the same bytes everywhere.
+*.rs text eol=lf

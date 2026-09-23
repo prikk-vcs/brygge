@@ -116,6 +116,8 @@ fn an_over_limit_svnadmin_dump_is_refused() {
     );
 }
 
+// Drives a POSIX `sh` pipeline (`yes | head`) as the child process, so it is Unix-only.
+#[cfg(unix)]
 #[test]
 fn a_child_writing_a_lot_of_stderr_does_not_deadlock() {
     if Command::new("sh").arg("-c").arg("true").status().is_err() {
@@ -151,6 +153,8 @@ fn a_child_writing_a_lot_of_stderr_does_not_deadlock() {
     );
 }
 
+// Drives a POSIX `sh` pipeline (`yes | head`) as the child process, so it is Unix-only.
+#[cfg(unix)]
 #[test]
 fn an_over_limit_svnadmin_version_output_is_named_as_such_not_as_the_dumpstream() {
     // Review 010 F-3: the refusal names what overflowed.
@@ -182,6 +186,8 @@ fn a_version_line_with_nothing_printable_neutralizes_to_empty() {
     assert_eq!(neutralize_version(b"1.14.5\x1b[2J"), "1.14.5[2J");
 }
 
+// Drives a POSIX `sh` pipeline (`yes | head`) as the child process, so it is Unix-only.
+#[cfg(unix)]
 #[test]
 fn a_large_stderr_with_valid_stdout_under_the_cap_succeeds() {
     if Command::new("sh").arg("-c").arg("true").status().is_err() {

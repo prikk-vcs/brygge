@@ -1,0 +1,351 @@
+name: Release
+
+# RFC 012: a tagged release is verified, built, published to crates.io by trusted publishing, checked
+# against what was published, and released on GitHub. The owner's approval of the `release` environment is
+# the authorization of the cut. Who does what: docs/src/development/handoffs/GOVERNANCE.md, "Cutting a
+# release"; the owner's one-time setup and the procedure: docs/src/development/releasing.md.
+#
+# Two ways in:
+#   - the architect pushes an annotated tag X.Y.Z;
+#   - "Run workflow" with a `tag`, to re-run a cut safely (crates already on crates.io are skipped) or to
+#     release a tag that predates this workflow (0.1.0, with `binaries` off).
+#
+# No secret is stored. crates.io issues a short-lived token to this workflow in the `release` environment
+# (trusted publishing); `gh` uses the job's own GITHUB_TOKEN.
+#
+# Rules kept throughout:
+#   - The top-level permission is `contents: read`; a job widens only what it needs.
+#   - No `${{ }}` expression is interpolated into a `run:` script. Values reach scripts through `env:`.
+#   - Every third-party action is pinned to a full commit SHA (the version is in the comment).
+#   - The release tools (tools/*.sh) are the workflow's own commit's copy, not the tagged tree's: for a tag
+#     push they are the same commit; for a dispatch on an older tag (0.1.0) the tag does not contain them.
+
+on:
+  push:
+    tags:
+      - "[0-9]+.[0-9]+.[0-9]+"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "The tag to release, X.Y.Z. It must already exist and be pushed."
+        type: string
+        required: true
+      binaries:
+        description: "Build and attach the four binaries. Off for a tag whose tree does not build on every platform (0.1.0)."
+        type: boolean
+        required: false
+        default: true
+      note:
+        description: "Optional plain text, appended to the release notes as a final paragraph."
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+# One run per tag at a time; a second is queued, never run beside the first.
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  # The tag being released: the pushed tag, or the dispatch input. It reaches scripts only through here.
+  TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  # ---- 1. verify: is this tag releasable? (no credential beyond a read-only token) --------------------
+  verify:
+    name: verify the tag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: The tag has the form X.Y.Z
+        run: |
+          if ! [[ $TAG =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::the tag is not of the form X.Y.Z"
+            exit 1
+          fi
+      - name: Check out the tagged source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ env.TAG }}
+          path: source
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check out the release tools (this workflow's own commit)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: release-tools
+          sparse-checkout: tools
+          persist-credentials: false
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+        with:
+          toolchain: stable
+      # Annotated; on origin/main; the checked-out tree is the tag; every crate is at the tag's version;
+      # CHANGELOG.md has exactly one heading for it.
+      - name: The tag, the version and the CHANGELOG
+        working-directory: source
+        run: ../release-tools/tools/check-release-tag.sh "$TAG"
+      # A release that already exists is never edited: stop before anything is published.
+      - name: No GitHub release exists yet
+        working-directory: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: ../release-tools/tools/check-release-absent.sh "$TAG"
+      - name: Every crate packages and builds
+        working-directory: source
+        run: cargo publish --workspace --dry-run --locked
+
+  # ---- 2. gates: the same gates as CI, on the tagged commit -------------------------------------------
+  gates:
+    name: gates
+    needs: verify
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml
+    with:
+      ref: refs/tags/${{ inputs.tag || github.ref_name }}
+      # A release without binaries (0.1.0) is not claimed for Windows or macOS, so it is not gated there.
+      linux-only: ${{ github.event_name == 'workflow_dispatch' && inputs.binaries == false }}
+
+  # ---- 3. build: one binary per platform CI proves, on its native runner ------------------------------
+  build:
+    name: build (${{ matrix.target }})
+    needs: verify
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.binaries }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Pinned, not `ubuntu-latest`: a runner-image change must not silently raise the binary's glibc
+          # floor (ubuntu-latest becomes Ubuntu 26 on 2026-10-19). aarch64 is pinned the same way.
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-24.04
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    env:
+      TARGET: ${{ matrix.target }}
+    steps:
+      - name: Check out the tagged source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ env.TAG }}
+          path: source
+          persist-credentials: false
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+      - name: Build
+        working-directory: source
+        shell: bash
+        run: cargo build -p brygge --release --locked --target "$TARGET"
+      - name: Package (tar.gz)
+        if: runner.os != 'Windows'
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          name="brygge-$TARGET"
+          mkdir -p stage dist
+          cp "target/$TARGET/release/brygge" stage/brygge
+          cp LICENSE stage/LICENSE
+          {
+            echo "target: $TARGET"
+            echo "commit: $(git rev-parse HEAD)"
+            echo "tag: $TAG"
+            echo "build: cargo build -p brygge --release --locked --target $TARGET"
+            rustc -vV
+          } > stage/build-info.txt
+          tar -C stage -czf "dist/$name.tar.gz" brygge LICENSE build-info.txt
+          # sha256sum on Linux, shasum on macOS; both write `<hash>  <file>`.
+          if command -v sha256sum >/dev/null; then
+            ( cd dist && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256" )
+          else
+            ( cd dist && shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256" )
+          fi
+      # A .zip on Windows. The checksum line has the shape `sha256sum -c` reads: lowercase hex, two spaces,
+      # the bare file name, no trailing newline (prikk's release.yml settled that shape).
+      - name: Package (zip)
+        if: runner.os == 'Windows'
+        working-directory: source
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $name = "brygge-$env:TARGET"
+          New-Item -ItemType Directory -Force -Path stage, dist | Out-Null
+          Copy-Item "target/$env:TARGET/release/brygge.exe" stage/brygge.exe
+          Copy-Item LICENSE stage/LICENSE
+          $commit = (git rev-parse HEAD)
+          Set-Content -Path stage/build-info.txt -Value "target: $env:TARGET"
+          Add-Content -Path stage/build-info.txt -Value "commit: $commit"
+          Add-Content -Path stage/build-info.txt -Value "tag: $env:TAG"
+          Add-Content -Path stage/build-info.txt -Value "build: cargo build -p brygge --release --locked --target $env:TARGET"
+          rustc -vV | Add-Content -Path stage/build-info.txt
+          Compress-Archive -Path stage/brygge.exe, stage/LICENSE, stage/build-info.txt -DestinationPath "dist/$name.zip"
+          $hash = (Get-FileHash "dist/$name.zip" -Algorithm SHA256).Hash.ToLower()
+          Set-Content -Path "dist/$name.zip.sha256" -Value "$hash  $name.zip" -NoNewline
+      - name: Upload the archive and its checksum
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: brygge-${{ matrix.target }}
+          path: source/dist/*
+          if-no-files-found: error
+
+  # ---- 4. publish-crates: the owner approves, then crates.io by trusted publishing ---------------------
+  publish-crates:
+    name: publish to crates.io
+    needs: [verify, gates, build]
+    # `build` is skipped when the binaries are off; it must not have failed.
+    if: ${{ !cancelled() && needs.verify.result == 'success' && needs.gates.result == 'success' && (needs.build.result == 'success' || needs.build.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Check out the tagged source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ env.TAG }}
+          path: source
+          persist-credentials: false
+      - name: Check out the release tools (this workflow's own commit)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: release-tools
+          sparse-checkout: tools
+          persist-credentials: false
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+        with:
+          toolchain: stable
+      # A token that lasts minutes, for this workflow in this environment; revoked when the job ends.
+      - name: Get a short-lived crates.io token (trusted publishing)
+        id: auth
+        uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18 # v1.0.5
+      - name: Publish the crates that are not yet on crates.io
+        working-directory: source
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: ../release-tools/tools/publish-crates.sh "$TAG"
+
+  # ---- 5. verify-published: install what crates.io now serves, and compare it with the tag ------------
+  verify-published:
+    name: verify what was published
+    needs: publish-crates
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the tagged source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ env.TAG }}
+          path: source
+          persist-credentials: false
+      - name: Check out the release tools (this workflow's own commit)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: release-tools
+          sparse-checkout: tools
+          persist-credentials: false
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+        with:
+          toolchain: stable
+      # What a user gets: from crates.io, with the crates' own lock file, outside the source tree.
+      - name: Install brygge from crates.io
+        run: cargo install --locked brygge --version "$TAG" --root "$RUNNER_TEMP/brygge-install"
+      - name: Version and smoke test
+        run: ./release-tools/tools/smoke-test.sh "$TAG" "$RUNNER_TEMP/brygge-install/bin/brygge"
+      - name: Byte-identity of the six published crates with the tag
+        working-directory: source
+        run: ../release-tools/tools/check-published.sh "$TAG"
+
+  # ---- 6. github-release: binaries with provenance, notes from CHANGELOG ---------------------------------
+  # No environment of its own: the owner's approval of `publish-crates` authorizes the cut, and this job can
+  # only run after that job and `verify-published` have succeeded. The attestation needs `id-token: write`,
+  # which does not depend on the environment.
+  github-release:
+    name: GitHub release
+    needs: [verify-published, build]
+    if: ${{ !cancelled() && needs.verify-published.result == 'success' && (needs.build.result == 'success' || needs.build.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      # 'true' unless this is a dispatch with the binaries off.
+      BINARIES: ${{ github.event_name != 'workflow_dispatch' || inputs.binaries }}
+      # The optional dispatch note: plain text, read by the script from the environment only.
+      NOTE: ${{ inputs.note }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Check out the tagged source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ env.TAG }}
+          path: source
+          persist-credentials: false
+      - name: Check out the release tools (this workflow's own commit)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: release-tools
+          sparse-checkout: tools
+          persist-credentials: false
+      # Checked again here, at the last moment: a release that exists is never edited.
+      - name: No GitHub release exists yet
+        working-directory: source
+        run: ../release-tools/tools/check-release-absent.sh "$TAG"
+      - name: Download the archives
+        if: ${{ env.BINARIES == 'true' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Attest the archives (build provenance)
+        if: ${{ env.BINARIES == 'true' }}
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/*.zip
+      # The `[X.Y.Z]` section of CHANGELOG.md, up to its "detailed changes" line; the dispatch note, if
+      # any, is appended as a final paragraph. Written through a file, never a command line.
+      - name: Assemble the release notes
+        working-directory: source
+        run: |
+          set -euo pipefail
+          ../release-tools/tools/release-notes.sh "$TAG" > "$RUNNER_TEMP/notes.md"
+          if [ -n "$NOTE" ]; then
+            printf '\n%s\n' "$NOTE" >> "$RUNNER_TEMP/notes.md"
+          fi
+          cat "$RUNNER_TEMP/notes.md"
+      - name: Create the release
+        working-directory: source
+        run: |
+          set -euo pipefail
+          files=()
+          if [ "$BINARIES" = true ]; then
+            files=(../dist/*.tar.gz ../dist/*.tar.gz.sha256 ../dist/*.zip ../dist/*.zip.sha256)
+          fi
+          gh release create "$TAG" --verify-tag --title "$TAG" --notes-file "$RUNNER_TEMP/notes.md" "${files[@]}"

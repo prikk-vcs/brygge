@@ -22,3 +22,4 @@
 
 - [Project handoff](development/handoffs/HANDOFF.md)
 - [Governance and approval policy](development/handoffs/GOVERNANCE.md)
+- [Releasing brygge](development/releasing.md)
