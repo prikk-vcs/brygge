@@ -181,8 +181,9 @@ version**: a consumer (a foreign encoder, an inspector) pins the IR contract, no
   threat-model control failure triggers a prompt patch release. The threat model is revisited per the
   project rule: a release touching a new parser, a new dependency, or an untrusted-input path **updates**
   `brygge-03`; others **re-verify** it.
-- **Tags are bare versions (no `v`)** and gates are CI-enforced. Publishing and tagging are **owner-only**
-  (see [`GOVERNANCE.md`](docs/src/development/handoffs/GOVERNANCE.md)).
+- **Tags are bare versions (no `v`)** and gates are CI-enforced. Tagging and publishing are
+  **authorized by the owner and executed by the architect**, never by the implementer (see
+  [`GOVERNANCE.md`](docs/src/development/handoffs/GOVERNANCE.md), "Cutting a release").
 - **What "done" means for a release:**
   - the gates are green (fmt · clippy `-D warnings` · test · **supply-chain gates**);
   - the fidelity/honesty surfaces are present and unsuppressible (INV-1);

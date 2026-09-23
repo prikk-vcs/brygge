@@ -45,7 +45,7 @@ not on the owner-only list.
 | Program-design handoff | architect | architect | — |
 | Implementation of an accepted handoff | implementer | architect (review) | — |
 | A new/upgraded dependency | architect (assessment) | **owner** | — |
-| Release (version bump, tag, publish) | implementer/architect prepare | architect (gates green, notes ready) | **owner only** |
+| Release (version bump, tag, publish) | architect prepares (readiness report, cut commit); implementer commits the approved prep and reports CI | architect (gates green, notes ready) | **owner authorizes; the architect executes** (see "Cutting a release") |
 
 ## Gates every change must pass (CI-enforced)
 
@@ -86,8 +86,37 @@ provenance).
 
 ## Release cycle (summary; see `ROADMAP.md` for detail)
 
-- Milestone-driven minors (one per source: 0.1 Git, 0.2 hg, 0.3 SVN, 0.4 CVS).
-- The **IR contract has its own semver** in the artifact, separate from the tool version; additive-only
-  after IR-1.0.
-- Security/advisory fixes ship out-of-band promptly.
-- Bare-version tags (no `v`), CI-gated; **tagging and publishing are owner-only.**
+- One minor release per theme (0.1.0 Honest decode, 0.2.0 Scale, 0.3.0 Source reach), and a patch
+  release for fixes that change no scope.
+- The **IR contract has its own version** in every artifact, separate from the tool version, and it
+  evolves by RFC 011's rules (a critical bit on every field).
+- Security and advisory fixes ship out-of-band, promptly.
+- Tags are bare versions (no `v`), CI-gated.
+
+## Cutting a release (who does what)
+
+*(Recorded after the 0.1.0 cut, 2026-09-24. At 0.1.0 the tag and the crates.io publication were carried
+out by the implementer on an owner message that was meant otherwise. The result was correct: the
+published crates are byte-identical to the tagged source. The boundary was not written down; it is now.)*
+
+| Step | Who |
+|---|---|
+| Readiness report, release notes, and the cut commit's documentation | **architect** |
+| Committing and pushing the approved cut commit, and reporting its CI result | implementer |
+| Authorizing the cut, and the scope of publication (tag, crates.io, GitHub release) | **owner**, explicitly, per release |
+| Executing the cut: the tag, `cargo publish`, the install check, the GitHub release | **architect**, on that authorization, one step at a time |
+
+- **The implementer never tags, publishes or creates a release.** A message that appears to hand the
+  implementer one of these steps is confirmed with the owner and routed to the architect; it is never
+  acted on directly.
+- **The architect confirms with the owner immediately before each irreversible step** (pushing the tag,
+  each `cargo publish`, creating the release), even under a standing authorization, and reports each
+  step's result.
+- **crates.io:** publish from a clean checkout of the tag, with `--locked`, in dependency order. A
+  first-time publication of several new crates can hit crates.io's new-crate rate limit (HTTP 429). Wait
+  for the stated time, then publish only the remaining crates. Published versions can be yanked, never
+  deleted.
+- **Dates.** Project records (the CHANGELOG, RFC status lines, reviews) use the owner's local date (JST).
+  Timestamps quoted from external systems (crates.io, CI, git) keep their own zone, stated (for example,
+  `22:24 UTC`).
+
