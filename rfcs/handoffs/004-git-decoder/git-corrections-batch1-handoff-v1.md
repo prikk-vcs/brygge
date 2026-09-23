@@ -44,6 +44,12 @@ and never alter or merge a path.
      class `Representation`, reason "workflow state (stash, notes, remote-tracking), not authored history
      of a carried ref (RFC 004 D-5, OQ-B)". Omit the record when N = 0.
 3. **`repo_id`** (the smallest root commit) is computed over the imported commits only.
+
+*(Amended after review 004, R-2.)* The sizing walk behind the "commits reachable only from dropped refs"
+record uses `.with_hidden(<carried tips>)`, so it visits dropped-only commits only. It never fails the
+decode: on an error, the record reads `commits reachable only from dropped refs (count unavailable:
+<reason>)`.
+
 4. **A repository with no carried ref** decodes to an empty IR with its loss records. It is not an error.
 
 ### 2.2 Repository shape (CR-11, D-3(ii))
@@ -56,6 +62,15 @@ directory `open.rs` resolves:
 | `objects/info/alternates` exists and is non-empty | `object alternates` | the repository borrows objects from another store; brygge reads only the repository it is given; run `git repack -a -d` in it (which copies borrowed objects in) and then remove `objects/info/alternates` |
 | `objects/info/http-alternates` exists | `object alternates` | the same |
 | the given path's `.git` is a **file** (`gitdir:` redirect), or the git directory contains `commondir` (a linked worktree) | `redirected git directory` | point brygge at the repository's main git directory (`git rev-parse --git-common-dir`) |
+
+*(Amended after review 004, R-1.)* A **symlink** also makes reads leave the repository. Refuse,
+`feature = "redirected git directory"`, when any of these is a symlink (checked with `symlink_metadata`):
+- the path's `.git` entry;
+- the git directory's `objects`, `objects/info` or `objects/pack`;
+- any entry in `objects/pack/`.
+
+The given path itself may be a symlink. Symlinked **loose objects** are a recorded residual
+(`RR-git-loose-object-symlink`), not a refusal.
 
 **Investigate and report (the CR-11 finding).** Does gix 0.87 with `open::Options::isolated()` follow
 alternates, `gitdir:` and `commondir`, and does it read `GIT_DIR`, `GIT_OBJECT_DIRECTORY` or

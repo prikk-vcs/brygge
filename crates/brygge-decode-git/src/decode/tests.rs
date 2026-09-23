@@ -118,6 +118,10 @@ fn build_rich_repo() -> TempRepo {
         "feature",
     ]);
     r.git(&["tag", "-a", "v1", "-m", "release one"]);
+    // A stash on top of everything else (requirement 7: determinism/pack-independence with a stash
+    // present). `refs/stash` is a dropped namespace (CR-05); this must not change what decodes.
+    r.write("readme.txt", "hello world, locally dirty\n");
+    r.git(&["stash", "push", "-q", "-m", "wip"]);
     r
 }
 
@@ -402,7 +406,7 @@ fn symbolic_ref_in_a_dropped_namespace_decodes_without_panic() {
     // Its target is a distinct, non-symbolic ref in the same (already dropped) namespace, carried on
     // its own by the existing remote-tracking record — not folded into the symbolic-ref count.
     assert!(
-        whats.contains(&"remote-tracking refs"),
+        whats.contains(&"remote-tracking refs (1)"),
         "the target ref is still handled on its own: {whats:?}"
     );
 }
@@ -714,5 +718,471 @@ fn ambiguous_identical_content_move_is_not_marked() {
             .ops
             .iter()
             .any(|op| matches!(op, brygge_ir::PathOp::Delete { path, .. } if path == "a.txt"))
+    );
+}
+
+// --- Git corrections batch 1 (CR-05, CR-11/D-3(ii), CR-03/D-3(i), CR-06) -----------------------------
+
+#[test]
+fn stash_notes_and_remote_tracking_are_excluded_and_counted() {
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    // Baseline: no workflow refs at all, for the repo_id comparison below.
+    let baseline = TempRepo::new();
+    baseline.write("a.txt", "a\n");
+    baseline.commit_all("c1");
+    let baseline_ir = decode(baseline.path(), &Options::default()).unwrap();
+
+    let r = TempRepo::new();
+    r.write("a.txt", "a\n");
+    r.commit_all("c1");
+    let head = r.git(&["rev-parse", "HEAD"]);
+
+    r.write("a.txt", "b\n");
+    r.git(&["stash", "push", "-q", "-m", "wip"]);
+
+    r.git(&["notes", "add", "-m", "a note", &head]);
+
+    r.write("only-on-remote.txt", "x\n");
+    r.commit_all("remote-only commit");
+    let remote_head = r.git(&["rev-parse", "HEAD"]);
+    r.git(&["update-ref", "refs/remotes/origin/x", &remote_head]);
+    r.git(&["reset", "-q", "--hard", &head]); // main no longer carries the remote-only commit
+
+    let ir = decode(r.path(), &Options::default()).unwrap();
+    assert_eq!(
+        ir.atoms.len(),
+        1,
+        "only c1 is carried history: {:?}",
+        ir.atoms
+    );
+    assert!(
+        ir.atoms.iter().all(|a| a.ops.iter().all(
+            |op| !matches!(op, brygge_ir::PathOp::Add { path, .. } if path == "only-on-remote.txt")
+        )),
+        "the commit reachable only from refs/remotes/origin/x never became an atom"
+    );
+
+    let whats: Vec<&str> = ir.loss.dropped.iter().map(|d| d.what.as_str()).collect();
+    assert!(whats.contains(&"stash refs (1)"), "{whats:?}");
+    assert!(whats.contains(&"notes refs (1)"), "{whats:?}");
+    assert!(whats.contains(&"remote-tracking refs (1)"), "{whats:?}");
+    assert!(
+        whats
+            .iter()
+            .any(|w| w.starts_with("commits reachable only from dropped refs")),
+        "{whats:?}"
+    );
+
+    assert_eq!(
+        ir.provenance.source.repo_id, baseline_ir.provenance.source.repo_id,
+        "repo_id is computed over imported commits only, unaffected by dropped-namespace refs"
+    );
+}
+
+#[test]
+fn alternates_are_refused_but_an_empty_file_is_not() {
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let origin = TempRepo::new();
+    origin.write("a.txt", "a\n");
+    origin.commit_all("c1");
+
+    let clone_dir = std::env::temp_dir().join(format!(
+        "brygge-git-clone-{}-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    // `git clone --shared` creates objects/info/alternates pointing at the origin's object store.
+    let out = Command::new("git")
+        .args([
+            "clone",
+            "-q",
+            "--shared",
+            origin.path().to_str().unwrap(),
+            clone_dir.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git clone --shared failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    match decode(&clone_dir, &Options::default()) {
+        Err(crate::Error::FloorRefusal { feature, .. }) => assert_eq!(feature, "object alternates"),
+        other => panic!("expected an object-alternates refusal, got {other:?}"),
+    }
+    let _ = std::fs::remove_dir_all(&clone_dir);
+
+    // A hand-written EMPTY alternates file is not refused.
+    let r = TempRepo::new();
+    r.write("a.txt", "a\n");
+    r.commit_all("c1");
+    std::fs::create_dir_all(r.path().join(".git/objects/info")).unwrap();
+    std::fs::write(r.path().join(".git/objects/info/alternates"), b"").unwrap();
+    assert!(decode(r.path(), &Options::default()).is_ok());
+}
+
+#[test]
+fn redirected_git_directory_is_refused_but_main_repo_succeeds() {
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let r = TempRepo::new();
+    r.write("a.txt", "a\n");
+    r.commit_all("c1");
+
+    let worktree_dir = std::env::temp_dir().join(format!(
+        "brygge-git-worktree-{}-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    r.git(&[
+        "worktree",
+        "add",
+        "-q",
+        worktree_dir.to_str().unwrap(),
+        "-b",
+        "wt-branch",
+    ]);
+
+    // The linked worktree's `.git` is a file (a `gitdir:` redirect).
+    match decode(&worktree_dir, &Options::default()) {
+        Err(crate::Error::FloorRefusal { feature, .. }) => {
+            assert_eq!(feature, "redirected git directory");
+        }
+        other => panic!("expected a redirected-git-directory refusal, got {other:?}"),
+    }
+
+    // The main repository still decodes.
+    assert!(decode(r.path(), &Options::default()).is_ok());
+
+    r.git(&["worktree", "remove", "-f", worktree_dir.to_str().unwrap()]);
+    let _ = std::fs::remove_dir_all(&worktree_dir);
+}
+
+fn unique_temp_dir(label: &str) -> PathBuf {
+    std::env::temp_dir().join(format!(
+        "brygge-git-{label}-{}-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    ))
+}
+
+#[cfg(unix)]
+#[test]
+fn a_symlinked_git_directory_is_refused() {
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let target = TempRepo::new();
+    target.write("a.txt", "a\n");
+    target.commit_all("c1");
+
+    let outer = unique_temp_dir("symlink-outer");
+    std::fs::create_dir_all(&outer).unwrap();
+    std::os::unix::fs::symlink(target.path().join(".git"), outer.join(".git")).unwrap();
+
+    match decode(&outer, &Options::default()) {
+        Err(crate::Error::FloorRefusal { feature, .. }) => {
+            assert_eq!(feature, "redirected git directory");
+        }
+        other => panic!("expected a redirected-git-directory refusal, got {other:?}"),
+    }
+    let _ = std::fs::remove_dir_all(&outer);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_symlinked_objects_directory_is_refused() {
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let target = TempRepo::new();
+    target.write("a.txt", "a\n");
+    target.commit_all("c1");
+
+    let r = TempRepo::new();
+    r.write("b.txt", "b\n");
+    r.commit_all("c1");
+    let objects = r.path().join(".git").join("objects");
+    std::fs::remove_dir_all(&objects).unwrap();
+    std::os::unix::fs::symlink(target.path().join(".git").join("objects"), &objects).unwrap();
+
+    match decode(r.path(), &Options::default()) {
+        Err(crate::Error::FloorRefusal { feature, .. }) => {
+            assert_eq!(feature, "redirected git directory");
+        }
+        other => panic!("expected a redirected-git-directory refusal, got {other:?}"),
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_symlinked_pack_file_is_refused() {
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let r = TempRepo::new();
+    r.write("a.txt", "a\n");
+    r.commit_all("c1");
+    r.git(&["repack", "-a", "-d", "-q"]);
+
+    let pack_dir = r.path().join(".git").join("objects").join("pack");
+    let entries: Vec<PathBuf> = std::fs::read_dir(&pack_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .collect();
+    let victim = entries.first().expect("repack produced pack files").clone();
+    let name = victim.file_name().unwrap().to_owned();
+    std::fs::remove_file(&victim).unwrap();
+    // The symlink need not resolve; detection is of the symlink itself (`symlink_metadata`).
+    std::os::unix::fs::symlink(
+        pack_dir.join("does-not-exist").with_file_name(name),
+        &victim,
+    )
+    .unwrap();
+
+    match decode(r.path(), &Options::default()) {
+        Err(crate::Error::FloorRefusal { feature, .. }) => {
+            assert_eq!(feature, "redirected git directory");
+        }
+        other => panic!("expected a redirected-git-directory refusal, got {other:?}"),
+    }
+}
+
+#[test]
+fn an_unsymlinked_repository_decodes_normally() {
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let r = TempRepo::new();
+    r.write("a.txt", "a\n");
+    r.commit_all("c1");
+    assert!(decode(r.path(), &Options::default()).is_ok());
+}
+
+#[test]
+fn corrupt_dropped_only_history_does_not_fail_the_decode() {
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let r = TempRepo::new();
+    r.write("a.txt", "a\n");
+    r.commit_all("c1");
+    let head = r.git(&["rev-parse", "HEAD"]);
+
+    r.write("a.txt", "b\n");
+    r.git(&["stash", "push", "-q", "-m", "wip"]);
+    let stash_id = r.git(&["rev-parse", "refs/stash"]);
+    // The stash commit's second parent is the index-tree commit — reachable only from refs/stash,
+    // never from any carried ref.
+    let index_parent = r.git(&["rev-parse", &format!("{stash_id}^2")]);
+    assert_ne!(
+        index_parent, head,
+        "the index-tree parent is a commit of its own, not HEAD"
+    );
+
+    let loose = r
+        .path()
+        .join(".git")
+        .join("objects")
+        .join(&index_parent[..2])
+        .join(&index_parent[2..]);
+    assert!(
+        loose.exists(),
+        "expected a loose object at {}",
+        loose.display()
+    );
+    std::fs::remove_file(&loose).unwrap();
+
+    let ir = decode(r.path(), &Options::default()).unwrap();
+    assert_eq!(ir.atoms.len(), 1, "carried history (c1) is intact");
+    let whats: Vec<&str> = ir.loss.dropped.iter().map(|d| d.what.as_str()).collect();
+    assert!(
+        whats
+            .iter()
+            .any(|w| w.starts_with("commits reachable only from dropped refs (count unavailable")),
+        "{whats:?}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn non_utf8_path_is_refused_with_escaped_bytes_and_commit_hex() {
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    use std::os::unix::ffi::OsStrExt;
+
+    let r = TempRepo::new();
+    r.write("a.txt", "a\n");
+    r.commit_all("c1");
+    let blob = r.git(&["hash-object", "-w", "--", "a.txt"]);
+
+    let mut cacheinfo_bytes = format!("100644,{blob},bad-").into_bytes();
+    cacheinfo_bytes.push(0xFF);
+    cacheinfo_bytes.extend_from_slice(b".txt");
+    let cacheinfo = std::ffi::OsStr::from_bytes(&cacheinfo_bytes).to_os_string();
+
+    let out = Command::new("git")
+        .current_dir(r.path())
+        .arg("update-index")
+        .arg("--add")
+        .arg("--cacheinfo")
+        .arg(&cacheinfo)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "update-index failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let out = Command::new("git")
+        .current_dir(r.path())
+        .args([
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-q",
+            "-m",
+            "add non-utf8 path",
+        ])
+        .env("GIT_AUTHOR_NAME", "A U Thor")
+        .env("GIT_AUTHOR_EMAIL", "author@example.com")
+        .env("GIT_AUTHOR_DATE", "2005-04-07T22:13:13 +0000")
+        .env("GIT_COMMITTER_NAME", "C O Mitter")
+        .env("GIT_COMMITTER_EMAIL", "committer@example.com")
+        .env("GIT_COMMITTER_DATE", "2005-04-07T22:13:13 +0000")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "commit failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let commit_hex = r.git(&["rev-parse", "HEAD"]);
+
+    match decode(r.path(), &Options::default()) {
+        Err(crate::Error::FloorRefusal { feature, reason }) => {
+            assert_eq!(feature, "non-UTF-8 path");
+            assert!(
+                reason.contains("\\xFF"),
+                "reason should escape the invalid byte: {reason}"
+            );
+            assert!(
+                reason.contains(&commit_hex),
+                "reason should name the commit: {reason}"
+            );
+        }
+        other => panic!("expected a non-UTF-8-path refusal, got {other:?}"),
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn non_utf8_ref_name_is_refused() {
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    use std::os::unix::ffi::OsStrExt;
+
+    let r = TempRepo::new();
+    r.write("a.txt", "a\n");
+    r.commit_all("c1");
+    let head = r.git(&["rev-parse", "HEAD"]);
+
+    let mut name_bytes = b"refs/heads/bad-".to_vec();
+    name_bytes.push(0xFF);
+    let ref_name = std::ffi::OsStr::from_bytes(&name_bytes).to_os_string();
+
+    let out = Command::new("git")
+        .current_dir(r.path())
+        .arg("update-ref")
+        .arg(&ref_name)
+        .arg(&head)
+        .output()
+        .unwrap();
+    if !out.status.success() {
+        eprintln!(
+            "skipping: this git/platform rejects a non-UTF-8 ref name: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        return;
+    }
+
+    match decode(r.path(), &Options::default()) {
+        Err(crate::Error::FloorRefusal { feature, reason }) => {
+            assert_eq!(feature, "non-UTF-8 ref name");
+            assert!(
+                reason.contains("\\xFF"),
+                "reason should escape the invalid byte: {reason}"
+            );
+        }
+        other => panic!("expected a non-UTF-8-ref-name refusal, got {other:?}"),
+    }
+}
+
+/// Fallback unit coverage of the conversion itself (requirement 5: "cover the conversion with a unit
+/// test" when the fixture above cannot be built on a given platform).
+#[test]
+fn escape_invalid_utf8_never_substitutes_u_fffd() {
+    assert_eq!(escape_invalid_utf8(b"bad-\xFF.txt"), "bad-\\xFF.txt");
+    assert_eq!(escape_invalid_utf8(b"plain"), "plain");
+    assert_eq!(escape_invalid_utf8(b"\xC0\xC1"), "\\xC0\\xC1");
+    assert!(!escape_invalid_utf8(b"\xFF").contains('\u{FFFD}'));
+}
+
+#[test]
+fn tag_on_a_blob_is_not_a_ref_record_but_is_counted() {
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let r = TempRepo::new();
+    r.write("a.txt", "a\n");
+    r.commit_all("c1");
+    let blob = r.git(&["hash-object", "-w", "--", "a.txt"]);
+    r.git(&["tag", "blobtag", &blob]);
+
+    let ir = decode(r.path(), &Options::default()).unwrap();
+    assert!(
+        ir.refs.iter().all(|rf| rf.name != "blobtag"),
+        "a tag on a blob is never a RefRecord (it has no atom to target)"
+    );
+    let whats: Vec<&str> = ir.loss.dropped.iter().map(|d| d.what.as_str()).collect();
+    assert!(
+        whats.contains(&"refs to non-commit objects (1)"),
+        "the drop is counted, not silently skipped: {whats:?}"
     );
 }

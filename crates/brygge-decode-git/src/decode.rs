@@ -32,6 +32,38 @@ fn read_err(e: impl std::fmt::Display) -> Error {
     Error::Read(e.to_string())
 }
 
+/// Render `bytes` as valid UTF-8 kept verbatim and each invalid byte escaped as `\xNN` — never
+/// `to_str_lossy`'s `U+FFFD` substitution, which would silently alter the bytes a refusal message
+/// names (D-3(i), CR-03).
+fn escape_invalid_utf8(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(bytes.len());
+    let mut rest = bytes;
+    loop {
+        match std::str::from_utf8(rest) {
+            Ok(valid) => {
+                out.push_str(valid);
+                break;
+            }
+            Err(e) => {
+                let valid_up_to = e.valid_up_to();
+                let valid_prefix = rest.get(..valid_up_to).unwrap_or(&[]);
+                out.push_str(std::str::from_utf8(valid_prefix).unwrap_or_default());
+                let bad_len = e.error_len().unwrap_or(rest.len() - valid_up_to).max(1);
+                let bad_end = (valid_up_to + bad_len).min(rest.len());
+                for &b in rest.get(valid_up_to..bad_end).unwrap_or(&[]) {
+                    let _ = write!(out, "\\x{b:02X}");
+                }
+                rest = rest.get(bad_end..).unwrap_or(&[]);
+                if rest.is_empty() {
+                    break;
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Decode the Git repository at `path` into an [`Ir`] under `opts`.
 ///
 /// # Errors
@@ -43,15 +75,40 @@ pub fn decode(path: &Path, opts: &Options) -> Result<Ir, Error> {
     open::check_repo_floor(&repo)?;
 
     let (refs, symbolic_ref_count) = scan_refs(&repo)?;
-    let tips: Vec<ObjectId> = refs.iter().filter_map(|r| r.commit).collect();
 
-    // Reachable commit set from every ref tip.
+    // CR-05: walk tips come only from carried refs (non-symbolic refs/heads/* and refs/tags/*,
+    // a tag peeled to its commit). Compute this set first — before anything is read for atoms —
+    // so a commit reachable only from a dropped namespace (refs/remotes/*, refs/notes/*,
+    // refs/stash, ...) is never read as history.
+    let carried_tips: Vec<ObjectId> = refs
+        .iter()
+        .filter(|r| matches!(r.kind, ScannedKind::Branch(_) | ScannedKind::Tag(_)))
+        .filter_map(|r| r.commit)
+        .collect();
     let mut set: BTreeSet<ObjectId> = BTreeSet::new();
-    if !tips.is_empty() {
-        for info in repo.rev_walk(tips).all().map_err(read_err)? {
+    if !carried_tips.is_empty() {
+        for info in repo
+            .rev_walk(carried_tips.clone())
+            .all()
+            .map_err(read_err)?
+        {
             set.insert(info.map_err(read_err)?.id);
         }
     }
+
+    // The count for the loss record only: commits reachable only from a dropped-namespace ref.
+    // `.with_hidden(carried_tips)` paints every carried-reachable commit as unwanted, so the walk
+    // visits dropped-only commits without re-walking the shared history. This is a *count*, not a
+    // requirement (RFC 004 R-2, 2026-09-23 review of this handoff): it reads commit headers only —
+    // never a tree or blob, and nothing it finds becomes an atom — and it never fails the decode. A
+    // broken commit in dropped-only history (e.g. a corrupt stash) makes the count unavailable, not
+    // the decode.
+    let dropped_tips: Vec<ObjectId> = refs
+        .iter()
+        .filter(|r| matches!(r.kind, ScannedKind::Dropped(_)))
+        .filter_map(|r| r.commit)
+        .collect();
+    let dropped_only_commits = count_dropped_only_commits(&repo, dropped_tips, carried_tips);
 
     let parents = commit_parents(&repo, &set)?;
     let order = parent_first_order(&set, &parents)?;
@@ -91,7 +148,7 @@ pub fn decode(path: &Path, opts: &Options) -> Result<Ir, Error> {
             .map_err(read_err)?;
 
         let child_tree = commit.tree_id().map_err(read_err)?.detach();
-        let child_snap = snapshot(&repo, child_tree, &mut snap_cache)?;
+        let child_snap = snapshot(&repo, child_tree, *id, &mut snap_cache)?;
 
         let ps = parents.get(id).cloned().unwrap_or_default();
         let base_snap = match ps.first() {
@@ -102,7 +159,7 @@ pub fn decode(path: &Path, opts: &Options) -> Result<Ir, Error> {
                     .try_into_commit()
                     .map_err(read_err)?;
                 let p_tree = p_commit.tree_id().map_err(read_err)?.detach();
-                snapshot(&repo, p_tree, &mut snap_cache)?
+                snapshot(&repo, p_tree, *p0, &mut snap_cache)?
             }
             None => Snapshot::new(),
         };
@@ -133,23 +190,28 @@ pub fn decode(path: &Path, opts: &Options) -> Result<Ir, Error> {
     }
 
     // Refs, the dropped-namespace loss records, and annotated-tag identity preservation (OQ-B).
-    let mut dropped_namespaces: BTreeSet<&'static str> = BTreeSet::new();
+    let mut dropped_namespace_counts: BTreeMap<&'static str, u64> = BTreeMap::new();
     let mut annotated_tags = 0u64;
+    let mut non_commit_refs = 0u64;
     for r in &refs {
         match &r.kind {
             ScannedKind::Branch(name) => {
-                if let Some(target) = r.commit.and_then(|c| sha_to_atom.get(&c).copied()) {
-                    builder.add_ref(RefRecord {
-                        name: name.clone(),
-                        kind: RefKind::Branch,
-                        target,
-                        status: EpistemicStatus::Stated,
-                        source: None,
-                    })?;
+                match r.commit.and_then(|c| sha_to_atom.get(&c).copied()) {
+                    Some(target) => {
+                        builder.add_ref(RefRecord {
+                            name: name.clone(),
+                            kind: RefKind::Branch,
+                            target,
+                            status: EpistemicStatus::Stated,
+                            source: None,
+                        })?;
+                    }
+                    // CR-06: peeled to a tree or blob, not a commit — recorded, not silently skipped.
+                    None => non_commit_refs += 1,
                 }
             }
-            ScannedKind::Tag(name) => {
-                if let Some(target) = r.commit.and_then(|c| sha_to_atom.get(&c).copied()) {
+            ScannedKind::Tag(name) => match r.commit.and_then(|c| sha_to_atom.get(&c).copied()) {
+                Some(target) => {
                     // An annotated tag preserves its own opaque object id + signature (PR-4/SRC-G3);
                     // its tagger and message have no slot in the RefRecord and are recorded as loss.
                     let source = r.tag_identity.as_ref().map(|(tag_id, signatures)| {
@@ -169,20 +231,59 @@ pub fn decode(path: &Path, opts: &Options) -> Result<Ir, Error> {
                         source,
                     })?;
                 }
-            }
+                // CR-06: peeled to a tree or blob, not a commit — recorded, not silently skipped.
+                None => non_commit_refs += 1,
+            },
             ScannedKind::Dropped(ns) => {
-                dropped_namespaces.insert(ns);
+                *dropped_namespace_counts.entry(ns).or_insert(0) += 1;
             }
         }
     }
 
     builder.set_loss(loss_boundary(
-        &dropped_namespaces,
+        &dropped_namespace_counts,
+        dropped_only_commits,
+        non_commit_refs,
         annotated_tags,
         symbolic_ref_count,
         unparseable_times,
     ));
     builder.finish().map_err(Error::Ir)
+}
+
+/// The result of sizing the "commits reachable only from dropped refs" loss record (CR-05).
+enum DroppedOnlyCommits {
+    /// The exact count.
+    Counted(u64),
+    /// The walk itself failed (e.g. a corrupt or missing commit in dropped-only history); the count is
+    /// unknown rather than guessed. `reason` is the underlying error's display text.
+    Unavailable(String),
+}
+
+/// Count commits reachable only from `dropped_tips`, never `carried_tips` (CR-05). This never fails the
+/// decode (2026-09-23 review R-2 of this handoff): any error during the walk — setup or iteration —
+/// becomes [`DroppedOnlyCommits::Unavailable`] instead of propagating, since this is a loss-record count,
+/// not a requirement for the decode to succeed.
+fn count_dropped_only_commits(
+    repo: &gix::Repository,
+    dropped_tips: Vec<ObjectId>,
+    carried_tips: Vec<ObjectId>,
+) -> DroppedOnlyCommits {
+    if dropped_tips.is_empty() {
+        return DroppedOnlyCommits::Counted(0);
+    }
+    let walk = match repo.rev_walk(dropped_tips).with_hidden(carried_tips).all() {
+        Ok(walk) => walk,
+        Err(e) => return DroppedOnlyCommits::Unavailable(e.to_string()),
+    };
+    let mut count = 0u64;
+    for info in walk {
+        match info {
+            Ok(_) => count += 1,
+            Err(e) => return DroppedOnlyCommits::Unavailable(e.to_string()),
+        }
+    }
+    DroppedOnlyCommits::Counted(count)
 }
 
 /// A ref as scanned, categorised, and peeled.
@@ -201,6 +302,9 @@ enum ScannedKind {
     Dropped(&'static str),
 }
 
+const HEADS_PREFIX: &[u8] = b"refs/heads/";
+const TAGS_PREFIX: &[u8] = b"refs/tags/";
+
 /// Scan refs: refuse replace refs (RFC 004 D-4), categorise the rest, and peel each to a commit id.
 /// Returns the carried refs plus a count of symbolic refs skipped (CR-16).
 fn scan_refs(repo: &gix::Repository) -> Result<(Vec<ScannedRef>, u64), Error> {
@@ -209,9 +313,11 @@ fn scan_refs(repo: &gix::Repository) -> Result<(Vec<ScannedRef>, u64), Error> {
     let platform = repo.references().map_err(read_err)?;
     for r in platform.all().map_err(read_err)? {
         let mut r = r.map_err(read_err)?;
-        let name = r.name().as_bstr().to_str_lossy().into_owned();
+        let raw_name: Vec<u8> = r.name().as_bstr().to_vec();
+        let name = raw_name.to_str_lossy(); // CR-03: lossy until RFC 011 (text as bytes); only used
+        // for the `refs/replace/` prefix check and dropped-namespace matching below, both ASCII.
 
-        if name.starts_with("refs/replace/") {
+        if raw_name.starts_with(b"refs/replace/") {
             return Err(Error::FloorRefusal {
                 feature: "replace ref".to_string(),
                 reason: format!(
@@ -232,26 +338,57 @@ fn scan_refs(repo: &gix::Repository) -> Result<(Vec<ScannedRef>, u64), Error> {
             symbolic_refs += 1;
             continue;
         };
-        let commit = r.peel_to_id().ok().map(|id| id.detach()).filter(|id| {
-            repo.find_object(*id)
-                .is_ok_and(|o| matches!(o.kind, gix::objs::Kind::Commit))
-        });
+
+        // CR-03/D-3(i): a carried ref's name (after its namespace prefix) must be valid UTF-8, never
+        // converted lossily. Namespace classification itself only compares the ASCII prefix bytes, so
+        // it is unaffected by what follows.
+        let carried_suffix: Option<(&[u8], bool)> = if raw_name.starts_with(HEADS_PREFIX) {
+            Some((raw_name.get(HEADS_PREFIX.len()..).unwrap_or(&[]), true))
+        } else if raw_name.starts_with(TAGS_PREFIX) {
+            Some((raw_name.get(TAGS_PREFIX.len()..).unwrap_or(&[]), false))
+        } else {
+            None
+        };
+        if let Some((suffix, _)) = carried_suffix {
+            if std::str::from_utf8(suffix).is_err() {
+                return Err(Error::FloorRefusal {
+                    feature: "non-UTF-8 ref name".to_string(),
+                    reason: format!(
+                        "ref name '{}' is not valid UTF-8 (invalid bytes shown as \\xNN)",
+                        escape_invalid_utf8(&raw_name)
+                    ),
+                });
+            }
+        }
 
         let mut tag_identity = None;
-        let kind = if let Some(b) = name.strip_prefix("refs/heads/") {
-            ScannedKind::Branch(b.to_string())
-        } else if let Some(t) = name.strip_prefix("refs/tags/") {
-            tag_identity = annotated_tag_identity(repo, direct)?;
-            ScannedKind::Tag(t.to_string())
-        } else if name.starts_with("refs/remotes/") {
-            ScannedKind::Dropped("remote-tracking")
-        } else if name.starts_with("refs/notes/") {
-            ScannedKind::Dropped("notes")
-        } else if name == "refs/stash" {
-            ScannedKind::Dropped("stash")
+        let (kind, commit) = if let Some((suffix, is_branch)) = carried_suffix {
+            // Checked valid UTF-8 just above.
+            let suffix_str = std::str::from_utf8(suffix).unwrap_or_default().to_string();
+            if is_branch {
+                (ScannedKind::Branch(suffix_str), peel_carried(repo, &mut r)?)
+            } else {
+                tag_identity = annotated_tag_identity(repo, direct)?;
+                (ScannedKind::Tag(suffix_str), peel_carried(repo, &mut r)?)
+            }
         } else {
-            // HEAD and any other odd ref namespace: not authored history.
-            ScannedKind::Dropped("other")
+            // Dropped namespaces are peeled leniently: they contribute no atom and no hard error, only
+            // (optionally) a count of commits reachable only from them (CR-05).
+            let dropped_kind = if name.starts_with("refs/remotes/") {
+                ScannedKind::Dropped("remote-tracking")
+            } else if name.starts_with("refs/notes/") {
+                ScannedKind::Dropped("notes")
+            } else if name == "refs/stash" {
+                ScannedKind::Dropped("stash")
+            } else {
+                // HEAD and any other odd ref namespace: not authored history.
+                ScannedKind::Dropped("other")
+            };
+            let lenient_commit = r.peel_to_id().ok().map(|id| id.detach()).filter(|id| {
+                repo.find_object(*id)
+                    .is_ok_and(|o| matches!(o.kind, gix::objs::Kind::Commit))
+            });
+            (dropped_kind, lenient_commit)
         };
         out.push(ScannedRef {
             kind,
@@ -260,6 +397,21 @@ fn scan_refs(repo: &gix::Repository) -> Result<(Vec<ScannedRef>, u64), Error> {
         });
     }
     Ok((out, symbolic_refs))
+}
+
+/// Peel a `refs/heads/*` or `refs/tags/*` ref to its commit (CR-06). A ref whose target is missing
+/// entirely is a broken repository (`Error::Read`), not a drop. A ref that peels cleanly to a tree or
+/// blob is `None` — the caller counts it as a non-commit-target ref rather than silently skipping it.
+fn peel_carried(
+    repo: &gix::Repository,
+    r: &mut gix::Reference<'_>,
+) -> Result<Option<ObjectId>, Error> {
+    let id = r.peel_to_id().map_err(read_err)?.detach();
+    match repo.find_object(id) {
+        Ok(o) if matches!(o.kind, gix::objs::Kind::Commit) => Ok(Some(id)),
+        Ok(_) => Ok(None),
+        Err(e) => Err(read_err(e)),
+    }
 }
 
 /// If `direct` is an **annotated** tag object, return its id and any GPG signature, preserved opaquely
@@ -355,13 +507,14 @@ fn parent_first_order(
 fn snapshot(
     repo: &gix::Repository,
     tree_id: ObjectId,
+    commit_id: ObjectId,
     cache: &mut HashMap<ObjectId, Snapshot>,
 ) -> Result<Snapshot, Error> {
     if let Some(s) = cache.get(&tree_id) {
         return Ok(s.clone());
     }
     let mut out = Snapshot::new();
-    walk_tree(repo, tree_id, "", &mut out)?;
+    walk_tree(repo, tree_id, "", commit_id, &mut out)?;
     cache.insert(tree_id, out.clone());
     Ok(out)
 }
@@ -370,6 +523,7 @@ fn walk_tree(
     repo: &gix::Repository,
     tree_id: ObjectId,
     prefix: &str,
+    commit_id: ObjectId,
     out: &mut Snapshot,
 ) -> Result<(), Error> {
     let tree = repo
@@ -379,9 +533,20 @@ fn walk_tree(
         .map_err(read_err)?;
     for entry in tree.iter() {
         let entry = entry.map_err(read_err)?;
-        let name = entry.filename().to_str_lossy();
+        let raw_name = entry.filename(); // &BStr; CR-03/D-3(i): checked below, never `to_str_lossy`.
+        let Ok(name) = std::str::from_utf8(raw_name) else {
+            return Err(Error::FloorRefusal {
+                feature: "non-UTF-8 path".to_string(),
+                reason: format!(
+                    "commit {commit_id}: path '{prefix}{}{}' is not valid UTF-8 (invalid bytes \
+                     shown as \\xNN)",
+                    if prefix.is_empty() { "" } else { "/" },
+                    escape_invalid_utf8(raw_name)
+                ),
+            });
+        };
         let path = if prefix.is_empty() {
-            name.into_owned()
+            name.to_string()
         } else {
             format!("{prefix}/{name}")
         };
@@ -389,7 +554,7 @@ fn walk_tree(
         let oid = entry.oid().to_owned();
         match mode.kind() {
             gix::objs::tree::EntryKind::Tree => {
-                walk_tree(repo, oid, &path, out)?;
+                walk_tree(repo, oid, &path, commit_id, out)?;
             }
             gix::objs::tree::EntryKind::Commit => {
                 return Err(Error::FloorRefusal {
@@ -401,6 +566,13 @@ fn walk_tree(
                 });
             }
             _ => {
+                // CR-03 §2.3.4: valid UTF-8 paths cannot collide at this point (git trees disallow
+                // duplicate entry names, and entry names cannot contain '/'); this is defense in depth.
+                if out.contains_key(&path) {
+                    return Err(Error::Read(format!(
+                        "commit {commit_id}: duplicate path '{path}' in tree snapshot"
+                    )));
+                }
                 out.insert(path, (oid, u32::from(mode.value())));
             }
         }
@@ -558,10 +730,14 @@ fn extract_signatures(commit: &gix::Commit<'_>) -> Result<Vec<Vec<u8>>, Error> {
 }
 
 /// The Git loss boundary (RFC 004 D-5): the representation-class drops, every one class-stated, plus the
-/// annotated-tag metadata that the IR `RefRecord` cannot yet hold, symbolic refs skipped (CR-16), and any
-/// author/committer time that failed to parse (CR-16) — recorded, never silently omitted (`PR-9`).
+/// annotated-tag metadata that the IR `RefRecord` cannot yet hold, symbolic refs skipped (CR-16), any
+/// author/committer time that failed to parse (CR-16), commits reachable only from a dropped ref
+/// namespace (CR-05), and refs that peel to a tree or blob rather than a commit (CR-06) — recorded,
+/// never silently omitted (`PR-9`).
 fn loss_boundary(
-    dropped_namespaces: &BTreeSet<&'static str>,
+    dropped_namespace_counts: &BTreeMap<&'static str, u64>,
+    dropped_only_commits: DroppedOnlyCommits,
+    non_commit_refs: u64,
     annotated_tags: u64,
     symbolic_refs: u64,
     unparseable_times: u64,
@@ -584,11 +760,46 @@ fn loss_boundary(
             reason: "local operation log, not history (PR-7)".to_string(),
         },
     ];
-    for ns in dropped_namespaces {
+    for (ns, count) in dropped_namespace_counts {
         dropped.push(DropRecord {
             class: LossClass::Representation,
-            what: format!("{ns} refs"),
+            what: format!("{ns} refs ({count})"),
             reason: "workflow/representation refs, not authored history (RFC 004 D-5, OQ-B)"
+                .to_string(),
+        });
+    }
+    match dropped_only_commits {
+        DroppedOnlyCommits::Counted(0) => {}
+        DroppedOnlyCommits::Counted(n) => {
+            dropped.push(DropRecord {
+                class: LossClass::Representation,
+                what: format!("commits reachable only from dropped refs ({n})"),
+                reason:
+                    "workflow state (stash, notes, remote-tracking), not authored history of a \
+                         carried ref (RFC 004 D-5, OQ-B)"
+                        .to_string(),
+            });
+        }
+        DroppedOnlyCommits::Unavailable(reason) => {
+            dropped.push(DropRecord {
+                class: LossClass::Representation,
+                what: format!(
+                    "commits reachable only from dropped refs (count unavailable: {reason})"
+                ),
+                reason:
+                    "workflow state (stash, notes, remote-tracking), not authored history of a \
+                         carried ref (RFC 004 D-5, OQ-B); the count itself could not be computed, \
+                         stated rather than guessed"
+                        .to_string(),
+            });
+        }
+    }
+    if non_commit_refs > 0 {
+        dropped.push(DropRecord {
+            class: LossClass::Other,
+            what: format!("refs to non-commit objects ({non_commit_refs})"),
+            reason: "a tag or branch naming a tree or blob; the IR's refs point at history atoms \
+                     (PR-9)"
                 .to_string(),
         });
     }
