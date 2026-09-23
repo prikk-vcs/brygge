@@ -373,6 +373,225 @@ fn refuses_shallow_and_grafts_and_replace() {
     ));
 }
 
+// --- CR-16: symbolic refs must not panic, and are dropped-with-record ---------------------------
+
+#[test]
+fn symbolic_ref_in_a_dropped_namespace_decodes_without_panic() {
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    // The exact shape an ordinary `git clone` creates: `refs/remotes/origin/HEAD` -> `.../main`.
+    let r = TempRepo::new();
+    r.write("a.txt", "a\n");
+    r.commit_all("c1");
+    let head = r.git(&["rev-parse", "HEAD"]);
+    r.git(&["update-ref", "refs/remotes/origin/main", &head]);
+    r.git(&[
+        "symbolic-ref",
+        "refs/remotes/origin/HEAD",
+        "refs/remotes/origin/main",
+    ]);
+
+    let ir = decode(r.path(), &Options::default()).unwrap();
+    let whats: Vec<&str> = ir.loss.dropped.iter().map(|d| d.what.as_str()).collect();
+    assert!(
+        whats.contains(&"symbolic refs (1)"),
+        "the symbolic ref is recorded as its own drop: {whats:?}"
+    );
+    // Its target is a distinct, non-symbolic ref in the same (already dropped) namespace, carried on
+    // its own by the existing remote-tracking record — not folded into the symbolic-ref count.
+    assert!(
+        whats.contains(&"remote-tracking refs"),
+        "the target ref is still handled on its own: {whats:?}"
+    );
+}
+
+#[test]
+fn symbolic_ref_in_a_carried_namespace_is_dropped_not_its_target() {
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let r = TempRepo::new();
+    r.write("a.txt", "a\n");
+    r.commit_all("c1");
+    r.git(&["symbolic-ref", "refs/heads/alias", "refs/heads/main"]);
+
+    let ir = decode(r.path(), &Options::default()).unwrap();
+    assert!(
+        ir.refs.iter().any(|rf| rf.name == "main"),
+        "the real branch main is still carried"
+    );
+    assert!(
+        ir.refs.iter().all(|rf| rf.name != "alias"),
+        "a symbolic ref is never carried, even in a normally-carried namespace (RFC 004 OQ-B)"
+    );
+    assert!(
+        ir.loss
+            .dropped
+            .iter()
+            .any(|d| d.what == "symbolic refs (1)")
+    );
+}
+
+#[test]
+fn dangling_symbolic_ref_decodes_and_is_dropped() {
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let r = TempRepo::new();
+    r.write("a.txt", "a\n");
+    r.commit_all("c1");
+    // Points at a branch that does not exist. `try_id()` reflects the ref's own (symbolic) shape, not
+    // whether its target resolves, so this is dropped exactly like a resolving symbolic ref.
+    r.git(&[
+        "symbolic-ref",
+        "refs/heads/nowhere",
+        "refs/heads/does-not-exist",
+    ]);
+
+    let ir = decode(r.path(), &Options::default()).unwrap();
+    assert!(ir.refs.iter().all(|rf| rf.name != "nowhere"));
+    assert!(
+        ir.loss
+            .dropped
+            .iter()
+            .any(|d| d.what == "symbolic refs (1)"),
+        "a dangling symbolic ref is recorded exactly like a resolving one"
+    );
+}
+
+// --- CR-16 R-1: an unparseable commit time is absent, never fabricated or salvaged --------------
+
+/// Build a commit in `r` whose author and committer both carry the raw `time_field` bytes, via
+/// `git hash-object --literally` (which bypasses git's own well-formedness checks), and point
+/// `refs/heads/main` at it. Returns the commit sha.
+fn commit_with_raw_time(r: &TempRepo, time_field: &str) -> String {
+    use std::io::Write as _;
+
+    r.write("a.txt", "a\n");
+    r.git(&["add", "-A"]);
+    let tree = r.git(&["write-tree"]);
+    let body = format!(
+        "tree {tree}\n\
+         author A U Thor <author@example.com> {time_field}\n\
+         committer A U Thor <author@example.com> {time_field}\n\
+         \n\
+         malformed time\n"
+    );
+    let mut child = Command::new("git")
+        .current_dir(r.path())
+        .args([
+            "hash-object",
+            "-t",
+            "commit",
+            "-w",
+            "--literally",
+            "--stdin",
+        ])
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn git hash-object");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(body.as_bytes())
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(
+        out.status.success(),
+        "git hash-object: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let sha = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    r.git(&["update-ref", "refs/heads/main", &sha]);
+    sha
+}
+
+#[test]
+fn overflowing_numeric_time_becomes_an_absent_claim_not_a_fabricated_one() {
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let r = TempRepo::new();
+    // All-digit, so gix's own raw-signature scan captures it whole; only the `i64` conversion fails.
+    commit_with_raw_time(&r, "99999999999999999999 +0000");
+
+    let ir = decode(r.path(), &Options::default()).unwrap();
+    let atom = &ir.atoms[0];
+    assert!(
+        atom.metadata.author_time.is_none(),
+        "an overflowing time is absent, never fabricated as 0 (NG-5)"
+    );
+    assert!(atom.metadata.commit_time.is_none(), "same for commit_time");
+    assert!(
+        ir.loss
+            .dropped
+            .iter()
+            .any(|d| d.what == "unparseable author/committer times (2)"),
+        "both the author and committer time failed to parse"
+    );
+}
+
+// Not `"1695456000abc"`: gix's raw-signature scanner (`is_time_byte`) stops at the first byte
+// outside `[-+0-9 \t]`, so a letter glued onto the digits truncates the captured `time` field to
+// clean digits *before* this code ever sees it — the "abc" instead corrupts the *next* header's
+// parse, an unrelated, earlier failure (`Error::Read("object parsing failed")`), verified directly
+// against this build. An embedded `-` stays inside `is_time_byte`'s alphabet, so the raw field is
+// captured whole as `"16954-56000"` — syntactically time-shaped, numerically not `-?[0-9]+`, and it
+// reaches `strict_seconds` intact, which is the seam R-1 exists to guard.
+#[test]
+fn a_time_token_that_is_not_purely_digits_becomes_an_absent_claim() {
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let r = TempRepo::new();
+    commit_with_raw_time(&r, "16954-56000 +0000");
+
+    let ir = decode(r.path(), &Options::default()).unwrap();
+    let atom = &ir.atoms[0];
+    assert!(
+        atom.metadata.author_time.is_none(),
+        "a non-digit-shaped time is absent, never salvaged to its leading digits"
+    );
+    assert!(atom.metadata.commit_time.is_none(), "same for commit_time");
+    assert!(
+        ir.loss
+            .dropped
+            .iter()
+            .any(|d| d.what == "unparseable author/committer times (2)")
+    );
+}
+
+#[test]
+fn strict_seconds_accepts_well_formed_tokens_and_rejects_malformed_ones() {
+    assert_eq!(strict_seconds("1695456000 +0000"), Some(1_695_456_000));
+    assert_eq!(strict_seconds("-1695456000 +0000"), Some(-1_695_456_000));
+    assert_eq!(strict_seconds("0 +0000"), Some(0));
+    assert_eq!(
+        strict_seconds("+1695456000 +0000"),
+        None,
+        "a leading + is not -?[0-9]+"
+    );
+    assert_eq!(strict_seconds("1695456000abc +0000"), None);
+    assert_eq!(strict_seconds("16954-56000 +0000"), None);
+    assert_eq!(
+        strict_seconds("99999999999999999999 +0000"),
+        None,
+        "overflows i64"
+    );
+    assert_eq!(strict_seconds(""), None);
+    assert_eq!(strict_seconds("   "), None);
+}
+
 #[test]
 fn an_empty_repository_decodes_to_an_empty_ir() {
     if !git_available() {

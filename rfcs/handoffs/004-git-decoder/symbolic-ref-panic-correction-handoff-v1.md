@@ -4,8 +4,9 @@
 **correction**: the code diverges from accepted design (RFC 004 D-6/D-2, `HANDOFF.md` §7 "never panic on
 input"). It is not a design change.
 
-**Origin:** the dev team's onboarding report (`.git-exclude/review-request/001-onboarding-review-findings.md`
-§1) and the architect's disposition (`.git-exclude/reviewed/001-architect-intake-review.md` §8.1, CR-16).
+**Origin:** the dev team's onboarding review (it reproduced the panic by decoding brygge's own repository)
+and the architect's intake review, where this correction is numbered **CR-16**. This handoff is the
+durable definition of CR-16.
 
 **Priority:** stage 0 of the 0.1.0 work order. It is independent of every pending owner decision.
 **Start now.**
@@ -48,12 +49,21 @@ Make `brygge decode git` and `brygge verify --against-source` work on ordinary G
      - A **dangling** symbolic ref (target missing) is dropped under the same record.
      - A symbolic ref is detected by the absence of a direct id (`try_id()` is `None`), or by gix's
        explicit target-kind API. Choose one and say which in the review request.
-   - **c.** Metadata times: use the fallible `time()` instead of `seconds()`.
-     - On a parse failure, set that claim to `None`. Never `0`, never a guess.
-     - Record one drop, class `Other`: `what = "unparseable commit times (N)"`, reason "the source's
-       time field could not be parsed; the claim is absent rather than fabricated (NG-5)".
+   - **c.** Metadata times: **parse the seconds strictly from the signature's raw `time` field**
+     (`SignatureRef::time`, a `&str`). Do not use `seconds()`, and do not use `time()` either.
+     *(Amended 2026-09-23 after review. The first version of this handoff said "use the fallible
+     `time()`", but gix-date's `parse_header` is lenient in two ways: it salvages the leading digits of a
+     malformed seconds token (`"16954-56000"` → `16954`), and it silently defaults a malformed
+     timezone offset to `+0000`. Both are the silent-approximation class this correction exists to
+     remove.)*
+     - The rule: the first whitespace-separated token must match `-?[0-9]+` exactly and fit `i64`.
+       Otherwise the claim is `None`: never `0`, never a guess, never a salvaged prefix.
+     - Record one drop, class `Other`: `what = "unparseable author/committer times (N)"`, counting
+       fields, not atoms. Reason: "the source's time field could not be parsed; the claim is absent
+       rather than fabricated (NG-5)".
      - Only the seconds value goes into the existing IR field. The timezone offset is **not** carried in
-       this handoff (that is CR-06/CR-09).
+       this handoff (that is CR-06/CR-09). When it is carried, it must also be parsed strictly, never via
+       gix's defaulting parser.
    - **d. Sweep.** Audit every gix call in `brygge-decode-git` (`decode.rs`, `open.rs`) for convenience
      APIs that **panic** (`expect`/`unwrap` inside the dependency) or **silently default**
      (`unwrap_or_default`, lossy fallbacks). Replace each with its fallible form, handled as a typed error,
@@ -103,9 +113,13 @@ skip when `git` is absent, as the existing ones do.
    is not a `RefRecord`, `main` is, and the drop is recorded.
 4. **Dangling symbolic ref:** a symbolic ref to a nonexistent branch. It decodes, and the ref is dropped
    under the same record.
-5. **Malformed commit time:** a commit object written with a non-numeric time. Use
+5. **Malformed commit time:** a commit object written with an overflowing numeric time, *and* one whose time token is malformed
+   but made only of bytes gix's signature scanner keeps (`[-+0-9 \t]`, e.g. `16954-56000`). A token such as
+   `1695456000abc` cannot reach the parser through a real commit: the scanner stops at `a` and the commit
+   object then fails to parse as a whole, so exercise it with a direct unit test of the parser instead.
+   The claim must be `None` in every case. Use
    `git hash-object -t commit -w --literally` on a hand-built commit body, then point a branch at it. The
-   resulting claim is `None` (not `0`), the `unparseable commit times (1)` drop is present, and there is
+   resulting claim is `None` (not `0`), the `unparseable author/committer times (N)` drop is present, and there is
    no panic.
 6. **Panic boundary:** a unit test of the helper with a closure that panics. It returns exit `FAILURE`
    and the fault message, and does not propagate the panic.

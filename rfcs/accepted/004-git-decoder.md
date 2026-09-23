@@ -160,7 +160,11 @@ against-source-check disciplines the milestone rests on.
   the tag's **tagger and message** have no `RefRecord` slot and are recorded as an **`Other`-class loss**
   (so a repository with annotated tags imports as an honest *recorded-loss*, CL-08 exit 10, not clean) —
   never silently omitted (`PR-9`). Full annotated-tag metadata preservation is deferred to a future
-  `brygge-ir` `RefRecord` metadata slot (RFC 001 territory).
+  `brygge-ir` `RefRecord` metadata slot (RFC 001 territory). **Amended by CR-16 (2026-09-23):** a
+  **symbolic ref**, in any namespace, is not a ref shape the IR can express (it has no alias concept) —
+  it is not carried, contributes no walk tip, and is recorded as its own `symbolic refs (N)` drop
+  (`Representation`); its target, if any, is a distinct ref this same scan carries or drops on its own
+  merits. See `rfcs/handoffs/004-git-decoder/symbolic-ref-panic-correction-handoff-v1.md`.
 - **OQ-C — The floor's exact contents** (D-4) — **RESOLVED 2026-09-04:** the owner ratified refusing all
   four (submodules, octopus-beyond-N, replace+grafts, shallow). The one residual is the **octopus parent
   limit N**, a prikk/OQ-2 value not yet set; until it is, decode carries all parents and the encoder's

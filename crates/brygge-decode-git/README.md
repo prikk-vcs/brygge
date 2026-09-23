@@ -28,9 +28,14 @@ Or run the example against any repository:
 cargo run -p brygge-decode-git --example decode_repo -- /path/to/repo [--detect-renames]
 ```
 
-Status: **Increment 1 implemented (ROADMAP M1, 0.1.0)** — commits→atoms, tree-snapshot diff→literal ops,
+Status: **Built (ROADMAP M1); not yet released** — commits→atoms, tree-snapshot diff→literal ops,
 opaque SHA/signature, branches+tags, the owner-ratified floor (submodules, replace/grafts, shallow all
-refused), the representation loss boundary, and byte-deterministic (pack-independent) output. Rename
-inference is off by default and, when on, marked *Derived* beside the literal ops. Queued next:
-against-source verify (RFC 004 D-7), the CLI surface, and rename tuning (OQ-A). Built against the RFC 004
-handoff and gix security review in `rfcs/handoffs/004-git-decoder/`.
+refused), the representation loss boundary, byte-deterministic (pack-independent) output,
+`verify --against-source`, and the full CLI surface. Rename inference is off by default and, when on,
+marked *Derived* beside the literal ops. A **symbolic ref** (e.g. `refs/remotes/origin/HEAD`, which an
+ordinary `git clone` always creates) is not carried as a ref in any namespace — the IR has no alias
+concept — and is recorded as a `symbolic refs (N)` drop; its target, if any, is a distinct ref this same
+decode carries or drops on its own merits (RFC 004 OQ-B, CR-16). An unparseable author/committer time
+becomes an absent claim, never fabricated as `0` or salvaged from a malformed token (NG-5, CR-16). Built
+against the RFC 004 handoff, the gix security review, and the CR-16 correction handoff, all in
+`rfcs/handoffs/004-git-decoder/`.

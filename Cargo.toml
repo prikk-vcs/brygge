@@ -46,3 +46,9 @@ missing_docs = "warn"
 unwrap_used      = "warn"
 expect_used      = "warn"
 indexing_slicing = "warn"
+
+[profile.release]
+# CR-16: `brygge`'s decoder panic boundary (`guard_decoder`, crates/brygge/src/commands.rs) relies on
+# unwinding to convert an unexpected panic inside a decoder or a decoder dependency (e.g. gix) into a
+# typed, documented exit (FAILURE) rather than an unclassified process abort. Do not set
+# `panic = "abort"` here or on any other profile without first revisiting that boundary.

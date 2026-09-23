@@ -42,7 +42,7 @@ pub fn decode(path: &Path, opts: &Options) -> Result<Ir, Error> {
     let repo = open::open(path)?;
     open::check_repo_floor(&repo)?;
 
-    let refs = scan_refs(&repo)?;
+    let (refs, symbolic_ref_count) = scan_refs(&repo)?;
     let tips: Vec<ObjectId> = refs.iter().filter_map(|r| r.commit).collect();
 
     // Reachable commit set from every ref tip.
@@ -81,6 +81,7 @@ pub fn decode(path: &Path, opts: &Options) -> Result<Ir, Error> {
     let mut builder = IrBuilder::new(provenance);
     let mut sha_to_atom: HashMap<ObjectId, AtomId> = HashMap::new();
     let mut snap_cache: HashMap<ObjectId, Snapshot> = HashMap::new();
+    let mut unparseable_times = 0u64;
 
     for id in &order {
         let commit = repo
@@ -107,7 +108,8 @@ pub fn decode(path: &Path, opts: &Options) -> Result<Ir, Error> {
         };
 
         let (ops, rename_hints) = diff_to_ops(&repo, &base_snap, &child_snap, opts, &mut builder)?;
-        let metadata = build_metadata(&commit)?;
+        let (metadata, unparseable) = build_metadata(&commit)?;
+        unparseable_times += unparseable;
         let signatures = extract_signatures(&commit)?;
         let parent_atoms: Vec<AtomId> = ps
             .iter()
@@ -174,7 +176,12 @@ pub fn decode(path: &Path, opts: &Options) -> Result<Ir, Error> {
         }
     }
 
-    builder.set_loss(loss_boundary(&dropped_namespaces, annotated_tags));
+    builder.set_loss(loss_boundary(
+        &dropped_namespaces,
+        annotated_tags,
+        symbolic_ref_count,
+        unparseable_times,
+    ));
     builder.finish().map_err(Error::Ir)
 }
 
@@ -195,8 +202,10 @@ enum ScannedKind {
 }
 
 /// Scan refs: refuse replace refs (RFC 004 D-4), categorise the rest, and peel each to a commit id.
-fn scan_refs(repo: &gix::Repository) -> Result<Vec<ScannedRef>, Error> {
+/// Returns the carried refs plus a count of symbolic refs skipped (CR-16).
+fn scan_refs(repo: &gix::Repository) -> Result<(Vec<ScannedRef>, u64), Error> {
     let mut out = Vec::new();
+    let mut symbolic_refs = 0u64;
     let platform = repo.references().map_err(read_err)?;
     for r in platform.all().map_err(read_err)? {
         let mut r = r.map_err(read_err)?;
@@ -212,8 +221,17 @@ fn scan_refs(repo: &gix::Repository) -> Result<Vec<ScannedRef>, Error> {
             });
         }
 
-        // The ref's *direct* target (the tag object itself for an annotated tag), before peeling.
-        let direct = r.id().detach();
+        // A symbolic ref (e.g. `refs/remotes/origin/HEAD`) is an alias to another ref, in any
+        // namespace; the IR has no alias concept (RFC 004 OQ-B, CR-16). `try_id()` is `None` exactly
+        // when the ref's own stored form is symbolic — including a *dangling* symbolic ref, whose
+        // target does not exist, since this reflects the ref's own shape, not whether it resolves.
+        // gix's `id()` panics on this case; `try_id()` is the fallible form. Skip it: it contributes no
+        // walk tip and is not carried as a ref. Its target, if any, is a distinct ref that `platform.all()`
+        // yields on its own and this same loop carries or drops on its own merits.
+        let Some(direct) = r.try_id().map(|id| id.detach()) else {
+            symbolic_refs += 1;
+            continue;
+        };
         let commit = r.peel_to_id().ok().map(|id| id.detach()).filter(|id| {
             repo.find_object(*id)
                 .is_ok_and(|o| matches!(o.kind, gix::objs::Kind::Commit))
@@ -241,7 +259,7 @@ fn scan_refs(repo: &gix::Repository) -> Result<Vec<ScannedRef>, Error> {
             tag_identity,
         });
     }
-    Ok(out)
+    Ok((out, symbolic_refs))
 }
 
 /// If `direct` is an **annotated** tag object, return its id and any GPG signature, preserved opaquely
@@ -480,23 +498,53 @@ fn blob_bytes(repo: &gix::Repository, oid: ObjectId) -> Result<Vec<u8>, Error> {
         .clone())
 }
 
-fn build_metadata(commit: &gix::Commit<'_>) -> Result<MetadataClaims, Error> {
+/// Parse the seconds field of a raw signature `time` string strictly (CR-16 R-1, handoff §3.1c amended).
+/// The first whitespace-separated token must match `-?[0-9]+` exactly and fit `i64`, or the result is
+/// `None`. Neither gix's `seconds()` (silently defaults to 0) nor its `time()` (via `gix_date`'s
+/// `parse_header`, which salvages the leading digits of a token like `"1695456000abc"` and silently
+/// defaults a malformed timezone offset) is used: both are the silent-approximation class CR-16 exists
+/// to remove.
+fn strict_seconds(raw: &str) -> Option<i64> {
+    let token = raw.split_whitespace().next()?;
+    let digits = token.strip_prefix('-').unwrap_or(token);
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    token.parse::<i64>().ok()
+}
+
+/// Build message/authorship claims. Times are parsed strictly ([`strict_seconds`], CR-16): an unparseable
+/// time becomes an absent claim, never a fabricated or salvaged one (NG-5). Returns the claims plus how
+/// many of the two time fields failed to parse, for the caller to fold into the loss boundary.
+fn build_metadata(commit: &gix::Commit<'_>) -> Result<(MetadataClaims, u64), Error> {
     let author = commit.author().map_err(read_err)?;
     let committer = commit.committer().map_err(read_err)?;
     let message = commit.message_raw().map_err(read_err)?;
-    Ok(MetadataClaims {
-        author: Some(Identity {
-            name: author.name.to_str_lossy().into_owned(),
-            email: author.email.to_str_lossy().into_owned(),
-        }),
-        committer: Some(Identity {
-            name: committer.name.to_str_lossy().into_owned(),
-            email: committer.email.to_str_lossy().into_owned(),
-        }),
-        message: Some(message.to_str_lossy().into_owned()),
-        author_time: Some(author.seconds()),
-        commit_time: Some(committer.seconds()),
-    })
+    let mut unparseable = 0u64;
+    let author_time = strict_seconds(author.time);
+    if author_time.is_none() {
+        unparseable += 1;
+    }
+    let commit_time = strict_seconds(committer.time);
+    if commit_time.is_none() {
+        unparseable += 1;
+    }
+    Ok((
+        MetadataClaims {
+            author: Some(Identity {
+                name: author.name.to_str_lossy().into_owned(),
+                email: author.email.to_str_lossy().into_owned(),
+            }),
+            committer: Some(Identity {
+                name: committer.name.to_str_lossy().into_owned(),
+                email: committer.email.to_str_lossy().into_owned(),
+            }),
+            message: Some(message.to_str_lossy().into_owned()),
+            author_time,
+            commit_time,
+        },
+        unparseable,
+    ))
 }
 
 /// The commit's GPG signature, preserved opaquely (RFC 004 D-2 / SRC-G3). It verifies nothing in any
@@ -510,9 +558,14 @@ fn extract_signatures(commit: &gix::Commit<'_>) -> Result<Vec<Vec<u8>>, Error> {
 }
 
 /// The Git loss boundary (RFC 004 D-5): the representation-class drops, every one class-stated, plus the
-/// annotated-tag metadata that the IR `RefRecord` cannot yet hold — recorded, never silently omitted
-/// (`PR-9`).
-fn loss_boundary(dropped_namespaces: &BTreeSet<&'static str>, annotated_tags: u64) -> LossBoundary {
+/// annotated-tag metadata that the IR `RefRecord` cannot yet hold, symbolic refs skipped (CR-16), and any
+/// author/committer time that failed to parse (CR-16) — recorded, never silently omitted (`PR-9`).
+fn loss_boundary(
+    dropped_namespaces: &BTreeSet<&'static str>,
+    annotated_tags: u64,
+    symbolic_refs: u64,
+    unparseable_times: u64,
+) -> LossBoundary {
     let mut dropped = vec![
         DropRecord {
             class: LossClass::Representation,
@@ -550,6 +603,25 @@ fn loss_boundary(dropped_namespaces: &BTreeSet<&'static str>, annotated_tags: u6
             reason: "authored tag metadata with no RefRecord slot in this IR contract; the tag's \
                      object id and signature are preserved as source identity, the rest is recorded \
                      here rather than silently omitted (PR-9, RFC 004 OQ-B)"
+                .to_string(),
+        });
+    }
+    if symbolic_refs > 0 {
+        dropped.push(DropRecord {
+            class: LossClass::Representation,
+            what: format!("symbolic refs ({symbolic_refs})"),
+            reason:
+                "an alias to another ref; the IR has no alias concept; the target ref is carried \
+                     on its own (RFC 004 OQ-B, CR-16)"
+                    .to_string(),
+        });
+    }
+    if unparseable_times > 0 {
+        dropped.push(DropRecord {
+            class: LossClass::Other,
+            what: format!("unparseable author/committer times ({unparseable_times})"),
+            reason: "the source's time field could not be parsed; the claim is absent rather than \
+                     fabricated (NG-5, CR-16)"
                 .to_string(),
         });
     }

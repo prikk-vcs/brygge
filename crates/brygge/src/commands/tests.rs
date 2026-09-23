@@ -88,6 +88,16 @@ fn simple_repo(seed: &str) -> TempRepo {
     r
 }
 
+/// Removes a directory on drop, even if a test panics on an assertion before reaching its own explicit
+/// cleanup (CR-16 review A-1).
+struct CleanupDir(PathBuf);
+
+impl Drop for CleanupDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 #[test]
 fn decode_inspect_verify_summary_roundtrip() {
     if !git_available() {
@@ -177,6 +187,102 @@ fn verify_against_source_detects_a_mismatch() {
         run_verify_against_source(repo.path(), &other_out, Format::Human),
         exit::VERIFY_FAILED
     );
+}
+
+#[test]
+fn decode_a_real_clone_succeeds_and_verifies_against_source() {
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let origin = simple_repo("clone-src");
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let clone_dir =
+        std::env::temp_dir().join(format!("brygge-cli-clone-{}-{n}", std::process::id()));
+    let _cleanup = CleanupDir(clone_dir.clone());
+    let status = PCommand::new("git")
+        .args(["clone", "-q"])
+        .arg(origin.path())
+        .arg(&clone_dir)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .status()
+        .expect("run git clone");
+    assert!(status.success(), "git clone failed");
+    assert!(
+        clone_dir.join(".git/refs/remotes/origin/HEAD").exists(),
+        "a real clone creates the exact symbolic ref CR-16 covers"
+    );
+
+    let clone_out = clone_dir.join("out.ir");
+    assert_eq!(
+        run_decode(
+            SourceKind::Git,
+            &clone_dir,
+            Some(&clone_out),
+            false,
+            false,
+            Format::Machine
+        ),
+        exit::CLEAN,
+        "a clone's symbolic HEAD is a representation-class drop, still a clean import (CR-16)"
+    );
+    assert!(clone_out.exists());
+    assert_eq!(
+        run_verify_against_source(&clone_dir, &clone_out, Format::Human),
+        exit::CLEAN,
+        "verify --against-source succeeds on a real clone (CR-16)"
+    );
+
+    // The atom set equals the origin's — compare source atom ids, since repo_id/refs may legitimately
+    // differ between the origin and the clone (blocks diverge across repositories by design elsewhere
+    // in this ecosystem; here it is the *source* identity, not brygge's, so it must agree).
+    let origin_out = origin.dir.join("origin-out.ir");
+    assert_eq!(
+        run_decode(
+            SourceKind::Git,
+            origin.path(),
+            Some(&origin_out),
+            false,
+            false,
+            Format::Machine
+        ),
+        exit::CLEAN
+    );
+    let origin_ir = brygge_ir::from_bytes(&std::fs::read(&origin_out).unwrap()).unwrap();
+    let clone_ir = brygge_ir::from_bytes(&std::fs::read(&clone_out).unwrap()).unwrap();
+    let origin_ids: std::collections::BTreeSet<_> = origin_ir
+        .atoms
+        .iter()
+        .map(|a| a.source.atom_id.clone())
+        .collect();
+    let clone_ids: std::collections::BTreeSet<_> = clone_ir
+        .atoms
+        .iter()
+        .map(|a| a.source.atom_id.clone())
+        .collect();
+    assert_eq!(
+        origin_ids, clone_ids,
+        "the clone carries exactly the origin's commits"
+    );
+}
+
+#[test]
+fn guard_decoder_catches_a_panic_and_returns_a_typed_fault() {
+    let result = guard_decoder(|| -> u32 { panic!("boom") });
+    match result {
+        Err(msg) => {
+            assert!(msg.contains("internal decoder fault"), "{msg}");
+            assert!(msg.contains("boom"), "{msg}");
+            assert!(msg.contains("brygge bug"), "{msg}");
+        }
+        Ok(_) => panic!("expected the panic to be caught, not propagated"),
+    }
+}
+
+#[test]
+fn guard_decoder_passes_through_a_normal_result() {
+    assert_eq!(guard_decoder(|| 42u32), Ok(42));
 }
 
 #[test]

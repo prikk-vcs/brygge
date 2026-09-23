@@ -120,8 +120,37 @@ struct SourceOpts {
     cvs_floor: u8,
 }
 
+/// Runs `f`, converting an unexpected panic into a typed fault rather than an unclassified crash
+/// (CR-16). Defense in depth only — it does not replace fixing a panic at its source; it exists so a
+/// panic inside a decoder or a decoder dependency (e.g. gix) is still a documented outcome (exit
+/// `FAILURE`), never a bare process abort (exit 101, not a CL-08 class). Relies on unwinding: the
+/// workspace must not set `panic = "abort"` without revisiting this.
+///
+/// `AssertUnwindSafe`: `f` closes only over by-value/by-shared-reference decode inputs (a path, an
+/// owned options struct) and produces an owned `Result`; nothing it captures is shared mutable state a
+/// caller could observe half-mutated after a caught panic. That makes asserting unwind-safety sound here,
+/// even though the closure's captured types are not provably `UnwindSafe` to the compiler in general
+/// (e.g. a decoder's internal repository handle may use interior mutability the compiler cannot see
+/// through the crate boundary).
+fn guard_decoder<T>(f: impl FnOnce() -> T) -> Result<T, String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).map_err(|payload| {
+        let detail = payload
+            .downcast_ref::<&str>()
+            .map(|s| (*s).to_string())
+            .or_else(|| payload.downcast_ref::<String>().cloned());
+        match detail {
+            Some(msg) => {
+                format!("internal decoder fault: {msg} — this is a brygge bug; please report it")
+            }
+            None => "internal decoder fault — this is a brygge bug; please report it".to_string(),
+        }
+    })
+}
+
 /// Decode `repo` with the chosen source decoder, mapping decoder errors to a `(exit code, message)`.
-/// A refused format/feature is a clean refusal (`FLOOR_REFUSAL`), not a generic failure.
+/// A refused format/feature is a clean refusal (`FLOOR_REFUSAL`), not a generic failure. The decoder
+/// invocation itself is panic-guarded (`guard_decoder`, CR-16) for all four sources, since this is the
+/// single path both `decode` and `verify --against-source` use.
 fn decode_source(kind: SourceKind, repo: &Path, opts: &SourceOpts) -> Result<Ir, (i32, String)> {
     match kind {
         SourceKind::Cvs => {
@@ -131,13 +160,15 @@ fn decode_source(kind: SourceKind, repo: &Path, opts: &SourceOpts) -> Result<Ir,
                 confidence_floor: opts.cvs_floor,
                 reconstruct_refs: opts.reconstruct_refs,
             };
-            brygge_decode_cvs::decode(&src, &cvs).map_err(|e| match e {
-                CvsError::FloorRefusal { feature, reason } => (
-                    exit::FLOOR_REFUSAL,
-                    format!("refused CVS feature '{feature}' below the floor: {reason}"),
-                ),
-                other => (exit::FAILURE, format!("decode failed: {other}")),
-            })
+            guard_decoder(|| brygge_decode_cvs::decode(&src, &cvs))
+                .map_err(|fault| (exit::FAILURE, fault))?
+                .map_err(|e| match e {
+                    CvsError::FloorRefusal { feature, reason } => (
+                        exit::FLOOR_REFUSAL,
+                        format!("refused CVS feature '{feature}' below the floor: {reason}"),
+                    ),
+                    other => (exit::FAILURE, format!("decode failed: {other}")),
+                })
         }
         SourceKind::Svn => {
             // A directory is a repository (dumped read-only via `svnadmin dump`); a file is a dumpfile.
@@ -150,50 +181,56 @@ fn decode_source(kind: SourceKind, repo: &Path, opts: &SourceOpts) -> Result<Ir,
                 reconstruct_refs: opts.reconstruct_refs,
                 layout: opts.layout.clone(),
             };
-            brygge_decode_svn::decode(&src, &svn).map_err(|e| match e {
-                SvnError::FloorRefusal { feature, reason } => (
-                    exit::FLOOR_REFUSAL,
-                    format!("refused Subversion feature '{feature}' below the floor: {reason}"),
-                ),
-                SvnError::UnsupportedFormat { what, reason } => (
-                    exit::FLOOR_REFUSAL,
-                    format!("unsupported Subversion dump form '{what}': {reason}"),
-                ),
-                other => (exit::FAILURE, format!("decode failed: {other}")),
-            })
+            guard_decoder(|| brygge_decode_svn::decode(&src, &svn))
+                .map_err(|fault| (exit::FAILURE, fault))?
+                .map_err(|e| match e {
+                    SvnError::FloorRefusal { feature, reason } => (
+                        exit::FLOOR_REFUSAL,
+                        format!("refused Subversion feature '{feature}' below the floor: {reason}"),
+                    ),
+                    SvnError::UnsupportedFormat { what, reason } => (
+                        exit::FLOOR_REFUSAL,
+                        format!("unsupported Subversion dump form '{what}': {reason}"),
+                    ),
+                    other => (exit::FAILURE, format!("decode failed: {other}")),
+                })
         }
         SourceKind::Git => {
             let git = brygge_decode_git::Options {
                 detect_renames: opts.detect_renames,
                 rename_threshold: 100,
             };
-            brygge_decode_git::decode(repo, &git).map_err(|e| match e {
-                GitError::FloorRefusal { feature, reason } => (
-                    exit::FLOOR_REFUSAL,
-                    format!("refused Git feature '{feature}' below the floor: {reason}"),
-                ),
-                other => (exit::FAILURE, format!("decode failed: {other}")),
-            })
+            guard_decoder(|| brygge_decode_git::decode(repo, &git))
+                .map_err(|fault| (exit::FAILURE, fault))?
+                .map_err(|e| match e {
+                    GitError::FloorRefusal { feature, reason } => (
+                        exit::FLOOR_REFUSAL,
+                        format!("refused Git feature '{feature}' below the floor: {reason}"),
+                    ),
+                    other => (exit::FAILURE, format!("decode failed: {other}")),
+                })
         }
         SourceKind::Hg => {
             let hg = brygge_decode_hg::Options {
                 detect_renames: opts.detect_renames,
                 rename_threshold: 100,
             };
-            brygge_decode_hg::decode(repo, &hg).map_err(|e| match e {
-                HgError::FloorRefusal { feature, reason } => (
-                    exit::FLOOR_REFUSAL,
-                    format!("refused Mercurial feature '{feature}' below the floor: {reason}"),
-                ),
-                HgError::UnsupportedFormat {
-                    requirement,
-                    reason,
-                } => (
-                    exit::FLOOR_REFUSAL,
-                    format!("unsupported Mercurial format '{requirement}': {reason}"),
-                ),
-                other => (exit::FAILURE, format!("decode failed: {other}")),
-            })
+            guard_decoder(|| brygge_decode_hg::decode(repo, &hg))
+                .map_err(|fault| (exit::FAILURE, fault))?
+                .map_err(|e| match e {
+                    HgError::FloorRefusal { feature, reason } => (
+                        exit::FLOOR_REFUSAL,
+                        format!("refused Mercurial feature '{feature}' below the floor: {reason}"),
+                    ),
+                    HgError::UnsupportedFormat {
+                        requirement,
+                        reason,
+                    } => (
+                        exit::FLOOR_REFUSAL,
+                        format!("unsupported Mercurial format '{requirement}': {reason}"),
+                    ),
+                    other => (exit::FAILURE, format!("decode failed: {other}")),
+                })
         }
     }
 }
