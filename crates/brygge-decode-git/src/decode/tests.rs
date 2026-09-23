@@ -1340,3 +1340,19 @@ fn the_commit_cap_refuses_when_exceeded() {
         other => panic!("expected a resource-limit refusal, got {other:?}"),
     }
 }
+
+// --- CR-12.2: the floor is one declared list, recorded in provenance --------------------------------
+
+#[test]
+fn provenance_floor_param_equals_the_declared_list() {
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let r = TempRepo::new();
+    r.write("a.txt", "a\n");
+    r.commit_all("c1");
+    let ir = decode(r.path(), &Options::default()).unwrap();
+    let expected = crate::floor::joined();
+    assert_eq!(ir.provenance.params.get("floor"), Some(&expected));
+}

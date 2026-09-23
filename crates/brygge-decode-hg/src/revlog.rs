@@ -10,7 +10,7 @@
 use std::io::Read as _;
 use std::path::Path;
 
-use crate::Error;
+use crate::{Error, floor};
 
 const ENTRY_LEN: usize = 64;
 const FLAG_INLINE: u32 = 1 << 16;
@@ -272,7 +272,7 @@ impl Revlog {
             .ok_or_else(|| read_err("revision out of range"))?;
         if e.is_censored() {
             return Err(Error::FloorRefusal {
-                feature: "censored revision".to_string(),
+                feature: floor::CENSORED_REVISION.to_string(),
                 reason:
                     "a censored revision's content was deliberately removed; refused rather than \
                          importing a hole as if it were content (RFC 005 D-4)"

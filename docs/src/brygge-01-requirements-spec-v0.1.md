@@ -10,7 +10,8 @@
 | ID scheme | `PU-` purpose · `NG-` non-goal · `PR-` preserve rule · `HO-` honesty rule · `VF-` verification · `ID-` idempotence · `FA-` failure · `BN-` boundary · `IR-` IR obligation · `SRC-` per-source · `UD-` prikk-side dependency · `OQ-` open question |
 
 > **Delivery status (2026-09-12).** The **decode → IR half is delivered** against these requirements for all
-> four named sources (Git, hg, SVN, CVS) — see [`../../HANDOFF.md`](../../HANDOFF.md) and `rfcs/`. This
+> four named sources (Git, hg, SVN, CVS) — see
+> [`development/handoffs/HANDOFF.md`](development/handoffs/HANDOFF.md) and `rfcs/`. This
 > document remains the stable contract those decoders satisfy. The **encode → prikk half** (§11 UD-*, §12
 > OQ-1/OQ-2) is owner/prikk-gated and not yet started past design; its §11 UD table (written at prikk
 > 0.27.1) is to be **re-verified against the current prikk** when encoder design begins.

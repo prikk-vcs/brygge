@@ -5,7 +5,7 @@
 //! implement** — a format brygge cannot read correctly is refused with a named reason, never guessed at.
 //! It runs before a single revlog byte is parsed, so an unsupported store can never be half-read.
 
-use crate::Error;
+use crate::{Error, floor};
 
 /// Requirements this build's revlog reader implements (or can safely ignore). Anything outside this set
 /// is refused (either as a floor feature or as an unreadable format).
@@ -25,8 +25,8 @@ const SUPPORTED: &[&str] = &[
 /// Requirements that are a **floor refusal** (`FA-3`, RFC 005 D-4): the feature is understood but
 /// deliberately out of scope. Each maps to a human label.
 const FLOOR: &[(&str, &str)] = &[
-    ("largefiles", "largefiles large-file storage"),
-    ("lfs", "git-lfs-style large-file storage"),
+    (floor::LARGEFILES, "largefiles large-file storage"),
+    (floor::LFS, "git-lfs-style large-file storage"),
 ];
 
 /// Check a `.hg/requires` body. Returns `Ok(())` only if every requirement is in [`SUPPORTED`].

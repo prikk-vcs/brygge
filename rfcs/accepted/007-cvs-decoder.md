@@ -168,7 +168,10 @@ The two genuinely hard pieces are **reading RCS safely** (the `,v` store — a n
   that most directly rules *who can migrate*. The **numeric bar and its definition** (a time-spread
   threshold and an ambiguity measure) are a configurable default settled at the handoff; brygge implements
   the line via the read-a-policy mechanism (CF-03) and does not hardcode it. An entirely-under-floor import
-  (no confident changeset) is a whole-import refusal.
+  (no confident changeset) is a whole-import refusal. *(2026-09-23, RFC 009 project-hygiene handoff,
+  CR-12.2)* The policy — this and the remote-source refusal alike — is **declared in code as one
+  owner-ratified list** (`crates/brygge-decode-cvs/src/floor.rs`) and **recorded in every artifact's
+  provenance** (`params["floor"]`, PR-5) — changing it is a reviewed code change, never a runtime knob.
 
 - **D-9 — Fit IR 1.0.0 additive-only (RFC 003 D-7). CONFIRMED against the shipped `brygge-ir` (66b52d8):
   CVS fits with ZERO contract changes** (full finding:
@@ -237,5 +240,4 @@ The two genuinely hard pieces are **reading RCS safely** (the `,v` store — a n
   dependency, no subprocess, pure Rust; the RCS reader and the changeset reconstructor as the two new
   pieces), and the **architect security review against `brygge-03`** (verdict proceed — the cleanest surface
   of any decoder; INV-1 at its purest, with the changeset atom itself `Derived` and changeset-level VF-2
-  honestly declined; it surfaces one residual, `RR-cvs-reconstruction`, to fold into `brygge-03`).
-  **Implementation toward M4 may begin.**
+  honestly declined; it surfaces one residual, `RR-cvs-reconstruction`, still to fold into `brygge-03`).

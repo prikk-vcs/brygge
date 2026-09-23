@@ -13,7 +13,7 @@ use brygge_ir::status::{Derivation, DerivationKind, EpistemicStatus};
 
 use crate::layout::{self, Root};
 use crate::tree::{self, Tree};
-use crate::{DECODER, Error, Options, Source, decoder_version, dumpstream, props};
+use crate::{DECODER, Error, Options, Source, decoder_version, dumpstream, floor, props};
 
 /// Decode the Subversion source into an [`Ir`].
 ///
@@ -41,7 +41,11 @@ pub fn decode(source: &Source, opts: &Options) -> Result<Ir, Error> {
         brygge_version: decoder_version().to_string(),
         decoder: DECODER.to_string(),
         decoder_version: decoder_version().to_string(),
-        params: opts.as_params(),
+        params: {
+            let mut params = opts.as_params();
+            params.insert("floor".to_string(), floor::joined());
+            params
+        },
         import_time: None,
     };
     let mut builder = IrBuilder::new(provenance);

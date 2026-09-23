@@ -30,18 +30,18 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::Error;
+use crate::{Error, floor};
 
 fn redirected(reason: String) -> Error {
     Error::FloorRefusal {
-        feature: "redirected git directory".to_string(),
+        feature: floor::REDIRECTED_GIT_DIRECTORY.to_string(),
         reason,
     }
 }
 
 fn alternates(reason: String) -> Error {
     Error::FloorRefusal {
-        feature: "object alternates".to_string(),
+        feature: floor::OBJECT_ALTERNATES.to_string(),
         reason,
     }
 }
@@ -164,7 +164,7 @@ pub fn check_repo_floor(repo: &gix::Repository) -> Result<(), Error> {
     let git_dir = repo.git_dir();
     if git_dir.join("shallow").exists() {
         return Err(Error::FloorRefusal {
-            feature: "shallow clone".to_string(),
+            feature: floor::SHALLOW_CLONE.to_string(),
             reason: "a shallow clone is a truncated history that would look whole; refused rather \
                      than imported as if complete (FA-1)"
                 .to_string(),
@@ -172,7 +172,7 @@ pub fn check_repo_floor(repo: &gix::Repository) -> Result<(), Error> {
     }
     if git_dir.join("info").join("grafts").exists() {
         return Err(Error::FloorRefusal {
-            feature: "grafts".to_string(),
+            feature: floor::GRAFTS.to_string(),
             reason:
                 "grafts rewrite the ancestry a reader would see; refused rather than importing \
                      the rewritten view silently"

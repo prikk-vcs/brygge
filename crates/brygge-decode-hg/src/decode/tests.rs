@@ -357,3 +357,19 @@ fn repo_id_is_independent_of_pull_order_across_multiple_roots() {
         "repo_id (the smallest root node) must not depend on local pull/revision order"
     );
 }
+
+// --- CR-12.2: the floor is one declared list, recorded in provenance --------------------------------
+
+#[test]
+fn provenance_floor_param_equals_the_declared_list() {
+    if !hg_available() {
+        eprintln!("skipping: hg not on PATH");
+        return;
+    }
+    let r = Repo::new();
+    r.write("a.txt", "a\n");
+    r.commit("1136239445", "c1");
+    let ir = decode(r.path(), &Options::default()).unwrap();
+    let expected = crate::floor::joined();
+    assert_eq!(ir.provenance.params.get("floor"), Some(&expected));
+}

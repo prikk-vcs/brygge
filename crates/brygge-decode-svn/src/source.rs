@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
 
-use crate::Error;
+use crate::{Error, floor};
 
 /// Resource ceilings for loading a dumpstream (RFC 010 D-4). One place for every SVN ceiling; tests
 /// construct a small instance instead of needing gigabytes.
@@ -94,7 +94,7 @@ fn dump_local_repo(path: &Path, limits: &Limits) -> Result<Vec<u8>, Error> {
     let shown = path.to_string_lossy();
     if shown.contains("://") {
         return Err(Error::FloorRefusal {
-            feature: "remote-source".to_string(),
+            feature: floor::REMOTE_SOURCE.to_string(),
             reason: "brygge dumps only a local repository; a URL/remote source is refused, and \
                      `svnrdump` (network) is out of scope (INV-3, RFC 006 §4)"
                 .to_string(),

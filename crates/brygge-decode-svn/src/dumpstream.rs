@@ -70,8 +70,6 @@ pub struct RevisionRecord {
 /// A parsed dumpstream.
 #[derive(Debug, Clone)]
 pub struct Dump {
-    /// The dump format version (1–3).
-    pub format_version: u32,
     /// The repository UUID, if the dump declared one.
     pub uuid: Option<String>,
     /// The revisions, in order.
@@ -406,13 +404,11 @@ pub fn parse_dump(data: &[u8]) -> Result<Dump, Error> {
         read_body(&mut cur, &headers)?;
     }
 
-    let format_version = format_version
+    // The version is validated (range-checked) as it's parsed above; its only remaining obligation is
+    // to have been present at all (a dump with no version header is malformed).
+    format_version
         .ok_or_else(|| Error::Read("missing SVN-fs-dump-format-version header".to_string()))?;
-    Ok(Dump {
-        format_version,
-        uuid,
-        revisions,
-    })
+    Ok(Dump { uuid, revisions })
 }
 
 #[cfg(test)]

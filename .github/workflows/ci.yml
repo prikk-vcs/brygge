@@ -23,7 +23,7 @@ jobs:
         run: cargo test --workspace --locked
 
   supply-chain:
-    name: cargo-deny · cargo-audit
+    name: cargo-deny · cargo-audit · ir-isolation
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -37,3 +37,5 @@ jobs:
         run: |
           cargo install cargo-audit --locked
           cargo audit
+      - name: brygge-ir dependency isolation (RFC 009 D-7)
+        run: ./tools/check-ir-isolation.sh

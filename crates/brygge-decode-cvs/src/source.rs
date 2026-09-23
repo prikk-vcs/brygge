@@ -4,7 +4,7 @@
 
 use std::path::PathBuf;
 
-use crate::Error;
+use crate::{Error, floor};
 
 /// Where to read the CVS history from.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,7 +26,7 @@ impl Source {
                 // A CVSROOT of the form `:pserver:…`/`:ext:…`, or a URL, is remote (INV-3).
                 if shown.starts_with(':') || shown.contains("://") {
                     return Err(Error::FloorRefusal {
-                        feature: "remote-source".to_string(),
+                        feature: floor::REMOTE_SOURCE.to_string(),
                         reason: "brygge reads a local CVS repository directly; a :pserver:/:ext:/URL \
                                  source is refused, and no `cvs` client is run (INV-3, RFC 007 §D-1)"
                             .to_string(),

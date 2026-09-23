@@ -14,6 +14,10 @@
 //! Entry point: [`decode`]. The source is a local CVS repository ([`Source`]); behaviour is tuned by
 //! [`Options`] (the clustering window and confidence floor; ref reconstruction is **off by default**).
 //!
+//! **Public API:** [`decode`], [`Options`], [`Source`], [`Error`], and [`decoder_version`] — everything a
+//! caller needs. [`UNDER_FLOOR`] is transitional: replaced by the typed refused/violation record of
+//! RFC 011.
+//!
 //! [`ChangeAtom`]: brygge_ir::ChangeAtom
 
 #![forbid(unsafe_code)]
@@ -21,6 +25,7 @@
 
 mod cluster;
 mod decode;
+mod floor;
 mod options;
 mod rcs;
 mod scan;
@@ -31,12 +36,6 @@ pub use decode::decode;
 pub use options::Options;
 pub use source::Source;
 
-/// The RCS `,v` reader types, public so integration tests and the decode layer can drive the reader;
-/// most callers want [`decode`] instead.
-pub mod rcsfile {
-    pub use crate::rcs::{RcsFile, RevNum, Revision, parse_rcs};
-}
-
 /// The decoder id and version recorded into IR provenance (`PR-6`) and every derivation (`HO-1`).
 #[must_use]
 pub fn decoder_version() -> &'static str {
@@ -44,10 +43,12 @@ pub fn decoder_version() -> &'static str {
 }
 
 /// The decoder id recorded into IR provenance and derivations.
-pub const DECODER: &str = "brygge-decode-cvs";
+const DECODER: &str = "brygge-decode-cvs";
 
 /// The `what` of the loss record written when the whole import is under the confidence floor (RFC 007
 /// OQ-B). A CLI maps its presence to the CL-08 convention/confidence exit class.
+///
+/// Transitional: replaced by the typed refused/violation record of RFC 011.
 pub const UNDER_FLOOR: &str = "reconstruction confidence below the floor";
 
 /// Everything the CVS decoder can fail with. A refused feature, an unreadable `,v`, or a below-floor

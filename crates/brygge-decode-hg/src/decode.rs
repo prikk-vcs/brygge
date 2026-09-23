@@ -17,7 +17,9 @@ use brygge_ir::model::{
 use brygge_ir::status::EpistemicStatus;
 
 use crate::revlog::{NULL_REV, Revlog};
-use crate::{Error, Options, changelog, decoder_version, filelog, fncache, manifest, requires};
+use crate::{
+    Error, Options, changelog, decoder_version, filelog, floor, fncache, manifest, requires,
+};
 
 const DECODER: &str = "brygge-decode-hg";
 
@@ -56,7 +58,11 @@ pub fn decode(path: &Path, opts: &Options) -> Result<Ir, Error> {
         brygge_version: decoder_version().to_string(),
         decoder: DECODER.to_string(),
         decoder_version: decoder_version().to_string(),
-        params: opts.as_params(),
+        params: {
+            let mut params = opts.as_params();
+            params.insert("floor".to_string(), floor::joined());
+            params
+        },
         import_time: None,
     };
     let mut builder = IrBuilder::new(provenance);
@@ -85,7 +91,7 @@ pub fn decode(path: &Path, opts: &Options) -> Result<Ir, Error> {
 
         if this_manifest.contains_key(".hgsub") || this_manifest.contains_key(".hgsubstate") {
             return Err(Error::FloorRefusal {
-                feature: "subrepo".to_string(),
+                feature: floor::SUBREPO.to_string(),
                 reason:
                     "Mercurial subrepositories are refused rather than approximated (RFC 005 D-4, \
                          parity with the Git submodule floor)"

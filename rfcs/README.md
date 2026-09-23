@@ -3,8 +3,9 @@
 Design decisions for brygge are recorded as RFCs, following the ecosystem's **five-folder lifecycle**
 (the same one prikk and stikk use; the canonical policy is `done/000-rfc-lifecycle-policy.md`).
 
-> New to brygge? Start at [`../HANDOFF.md`](../HANDOFF.md) for the whole map; this file is the authoritative
-> record of RFC **state** (the folder an RFC lives in is the source of truth).
+> New to brygge? Start at [`../docs/src/development/handoffs/HANDOFF.md`](../docs/src/development/handoffs/HANDOFF.md)
+> for the whole map; this file is the authoritative record of RFC **state** (the folder an RFC lives in is
+> the source of truth).
 
 ```
 proposed/   a decision drafted for review, not yet settled
@@ -19,13 +20,15 @@ gets a **program-design handoff** under `rfcs/handoffs/NNN-slug/` before impleme
 
 **The upstream contract is prikk RFC 113** (*History import foundations*), which lives in the prikk
 repository, not here. brygge's RFCs realize the *decoder/IR/encoder* side of that contract; RFC 113
-§4a's owner-open questions (OQ-1…OQ-3) gate brygge's encode-to-prikk work.
+§4a's owner-open questions (OQ-1…OQ-3) were **ruled 2026-09-13** — see `ROADMAP.md`'s Track B for what
+gates brygge's encode-to-prikk work now (prikk's own foundations being accepted).
 
 ## RFC index (planned)
 
 Numbering is brygge's own. **Track A** (decode → IR) depends on nothing in prikk and is buildable now;
-**Track B** (encode → prikk) past a reviewable proposal is gated on prikk (UD-1…UD-3) and the owner
-(OQ-1…OQ-3). Build order follows the difficulty gradient (requirements §7).
+**Track B** (encode → prikk) past a reviewable proposal is gated on prikk's own foundations being
+accepted (the owner's OQ-1…OQ-3 are already ruled; see `ROADMAP.md` Track B). Build order follows the
+difficulty gradient (requirements §7).
 
 | RFC | Scope | Track / Phase | Gate |
 |---|---|---|---|
@@ -45,97 +48,43 @@ is written by the architect and reviewed/approved per `GOVERNANCE.md`.
 
 ## State
 
-**All four sources on the gradient are built, and the IR contract is FROZEN at 1.0.0 (RFC 003 D-7, executed
-2026-09-08).** RFC 004 (Git), 005 (Mercurial), 006 (Subversion), and 007 (CVS) are accepted and implemented
-through the CLI/verify surface; `brygge decode git|hg|svn|cvs`, `inspect`, `verify`, and `summary` all work
-(Git/hg/SVN validated against real `git`/`hg`/`svnadmin`; CVS against hand-built RCS `,v` fixtures). The
-freeze held across every source **with no contract change** — Git and hg were the pre-freeze basis; SVN
-(convention-derived refs) and CVS (a `Derived` changeset *atom*, the deepest stress) were post-freeze and
-fit **additive-only, needing nothing added**. The contract is `1.0.0`, additive-only within major 1.
+**All four sources on the gradient are built (not yet released — `ROADMAP.md`), and the IR contract was
+FROZEN at 1.0.0 (RFC 003 D-7, 2026-09-08) and is being re-cut to contract `0.2.0` (RFC 011, D-1(a),
+accepted 2026-09-23; implemented by its handoff).** Per the lifecycle policy, **the folder an RFC lives in
+is the source of truth for its state**; this table is the index the policy asks each project to keep,
+grouped by state as RFC 000 recommends. Update it in the same commit that moves an RFC between folders.
 
-- **Accepted:**
-  - [RFC 011 — IR contract re-cut before the first release](accepted/011-ir-contract-recut.md) — accepted
-    2026-09-23 (owner ruling D-1 (a); OQ-A ruled: contract `0.2.0`). Supersedes parts of RFC 001/002/003.
-    Handoff: `handoffs/011-ir-contract-recut/`.
-  - [RFC 006 — Subversion decoder](accepted/006-subversion-decoder.md) — accepted 2026-09-08 (M3);
-    **increments 1–2 built and green** (`brygge-decode-svn` + CLI wiring, zero new crate dependencies). The gradient's third
-    source and the IR's **derived-side** stress test: SVN revisions are
-    atomic and linear (a `Stated` spine), but branches and tags are directory copies by *convention* —
-    reconstructed only as `Derived` (SRC-S1/FA-2, the derived-marking archetype). Owner rulings: **read
-    tier Tier D** — a pure-Rust *dumpstream* parser fed by a user-supplied dumpfile or a read-only local
-    `svnadmin dump` (no FFI, no network; over hand-rolling FSFS/BDB or linking libsvn, OQ-A); **floor** —
-    `svn:externals` refused, and a convention-violating layout **imported with a loud `Derived` record, not
-    refused** (widest honest migration reach, OQ-B). First **post-freeze** source, so it must fit IR 1.0.0
-    additive-only (RFC 003 D-7). **All three acceptance artifacts are done** (under
-    `handoffs/006-subversion-decoder/`): D-9 confirmed SVN fits IR 1.0.0 with **zero contract changes**;
-    the **program-design handoff** (Tier D needs no new crate dependency; the dumpstream is
-    backend-uniform); and the **architect security review against `brygge-03`** (verdict: proceed — the
-    supply-chain surface shrinks, the C-format risk is isolated by *subprocess* not linked, INV-1/2/3/5/6
-    hold as bound tests). **Implementation toward M3 may begin.**
-  - [RFC 005 — Mercurial decoder](accepted/005-mercurial-decoder.md) — accepted 2026-09-06; **built and
-    delivered (M2)**. Read tier Tier 2 (pure-Rust revlog reader: index + delta chains + zlib/zstd via
-    flate2/ruzstd, no C, no hg binary), ground-truth-validated against `hg debugdata`/`debugindex`. The
-    **stated-rename** discipline is live (hg renames carried `Stated` → zero derived marks). Floor: subrepos
-    / largefiles / censored / unknown-requires refused. **D-8 confirmed: no IR contract change for a second
-    source.** Queued follow-ups: rename inference (OQ-A), `.hgtags`→tag refs (OQ-C), large-repo streaming +
-    hashed-fncache long paths (OQ-E).
-  - [RFC 004 — Git decoder](accepted/004-git-decoder.md) — accepted 2026-09-04, built through both
-    increments; OQ-A (rename detection) and OQ-B (ref/tag fidelity) resolved 2026-09-06. `gix` approved
-    with the security review at
-    [`handoffs/004-git-decoder/gix-security-review-v1.md`](handoffs/004-git-decoder/gix-security-review-v1.md);
-    the Git feature floor ratified (OQ-3).
-  - [RFC 001 — IR foundations](accepted/001-ir-foundations.md) — handoffs under
-    [`handoffs/001-ir-foundations/`](handoffs/001-ir-foundations/): the design handoff, and the
-    **consolidated `brygge-ir` build spec** (folds in 002/003) that the implementation follows.
-  - [RFC 002 — Honesty & provenance machinery](accepted/002-honesty-and-provenance-machinery.md)
-  - [RFC 003 — Determinism, format & versioning](accepted/003-determinism-format-and-versioning.md)
-    (resolves RFC 001's OQ-A/B/C)
-  - [RFC 007 — CVS decoder](accepted/007-cvs-decoder.md) — accepted 2026-09-10 (M4), **built and green**
-    (`brygge-decode-cvs` + CLI, zero new crate dependencies), the **last source on the gradient**. The IR's deepest epistemic stress: CVS has **no atomic commit**, so the
-    **changeset itself is reconstructed** — a `Derived(ReconstructedChangeset)` *atom*, not just derived refs
-    (SRC-C1, IR-2). The honest deliverable is **lossy-but-labelled** (SRC-C3): per-file content and history
-    faithful, changeset grouping carried as brygge's derived judgment with its clustering parameters and a
-    confidence, and **changeset-level VF-2 honestly absent** (no source atom to check against). Owner
-    rulings: **read tier Tier R** — a pure-Rust RCS `,v` reader (uncompressed, so a **third
-    zero-new-dependency** decoder, no subprocess; OQ-A); **confidence floor per-changeset** — import the
-    confident majority, loudly flag/refuse the under-floor ones (OQ-B). Second **post-freeze** source, so it
-    must fit IR 1.0.0 additive-only (preliminary D-9: fits — `ReconstructedChangeset` and `confidence`
-    already exist). **All three acceptance artifacts are done** (under `handoffs/007-cvs-decoder/`): D-9
-    confirmed CVS fits IR 1.0.0 with **zero contract changes**; the **program-design handoff** (zero new
-    dependency, no subprocess, pure Rust); and the **architect security review** (verdict proceed — the
-    cleanest surface of any decoder, INV-1 at its purest). **Implementation toward M4 may begin.**
-  - [RFC 009 — Dependency-surface & supply-chain policy](accepted/009-dependency-surface-and-supply-chain-policy.md)
-  - [RFC 010 — Bounded memory & streaming](accepted/010-bounded-memory-and-streaming.md) — accepted
-    2026-09-12 (OQ-F), owner-directed. Streaming cannot shrink the IR (the IR *is* the content); it bounds a
-    decoder's **scratch** to ~O(IR) instead of O(IR × depth). **Increment 1 built:** `brygge-decode-svn`
-    retains only the tree snapshots a `copyfrom` names — O(revisions × tree) → O(copy-targets × tree), no
-    format/determinism change. Increments 2–4 (SVN dumpstream iterator, CVS reconstruction bound, and a
-    measurement-gated streaming writer) queued.
-- **Done:** [RFC 000 — RFC lifecycle policy](done/000-rfc-lifecycle-policy.md) (brygge uses the
-  **5-folder variant**: `proposed → accepted → done`, plus `archive/` and optional `draft/`).
+### Accepted
 
-RFC 004 is realized in two increments (handoffs under `handoffs/004-git-decoder/`): **increment 1** the
-`brygge-decode-git` decoder (Git → IR), **increment 2** the read-side CLI (`decode`/`inspect`/`verify`/
-`summary`, CL-08 exit classes) + against-source verify (VF-2). Both are built and green, and RFC 004's
-open questions **OQ-A** (rename detection: exact-content 1:1, similarity deferred) and **OQ-B** (ref
-namespace policy + annotated-tag identity preservation) are now **resolved**.
-RFC 005 (Mercurial) is realized in three parts (handoff under `handoffs/005-mercurial-decoder/`): the
-format-safety gate, the ground-truth-validated revlog reader, and the object layer + `decode()` — all
-built and green, plus CLI `decode hg` and against-source dispatch.
-The **RFC 003 D-7 contract freeze is done** (IR `1.0.0`, 2026-09-08). **RFC 006 (Subversion → M3) is
-accepted** (2026-09-08): read tier Tier D (dumpstream parser), floor ruled (externals refused,
-convention-violations imported-with-loud-derived-record). **All three acceptance artifacts are complete**
-(D-9 additive-fit, program-design handoff, security review — verdict proceed), and **`brygge-decode-svn`
-increments 1 and 2 are built and green** (the `decode` library — dumpstream reader + tree model → IR — and
-the CLI: `brygge decode svn <repo|dumpfile> [--reconstruct-refs]` + `verify --against-source`, validated
-against real `svnadmin` 1.14.5; delta dumps and streaming queued). **RFC 007 (CVS → M4) is accepted**
-(2026-09-10): read tier Tier R (pure-Rust RCS reader, zero new deps), confidence floor ruled per-changeset
-(import the confident majority, loudly flag/refuse under-floor). **`brygge-decode-cvs` is built and green**
-(CLI wired; `verify --against-source` checks per-file content + deterministic reproduction, not changeset
-correspondence, D-7). **M4 is delivered, and the difficulty gradient is complete: Git, hg, SVN, and CVS have
-all been decoded into the IR with no contract change** — the strongest evidence for PU-1/PU-3 and the
-RFC 003 D-7 freeze. The RFC 005 follow-ups (rename inference / `.hgtags` / large repos) remain available as
-a parallel track. `encode` unblocks when the owner rules GATED-1..3 (RFC 008).
+| RFC | Scope | Handoff(s) |
+|---|---|---|
+| [001](accepted/001-ir-foundations.md) | IR foundations & obligations | `handoffs/001-ir-foundations/` |
+| [002](accepted/002-honesty-and-provenance-machinery.md) | Honesty & provenance machinery | (folded into 001's handoff) |
+| [003](accepted/003-determinism-format-and-versioning.md) | Determinism, IR artifact format & versioning, integrity digest | (folded into 001's handoff) |
+| [004](accepted/004-git-decoder.md) | Git decoder | `handoffs/004-git-decoder/` |
+| [005](accepted/005-mercurial-decoder.md) | Mercurial decoder | `handoffs/005-mercurial-decoder/` |
+| [006](accepted/006-subversion-decoder.md) | Subversion decoder | `handoffs/006-subversion-decoder/` |
+| [007](accepted/007-cvs-decoder.md) | CVS decoder | `handoffs/007-cvs-decoder/` |
+| [009](accepted/009-dependency-surface-and-supply-chain-policy.md) | Dependency-surface & supply-chain policy | `handoffs/009-dependency-surface-and-supply-chain-policy/` |
+| [010](accepted/010-bounded-memory-and-streaming.md) | Bounded memory & streaming | `handoffs/010-bounded-memory-and-streaming/` |
+| [011](accepted/011-ir-contract-recut.md) | IR contract re-cut before the first release (supersedes parts of 001/002/003; contract `0.2.0`) | `handoffs/011-ir-contract-recut/` |
 
-Per the lifecycle policy, the folder is the source of truth for state; this section is the index the
-policy asks each project to keep. Update it in the same commit that moves an RFC between folders.
+### Done
+
+| RFC | Scope |
+|---|---|
+| [000](done/000-rfc-lifecycle-policy.md) | RFC lifecycle policy — brygge uses the **5-folder variant** (`proposed → accepted → done`, plus `archive/` and optional `draft/`) |
+
+### Proposed
+
+None currently.
+
+### Archive
+
+None currently.
+
+### Reserved / upcoming
+
+- **008 — prikk encoder.** Reserved (not yet written); conforms to prikk's import foundations once they
+  exist (ROADMAP Track B1, gated on prikk's own foundations being accepted — the owner's OQ-1…OQ-3 are
+  already ruled).

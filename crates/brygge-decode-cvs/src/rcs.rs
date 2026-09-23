@@ -50,11 +50,10 @@ impl RevNum {
     }
 }
 
-/// One revision's metadata and stored text (full content for `head`, a diff otherwise).
+/// One revision's metadata and stored text (full content for `head`, a diff otherwise). Its own number
+/// is not stored here — every `Revision` lives in [`RcsFile::revisions`], keyed by [`RevNum`].
 #[derive(Debug, Clone)]
 pub struct Revision {
-    /// The revision number.
-    pub num: RevNum,
     /// Commit time as epoch seconds (from the RCS `date`).
     pub date: i64,
     /// The committer login (a claim, PR-3).
@@ -607,9 +606,8 @@ pub fn parse_rcs(data: &[u8]) -> Result<RcsFile, Error> {
     for (num, meta) in deltas {
         let (log, text) = texts.get(&num).cloned().unwrap_or_default();
         revisions.insert(
-            num.clone(),
+            num,
             Revision {
-                num,
                 date: meta.date,
                 author: meta.author,
                 state: meta.state,

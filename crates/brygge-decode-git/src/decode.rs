@@ -18,7 +18,7 @@ use brygge_ir::model::{
 };
 use brygge_ir::status::{Derivation, DerivationKind, EpistemicStatus};
 
-use crate::{Error, Options, decoder_version, open};
+use crate::{Error, Options, decoder_version, floor, open};
 
 /// The full path → (blob/link/gitlink object id, mode) contents of a tree.
 type Snapshot = BTreeMap<String, (ObjectId, u32)>;
@@ -178,7 +178,11 @@ pub(crate) fn decode_with(path: &Path, opts: &Options, limits: &Limits) -> Resul
         brygge_version: decoder_version().to_string(),
         decoder: DECODER.to_string(),
         decoder_version: decoder_version().to_string(),
-        params: opts.as_params(),
+        params: {
+            let mut params = opts.as_params();
+            params.insert("floor".to_string(), floor::joined());
+            params
+        },
         import_time: None,
     };
 
@@ -367,7 +371,7 @@ fn scan_refs(repo: &gix::Repository) -> Result<(Vec<ScannedRef>, u64), Error> {
 
         if raw_name.starts_with(b"refs/replace/") {
             return Err(Error::FloorRefusal {
-                feature: "replace ref".to_string(),
+                feature: floor::REPLACE_REF.to_string(),
                 reason: format!(
                     "{name} rewrites the object graph a reader would see; refused rather than \
                      importing the rewritten view silently"
@@ -400,7 +404,7 @@ fn scan_refs(repo: &gix::Repository) -> Result<(Vec<ScannedRef>, u64), Error> {
         if let Some((suffix, _)) = carried_suffix {
             if std::str::from_utf8(suffix).is_err() {
                 return Err(Error::FloorRefusal {
-                    feature: "non-UTF-8 ref name".to_string(),
+                    feature: floor::NON_UTF8_REF_NAME.to_string(),
                     reason: format!(
                         "ref name '{}' is not valid UTF-8 (invalid bytes shown as \\xNN)",
                         escape_invalid_utf8(&raw_name)
@@ -593,7 +597,7 @@ fn walk_tree(
             let raw_name = entry.filename(); // &BStr; CR-03/D-3(i): checked below, never `to_str_lossy`.
             let Ok(name) = std::str::from_utf8(raw_name) else {
                 return Err(Error::FloorRefusal {
-                    feature: "non-UTF-8 path".to_string(),
+                    feature: floor::NON_UTF8_PATH.to_string(),
                     reason: format!(
                         "commit {commit_id}: path '{prefix}{}{}' is not valid UTF-8 (invalid bytes \
                          shown as \\xNN)",
@@ -628,7 +632,7 @@ fn walk_tree(
                 }
                 gix::objs::tree::EntryKind::Commit => {
                     return Err(Error::FloorRefusal {
-                        feature: "submodule".to_string(),
+                        feature: floor::SUBMODULE.to_string(),
                         reason: format!(
                             "submodule (gitlink) at '{path}' points outside this repository; refused \
                              rather than approximated"

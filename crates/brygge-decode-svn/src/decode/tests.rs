@@ -504,3 +504,14 @@ fn a_copyfrom_to_a_distant_revision_still_resolves() {
     let a = decode_dump(&d.buf, &Options::default()).unwrap();
     assert_eq!(brygge_ir::to_bytes(&ir), brygge_ir::to_bytes(&a)); // deterministic
 }
+
+// --- CR-12.2: the floor is one declared list, recorded in provenance --------------------------------
+
+#[test]
+fn provenance_floor_param_equals_the_declared_list() {
+    let mut d = DumpBuilder::new();
+    d.revision(0, &[("svn:date", &date(0))]);
+    let ir = decode_dump(&d.buf, &Options::default()).unwrap();
+    let expected = crate::floor::joined();
+    assert_eq!(ir.provenance.params.get("floor"), Some(&expected));
+}

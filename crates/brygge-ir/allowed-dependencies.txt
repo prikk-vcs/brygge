@@ -1,0 +1,14 @@
+# brygge-ir's full normal-dependency closure (RFC 009 D-7, INV-4/INV-5). Names only, not versions, so a
+# routine patch bump does not fail this gate. Adding a name here requires an architect review — brygge-ir
+# is the light core a target links, and its dependency surface is the thing this file makes a tested
+# property instead of an asserted one (CR-12.1). Generated with `tools/check-ir-isolation.sh` and kept in
+# sync by CI.
+block-buffer
+brygge-ir
+cfg-if
+cpufeatures
+crypto-common
+digest
+generic-array
+sha2
+typenum

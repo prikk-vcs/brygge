@@ -248,3 +248,21 @@ fn a_remote_source_is_refused() {
     );
     assert!(matches!(out, Err(crate::Error::FloorRefusal { .. })));
 }
+
+// --- CR-12.2: the floor is one declared list, recorded in provenance --------------------------------
+
+#[test]
+fn provenance_floor_param_equals_the_declared_list() {
+    let r = Repo::new();
+    r.write_vfile(
+        "a.c",
+        &single_rev("alice", "2024.01.01.12.00.00", "x", "aaa\n", &[]),
+    );
+    let ir = decode(
+        &Source::LocalRepo(r.path().to_path_buf()),
+        &Options::default(),
+    )
+    .unwrap();
+    let expected = crate::floor::joined();
+    assert_eq!(ir.provenance.params.get("floor"), Some(&expected));
+}

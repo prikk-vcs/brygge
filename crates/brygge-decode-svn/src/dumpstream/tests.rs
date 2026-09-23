@@ -68,7 +68,6 @@ fn parses_a_minimal_dump() {
     d.extend(add_file("file.txt", b"hello\n"));
 
     let dump = parse_dump(&d).unwrap();
-    assert_eq!(dump.format_version, 2);
     assert_eq!(
         dump.uuid.as_deref(),
         Some("11111111-2222-3333-4444-555555555555")

@@ -11,12 +11,17 @@
 //!
 //! Entry point: [`decode`]. Sources are described by [`Source`]. Behaviour is tuned by [`Options`]
 //! (branch/tag reconstruction is **off by default**).
+//!
+//! **Public API:** [`decode`], [`Options`], [`Source`], [`LayoutPolicy`], [`Error`], and
+//! [`decoder_version`] — everything a caller needs. [`LAYOUT_UNMATCHED`] is transitional: replaced by the
+//! typed refused/violation record of RFC 011.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
 mod decode;
 mod dumpstream;
+mod floor;
 mod layout;
 mod options;
 mod props;
@@ -27,14 +32,6 @@ pub use decode::decode;
 pub use options::{LayoutPolicy, Options};
 pub use source::Source;
 
-/// The parsed-dumpstream types, public so integration tests and the decode layer can drive the reader;
-/// most callers want [`decode`] instead.
-pub mod dump {
-    pub use crate::dumpstream::{
-        Dump, NodeAction, NodeKind, NodeRecord, RevisionRecord, parse_dump,
-    };
-}
-
 /// The decoder id and version recorded into IR provenance (`PR-6`) and every derivation (`HO-1`).
 #[must_use]
 pub fn decoder_version() -> &'static str {
@@ -42,11 +39,13 @@ pub fn decoder_version() -> &'static str {
 }
 
 /// The decoder id recorded into IR provenance and derivations.
-pub const DECODER: &str = "brygge-decode-svn";
+const DECODER: &str = "brygge-decode-svn";
 
 /// The `what` of the loss record written when branch/tag reconstruction was requested but the layout was
 /// not found (RFC 006 OQ-B — the loud convention-violation record). A CLI maps its presence to the CL-08
 /// convention-violation exit class.
+///
+/// Transitional: replaced by the typed refused/violation record of RFC 011.
 pub const LAYOUT_UNMATCHED: &str = "trunk/branches/tags layout not found";
 
 /// Everything the Subversion decoder can fail with. A refused feature, an unreadable format, or a

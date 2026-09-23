@@ -13,8 +13,7 @@ named reason** (INV-3). Tier D adds no gix-scale heavy dependency, so acceptance
 (GOVERNANCE security gate; RFC 009 D-6). **All three acceptance artifacts are now done** — the D-9
 additive-fit confirmation, the program-design handoff, and the security review (verdict: **proceed to
 implementation**, controls bound as tests) — all under
-[`handoffs/006-subversion-decoder/`](../handoffs/006-subversion-decoder/). **Implementation toward M3 may
-begin.**
+[`handoffs/006-subversion-decoder/`](../handoffs/006-subversion-decoder/).
 
 **Implementation status.** **Increments 1 and 2 built and green.** Increment 1 (`crates/brygge-decode-svn`):
 `decode(Source, &Options)` reads a dumpstream (a supplied dumpfile or a read-only local `svnadmin dump`)
@@ -256,7 +255,10 @@ working-copy bytes, and `svn:externals`.
     honesty requires.
   - Still deferred to the handoff, not floor-blocking: BDB-backend repositories the dump path cannot read,
     and very old/partial dump formats — handled by refusing cleanly below the line (FA-3) via the
-    read-a-policy mechanism (CF-03).
+    read-a-policy mechanism (CF-03). *(2026-09-23, RFC 009 project-hygiene handoff, CR-12.2)* The policy is
+    **declared in code as one owner-ratified list** (`crates/brygge-decode-svn/src/floor.rs`) and
+    **recorded in every artifact's provenance** (`params["floor"]`, PR-5) — changing it is a reviewed code
+    change, never a runtime knob.
 
 - **OQ-C — Branch/tag layout policy.** OQ-B settles the shape: **derived `RefRecord` reconstruction ships
   in M3**, under the standard `trunk`/`branches`/`tags` policy, **off by default**, always `Derived`, always
@@ -306,5 +308,5 @@ working-copy bytes, and `svn:externals`.
   crates), SVN's C-format risk is isolated **by subprocess** rather than linked (a containment advantage
   over Tier L), and INV-1/2/3/5/6 hold with the §6 bounds bound as tests. It surfaces a threat-model
   refinement to fold into `brygge-03` (C-4b: a C surface may be isolated to a *subprocess*, not only an
-  FFI crate) plus two residuals (`RR-svn-svnadmin`, `RR-svn-svnadmin-version`). **All acceptance artifacts
-  are complete; implementation toward M3 may begin.**
+  FFI crate) plus two residuals (`RR-svn-svnadmin`, `RR-svn-svnadmin-version`, both since folded into
+  `brygge-03` v0.2). **All acceptance artifacts are complete.**

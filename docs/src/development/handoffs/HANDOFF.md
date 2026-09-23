@@ -5,8 +5,9 @@ map: what brygge is, the state at handover, the invariants you must never regres
 lives, how to build and gate it, and the prioritized backlog. Everything it references is in this
 repository; nothing load-bearing lives only in someone's head.
 
-**Date of handover:** 2026-09-12. **State:** the decode → IR half is delivered for all four named sources;
-the IR contract is frozen at 1.0.0; all gates are green. The encode → prikk half is owner/prikk-gated and
+**Date of handover:** 2026-09-12. **State:** the decode → IR half is **built, not yet released**, for all
+four named sources (see `ROADMAP.md`'s release plan for the 0.1.0 correction cycle and what gates it); the
+IR contract is frozen at 1.0.0; all gates are green. The encode → prikk half is owner/prikk-gated and
 deliberately not started past design (see §8).
 
 ---
@@ -25,11 +26,11 @@ where told. The governing upstream contract is prikk **RFC 113** (History import
 
 | Area | State |
 |---|---|
-| **Decode → IR (Track A)** | **Delivered for all four sources.** Git (M1), Mercurial (M2), Subversion (M3), CVS (M4). |
+| **Decode → IR (Track A)** | **Built for all four sources, not yet released** (`ROADMAP.md`'s release plan). Git (M1), Mercurial (M2), Subversion (M3), CVS (M4). |
 | **IR contract** | **Frozen at 1.0.0** (RFC 003 D-7, 2026-09-08). All four sources fit it **with no contract change** — the strongest possible evidence for the freeze. Post-freeze: additive-only within major 1. |
 | **CLI** | `brygge decode <git\|hg\|svn\|cvs> <path>`, `inspect`, `verify --internal`, `verify --against-source`, `summary`; human + machine output; CL-08 exit classes. |
 | **Encode → prikk (Track B)** | **Gated, not started past design.** Waits on prikk's UD-1…UD-3 / OQ-1…OQ-3 (RFC 008; see §8). |
-| **Gates** | fmt · clippy `-D warnings` · test (**123 passing**) · `cargo deny` · `cargo audit` — all green, all `--locked`. |
+| **Gates** | fmt · clippy `-D warnings` · test (**217 passing**) · `cargo deny` · `cargo audit` · `tools/check-ir-isolation.sh` — all green, all `--locked`. |
 | **Toolchain** | Rust 2024, MSRV **1.85**; built/tested on rustc 1.98.1. |
 | **Third-party deps** | `sha2` (core); `gix` (Git); `flate2`+`ruzstd` (hg). SVN and CVS decoders add **zero** third-party deps. |
 
@@ -123,8 +124,9 @@ the gated Track-B prikk-encoder RFC — not yet written; its design begins when 
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo test --workspace --locked
-cargo deny check          # advisories, licenses, banned/duplicate crates (INV-4)
-cargo audit               # known vulnerabilities in the dependency tree
+cargo deny check                  # advisories, licenses, banned/duplicate crates (INV-4)
+cargo audit                       # known vulnerabilities in the dependency tree
+./tools/check-ir-isolation.sh     # brygge-ir's dependency closure matches its allowlist (RFC 009 D-7)
 
 # The measurement harness (dev-only), before/after any RFC 010 increment:
 cargo run -p brygge-bench --release
@@ -143,7 +145,7 @@ owner-approved contract event — never a silent one.
 
 ## 8. The backlog — what's next, prioritized and honest
 
-Nothing here is required for the delivered product to be correct; all of it is deferred scope or gated
+Nothing here is required for the built (not yet released) product to be correct; all of it is deferred scope or gated
 work, recorded so the team inherits the reasoning, not just the TODO.
 
 **Track A follow-ups (buildable now; each is scoped in its RFC):**
@@ -156,9 +158,9 @@ work, recorded so the team inherits the reasoning, not just the TODO.
    readable; currently refused with a named reason.
 3. **CVS refinements** (RFC 007, queued): branch-aware changeset parenting (the baseline threads linearly),
    adaptive clustering windows (OQ-E), and optional rename inference (OQ-C, off by default).
-4. **Fold the threat-model residuals into `brygge-03`** at its next revision: `RR-svn-svnadmin`,
-   `RR-svn-svnadmin-version`, `RR-cvs-reconstruction` (identified by the security reviews). `RR-gix-sha1`
-   and the C-4b subprocess refinement are already folded (brygge-03 v0.2).
+4. **Fold `RR-cvs-reconstruction` into `brygge-03`** at its next revision (identified by the CVS security
+   review; still outstanding). `RR-gix-sha1`, `RR-svn-svnadmin`, `RR-svn-svnadmin-version`, and the C-4b
+   subprocess refinement are already folded (brygge-03 v0.2).
 
 **Deferred by explicit owner decision:**
 5. **A TUI** — deferred, *not* rejected (2026-09-12). If pursued, the standing architect recommendation is a

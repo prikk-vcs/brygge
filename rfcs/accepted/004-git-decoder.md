@@ -96,8 +96,11 @@ against-source-check disciplines the milestone rests on.
   (OQ-3, ruled 2026-09-04).** On encountering a feature it will not approximate, the decoder **refuses
   with a named reason** and the "hit the floor" outcome class (CL-08/FA-3) — it never guesses. The decoder
   reads a **floor policy** (CF-03) rather than hardcoding product scope, so the line is set by policy, not
-  by code. The owner **ratified the provisional floor in full for M1** (SRC-G2) — all four items below are
-  **refused**:
+  by code. *(2026-09-23, RFC 009 project-hygiene handoff, CR-12.2)* The policy is **declared in code as one
+  owner-ratified list** (`crates/brygge-decode-git/src/floor.rs`) and **recorded in every artifact's
+  provenance** (`params["floor"]`, PR-5), so a reviewer reads which floor applied from the artifact itself
+  — changing it is a reviewed code change, never a runtime knob. The owner **ratified the provisional floor
+  in full for M1** (SRC-G2) — all four items below are **refused**:
   - **submodules** (a pointer to another repository — out of this import's scope);
   - **octopus merges** beyond the target's parent limit — refused above N. The ceiling **N is a
     prikk/OQ-2 value not yet set**; until it is, the decoder **carries all parents** and defers the

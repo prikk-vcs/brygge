@@ -17,11 +17,16 @@
 //! println!("{}", brygge_ir::honesty::summary(&ir).render_human());
 //! # Ok::<(), brygge_decode_git::Error>(())
 //! ```
+//!
+//! **Public API (CR-20, minimal by design):** [`decode`], [`Options`], [`Error`], and
+//! [`decoder_version`] — everything a caller needs and nothing else; the `gix`-facing internals stay
+//! crate-private.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
 mod decode;
+mod floor;
 mod open;
 mod options;
 

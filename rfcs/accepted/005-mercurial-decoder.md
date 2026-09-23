@@ -51,11 +51,12 @@ structure with no clean prikk analogue** — named branches versus bookmarks, ph
 ## Decisions
 
 - **D-1 — A new `brygge-decode-hg` crate; nothing else in the workspace reads hg.** Per RFC 009 D-1 the
-  crate is the only place the hg read path (a revlog reader and/or an `hg`-subprocess driver) lives;
-  `brygge-ir`, the encoders, and `verify --internal` build and run without it (the RFC 009 D-7 isolation
-  property, already tested for Git, generalizes). It exposes one narrow function — read a repository path,
-  produce a `brygge_ir::Ir` (or a typed error). **Read tier: Tier 2 — a pure-Rust revlog reader
-  (owner-ruled 2026-09-06).** brygge reads hg's on-disk revlog/filelog/manifest format directly, in
+  crate is the only place the hg read path lives; `brygge-ir`, the encoders, and `verify --internal` build
+  and run without it (the RFC 009 D-7 isolation property, already tested for Git, generalizes). It exposes
+  one narrow function — read a repository path, produce a `brygge_ir::Ir` (or a typed error). **Read tier:
+  Tier 2 — a pure-Rust revlog reader (owner-ruled 2026-09-06).** The `hg`-CLI-subprocess alternative (Tier
+  3) was considered and rejected below (OQ-A); only the pure-Rust reader applies. brygge reads hg's
+  on-disk revlog/filelog/manifest format directly, in
   process: no external `hg` binary, no subprocess, no runtime dependency, `forbid(unsafe)` stays maximal
   — the smallest, most self-contained trust surface, chosen to hold the clean/safe/secure line over the
   faster-to-build `hg`-CLI alternative. The one unavoidable dependency is **decompression** (revlogs are
@@ -101,7 +102,10 @@ structure with no clean prikk analogue** — named branches versus bookmarks, ph
   - On encountering a feature it will not approximate, the decoder **refuses with a named reason** and the
     CL-08 floor outcome (FA-3), reading a floor policy (CF-03) rather than hardcoding scope. The floor,
     **owner-ratified 2026-09-06 (OQ-B/OQ-D)**: refuse **subrepos**, **largefiles/lfs** pointers, and
-    **censored revisions**.
+    **censored revisions**. *(2026-09-23, RFC 009 project-hygiene handoff, CR-12.2)* The policy is
+    **declared in code as one owner-ratified list** (`crates/brygge-decode-hg/src/floor.rs`) and
+    **recorded in every artifact's provenance** (`params["floor"]`, PR-5) — changing it is a reviewed code
+    change, never a runtime knob.
 
 - **D-5 — The hg loss boundary (HO-2/PR-7/PR-8), every drop class-stated (PR-9).** Representation-class:
   revlog physical layout and delta chains, the dirstate and working copy, phase roots. Advisory-unreliable:
@@ -114,6 +118,8 @@ structure with no clean prikk analogue** — named branches versus bookmarks, ph
   **tier 3** runs `hg` with an **empty `HGRCPATH`, no extensions, no hooks, no network, and no dirstate or
   working-copy mutation** (`hg` invoked read-only, e.g. `log`/`cat`/`debugdata` against the store) — so no
   source-provided code executes (INV-2/T-2) and the same inputs always produce byte-identical output.
+  **Tier 3 was considered and rejected** (OQ-A, owner-ruled 2026-09-06: tier 2); only the pure-Rust
+  reader's guardrails above apply.
   `import_time` stays provenance-only (RFC 003 D-4/ID-4). Re-running after a failure reproduces the result
   up to the failure point (FA-5).
 

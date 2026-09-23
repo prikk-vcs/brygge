@@ -12,7 +12,7 @@ use brygge_ir::model::{
 use brygge_ir::status::{Derivation, DerivationKind, EpistemicStatus};
 
 use crate::cluster::{self, Changeset, FileRev};
-use crate::{DECODER, Error, Options, Source, UNDER_FLOOR, decoder_version, scan, symbols};
+use crate::{DECODER, Error, Options, Source, UNDER_FLOOR, decoder_version, floor, scan, symbols};
 
 /// The IR mode for a CVS file (CVS/RCS carries no Unix exec bit; binary `-kb` is content, not mode).
 const MODE_REGULAR: u32 = 0o100_644;
@@ -37,7 +37,11 @@ pub fn decode(source: &Source, opts: &Options) -> Result<Ir, Error> {
         brygge_version: decoder_version().to_string(),
         decoder: DECODER.to_string(),
         decoder_version: decoder_version().to_string(),
-        params: opts.as_params(),
+        params: {
+            let mut params = opts.as_params();
+            params.insert("floor".to_string(), floor::joined());
+            params
+        },
         import_time: None,
     };
     let mut builder = IrBuilder::new(provenance);
@@ -74,7 +78,7 @@ pub fn decode(source: &Source, opts: &Options) -> Result<Ir, Error> {
             .any(|c| c.confidence >= opts.confidence_floor)
     {
         return Err(Error::FloorRefusal {
-            feature: "whole-import-under-confidence-floor".to_string(),
+            feature: floor::WHOLE_IMPORT_UNDER_CONFIDENCE_FLOOR.to_string(),
             reason: format!(
                 "no reconstructed changeset reached the confidence floor ({}); the history is too \
                  ambiguous to import as changesets (RFC 007 OQ-B, SRC-C3)",

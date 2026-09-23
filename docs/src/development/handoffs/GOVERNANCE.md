@@ -55,12 +55,14 @@ The ecosystem's three, **plus brygge's supply-chain gates** (its defining risk):
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo test --workspace --locked
-cargo deny check          # advisories, licenses, banned/duplicate crates (INV-4)
-cargo audit               # known vulnerabilities in the dependency tree
+cargo deny check                  # advisories, licenses, banned/duplicate crates (INV-4)
+cargo audit                       # known vulnerabilities in the dependency tree
+./tools/check-ir-isolation.sh     # brygge-ir's dependency closure matches its allowlist (RFC 009 D-7)
 ```
 
 Conventions match the ecosystem: Rust 2024, MSRV pinned, English, **`unsafe` forbidden in brygge's own
-crates** (any C/FFI confined to a single dedicated crate — C-4b), 2018 module style (`foo.rs` + `foo/`,
+crates** (any C/FFI confined to a single dedicated crate **or a subprocess** — C-4b, threat model v0.2),
+2018 module style (`foo.rs` + `foo/`,
 no `mod.rs`), tests as siblings (`#[cfg(test)] mod tests;`, never inline), no panics on fallible input,
 public items documented.
 
