@@ -34,6 +34,11 @@ gix = { version = "0.87", features = ["blob-diff", "revision"] }
 # hg default). Small, decompression-only; isolated in `brygge-decode-hg` (RFC 009 D-1). No gix-scale review.
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 ruzstd = "0.7"
+# The Mercurial decoder's revision-hash verification: SHA-1 with collision detection, as Mercurial itself
+# uses (sha1dc). Already in the lock file through gix-hash, so this adds only a dependency edge for
+# `brygge-decode-hg`, not a new crate (architect decision under RFC 009, release-prep handoff §1).
+# Default features (`oid`, `std`) are off: `oid` would add the `const-oid` crate to the lock file.
+sha1-checked = { version = "0.10.0", default-features = false }
 
 # Lint discipline mirrors the ecosystem: unsafe is forbidden everywhere except a future dedicated FFI
 # crate (RFC 009 D-3); public items are documented; the panic-prone clippy lints warn so review holds

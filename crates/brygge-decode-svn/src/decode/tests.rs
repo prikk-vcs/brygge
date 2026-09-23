@@ -12,7 +12,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use brygge_ir::model::{PathOp, RefKind};
 use brygge_ir::status::EpistemicStatus;
 
-use super::decode;
+use super::decode as decode_unchecked;
+
+/// `decode`, plus the artifact-text check on every result: every fixture in this file is scanned.
+fn decode(source: &Source, opts: &Options) -> Result<brygge_ir::Ir, crate::Error> {
+    let ir = decode_unchecked(source, opts)?;
+    assert_no_internal_references(&ir);
+    Ok(ir)
+}
 use crate::{Options, Source};
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -918,4 +925,128 @@ fn cr_04_an_unparseable_svn_date_is_counted_not_guessed() {
         .find(|dr| dr.what.starts_with("unparseable svn:date"))
         .expect("an unparseable-svn:date drop record");
     assert_eq!(drop.what, "unparseable svn:date (1)");
+}
+
+// ---- artifact text carries no internal references ---------------------------------------------------
+
+/// The first internal reference identifier in `s` — `\b(RFC|OQ|CR|PR|INV|NG|SRC|FS|VF|HO|CL|CT|FA)[- ]?[0-9]`
+/// (a space is allowed, so `RFC 011` is caught; the handoff's own pattern missed it) — if any.
+/// Hand-rolled so this crate gains no regex dependency.
+fn internal_reference(s: &str) -> Option<&str> {
+    const PREFIXES: [&str; 13] = [
+        "RFC", "OQ", "CR", "PR", "INV", "NG", "SRC", "FS", "VF", "HO", "CL", "CT", "FA",
+    ];
+    let bytes = s.as_bytes();
+    for start in 0..bytes.len() {
+        let at_boundary = start == 0
+            || bytes
+                .get(start - 1)
+                .is_some_and(|b| !(b.is_ascii_alphanumeric() || *b == b'_'));
+        if !at_boundary {
+            continue;
+        }
+        let Some(rest) = s.get(start..) else {
+            continue; // not a char boundary
+        };
+        for prefix in PREFIXES {
+            if let Some(after) = rest.strip_prefix(prefix) {
+                let after = after
+                    .strip_prefix('-')
+                    .or_else(|| after.strip_prefix(' '))
+                    .unwrap_or(after);
+                if after.bytes().next().is_some_and(|b| b.is_ascii_digit()) {
+                    return Some(rest.get(..prefix.len() + 2).unwrap_or(rest));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Fail if any `DropRecord` or `Flag` `what`/`reason` in `ir` carries an internal reference: artifact
+/// text is read by users and by other tools, which have no access to our internal numbering.
+fn assert_no_internal_references(ir: &brygge_ir::Ir) {
+    for d in &ir.loss.dropped {
+        for text in [&d.what, &d.reason] {
+            assert!(
+                internal_reference(text).is_none(),
+                "internal reference {:?} in a drop record: {text}",
+                internal_reference(text)
+            );
+        }
+    }
+    for f in &ir.flags {
+        for text in [&f.what, &f.reason] {
+            assert!(
+                internal_reference(text).is_none(),
+                "internal reference {:?} in a flag: {text}",
+                internal_reference(text)
+            );
+        }
+    }
+}
+
+#[test]
+fn the_internal_reference_matcher_matches_the_documented_pattern() {
+    assert!(internal_reference("preserved (PR-7)").is_some());
+    assert!(internal_reference("see RFC 006").is_some()); // a space between prefix and number counts
+    assert!(internal_reference("(RFC 011 D-4)").is_some());
+    assert!(internal_reference("per OQ-B").is_none()); // OQ-B: a letter, not a number, follows
+    assert!(internal_reference("OQ-2").is_some());
+    assert!(internal_reference("(FA-1)").is_some());
+    assert!(internal_reference("FA 3").is_some());
+    assert!(internal_reference("RFC006 x").is_some());
+    assert!(internal_reference("per INV-3.").is_some());
+    assert!(internal_reference("NG5").is_some());
+    assert!(internal_reference("a CR-12 b").is_some());
+    assert!(internal_reference("SCR-1 PRX-1 HOME1").is_none()); // no word boundary / not digits
+    assert!(internal_reference("plain words only").is_none());
+}
+
+#[test]
+fn every_kind_of_artifact_text_this_decoder_writes_is_free_of_internal_references() {
+    // The `decode` wrapper above scans every fixture in this file; this one makes sure the categories that
+    // only appear in particular fixtures — working-copy hints, custom properties, mergeinfo — are all
+    // actually produced and therefore scanned, alongside a partial-layout flag and an empty directory.
+    let mut d = DumpBuilder::new();
+    d.revision(0, &[("svn:date", &date(0))]);
+    d.revision(1, &[("svn:log", "props"), ("svn:date", &date(1))]);
+    d.add_dir("trunk");
+    d.node(
+        "trunk/a.txt",
+        Some("file"),
+        "add",
+        Some(&[
+            ("svn:eol-style", "native"),
+            ("svn:keywords", "Id"),
+            ("mycompany:custom", "x"),
+            ("svn:mergeinfo", "/branches/x:1"),
+        ]),
+        Some(b"x\n"),
+        None,
+    );
+    d.add_dir("trunk/emptydir");
+    d.add_file("README", b"outside the layout\n");
+    let opts = Options {
+        reconstruct_refs: true,
+        ..Options::default()
+    };
+    let ir = decode_dump(&d.buf, &opts).unwrap();
+    let whats: Vec<&str> = ir.loss.dropped.iter().map(|x| x.what.as_str()).collect();
+    assert!(
+        whats.iter().any(|w| w.contains("svn:eol-style")),
+        "{whats:?}"
+    );
+    assert!(whats.iter().any(|w| w.contains("custom")), "{whats:?}");
+    assert!(whats.contains(&"svn:mergeinfo"), "{whats:?}");
+    assert!(
+        whats.iter().any(|w| w.starts_with("empty directories")),
+        "{whats:?}"
+    );
+    assert!(
+        ir.flags.iter().any(|f| f.what.starts_with("paths outside")),
+        "{:?}",
+        ir.flags
+    );
+    assert_no_internal_references(&ir);
 }

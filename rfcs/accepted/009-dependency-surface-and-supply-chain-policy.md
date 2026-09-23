@@ -23,7 +23,7 @@ source RFC's decision — but it fixes the criteria and the guardrails they deci
 
 ## The constraints that scope this policy
 
-- prikk's whole claim is verifiability on a **five-crate** audited surface; brygge must be able to hand
+- prikk's whole claim is verifiability on a **deliberately small** audited dependency surface (five crates when this RFC was written; the count has since grown with prikk, which is exactly why brygge must add none of its own); brygge must be able to hand
   prikk (or any target) an import that is checkable **without linking a single brygge dependency**
   (`BN-5/CT-05/INV-5`).
 - A Git decoder needs `gix` (pure Rust, ~100 crates) or `libgit2` (C); SVN/CVS/hg have no mature

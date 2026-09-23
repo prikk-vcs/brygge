@@ -47,3 +47,27 @@ pub(crate) fn escape_bytes(bytes: &[u8]) -> String {
     }
     out
 }
+
+/// Render untrusted bytes for a refusal message: every valid UTF-8 sequence as-is, every invalid byte as
+/// `\xNN` — never a lossy substitution (the same treatment the Git decoder gives a non-UTF-8 path).
+pub(crate) fn escape_invalid_utf8(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(bytes.len());
+    for chunk in bytes.utf8_chunks() {
+        out.push_str(chunk.valid());
+        for b in chunk.invalid() {
+            let _ = write!(out, "\\x{b:02x}");
+        }
+    }
+    out
+}
+
+/// Lowercase-hex a node (or any byte string).
+pub(crate) fn hex(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        let _ = write!(out, "{b:02x}");
+    }
+    out
+}

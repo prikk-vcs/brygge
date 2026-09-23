@@ -223,7 +223,7 @@ pub fn check_repo_floor(repo: &gix::Repository) -> Result<(), Error> {
         return Err(Error::FloorRefusal {
             feature: floor::SHALLOW_CLONE.to_string(),
             reason: "a shallow clone is a truncated history that would look whole; refused rather \
-                     than imported as if complete (FA-1)"
+                     than imported as if complete"
                 .to_string(),
         });
     }

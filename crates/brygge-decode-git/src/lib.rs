@@ -50,7 +50,7 @@ pub enum Error {
     Read(String),
     /// A source feature below the floor was hit; it is refused with a named reason (RFC 004 D-4, `FA-3`).
     FloorRefusal {
-        /// The refused feature (e.g. `"submodule"`, `"shallow clone"`).
+        /// The refused feature (e.g. `"submodule"`, `"shallow-clone"`).
         feature: String,
         /// Why it is refused rather than approximated.
         reason: String,

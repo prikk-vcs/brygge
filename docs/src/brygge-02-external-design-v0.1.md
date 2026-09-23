@@ -3,19 +3,21 @@
 | | |
 |---|---|
 | Document | brygge External Design (black-box view) |
-| Version | v0.3 (draft for review) |
-| Date | 2026-09-23 (v0.3: §2.1 command surface revised per owner ruling D-7; v0.2 2026-09-03) |
-| Inputs | brygge Requirements v0.2 (`brygge-01-requirements-spec-v0.1.md`) — cited as PU/NG/PR/HO/VF/ID/FA/BN/IR/UD/OQ; RFC 113 (import contract); prikk reality (0.27.1 audit; core now at 0.28 — the prikk-side gates are unchanged in kind and remain owner-open); project rules |
+| Version | v0.3 (for the 0.1.0 release) |
+| Date | 2026-09-24 (v0.3: §2.1 command surface revised per owner ruling D-7, 2026-09-23; prikk facts re-verified against prikk 0.46.0, 2026-09-24; v0.2 2026-09-03) |
+| Inputs | brygge Requirements v0.2 (`brygge-01-requirements-spec-v0.1.md`) — cited as PU/NG/PR/HO/VF/ID/FA/BN/IR/UD/OQ; RFC 113 (import contract); prikk reality (the 0.27.1 audit, re-verified against prikk 0.46.0 on 2026-09-23: RFC 113 is accepted and its §4.3–§4.5 were ruled on 2026-09-13; UD-1 and UD-2 remain unbuilt — see `brygge-01` §11/§12); project rules |
 | Scope | WHAT brygge exposes at its boundaries — its command surface, the external contract of the **IR (intermediate representation)**, the fidelity and provenance outputs, and the interaction flows — for **the parts that can be designed before the owner's open questions are settled.** The requirements are explicit that OQ-1…OQ-3 gate per-source encoder design; this document honours that by designing the pipeline, the IR contract, and the honesty surface now, and **stopping** at each gated point (§8). |
 | Not | internal architecture, the IR's byte schema (the requirements forbid a schema), APIs, or code. |
 | ID scheme | `BD-` boundary · `AC-` actor · `CL-` command surface · `IX-` IR external contract · `FS-` fidelity/honesty surface · `PX-` provenance-to-target interface · `CF-` configuration · `FL-` flow · `CT-` external data contract · `OP-` operational behaviour · `GATED-` a surface that cannot be designed until an owner question is answered. (`DC-` avoided — it collides with prikk's RFC numbering.) |
 
-> **Delivery status (2026-09-12).** The designed command surface is **shipped**: `decode <git|hg|svn|cvs>`,
-> `inspect`, `verify --internal` / `--against-source`, and `summary`, with human + machine output (CL-07)
-> and the CL-08 outcome-class exit codes. The **IR external contract (IX-*) is frozen at 1.0.0** (RFC 003
-> D-7) and held all four sources with no change. The **GATED-** surfaces (the prikk encoder) remain
-> owner/prikk-gated (§8; RFC 008). See [`HANDOFF.md`](development/handoffs/HANDOFF.md). This document remains the
-> black-box contract the CLI satisfies.
+> **Delivery status (2026-09-24).** The command surface of §2.1 is **built** and is being prepared as the
+> first release, **0.1.0**: `decode <git|hg|svn|cvs> <source> --out <artifact>`, `inspect <artifact>` and
+> `verify <artifact> [--against-source <source>]`, with human and machine output (CL-07) and the CL-08
+> outcome-class exit codes. The IR external contract is **IR contract 0.2.0** (RFC 011), which replaced the
+> pre-release 1.0.0 freeze; its wire format is published in
+> [`reference/ir-artifact-format.md`](reference/ir-artifact-format.md). The **GATED-** surfaces (the prikk
+> encoder) wait on prikk (§8; ROADMAP Track B). See [`HANDOFF.md`](development/handoffs/HANDOFF.md). This
+> document remains the black-box contract the CLI satisfies.
 
 Design stance carried from requirements: **facts derive, judgment is authored, the join is checked** — so every user-visible surface makes the derived-vs-stated distinction inescapable (HO-1), makes loss legible (HO-2), and never lets honesty be turned off (HO-5). Where a Git mental model expects "just import it," the surface redirects to "decode, review fidelity, then encode a proposal."
 
@@ -44,7 +46,7 @@ Design stance carried from requirements: **facts derive, judgment is authored, t
 
 - **BD-01 — Inside brygge:** the per-source decoders, the IR, the per-target encoders, and the honesty machinery that spans all three (derived-marking, loss-boundary recording, the fidelity summary). brygge is responsible for reading the source correctly, representing it faithfully-with-provenance, translating it, and making every derivation and loss legible (BN-1).
 - **BD-02 — Outside brygge:** the source repositories; the heavy source-system libraries brygge links (`gix`/`libgit2`, SVN, CVS — PU-5); the operating system; the target system (prikk or another), which owns admission, trust, verification, sealing, and storage (BN-2); and the humans.
-- **BD-03 — The dependency-weight boundary is a hard external property** (BN-5): brygge may link whatever it needs to read a source, but **nothing it emits may require the target to link any of those.** A prikk repository verifies a brygge import using only prikk's own five-crate surface; the import's checkability (VF-3) never routes through a brygge dependency. This is externally observable: a consumer can confirm the target proposal and the IR are consumable with none of brygge's decoder dependencies present.
+- **BD-03 — The dependency-weight boundary is a hard external property** (BN-5): brygge may link whatever it needs to read a source, but **nothing it emits may require the target to link any of those.** A prikk repository verifies a brygge import using only prikk's own dependency surface; the import's checkability (VF-3) never routes through a brygge dependency. This is externally observable: a consumer can confirm the target proposal and the IR are consumable with none of brygge's decoder dependencies present.
 - **BD-04 — brygge never mutates the target** (BN-4): it produces files; it does not admit, seal, merge, or reconcile. A re-import is a fresh translation (ID-2); what the target does with it is the target's.
 - **BD-05 — Two separable halves, separable in the boundary** (PU-1/PU-3): decode → IR is complete and useful without any encoder; the IR is a durable, inspectable artifact between the halves, not an internal handoff. A second target's encoder is a consumer of the IR at this boundary, not a modification of brygge.
 
@@ -186,8 +188,8 @@ Numbered user-action → system-response. Each cites the requirement it realizes
 - **CT-01 — Inputs brygge accepts:** a source repository (Git/hg/SVN/CVS, by kind + location); an IR artifact (for `inspect`/`verify`/`encode`); inference parameters (CF-01); the declared source-side floor policy (CF-03, contents GATED). No target credentials, no network endpoints — brygge reads sources and writes files.
 - **CT-02 — Outputs brygge produces:** the **IR artifact** (its external contract is IX-*, its byte schema deliberately undefined here); the **target proposal** (for prikk: labelled, unsealed, `Unverifiable`, with provenance); the **fidelity record/summary** (FS-01, reproducible via CL-05); and **verification reports** (VF-2/VF-3, CL-04). Every output is a file or a report; brygge writes nothing into the target's storage (BD-04, BN-2).
 - **CT-03 — The provenance interface to the target** (PX-*): what brygge conveys across the boundary for the target's admission/trust/seal decisions. Its *content* is specified (PX-01…PX-03); its *prikk form* is GATED (PX-04, UD-1).
-- **CT-04 — The tool's machine-readable report format** (CL-07) is a versioned contract, distinct from the IR: it is how a CI gate consumes `verify`/`summary`/outcome classes. Versioned so a migration pipeline can pin it. (This is a *report* schema, permitted; the *IR* schema remains the design phase's, not this document's.)
-- **CT-05 — What a prikk repository must be able to assume about brygge output** (BN-5, the requirements' central constraint): that it is consumable and checkable with **only prikk's own five-crate surface** — no brygge dependency required to read the proposal, verify it internally (VF-3), or carry its provenance. This is the externally-testable form of "brygge carries the weight, prikk does not."
+- **CT-04 — The tool's machine-readable report format** (CL-07) is a versioned contract, distinct from the IR: it is how a CI gate consumes `decode`, `inspect` and `verify` results and outcome classes. Versioned so a migration pipeline can pin it. (This is a *report* schema, permitted; the *IR* schema remains the design phase's, not this document's.)
+- **CT-05 — What a prikk repository must be able to assume about brygge output** (BN-5, the requirements' central constraint): that it is consumable and checkable with **only prikk's own dependency surface** — no brygge dependency required to read the proposal, verify it internally (VF-3), or carry its provenance. This is the externally-testable form of "brygge carries the weight, prikk does not."
 
 ---
 

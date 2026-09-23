@@ -430,8 +430,8 @@ fn scan_refs(
     for r in platform.all().map_err(read_err)? {
         let mut r = r.map_err(read_err)?;
         let raw_name: Vec<u8> = r.name().as_bstr().to_vec();
-        let name = raw_name.to_str_lossy(); // CR-03: lossy until RFC 011 (text as bytes); only used
-        // for the `refs/replace/` prefix check and dropped-namespace matching below, both ASCII.
+        let name = raw_name.to_str_lossy(); // lossy conversion is safe here: `name` is only used for the
+        // `refs/replace/` prefix check and dropped-namespace matching below, both ASCII.
 
         if raw_name.starts_with(b"refs/replace/") {
             return Err(Error::FloorRefusal {
@@ -1095,26 +1095,24 @@ fn loss_boundary(
         DropRecord {
             class: LossClass::Representation,
             what: "packfile and delta layout, physical object store".to_string(),
-            reason: "representation not assertion; reconstructible from the objects (PR-7)"
-                .to_string(),
+            reason: "representation not assertion; reconstructible from the objects".to_string(),
         },
         DropRecord {
             class: LossClass::Representation,
             what: "index and working tree".to_string(),
-            reason: "local state, not history (PR-7)".to_string(),
+            reason: "local state, not history".to_string(),
         },
         DropRecord {
             class: LossClass::Representation,
             what: "reflogs".to_string(),
-            reason: "local operation log, not history (PR-7)".to_string(),
+            reason: "local operation log, not history".to_string(),
         },
     ];
     for (ns, count) in dropped_namespace_counts {
         dropped.push(DropRecord {
             class: LossClass::Representation,
             what: format!("{ns} refs ({count})"),
-            reason: "workflow/representation refs, not authored history (RFC 004 D-5, OQ-B)"
-                .to_string(),
+            reason: "workflow/representation refs, not authored history".to_string(),
         });
     }
     match dropped_only_commits {
@@ -1125,7 +1123,7 @@ fn loss_boundary(
                 what: format!("commits reachable only from dropped refs ({n})"),
                 reason:
                     "workflow state (stash, notes, remote-tracking), not authored history of a \
-                         carried ref (RFC 004 D-5, OQ-B)"
+                         carried ref"
                         .to_string(),
             });
         }
@@ -1141,8 +1139,7 @@ fn loss_boundary(
         dropped.push(DropRecord {
             class: LossClass::Other,
             what: format!("refs to non-commit objects ({non_commit_refs})"),
-            reason: "a tag or branch naming a tree or blob; the IR's refs point at history atoms \
-                     (PR-9)"
+            reason: "a tag or branch naming a tree or blob; the IR's refs point at history atoms"
                 .to_string(),
         });
     }
@@ -1152,7 +1149,7 @@ fn loss_boundary(
             what: format!("symbolic refs ({symbolic_refs})"),
             reason:
                 "an alias to another ref; the IR has no alias concept; the target ref is carried \
-                     on its own (RFC 004 OQ-B, CR-16)"
+                     on its own"
                     .to_string(),
         });
     }
@@ -1164,7 +1161,7 @@ fn loss_boundary(
                 time_counts.unparseable_times
             ),
             reason: "the source's time field could not be parsed; the claim is absent rather than \
-                     fabricated (NG-5, CR-16)"
+                     fabricated"
                 .to_string(),
         });
     }
@@ -1176,8 +1173,7 @@ fn loss_boundary(
                 time_counts.unparseable_offsets
             ),
             reason: "the source's timezone offset could not be parsed strictly (`+HHMM`/`-HHMM`); \
-                     the time is carried without an offset rather than a fabricated or salvaged one \
-                     (NG-5, RFC 011 D-5)"
+                     the time is carried without an offset rather than a fabricated or salvaged one"
                 .to_string(),
         });
     }
@@ -1190,7 +1186,7 @@ fn loss_boundary(
             ),
             reason:
                 "the commit's declared `encoding` header value was not valid UTF-8, so it is not \
-                     carried on the message's `Text.encoding` (RFC 011 D-4)"
+                     carried on the message's `Text.encoding`"
                     .to_string(),
         });
     }
@@ -1199,7 +1195,7 @@ fn loss_boundary(
             class: LossClass::Other,
             what: format!("nested tag objects not carried ({nested_tag_objects})"),
             reason: "an intermediate tag object in a tag-of-a-tag chain; only the outer tag's \
-                     annotation is carried (RFC 011 D-9)"
+                     annotation is carried"
                 .to_string(),
         });
     }

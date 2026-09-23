@@ -58,7 +58,11 @@ fn symlink_target_strips_the_link_prefix() {
 
 #[test]
 fn externals_are_refused() {
-    assert!(check_externals("trunk", &props(&[("svn:externals", "^/lib lib")])).is_err());
+    let err = check_externals("trunk", &props(&[("svn:externals", "^/lib lib")])).unwrap_err();
+    assert!(
+        matches!(&err, crate::Error::FloorRefusal { feature, .. } if feature == "svn-externals"),
+        "the refused feature is the floor identifier, not the property name: {err:?}"
+    );
     assert!(check_externals("trunk", &props(&[("svn:ignore", "*.o")])).is_ok());
 }
 

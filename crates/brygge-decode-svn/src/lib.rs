@@ -59,7 +59,7 @@ pub enum Error {
     },
     /// A source feature below the floor was hit; refused with a named reason (RFC 006 D-4/OQ-B, `FA-3`).
     FloorRefusal {
-        /// The refused feature (e.g. `"svn:externals"`, `"remote-source"`).
+        /// The refused feature (e.g. `"svn-externals"`, `"remote-source"`).
         feature: String,
         /// Why it is refused rather than approximated.
         reason: String,

@@ -1966,3 +1966,88 @@ fn decode_hg_and_verify_a_good_artifact_from_every_decoder() {
     );
     let _ = std::fs::remove_file(&out);
 }
+
+// ---- release prep §5: the temp path is created exclusively ------------------------------------------
+
+fn scratch_dir(tag: &str) -> PathBuf {
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let d = std::env::temp_dir().join(format!("brygge-atomic-{tag}-{}-{n}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    d
+}
+
+fn planted_tmp_path(dir: &Path, name: &str) -> PathBuf {
+    dir.join(format!(".{name}.brygge-tmp-{}", std::process::id()))
+}
+
+#[cfg(unix)]
+#[test]
+fn a_planted_symlink_at_the_temp_path_fails_the_write_and_its_target_is_untouched() {
+    let dir = scratch_dir("symlink");
+    let victim = dir.join("victim.txt");
+    std::fs::write(&victim, b"precious").unwrap();
+    let out = dir.join("out.ir");
+    let tmp = planted_tmp_path(&dir, "out.ir");
+    std::os::unix::fs::symlink(&victim, &tmp).unwrap();
+
+    let err = atomic_write(&out, b"artifact bytes").unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+    assert_eq!(
+        std::fs::read(&victim).unwrap(),
+        b"precious",
+        "the target was written through"
+    );
+    assert!(!out.exists(), "no artifact may be produced");
+    // Not ours, so not removed either: the planted link is still there.
+    assert!(
+        std::fs::symlink_metadata(&tmp)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_planted_regular_file_at_the_temp_path_is_not_truncated_or_removed() {
+    let dir = scratch_dir("file");
+    let out = dir.join("out.ir");
+    let tmp = planted_tmp_path(&dir, "out.ir");
+    std::fs::write(&tmp, b"planted").unwrap();
+
+    assert!(atomic_write(&out, b"artifact bytes").is_err());
+    assert_eq!(std::fs::read(&tmp).unwrap(), b"planted");
+    assert!(!out.exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_normal_write_still_succeeds_and_leaves_no_temp_file() {
+    let dir = scratch_dir("ok");
+    let out = dir.join("out.ir");
+    atomic_write(&out, b"artifact bytes").unwrap();
+    assert_eq!(std::fs::read(&out).unwrap(), b"artifact bytes");
+    assert!(tmp_siblings(&dir).is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_non_utf8_output_file_name_is_written_without_a_lossy_conversion() {
+    use std::os::unix::ffi::OsStrExt;
+    let dir = scratch_dir("nonutf8");
+    let out = dir.join(std::ffi::OsStr::from_bytes(b"out-\xff.ir"));
+    atomic_write(&out, b"x").unwrap();
+    assert_eq!(std::fs::read(&out).unwrap(), b"x");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn help_lists_flagged_in_the_vocabulary_and_no_internal_ids() {
+    let help = crate::cli::USAGE;
+    assert!(help.contains("VOCABULARY:") && help.contains("flagged"));
+    for id in ["FS-", "VF-", "CL-", "CR-", "PR-", "INV-", "RFC"] {
+        assert!(!help.contains(id), "--help mentions the internal id {id}");
+    }
+}

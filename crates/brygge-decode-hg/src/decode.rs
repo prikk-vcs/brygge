@@ -41,16 +41,34 @@ pub fn decode(path: &Path, opts: &Options) -> Result<Ir, Error> {
     let changelog = Revlog::open(&store.join("00changelog.i"))?;
     let manifest_log = Revlog::open(&store.join("00manifest.i"))?;
 
-    // Git parity (RFC 010 CR-15): the smallest **root** changeset node, not revision 0. Mercurial's
-    // revision numbers are assigned by local pull/commit order, not content, so two clones of one
-    // repository pulled in different orders can number the same changesets differently; a repository
-    // with more than one root (e.g. grafted-together histories) makes "revision 0" ambiguous besides.
-    let repo_id = (0..changelog.len())
-        .filter_map(|rev| changelog.entry(rev))
-        .filter(|e| e.p1 == NULL_REV && e.p2 == NULL_REV)
-        .map(|e| e.node)
-        .min()
-        .map(|node| node.to_vec())
+    // The published view (RFC 005 corrections handoff §1, D-4): only served changesets become atoms. It is
+    // computed first because the repository's identity is taken from it (below). An empty repository has
+    // nothing to publish.
+    let view = if changelog.is_empty() {
+        None
+    } else {
+        Some(published::compute(&root, &store, &changelog)?)
+    };
+
+    // Git parity (RFC 010 CR-15): the smallest **root** node, not revision 0 — among the *served*
+    // changesets (review 012 F-1). Mercurial's revision numbers are assigned by local pull/commit order,
+    // not content, so two clones of one repository pulled in different orders can number the same
+    // changesets differently; a repository with more than one root makes "revision 0" ambiguous besides.
+    // Only served roots count: they are read (so their nodes are verified), and the identity then equals
+    // what `hg clone` of the repository would give — a secret root is not part of the published history
+    // and must not decide its identity. Nothing served → empty, as for an empty repository.
+    let repo_id = view
+        .as_ref()
+        .map(|v| {
+            (0..changelog.len())
+                .filter(|&rev| v.served.get(rev).copied().unwrap_or(false))
+                .filter_map(|rev| changelog.entry(rev))
+                .filter(|e| e.p1 == NULL_REV && e.p2 == NULL_REV)
+                .map(|e| e.node)
+                .min()
+                .map(|node| node.to_vec())
+                .unwrap_or_default()
+        })
         .unwrap_or_default();
 
     let provenance = ImportProvenance {
@@ -72,10 +90,10 @@ pub fn decode(path: &Path, opts: &Options) -> Result<Ir, Error> {
     };
     let mut builder = IrBuilder::new(provenance);
 
-    if changelog.is_empty() {
+    let Some(view) = view else {
         builder.set_loss(loss_boundary(&store, 0, 0, 0, 0, 0, 0));
         return builder.finish().map_err(Error::Ir);
-    }
+    };
 
     // manifest node -> manifest revlog revision
     let mut manifest_node_to_rev: HashMap<[u8; 20], usize> = HashMap::new();
@@ -84,9 +102,6 @@ pub fn decode(path: &Path, opts: &Options) -> Result<Ir, Error> {
             manifest_node_to_rev.insert(e.node, mrev);
         }
     }
-
-    // The published view (RFC 005 corrections handoff §1, D-4): only served changesets become atoms.
-    let view = published::compute(&root, &store, &changelog)?;
 
     let mut filelogs: HashMap<String, Revlog> = HashMap::new();
     let mut node_to_atom: HashMap<[u8; 20], AtomId> = HashMap::new();
@@ -106,10 +121,9 @@ pub fn decode(path: &Path, opts: &Options) -> Result<Ir, Error> {
         if this_manifest.contains_key(".hgsub") || this_manifest.contains_key(".hgsubstate") {
             return Err(Error::FloorRefusal {
                 feature: floor::SUBREPO.to_string(),
-                reason:
-                    "Mercurial subrepositories are refused rather than approximated (RFC 005 D-4, \
-                         parity with the Git submodule floor)"
-                        .to_string(),
+                reason: "Mercurial subrepositories are refused rather than approximated, as Git \
+                         submodules are"
+                    .to_string(),
             });
         }
 
@@ -806,28 +820,26 @@ fn loss_boundary(
         DropRecord {
             class: LossClass::Representation,
             what: "revlog physical layout and delta chains".to_string(),
-            reason: "representation not assertion; the logical revisions are preserved (PR-7)"
-                .to_string(),
+            reason: "representation not assertion; the logical revisions are preserved".to_string(),
         },
         DropRecord {
             class: LossClass::Representation,
             what: "dirstate and working copy".to_string(),
-            reason: "local state, not history (PR-7)".to_string(),
+            reason: "local state, not history".to_string(),
         },
     ];
     if store.join("phaseroots").exists() {
         dropped.push(DropRecord {
             class: LossClass::Representation,
             what: "phases (public/draft/secret)".to_string(),
-            reason: "local workflow state, not history (PR-7, RFC 005 D-5)".to_string(),
+            reason: "local workflow state, not history".to_string(),
         });
     }
     if store.join("obsstore").exists() {
         dropped.push(DropRecord {
             class: LossClass::AdvisoryUnreliable,
             what: "obsolescence markers".to_string(),
-            reason: "advisory metadata about rewritten changesets; never promoted to ancestry \
-                     (PR-8, RFC 005 D-5)"
+            reason: "advisory metadata about rewritten changesets; never promoted to ancestry"
                 .to_string(),
         });
     }

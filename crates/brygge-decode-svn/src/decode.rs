@@ -173,8 +173,7 @@ fn reconstruct_refs(
             what: "trunk/branches/tags layout not found".to_string(),
             count: 1,
             reason: "ref reconstruction was requested but the repository does not follow the \
-                     convention; no branch/tag ref was fabricated (RFC 006 OQ-B, the loud \
-                     convention-violation record)"
+                     convention; no branch or tag ref was fabricated"
                 .to_string(),
         });
         return Ok(());
@@ -289,8 +288,7 @@ impl Loss {
         let mut dropped = vec![DropRecord {
             class: LossClass::Representation,
             what: "SVN physical storage and dumpstream framing".to_string(),
-            reason: "representation not assertion; the logical revisions are preserved (PR-7)"
-                .to_string(),
+            reason: "representation not assertion; the logical revisions are preserved".to_string(),
         }];
         if self.mergeinfo {
             dropped.push(DropRecord {
@@ -298,7 +296,7 @@ impl Loss {
                 what: "svn:mergeinfo".to_string(),
                 reason:
                     "advisory merge tracking, frequently incomplete; never promoted to a merge \
-                         parent (PR-8, SRC-S2)"
+                         parent"
                         .to_string(),
             });
         }
@@ -308,7 +306,7 @@ impl Loss {
                 what: "svn:eol-style / svn:keywords / svn:ignore (working-copy hints)".to_string(),
                 reason:
                     "the stored normal-form bytes are carried verbatim; keyword/EOL expansion is \
-                         a working-copy transform, not history (NG-5, PR-7)"
+                         a working-copy transform, not history"
                         .to_string(),
             });
         }
@@ -316,9 +314,10 @@ impl Loss {
             dropped.push(DropRecord {
                 class: LossClass::Other,
                 what: "custom (user-defined) properties".to_string(),
-                reason: "not carried this increment (no consumer; the frozen IR is not grown \
-                         speculatively — RFC 006 OQ-D)"
-                    .to_string(),
+                reason:
+                    "not carried in this version (nothing consumes them, and the IR contract is \
+                         not grown speculatively)"
+                        .to_string(),
             });
         }
         if self.empty_dirs > 0 {
@@ -327,7 +326,7 @@ impl Loss {
                 what: format!("empty directories ({})", self.empty_dirs),
                 reason:
                     "the IR has no empty-directory entity (as Git/prikk); the directory carried \
-                         no file (RFC 006 D-6)"
+                         no file"
                         .to_string(),
             });
         }

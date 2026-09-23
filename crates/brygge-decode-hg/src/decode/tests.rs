@@ -369,6 +369,105 @@ fn repo_id_is_independent_of_pull_order_across_multiple_roots() {
     );
 }
 
+// --- review 012 F-1: the repository identity is the smallest root among the *published* changesets ---
+
+fn root_node(r: &Repo, rev: &str) -> Vec<u8> {
+    let out = Command::new("hg")
+        .env("HGRCPATH", "/dev/null")
+        .arg("-R")
+        .arg(r.path())
+        .args(["log", "-r", rev, "-T", "{node}"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let hex = String::from_utf8(out.stdout).unwrap();
+    (0..hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+        .collect()
+}
+
+/// Two unrelated roots pulled into one repository, the one with the *smaller* node made secret. Returns
+/// the repository together with the (smaller, larger) root nodes; `None` if this hg cannot pull unrelated
+/// histories.
+fn repo_with_a_secret_smaller_root() -> Option<(Repo, Vec<u8>, Vec<u8>)> {
+    let a = Repo::new();
+    a.write("a.txt", "a\n");
+    a.commit("1136239445", "root a");
+    let b = Repo::new();
+    b.write("b.txt", "b\n");
+    b.commit("1136239450", "root b");
+    let (na, nb) = (root_node(&a, "0"), root_node(&b, "0"));
+    let (small, large) = if na < nb { (na, nb) } else { (nb, na) };
+    assert!(small < large, "the ordering precondition must hold");
+
+    let x = Repo::new();
+    if !x.try_run(&["pull", "--force", a.path().to_str().unwrap()])
+        || !x.try_run(&["pull", "--force", b.path().to_str().unwrap()])
+    {
+        return None;
+    }
+    let small_hex: String = small.iter().map(|b| format!("{b:02x}")).collect();
+    x.run(&["phase", "--secret", "--force", "-r", &small_hex]);
+    Some((x, small, large))
+}
+
+#[test]
+fn a_secret_smallest_root_does_not_decide_the_repo_id() {
+    if !hg_available() {
+        eprintln!("skipping: hg not on PATH");
+        return;
+    }
+    let Some((x, small, large)) = repo_with_a_secret_smaller_root() else {
+        eprintln!("skipping: this hg would not pull unrelated histories with --force");
+        return;
+    };
+    let ir = decode(x.path(), &Options::default()).expect("decode");
+    assert_eq!(ir.atoms.len(), 1, "only the published root is carried");
+    assert_ne!(
+        ir.provenance.source.repo_id, small,
+        "the secret root decided the identity"
+    );
+    assert_eq!(ir.provenance.source.repo_id, large);
+}
+
+#[test]
+fn the_repo_id_equals_that_of_an_hg_clone_of_the_repository() {
+    if !hg_available() {
+        eprintln!("skipping: hg not on PATH");
+        return;
+    }
+    let Some((x, _small, large)) = repo_with_a_secret_smaller_root() else {
+        eprintln!("skipping: this hg would not pull unrelated histories with --force");
+        return;
+    };
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let dir =
+        std::env::temp_dir().join(format!("brygge-hgclone-{}-{nanos}-{n}", std::process::id()));
+    let cloned = Command::new("hg")
+        .env("HGRCPATH", "/dev/null")
+        .args(["clone", "-q"])
+        .arg(x.path())
+        .arg(&dir)
+        .status()
+        .unwrap()
+        .success();
+    let z = Repo { dir };
+    assert!(cloned, "hg clone failed");
+    let ir_x = decode(x.path(), &Options::default()).unwrap();
+    let ir_z = decode(z.path(), &Options::default()).unwrap();
+    assert_eq!(ir_z.atoms.len(), 1, "the clone excludes the secret root");
+    assert_eq!(
+        ir_x.provenance.source.repo_id,
+        ir_z.provenance.source.repo_id
+    );
+    assert_eq!(ir_z.provenance.source.repo_id, large);
+}
+
 // --- CR-12.2: the floor is one declared list, recorded in provenance --------------------------------
 
 #[test]
@@ -988,5 +1087,319 @@ mod copy_decision {
             None
         );
         assert!(g.probes.borrow().is_empty(), "no walk, no probes");
+    }
+}
+
+// ---- release-prep §1, end to end: a store whose text was altered without updating its node -------------
+
+/// Rewrite a single-revision revlog (inline, or split into `.i` + `.d`) in place: decode its one chunk, let
+/// `mutate` alter the text, and store the result as a raw (`u`) chunk with the index's lengths updated —
+/// leaving the node exactly as it was. Returns the revision's (unchanged) node.
+fn alter_single_revision(index_path: &Path, mutate: impl FnOnce(&mut Vec<u8>)) -> [u8; 20] {
+    use std::io::Read as _;
+    let index = std::fs::read(index_path).unwrap();
+    let inline = u32::from_be_bytes(index[..4].try_into().unwrap()) & (1 << 16) != 0;
+    let data_path = index_path.with_extension("d");
+    let comp_len = u32::from_be_bytes(index[8..12].try_into().unwrap()) as usize;
+    let chunk: Vec<u8> = if inline {
+        assert_eq!(
+            index.len(),
+            64 + comp_len,
+            "expected a single-revision revlog at {index_path:?}"
+        );
+        index[64..].to_vec()
+    } else {
+        assert_eq!(
+            index.len(),
+            64,
+            "expected a single-revision revlog at {index_path:?}"
+        );
+        let d = std::fs::read(&data_path).unwrap();
+        assert_eq!(d.len(), comp_len);
+        d
+    };
+    let mut text = match chunk.first() {
+        None => Vec::new(),
+        Some(0x00) => chunk.clone(),
+        Some(b'u') => chunk[1..].to_vec(),
+        Some(b'x') => {
+            let mut out = Vec::new();
+            flate2::read::ZlibDecoder::new(&chunk[..])
+                .read_to_end(&mut out)
+                .unwrap();
+            out
+        }
+        Some(other) => panic!("unexpected chunk marker {other:#x}"),
+    };
+    mutate(&mut text);
+    let mut new_chunk = vec![b'u'];
+    new_chunk.extend_from_slice(&text);
+    let mut out = index[..64].to_vec();
+    out[8..12].copy_from_slice(&u32::try_from(new_chunk.len()).unwrap().to_be_bytes());
+    out[12..16].copy_from_slice(&u32::try_from(text.len()).unwrap().to_be_bytes());
+    if inline {
+        out.extend_from_slice(&new_chunk);
+    } else {
+        std::fs::write(&data_path, &new_chunk).unwrap();
+    }
+    std::fs::write(index_path, out).unwrap();
+    index[32..52].try_into().unwrap()
+}
+
+fn one_commit_repo() -> Repo {
+    let r = Repo::new();
+    r.write("a.txt", "hello\n");
+    r.commit("1136239445", "initial");
+    r
+}
+
+fn assert_refused_naming(result: Result<brygge_ir::Ir, crate::Error>, node: [u8; 20]) {
+    match result {
+        Err(crate::Error::Read(msg)) => assert_eq!(
+            msg,
+            format!(
+                "revision {} does not match its content (corrupt or crafted store)",
+                crate::util::hex(&node)
+            )
+        ),
+        other => panic!("expected the mismatch refusal naming the node, got {other:?}"),
+    }
+}
+
+#[test]
+fn an_untouched_store_verifies_and_decodes() {
+    if !hg_available() {
+        eprintln!("skipping: hg not on PATH");
+        return;
+    }
+    let r = one_commit_repo();
+    assert!(decode(r.path(), &Options::default()).is_ok());
+}
+
+#[test]
+fn a_changeset_whose_text_was_altered_without_its_node_is_refused() {
+    if !hg_available() {
+        eprintln!("skipping: hg not on PATH");
+        return;
+    }
+    let r = one_commit_repo();
+    // The node `hg` itself reports for the changeset, asked before the store is altered (afterwards `hg`
+    // refuses the store too — it checks every revision's hash on read).
+    let out = Command::new("hg")
+        .env("HGRCPATH", "/dev/null")
+        .arg("-R")
+        .arg(r.path())
+        .args(["log", "-r", "0", "-T", "{node}"])
+        .output()
+        .unwrap();
+    let hg_node = String::from_utf8(out.stdout).unwrap();
+    let node = alter_single_revision(&r.path().join(".hg/store/00changelog.i"), |t| {
+        t.extend_from_slice(b" (edited)");
+    });
+    assert_eq!(hg_node, crate::util::hex(&node));
+    assert_refused_naming(decode(r.path(), &Options::default()), node);
+}
+
+#[test]
+fn a_manifest_whose_text_was_altered_without_its_node_is_refused() {
+    if !hg_available() {
+        eprintln!("skipping: hg not on PATH");
+        return;
+    }
+    let r = one_commit_repo();
+    let node = alter_single_revision(&r.path().join(".hg/store/00manifest.i"), |t| {
+        // Rename the tracked path in place, same length: `a.txt` -> `b.txt`.
+        assert_eq!(&t[..5], b"a.txt");
+        t[0] = b'b';
+    });
+    assert_refused_naming(decode(r.path(), &Options::default()), node);
+}
+
+#[test]
+fn a_filelog_revision_whose_text_was_altered_without_its_node_is_refused() {
+    if !hg_available() {
+        eprintln!("skipping: hg not on PATH");
+        return;
+    }
+    let r = one_commit_repo();
+    let node = alter_single_revision(&r.path().join(".hg/store/data/a.txt.i"), |t| {
+        assert_eq!(t.as_slice(), b"hello\n");
+        t[0] = b'J';
+    });
+    assert_refused_naming(decode(r.path(), &Options::default()), node);
+}
+
+#[test]
+fn a_filelog_revision_with_copy_metadata_decodes_and_carries_the_copy() {
+    // Verification hashes the raw text including the `\1\ncopy: …\n\1\n` header, so a real `hg cp`/`hg mv`
+    // filelog revision — which carries that header — must still verify and decode.
+    if !hg_available() {
+        eprintln!("skipping: hg not on PATH");
+        return;
+    }
+    let r = Repo::new();
+    r.write("old.txt", "moved content\n");
+    r.commit("1136239445", "add");
+    r.run(&["mv", "old.txt", "new.txt"]);
+    r.commit("1136239446", "move");
+    let ir = decode(r.path(), &Options::default()).unwrap();
+    let copies: Vec<_> = ir.atoms.iter().flat_map(|a| &a.copies).collect();
+    assert_eq!(copies.len(), 1);
+    assert_eq!(
+        (copies[0].from.as_str(), copies[0].to.as_str()),
+        ("old.txt", "new.txt")
+    );
+}
+
+// ---- release-prep §4: artifact text carries no internal references --------------------------------------
+
+/// True if `s` contains `\b(RFC|OQ|CR|PR|INV|NG|SRC|FS|VF|HO|CL|CT|FA)[- ]?[0-9]` — an internal reference
+/// number users and prikk cannot look up (review 012 F-3: the separator may be a space, as in `RFC 011`).
+/// `OQ` also matches a lettered form (`OQ-B`), which the numeric pattern alone would miss.
+/// Hand-rolled (no regex dependency).
+fn has_internal_reference(s: &str) -> bool {
+    const PREFIXES: [&str; 13] = [
+        "RFC", "OQ", "CR", "PR", "INV", "NG", "SRC", "FS", "VF", "HO", "CL", "CT", "FA",
+    ];
+    let bytes = s.as_bytes();
+    for start in 0..bytes.len() {
+        let word_start =
+            start == 0 || !(bytes[start - 1].is_ascii_alphanumeric() || bytes[start - 1] == b'_');
+        if !word_start {
+            continue;
+        }
+        for p in PREFIXES {
+            if bytes[start..].starts_with(p.as_bytes()) {
+                let mut i = start + p.len();
+                let separated = matches!(bytes.get(i), Some(&b'-') | Some(&b' '));
+                if separated {
+                    i += 1;
+                }
+                // An open-question reference is lettered (`OQ-B`), not numbered: accept a capital there too.
+                let lettered =
+                    p == "OQ" && separated && bytes.get(i).is_some_and(u8::is_ascii_uppercase);
+                if bytes.get(i).is_some_and(u8::is_ascii_digit) || lettered {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+#[test]
+fn the_internal_reference_matcher_matches_what_the_handoff_describes() {
+    for bad in [
+        "(PR-7)",
+        "see RFC-5",
+        "RFC005",
+        "CR-03",
+        "a (INV-3) b",
+        "x FS-02",
+        "VF-1",
+        "RFC 011",
+        "(RFC 005 D-4)",
+        "OQ-B",
+        "(FA-1)",
+    ] {
+        assert!(has_internal_reference(bad), "should match: {bad:?}");
+    }
+    for good in [
+        "representation not assertion",
+        "PRIVATE 7",
+        "the CRT tube",
+        "copy sources not resolvable (2)",
+        "a CLI user",
+        "HOME1",
+        "phase 2 changesets",
+        "the OQUI 7",
+    ] {
+        assert!(!has_internal_reference(good), "should not match: {good:?}");
+    }
+}
+
+fn assert_no_internal_references(ir: &brygge_ir::Ir, what: &str) {
+    for d in &ir.loss.dropped {
+        assert!(
+            !has_internal_reference(&d.what) && !has_internal_reference(&d.reason),
+            "{what}: a drop carries an internal reference: {d:?}"
+        );
+    }
+    for f in &ir.flags {
+        assert!(
+            !has_internal_reference(&f.what) && !has_internal_reference(&f.reason),
+            "{what}: a flag carries an internal reference: {f:?}"
+        );
+    }
+}
+
+#[test]
+fn every_loss_record_the_decoder_can_produce_is_free_of_internal_references() {
+    // Every optional record at once (a store with phaseroots and an obsstore, and every counter non-zero),
+    // so each `DropRecord` text this crate writes is scanned without needing a repository per record.
+    let dir = std::env::temp_dir().join(format!("brygge-hg-scan-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("phaseroots"), b"").unwrap();
+    std::fs::write(dir.join("obsstore"), b"").unwrap();
+    let lb = super::loss_boundary(&dir, 3, 2, 1, 1, 1, 1);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        lb.dropped.len() >= 9,
+        "expected every record, got {}",
+        lb.dropped.len()
+    );
+    for d in &lb.dropped {
+        assert!(
+            !has_internal_reference(&d.what) && !has_internal_reference(&d.reason),
+            "a drop carries an internal reference: {d:?}"
+        );
+    }
+}
+
+#[test]
+fn the_loss_and_flag_text_of_real_fixtures_is_free_of_internal_references() {
+    if !hg_available() {
+        eprintln!("skipping: hg not on PATH");
+        return;
+    }
+    let r = build_repo();
+    let ir = decode(r.path(), &Options::default()).unwrap();
+    assert_no_internal_references(&ir, "build_repo");
+
+    let secret = Repo::new();
+    secret.write("a.txt", "a\n");
+    secret.commit("1136239445", "public");
+    secret.write("a.txt", "b\n");
+    secret.run(&["commit", "-d", "1136239446 0", "-m", "secret", "--secret"]);
+    let ir = decode(secret.path(), &Options::default()).unwrap();
+    assert!(
+        ir.loss
+            .dropped
+            .iter()
+            .any(|d| d.what.starts_with("changesets not published")),
+        "the secret fixture should record its exclusion: {:?}",
+        ir.loss.dropped
+    );
+    assert_no_internal_references(&ir, "secret fixture");
+}
+
+#[test]
+fn refusal_messages_are_free_of_internal_references() {
+    // The requirement gate's own refusal texts, for every branch it can take.
+    for req in [
+        "largefiles",
+        "lfs",
+        "revlogv2",
+        "treemanifest",
+        "narrowhg",
+        "something-new",
+    ] {
+        match crate::requires::check(req) {
+            Err(crate::Error::FloorRefusal { reason, .. })
+            | Err(crate::Error::UnsupportedFormat { reason, .. }) => {
+                assert!(!has_internal_reference(&reason), "{req}: {reason:?}");
+            }
+            other => panic!("{req}: expected a refusal, got {other:?}"),
+        }
     }
 }

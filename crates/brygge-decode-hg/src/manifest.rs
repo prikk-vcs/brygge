@@ -30,7 +30,8 @@ pub struct Entry {
 /// Parse manifest text into a sorted `path → entry` map.
 ///
 /// # Errors
-/// [`Error::Read`] on a malformed line (missing `\0`, bad hex node, or unknown flag).
+/// [`Error::Read`] on a malformed line (missing `\0`, bad hex node, or unknown flag);
+/// [`Error::FloorRefusal`] (`non-utf8-path`) on a path that is not valid UTF-8.
 pub fn parse(text: &[u8]) -> Result<BTreeMap<String, Entry>, Error> {
     let mut out = BTreeMap::new();
     for line in text.split(|&b| b == b'\n') {
@@ -44,7 +45,14 @@ pub fn parse(text: &[u8]) -> Result<BTreeMap<String, Entry>, Error> {
         let path_bytes = line.get(..sep).unwrap_or(&[]);
         let rest = line.get(sep + 1..).unwrap_or(&[]);
         let path = std::str::from_utf8(path_bytes)
-            .map_err(|_| Error::Read("manifest path is not valid UTF-8".to_string()))?
+            .map_err(|_| Error::FloorRefusal {
+                feature: crate::floor::NON_UTF8_PATH.to_string(),
+                reason: format!(
+                    "a manifest path is not valid UTF-8 ({}); brygge carries paths as text and never \
+                     converts one lossily",
+                    crate::util::escape_invalid_utf8(path_bytes)
+                ),
+            })?
             .to_string();
         // rest is 40 hex chars, optionally followed by a single flag byte.
         let (node_hex, flag) = match rest.len() {

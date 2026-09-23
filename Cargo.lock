@@ -102,6 +102,7 @@ dependencies = [
  "brygge-ir",
  "flate2",
  "ruzstd",
+ "sha1-checked",
 ]
 
 [[package]]

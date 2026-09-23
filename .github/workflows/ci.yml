@@ -21,6 +21,8 @@ jobs:
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - name: Test
         run: cargo test --workspace --locked
+      - name: Relative links in documentation
+        run: ./tools/check-links.sh
 
   supply-chain:
     name: cargo-deny · cargo-audit · ir-isolation

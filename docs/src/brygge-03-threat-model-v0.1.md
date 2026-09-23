@@ -3,9 +3,9 @@
 | | |
 |---|---|
 | Document | brygge Threat Model (security) |
-| Version | v0.2 |
-| Date | 2026-09-09 (v0.2 revision; v0.1 2026-09-03) |
-| Revised | **v0.2 (2026-09-09)** folds the RFC 004 (gix) and RFC 006 (SVN Tier D) security-review deltas: **C-2e/C-4b/INV-4** — a C surface may be isolated to a **subprocess**, not only a dedicated FFI crate; **TB-2** acknowledges subprocess decoder producers; **C-2b** clarifies that invoking a trusted external tool is not executing source-provided code; and three residuals added — **RR-gix-sha1**, **RR-svn-svnadmin**, **RR-svn-svnadmin-version**. |
+| Version | v0.3 |
+| Date | 2026-09-24 (v0.3 revision; v0.2 2026-09-09; v0.1 2026-09-03) |
+| Revised | **v0.3 (2026-09-24)** folds the 0.1.0 correction cycle (intake review CR-01…CR-21, reviews 002–011) and closes the model against the code as built. **New controls:** **C-1f** output neutralization; **C-2f** source-object integrity (Git objects re-hashed, the commit-graph cache not trusted, tag chains verified; every hg revision checked against its node with a collision-detecting SHA-1); **C-6d** only what the source would publish is imported (Git carried namespaces; the hg published view). **Restated to match the code:** **C-2a** (strict, typed refusal; the panic boundary; release overflow checks), **C-2c** (read confinement, and the floor refusals that enforce it), **C-2d** (the declared ceilings, checked before allocation), **C-3a** (the seven `verify` checks and the three-valued verdict), **C-3b** (IR contract 0.2.0: version gate first, critical bit, strict canonical form, digest over the stored bytes), **C-7** (atomic write), **C-8** (cancellation and progress are **not** built; stated as such), **C-9** (no stated non-determinism remains in the IR). **Residuals:** **RR-cvs-reconstruction**, **RR-cvs-read-toctou** and **RR-svn-special-toggle** added; **RR-git-loose-object-symlink**, **RR-git-object-id-unverified** and **RR-hg-node-unverified** (found and closed in the same cycle) closed; **RR-gix-sha1** narrowed; **RR-4** and **RR-svn-svnadmin-version** updated to the rulings and the code. **v0.2 (2026-09-09)** folds the RFC 004 (gix) and RFC 006 (SVN Tier D) security-review deltas: **C-2e/C-4b/INV-4** — a C surface may be isolated to a **subprocess**, not only a dedicated FFI crate; **TB-2** acknowledges subprocess decoder producers; **C-2b** clarifies that invoking a trusted external tool is not executing source-provided code; and three residuals added — **RR-gix-sha1**, **RR-svn-svnadmin**, **RR-svn-svnadmin-version**. |
 | Basis | brygge Requirements v0.2 (PU/NG/PR/HO/VF/ID/FA/BN/IR/UD/OQ) and External Design v0.2 (BD/CL/IX/FS/PX/CF/FL/CT/OP/GATED); RFC 113 (import contract); project rules (`.git-exclude/rules/`, §Release Deliverables — a threat model is a first-class release deliverable) |
 | ID scheme | `A-` asset · `TB-` trust boundary · `T-` threat · `C-` control · `INV-` security invariant · `RR-` residual risk · `ASSUME-` assumption |
 | Not | code, an API, or a dependency audit report. It states what brygge must defend, against whom, and how — so the design and tests can be checked against it. |
@@ -38,26 +38,58 @@
 A source (or a careless run) yields history that reads as natively authored or prikk-verified. The archetype: a GPG-signed Git commit presented as a verified prikk author; or imported history that looks indistinguishable from sealed native history. This is brygge's worst failure — a trust-destroying one for the whole ecosystem (A-IMPORT, A-TARGET-TRUST).
 
 - **C-1a — `Unverifiable` by construction** (HO-3, NG-3). Imported authorship lands in exactly the target's vocabulary for "present, readable, not verified as authored"; for prikk that is `Unverifiable`. It is never shown as sound/green/native anywhere in any brygge surface (FS-04).
-- **C-1b — honesty is a property of every object, not a report** (HO-4, FS-01/FS-02). The derived-marking, the loss boundary, and the `Unverifiable` status live *in* the IR/proposal and are recoverable from them (`brygge summary`), so they cannot be lost, skipped, or separated from the history they describe.
+- **C-1b — honesty is a property of every object, not a report** (HO-4, FS-01/FS-02). The derived-marking, the loss boundary, and the `Unverifiable` status live *in* the IR/proposal and are recoverable from them (`brygge inspect`), so they cannot be lost, skipped, or separated from the history they describe.
 - **C-1c — honesty is non-configurable** (HO-5, CF-02). No flag suppresses derived-marking, the loss boundary, `Unverifiable`, or the fidelity summary. Configuration tunes *inference*, never *honesty*.
 - **C-1d — the two claims are never conflated** (VF-4, FS-04). "verified by the target" and "faithfully imported, authorship unverified" are distinguishable by any reader at any time; a preserved source signature is shown as *preserved and verifying nothing in the target*, never as a target signature.
 - **C-1e — derived ≠ stated, in the object** (HO-1, IR-2). An inferred rename / reconstructed CVS changeset / inferred SVN branch is marked derived where it appears; a reader tells judgment from fact without re-running the heuristic.
+- **C-1f — untrusted text cannot forge brygge's own output** (CL-07; CR-19). Source text (names, messages, paths, ref names, reasons derived from them) could otherwise print a fake `PASS` line, a fake key, or terminal control sequences that hide or recolor a verdict.
+  - **Human output:** every control character and every bidirectional or invisible Unicode format character is shown escaped (`\u{XXXX}`), and a literal backslash is doubled, so an escape in the output is never ambiguous with one in the input.
+  - **Machine output:** untrusted text never appears in a key (items are indexed). Values are percent-encoded outside a small safe set, so a value can never contain `=` or a newline and can never forge a line or a key.
+  - **One renderer:** only the CLI prints. Decoder libraries write nothing to stdout or stderr, so no text can bypass the neutralization.
 
 ### T-2 (Tampering / Elevation / DoS) — hostile source repository
 A crafted source exploits brygge or its host through TB-1/TB-2: memory-safety bugs in a decoder; **path traversal / symlink escape / absolute paths** in source-declared file paths; **decompression or delta bombs**; pathological object counts or sizes; and **source-embedded executable content** — Git hooks, `.gitattributes` clean/smudge filters, submodule URLs, SVN hook scripts, CVS `.cvsignore`/wrappers (A-HOST, A-IMPORT).
 
 - **C-2a — all source bytes are untrusted** (TB-1). No decoder path assumes well-formedness; malformed input is a refusal (FA-2/FA-3), never undefined behaviour.
+  - **Strict, never guessed.** A malformed field is a typed error, not a default. Examples: an unparseable RCS date or an out-of-range date component; an unknown escape or duplicate key in an hg extra; a malformed phaseroots, bookmark or localtag line; an SVN symlink without its `link ` target.
+  - **Refused where carriage cannot be exact.** A shape brygge cannot carry byte-exact is a named floor refusal (exit 20), never a lossy conversion. This covers non-UTF-8 paths, and names that the IR holds as text: Git ref names and commit header names, CVS symbol names, and hg extra keys.
+  - **Contained failure.** An unexpected panic inside a decoder or a decoder dependency is caught at one boundary in the CLI and becomes a typed failure (exit 1), never an unclassified abort. Release builds keep integer overflow checks, so an arithmetic wrap that review missed becomes that typed failure rather than a false value.
 - **C-2b — brygge never executes source-provided code.** Decode reads *objects*; it does not run hooks, apply clean/smudge filters, fetch submodules, or execute any script the source carries. Filter/hook content is preserved opaquely as data (PR-4) if it is history, never invoked. **This is an invariant (INV-2).** Running a **trusted external tool** to read a source (RFC 006 Tier D invokes `svnadmin dump`) is distinct from and does not breach this: the tool is operator-environment code (TB-4), not source-provided, and `svnadmin dump` executes **no** repository hook scripts (hooks fire on commit/revprop paths, never on dump). A tool that *did* run source-embedded code, or a source construct that reaches out (`svn:externals`), is refused — externals are refused, not resolved (→ the SVN floor).
-- **C-2c — source-declared paths are data, not filesystem targets.** Paths from the source name content *inside the IR*; brygge never uses a source-declared path as a write destination. Any place brygge does touch the filesystem for source content refuses `..`, absolute paths, and symlink escapes, and confines to the operator's output location (→ C-7).
-- **C-2d — resource bounds, refuse rather than exhaust** (→ T-8). Streaming where possible; declared ceilings on object size, total count, path depth, and decompression ratio; hitting a ceiling is a recorded refusal (FA-3), not an OOM or a hang.
+- **C-2c — source-declared paths are data, not filesystem targets; brygge reads only the repository it is given.** Paths from the source name content *inside the IR*; brygge never uses a source-declared path as a write destination (→ C-7). On the **read** side, a source must not be able to make brygge read another location on the host into the IR, which would be a confused deputy (T-6/T-7):
+  - **Git:** opened with gix's isolated options (no global, system or environment configuration). Alternates, a redirected git directory (`gitdir:` files, `commondir`), and a symlinked `.git`, `objects`, `objects/info`, `objects/pack` or pack entry are refused. So are grafts, replace refs and shallow clones, which would substitute history.
+  - **CVS:** any symlink under the repository root, file or directory, is refused; entries are examined with `lstat` and never followed (residual: RR-cvs-read-toctou).
+  - **Mercurial:** the store is read in place; a repository in the middle of a merge is refused.
+  - **SVN:** a dumpfile is read as one stream; a live repository is read only through `svnadmin dump`.
+- **C-2d — resource bounds, refuse rather than exhaust** (→ T-8). Declared ceilings on object size, total count, path length and depth, and decompressed size. A ceiling is checked **before** the memory it protects is allocated, and hitting one is a typed refusal (`ResourceLimit`, exit 20) naming what exceeded and the ceiling with its unit, never an OOM, a stack overflow or a hang. Each decoder keeps its ceilings in one place, and its README lists them:
+  - **Git:** blob size, read from the object header before the body is read; commit count; path length; tree depth, enforced by an iterative tree walk (recursion on attacker-chosen depth could abort the process beyond any panic boundary); tag-chain length.
+  - **Mercurial:** every decompression (zlib, zstd) and every delta application is bounded, and each reconstructed revision must equal its index's recorded length. The obsstore and the small metadata files (phaseroots, bookmarks, localtags) have ceilings; the dirstate read is 40 bytes.
+  - **SVN:** the dumpstream is size-checked before reading and read through a bound. The `svnadmin` subprocess's stdout is bounded, and its stderr is drained with only a bounded prefix kept, so the child can never deadlock.
+  - **CVS:** each `,v` file is size-checked before reading and read through a bound; the file count is bounded.
+  - Streaming (bounded *memory*, not just bounded input) is RFC 010's later increments (0.2.0).
 - **C-2e — memory-safety posture.** brygge's own crates `forbid(unsafe_code)`. The unsafe/C surface is confined to dependencies (RR-1) and, if a C library is used at all, to a single dedicated FFI crate — **or, preferably where available, to a subprocess** (RFC 006 Tier D reads SVN via `svnadmin dump` rather than linking `libsvn`), which contains any memory-safety fault in that C code in a **separate address space** where it cannot corrupt brygge's process or defeat `forbid(unsafe_code)` (→ C-4b).
+- **C-2f — source identifiers are verified, not trusted** (PR-4, VF-2). brygge preserves a source's own object ids (a Git SHA, an hg node) as the link back to the source. A crafted repository could present content under an id it does not hash to, and brygge would then publish a false link.
+  - **Git:** every object whose content or links reach the IR is re-hashed with the repository's hash kind and compared with the id it was requested by; a mismatch stops the decode. That covers commits, trees, blobs, and every tag on a tag chain. History is walked from verified commits only: the commit-graph cache, an unverified index of parent ids, is not consulted, and a walk that disagrees with verified commit content is a read error. The SHA-256 object format is refused until the reader supports it.
+  - **Mercurial:** every revision brygge reads (changelog, manifest, filelog) is checked against its node with Mercurial's own revision hash, `sha1(min(p1, p2) ‖ max(p1, p2) ‖ raw text)`, using a collision-detecting SHA-1 as Mercurial does. A mismatch, or a detected collision, stops the decode. Revisions whose stored text is not the hashed text (ellipsis, external storage) and unknown revision flags are refused by name. The repository identity is taken from the smallest **published** root, which is read and therefore verified.
 
 ### T-3 (Tampering) — altering the import, or stripping its honesty
 An attacker (or accident) modifies the IR between `decode` and `encode`, or strips derived-marks / loss-boundary / provenance so the output looks more trustworthy than it is (A-IMPORT).
 
-- **C-3a — inconsistency is detectable** (VF-3). `brygge verify --internal` checks that every derived record is marked, the loss boundary is stated, authorship is `Unverifiable`, and provenance names its source — an IR whose honesty was stripped fails this check.
-- **C-3b — the artifact is integrity-checkable and versioned** (IX-07). The IR carries its contract version and a content digest, so tampering or truncation is detectable rather than silent (this is detectability, not authentication — see RR-4).
-- **C-3c — determinism catches divergence** (VF-1, C-9). A fresh re-decode of the same source under the same version reproduces the IR; a tampered artifact diverges from the reproduction.
+- **C-3a — inconsistency is detectable** (VF-3; CR-02). `brygge verify`, which needs no source, runs seven checks, and each can fail:
+  - **integrity:** the contract version and digest;
+  - **structure:** parents exist and precede their children, refs target atoms, ref names are unique per kind, and there is at most one op per path per atom;
+  - **replay:** replaying each atom along its first parent is consistent (adds target absent paths; modifies, deletes and replaces target present ones);
+  - **derivations:** every derived record carries the parameters its kind requires (for example, a reconstructed CVS changeset needs its window, keys, date rule and confidence rule);
+  - **source-invariants:** an atom's status fits its source kind, so a CVS artifact relabelled `Stated` fails even with its ids and digest recomputed;
+  - **provenance:** it names its decoder, versions and source;
+  - **loss-boundary:** the loss boundary is present and well-formed.
+
+  The verdict is three-valued: `pass`, `fail`, or `incomplete` (a requested `--against-source` could not run). It is never reported as `pass` with a non-zero exit.
+- **C-3b — the artifact is integrity-checkable and versioned** (IX-07; RFC 011). The IR carries its contract version and a content digest, so tampering or truncation is detectable rather than silent (this is detectability, not authentication — see RR-4).
+  - **The version gate runs first:** an artifact of an unknown contract is refused before anything else is parsed.
+  - **The digest covers the stored bytes**, not a re-encoding.
+  - **The canonical form is strict:** a non-canonical encoding of the same content is refused, so no two byte strings mean one artifact.
+  - **Evolution is safe by construction:** each field carries a critical bit. An unknown critical field is refused, and an unknown non-critical field is skipped and reported, never silently ignored.
+- **C-3c — determinism catches divergence** (VF-1, C-9). A fresh re-decode of the same source under the same version reproduces the IR; a tampered artifact diverges from the reproduction. `verify --against-source` reports `not-checked` (verdict `incomplete`), never `fail`, when the source given is a different **form** from the one recorded (an SVN dumpfile versus a live repository). It compares SVN decodes with the recorded `svnadmin` version aligned, noting a version difference rather than failing on it.
 
 ### T-4 (Supply chain) — the heavy dependency surface
 The decoder libraries (~100 crates for `gix`, or C for `libgit2`, plus SVN/CVS) are the largest attack and audit surface, and the reason brygge is separate from prikk (A-SUPPLY, PU-5).
@@ -65,11 +97,11 @@ The decoder libraries (~100 crates for `gix`, or C for `libgit2`, plus SVN/CVS) 
 - **C-4a — isolate the weight behind the decoder boundary.** The heavy deps live only in the per-source decoder crates; the IR, the honesty/verify path, and the encoders do not link them. VF-3 (internal verification) must run without any decoder dependency present — the internal analogue of BN-5.
 - **C-4b — pure-Rust preferred; C isolated by FFI crate *or subprocess*.** Prefer pure Rust (e.g. `gix`, keeps `forbid(unsafe)` maximal) over a C library (e.g. `libgit2`). If C code is unavoidable for a source, isolate it — in **preference order**: (1) a pure-Rust reader (no C at all — the ideal); (2) a **subprocess** that produces a parseable stream brygge reads in pure Rust (RFC 006 SVN Tier D: `svnadmin dump` → brygge's own dumpstream parser) — the C fault surface is a *separate process*, not brygge's address space, and vanishes entirely when the operator supplies the dumped stream directly; (3) a single dedicated **FFI crate** — the one place `unsafe`/C is linked into brygge, mirroring prikk's `prikk-ffi` discipline — used only when neither (1) nor (2) is available. The subprocess (2) is stronger isolation than the FFI crate (3) and is preferred wherever the source ecosystem offers a suitable tool.
 - **C-4c — pin and lock.** Exact dependency versions; the lockfile is committed; upgrades are deliberate and reviewed.
-- **C-4d — supply-chain gates in CI.** `cargo-deny` (advisories, licenses, banned/duplicate crates) and `cargo-audit` run in CI; a new advisory fails the build. New or upgraded decoder dependencies get explicit architect review (governance).
+- **C-4d — supply-chain gates in CI.** `cargo-deny` (advisories, licenses, banned/duplicate crates) and `cargo-audit` run in CI; a new advisory fails the build. New or upgraded decoder dependencies get explicit architect review (governance). The isolation of `brygge-ir` (C-4a/C-5) is enforced in CI against a declared allowlist of its dependency closure (`tools/check-ir-isolation.sh`), not merely observed.
 - **C-4e — minimize.** The dependency set is kept as small as the mission allows; a dependency is justified, not defaulted-in.
 
 ### T-5 (Elevation) — brygge output enlarging the target's audited surface
-A design in which consuming a brygge import forces the target to link a brygge dependency would defeat the whole separation: prikk's five-crate audited surface would grow through the back door (A-TARGET-TRUST, BN-5).
+A design in which consuming a brygge import forces the target to link a brygge dependency would defeat the whole separation: prikk's deliberately small audited dependency surface would grow through the back door (A-TARGET-TRUST, BN-5).
 
 - **C-5 — the boundary is a tested property** (CT-05). The IR, the proposal, and internal verification (VF-3) are consumable and checkable with **only the target's own dependency surface** — no brygge decoder dependency required downstream. This is verified by a test that consumes brygge output with none of brygge's decoder deps present.
 
@@ -79,21 +111,26 @@ Source history may contain committed secrets, private emails, GPG signatures, an
 - **C-6a — no network, no telemetry** (INV-3). brygge reads sources and writes operator-specified files only (CT-01). There is no phone-home, no analytics, no remote fetch during decode (submodules are refused, not fetched — C-2b).
 - **C-6b — no content in logs beyond the operator's chosen surface.** Diagnostics name atoms, classes, and counts; they do not dump source content into logs that could outlive the operator's intent.
 - **C-6c — carried-verbatim is stated, not silently scrubbed.** brygge preserves source content faithfully (VF-2 depends on it), so it must **not** silently redact — but the fidelity surface states plainly that content is carried verbatim from source, so the operator knows secrets-in-history come along and can act **in the source** before import. brygge names what it does not do; scrubbing is the operator's pre/post step (RR-3).
+- **C-6d — only what the source would publish is imported** (CR-05). Some history in a repository was never meant to leave it.
+  - **Git:** history comes only from the carried namespaces (`refs/heads/*`, `refs/tags/*`). Commits reachable only from stash, notes, remote-tracking or other refs are not imported, and they are counted.
+  - **Mercurial:** brygge computes the repository's published view (what `hg clone` would share). Secret, archived and internal-phase changesets, and hidden (obsolete) ones, are not imported, and they are counted.
+  - A migration therefore cannot carry a changeset the source marked private.
 
 ### T-7 (Elevation) — confused deputy / errant writes
-A source with crafted paths tries to make brygge write outside `--ir` / `--out` (A-HOST).
+A source with crafted paths tries to make brygge write outside `--out` (A-HOST).
 
-- **C-7 — write only where told.** All brygge writes are confined to the operator-specified output locations; source-derived paths are never write targets (C-2c). This mirrors stikk's "never write inside a repository" discipline, one boundary over.
+- **C-7 — write only where told.** brygge writes one file, the artifact at `decode --out`; source-derived paths are never write targets (C-2c). This mirrors stikk's "never write inside a repository" discipline, one boundary over. The write is **atomic**: a temporary file in the same directory, synced, then renamed over the target. An interrupted or failed decode leaves the previous artifact intact, never a truncated one.
 
 ### T-8 (Denial of service) — resource exhaustion
 Enormous repositories, pathological delta chains, deep trees, huge file counts, decompression bombs (A-HOST). (Called out separately from T-2 because it is a normal operating condition for real migrations, not only an attack.)
 
-- **C-8 — bounded, cancellable, honest at the limit.** Streaming and bounded memory; progress reporting and cancellation (OP-02); a stop is a clean, labelled partial (FA-1/FA-4/FA-5); a ceiling hit is a recorded refusal with a named reason (FA-3), never an OOM that leaves an ambiguous artifact.
+- **C-8 — bounded and honest at the limit.** A ceiling hit is a typed refusal with a named reason (FA-3, C-2d), never an OOM that leaves an ambiguous artifact. An interrupted run leaves no artifact, or the previous one intact (C-7); brygge does not write partial artifacts.
+  - **Not built in 0.1.0:** progress reporting and graceful cancellation (OP-02), and streaming with bounded memory (RFC 010 increments 2–4, 0.2.0). Interrupting brygge today simply stops it. That is safe because of C-7, but it gives no progress and produces no labelled partial.
 
 ### T-9 (Tampering) — non-determinism as a trust hole
 If brygge is non-deterministic, "faithful" is uncheckable (VF-1 fails) and a tamper can hide in the noise (A-IMPORT).
 
-- **C-9 — determinism is a security property.** The same inputs yield byte-identical IR and proposal; any non-determinism brygge cannot avoid (e.g., an import timestamp, if the target's provenance object carries authoritative time — ID-4/UD-4) is **named** as a stated non-determinism, never left to silently perturb output.
+- **C-9 — determinism is a security property.** The same inputs yield byte-identical IR and proposal; any non-determinism brygge cannot avoid is **named** as a stated non-determinism, never left to silently perturb output. Under IR contract 0.2.0 the IR carries **no** import time, so no stated non-determinism remains in the IR itself. The one input-side dependency is the `svnadmin` version for a live SVN decode (RR-svn-svnadmin-version). prikk ruled that an import attestation's `created_at` is a fixed sentinel (UD-4), so the proposal adds none either.
 
 ---
 
@@ -113,10 +150,17 @@ A change that breaks one of these is a security bug, not a preference. Several m
 - **RR-1 — The heavy decoder dependencies may contain vulnerabilities.** This is the accepted cost of the mission (it is *why* brygge is separate from prikk). Mitigated by isolation (C-4a), pure-Rust preference (C-4b), pinning + supply-chain gates (C-4c/d), and the recommendation that operators run brygge over **untrusted** source repositories in a sandbox (container / restricted user / no ambient credentials), since TB-1 input reaches those libraries.
 - **RR-2 — brygge cannot make a lying source honest.** A faithfully-imported falsehood is still a falsehood; VF-2 checks *correspondence to the source*, not the source's own truthfulness. Detecting source-level fraud is out of scope.
 - **RR-3 — Secrets/PII in source history are carried faithfully.** Redaction would break fidelity (VF-2) and is the operator's decision in the source, before or after import; brygge's duty is to *state* that content is carried verbatim (C-6c), not to scrub it.
-- **RR-4 — Until prikk's import provenance is built (UD-1) and the signing question is ruled (OQ-1/DC-35), a proposal's provenance is integrity-*detectable* (C-3b) but not cryptographically *authenticated*.** This is stated in the proposal, not hidden; authenticated provenance arrives with prikk's attestation surface.
-- **RR-gix-sha1 — `gix` reads SHA-1 Git objects without collision detection** (RFC 004 security review; relates to RUSTSEC-2025-0021, cleared as an advisory by pinning forward). This is inherent to SHA-1 repositories and does **not** touch brygge's integrity model: the IR re-hashes everything under SHA-256 (`AtomId`/`BlobId`/digest, RFC 003 D-3), and the Git SHA-1 is preserved **opaquely** as a source identifier (PR-4), trusted for nothing in any target. The residual is *source misread under a deliberate SHA-1 collision*, mitigated by SHA-256 re-hashing and `verify --against-source` (RFC 004 D-7). Track `gix`'s SHA-256-object support as it matures.
+- **RR-4 — brygge's artifact is integrity-*detectable* (C-3b) but not cryptographically *authenticated*, and brygge never signs.** prikk ruled on 2026-09-13 (RFC 113 OQ-1/OQ-2) that the **importer** signs the import declaration, and that the importer is prikk's own import command, run by an adopted maintainer. Authentication therefore happens at prikk's boundary, over what that maintainer imports, once prikk's import attestation (UD-1) is built. Until then, anyone who can alter an artifact can also recompute its digest; the defense is `verify --against-source` (C-3c) against the source.
+- **RR-gix-sha1 — `gix` reads SHA-1 Git objects without collision detection** (RFC 004 security review; relates to RUSTSEC-2025-0021, cleared as an advisory by pinning forward). This is inherent to SHA-1 repositories and does **not** touch brygge's integrity model: the IR re-hashes everything under SHA-256 (`AtomId`/`BlobId`/digest, RFC 003 D-3), and the Git SHA-1 is preserved **opaquely** as a source identifier (PR-4), trusted for nothing in any target. The residual is *source misread under a deliberate SHA-1 collision*, mitigated by SHA-256 re-hashing and `verify --against-source` (RFC 004 D-7). **Narrowed in v0.3:** since every object is now re-hashed against its id (C-2f), a *mismatched* object is impossible; only a true SHA-1 collision remains. Track `gix`'s SHA-256-object support as it matures (the SHA-256 object format is refused until then).
 - **RR-svn-svnadmin — brygge trusts the operator's `svnadmin` binary and its dump output** (RFC 006 Tier D; TB-4). A hostile or compromised `svnadmin` on the host could feed a false dumpstream; mitigated by ASSUME-1 (the host is trusted) and by the **dumpfile path**, which bypasses the subprocess entirely. Separately, `svnadmin` parsing a hostile *repository* is a semi-trusted-tool surface (a TB-2 variant in subprocess form), **isolated by process** (C-2e/C-4b) and covered by RR-1's sandbox recommendation for untrusted sources.
-- **RR-svn-svnadmin-version — decode of a live SVN *repository* depends on the `svnadmin` version** (RFC 006 Tier D): two versions could frame the dumpstream differently, so the byte-for-byte result across hosts is guaranteed only for the same tool version. Named as a stated non-determinism (C-9), mitigated by treating the **dumpstream as the canonical deterministic input** (decoding the same dumpfile is always identical) and recording the source form (live dump vs supplied dumpfile) in provenance so `verify --against-source` (VF-2) is well-defined.
+- **RR-svn-svnadmin-version — decode of a live SVN *repository* depends on the `svnadmin` version** (RFC 006 Tier D): two versions could frame the dumpstream differently, so the byte-for-byte result across hosts is guaranteed only for the same tool version. Named as a stated non-determinism (C-9), mitigated by treating the **dumpstream as the canonical deterministic input** (decoding the same dumpfile is always identical) and recording the source form (live dump vs supplied dumpfile) in provenance so `verify --against-source` (VF-2) is well-defined. **Implemented in 0.1.0:** provenance records `source_form`, plus `svnadmin_version` (neutralized, bounded) for a live decode; `verify --against-source` refuses to compare across forms (`not-checked`) and aligns the version before comparing (C-3c).
+- **RR-cvs-reconstruction — a CVS changeset is brygge's derived judgment, not a source record** (RFC 007). A consumer that *ignores the `Derived` status* could over-trust the grouping as if CVS had recorded it. The marking is in every atom; the confidence rule (`span-overlap-v1`), its inputs and every order split are recorded; the fidelity report leads with it; and the faithfulness statement states the limit before the run. The residual is a consumer discarding honesty brygge attached, which brygge cannot prevent, only make impossible to lose (the CVS-specific sharpening of RR-2).
+- **RR-cvs-read-toctou — a symlink swapped in after the `lstat` walk would be followed.** The CVS reader examines entries without following them, then opens files by path; a symlink substituted in between would be followed on the open. Exploiting it needs write access to the source repository *while brygge reads it*, which is a compromise of A-HOST (ASSUME-1), not a crafted repository at rest. The fix, comparing the opened file's device and inode with the `lstat` result, is scheduled for 0.2.0.
+- **RR-svn-special-toggle — a property-only change of `svn:special`** (setting or clearing it on a file without new text) keeps the file's previous content, so a `link ` prefix is neither added nor stripped for that node. It is rare, and malformed symlink text is still refused (C-2a). The fix is scheduled with SVN delta dumps (0.3.0).
+- **Closed in v0.3:**
+  - **RR-git-loose-object-symlink** (a symlinked loose object could read outside the repository): a loose object now either hashes to its id, so it is the right object wherever it was read from, or the decode stops (C-2f).
+  - **RR-git-object-id-unverified** (a preserved Git id could be a false link): every object is verified (C-2f).
+  - **RR-hg-node-unverified** (the same gap for Mercurial nodes, found in the 0.1.0 release review): every revision read is verified (C-2f).
 - **ASSUME-1 — The operator and their host are trusted; the source repository is not.** brygge defends A-HOST against the source (TB-1), not against a hostile operator.
 - **ASSUME-2 — The target enforces its own admission/trust/seal** (BN-2). brygge's honesty is necessary but not sufficient; the target's policy is the last line, and OQ-1…OQ-3 (owner's) decide what that policy is for prikk.
 
@@ -125,11 +169,14 @@ A change that breaks one of these is a security bug, not a preference. Several m
 | Control ↓ / Threat → | T-1 | T-2 | T-3 | T-4 | T-5 | T-6 | T-7 | T-8 | T-9 |
 |---|---|---|---|---|---|---|---|---|---|
 | C-1a…e honesty in the object | ● | | ● | | | | | | |
-| C-2a…e untrusted-input handling | | ● | | | | | ● | ● | |
+| C-1f output neutralization | ● | | ● | | | | | | |
+| C-2a…e untrusted-input handling | | ● | | | | ○ | ● | ● | |
+| C-2f source identifiers verified | ○ | ● | ● | | | | | | |
 | C-3a…c integrity/verify/determinism | | | ● | | | | | | ● |
 | C-4a…e dependency isolation/audit | | ○ | | ● | ○ | | | | |
 | C-5 boundary-not-enlarged (tested) | | | | ○ | ● | | | | |
 | C-6a…c no-network / carried-verbatim | | | | | | ● | ○ | | |
+| C-6d only what the source would publish | | | | | | ● | | | |
 | C-7 write-only-where-told | | ○ | | | | ○ | ● | | |
 | C-8 bounded/cancellable | | ○ | | | | | | ● | |
 | C-9 determinism | | | ○ | | | | | | ● |
@@ -140,14 +187,14 @@ A change that breaks one of these is a security bug, not a preference. Several m
 
 | Threat-model element | Requirements / design basis |
 |---|---|
-| T-1 / C-1* / INV-1 | NG-3, HO-1…HO-5, VF-4, FS-01/02/04, CF-02; RFC 113 §2/§3 |
-| T-2 / C-2* / INV-2 | TB-1, FA-2/FA-3, PR-4; PU-5 (why the surface exists) |
-| T-3 / C-3* / INV-6 | VF-1/VF-3, IX-07, HO-4, FS-02, ID-4 |
-| T-4 / C-4* / INV-4 | PU-5, BN-5; project dependency-discipline (mirrors prikk's five-crate posture, `prikk-ffi`) |
+| T-1 / C-1* / INV-1 | NG-3, HO-1…HO-5, VF-4, FS-01/02/04, CF-02; RFC 113 §2/§3; C-1f: CL-07, CR-19 |
+| T-2 / C-2* / INV-2 | TB-1, FA-2/FA-3, PR-4; PU-5 (why the surface exists); C-2c: CR-11; C-2d: RFC 010 D-4, CR-10/CR-17; C-2f: PR-4, VF-2 |
+| T-3 / C-3* / INV-6 | VF-1/VF-3, IX-07, HO-4, FS-02, ID-4; C-3a: CR-02, RFC 011 D-10; C-3b: RFC 011 |
+| T-4 / C-4* / INV-4 | PU-5, BN-5; project dependency-discipline (mirrors prikk's small, audited dependency posture and `prikk-ffi`) |
 | T-5 / C-5 / INV-5 | BN-5, CT-05 |
-| T-6 / C-6* / INV-3 | CT-01, NG-3, PR-3/PR-4 |
-| T-7 / C-7 / INV-3 | BD-04, CT-02 |
+| T-6 / C-6* / INV-3 | CT-01, NG-3, PR-3/PR-4; C-6d: CR-05, owner ruling D-4 (2026-09-23) |
+| T-7 / C-7 / INV-3 | BD-04, CT-02; CR-13 |
 | T-8 / C-8 | FA-1/FA-3/FA-4/FA-5, OP-02 |
 | T-9 / C-9 / INV-6 | VF-1, ID-4, UD-4 |
 
-*End of Threat Model v0.1. Per project rules, this document is revisited every release: a release whose changes touch new source parsers, new dependencies, the IR/provenance format, or any untrusted-input path **updates** this model; other releases **re-verify** its controls still hold. The controls most likely to need a test from day one: INV-2 (no source code executed; path-safety), INV-4/INV-5 (dependency isolation; output consumable without brygge deps), and INV-1 (honesty is present and non-suppressible in every produced object).*
+*End of Threat Model v0.3. Per project rules, this document is revisited every release: a release whose changes touch new source parsers, new dependencies, the IR/provenance format, or any untrusted-input path **updates** this model; other releases **re-verify** its controls still hold. The controls most likely to need a test from day one: INV-2 (no source code executed; path-safety), INV-4/INV-5 (dependency isolation; output consumable without brygge deps), and INV-1 (honesty is present and non-suppressible in every produced object).*

@@ -102,13 +102,13 @@ COMMANDS:
            dumpfile; for cvs, a local repository directory of RCS ,v files. --infer-renames (git/hg) and
            --reconstruct-refs (svn/cvs) each turn on an opt-in, always-marked derived layer; giving either
            to a source kind it does not apply to is a usage error
-  inspect  print the fidelity report an artifact alone reproduces (FS-02); --atoms adds the per-atom
+  inspect  print the fidelity report an artifact alone reproduces; --atoms adds the per-atom
            listing: epistemic status, source ids, derived parameters, and the loss boundary
   verify   the honesty checks any reader can run with no source (always); with --against-source, also
-           re-derive from the source and confirm correspondence (VF-2) — the two results are reported
+           re-derive from the source and confirm correspondence — the two results are reported
            separately, never merged
 
-VOCABULARY: artifact, source, stated, derived, dropped, refused, Unverifiable.";
+VOCABULARY: artifact, source, stated, derived, dropped, flagged, refused, Unverifiable.";
 
 fn usage_error(command: &str, problem: impl std::fmt::Display) -> String {
     format!("{problem}\n\nrun `brygge {command} --help` for usage")

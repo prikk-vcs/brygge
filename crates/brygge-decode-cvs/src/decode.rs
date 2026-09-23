@@ -110,7 +110,7 @@ pub fn decode(source: &Source, opts: &Options) -> Result<Ir, Error> {
             feature: floor::WHOLE_IMPORT_UNDER_CONFIDENCE_FLOOR.to_string(),
             reason: format!(
                 "no reconstructed changeset reached the confidence floor ({}); the history is too \
-                 ambiguous to import as changesets (RFC 007 OQ-B, SRC-C3)",
+                 ambiguous to import as changesets",
                 opts.confidence_floor
             ),
         });
@@ -200,7 +200,7 @@ pub fn decode(source: &Source, opts: &Options) -> Result<Ir, Error> {
             count: low_confidence as u64,
             reason: format!(
                 "{low_confidence} reconstructed changeset(s) scored below the confidence floor and are \
-                 imported but flagged as low-confidence judgments (RFC 007 OQ-B, SRC-C2/C3)"
+                 imported but flagged as low-confidence judgments"
             ),
         });
     }
@@ -501,13 +501,13 @@ impl Loss {
             DropRecord {
                 class: LossClass::Representation,
                 what: "RCS ,v physical layout and delta encoding".to_string(),
-                reason: "representation not assertion; the logical revisions are preserved (PR-7)"
+                reason: "representation not assertion; the logical revisions are preserved"
                     .to_string(),
             },
             DropRecord {
                 class: LossClass::Representation,
                 what: "CVSROOT administrative files, locks, and working-copy state".to_string(),
-                reason: "configuration and local state, not history (PR-7)".to_string(),
+                reason: "configuration and local state, not history".to_string(),
             },
         ];
         if self.has_expand {
@@ -515,7 +515,7 @@ impl Loss {
                 class: LossClass::Representation,
                 what: "RCS keyword expansion / -kb text translation".to_string(),
                 reason: "a working-copy transform; the stored (unexpanded) bytes are carried \
-                         verbatim (NG-5)"
+                         verbatim"
                     .to_string(),
             });
         }

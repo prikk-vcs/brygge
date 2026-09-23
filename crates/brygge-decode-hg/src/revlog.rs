@@ -1,5 +1,10 @@
 //! A minimal, bounds-checked reader for Mercurial **revlogv1** stores (RFC 005 D-1, Tier 2).
 //!
+//! Every revision read is **verified against its node**: [`Revlog::revision`] is the one place a
+//! revision's full text is reconstructed, and it re-hashes that text the way Mercurial does
+//! (`storageutil.hashrevisionsha1`) before returning it, so a store that presents content under a node it
+//! does not hash to is refused rather than carried as a false link.
+//!
 //! A revlog is an index (`.i`) plus, when not *inline*, a data file (`.d`). Each 64-byte index entry
 //! (big-endian) is `offset_flags(u64) · comp_len(u32) · uncomp_len(u32) · base_rev(i32) · link_rev(i32)
 //! · p1(i32) · p2(i32) · node(20) · pad(12)`. A revision's stored chunk is either a full snapshot
@@ -14,8 +19,20 @@ use crate::{Error, floor};
 
 const ENTRY_LEN: usize = 64;
 const FLAG_INLINE: u32 = 1 << 16;
-/// Per-revision censored flag (`REVIDX_ISCENSORED`), refused by the floor (RFC 005 D-4).
+/// Per-revision censored flag (`REVIDX_ISCENSORED`), refused by the floor.
 const REVIDX_ISCENSORED: u16 = 1 << 15;
+/// `REVIDX_ELLIPSIS` (narrow clones): Mercurial's own flag processor reports the hash as *not* matching
+/// the text (`revlog.py` `ellipsisreadprocessor` returns `(text, False)`), so it cannot be verified.
+const REVIDX_ELLIPSIS: u16 = 1 << 14;
+/// `REVIDX_EXTSTORED` (large-file extensions): the revlog stores a pointer while the node hashes the
+/// real text (`hgext/lfs/wrapper.py` `writetostore` returns `(rawtext, False)`), so the stored text is
+/// not the hashed text.
+const REVIDX_EXTSTORED: u16 = 1 << 13;
+/// The flags that do not change what is hashed (`revlogutils/constants.py` `REVIDX_NEUTRAL_FLAGS`):
+/// has-copies-info (1<<12), has-meta (1<<11) and the five delta-info flags (1<<10 … 1<<6). The stored raw
+/// text of a revision carrying only these is exactly the text its node hashes.
+const HASH_NEUTRAL_FLAGS: u16 =
+    (1 << 12) | (1 << 11) | (1 << 10) | (1 << 9) | (1 << 8) | (1 << 7) | (1 << 6);
 
 /// The null revision (`-1`): a missing parent or base.
 pub const NULL_REV: i32 = -1;
@@ -264,7 +281,8 @@ impl Revlog {
     /// # Errors
     /// [`Error::Read`] on a malformed chunk, an unknown compression marker, a bad delta, a cyclic /
     /// over-long base chain, or a reconstructed length that does not match the index (RFC 010 CR-17);
-    /// [`Error::FloorRefusal`] on a censored revision (RFC 005 D-4); [`Error::ResourceLimit`] if a
+    /// [`Error::FloorRefusal`] on a censored, ellipsis, externally stored or unknown-flag revision;
+    /// [`Error::Read`] if the reconstructed text does not hash to the node; [`Error::ResourceLimit`] if a
     /// decompressed chunk or a patched text exceeds the ceiling.
     pub fn revision(&self, rev: usize) -> Result<Vec<u8>, Error> {
         self.revision_with(rev, &Limits::default())
@@ -275,15 +293,7 @@ impl Revlog {
             .entries
             .get(rev)
             .ok_or_else(|| read_err("revision out of range"))?;
-        if e.is_censored() {
-            return Err(Error::FloorRefusal {
-                feature: floor::CENSORED_REVISION.to_string(),
-                reason:
-                    "a censored revision's content was deliberately removed; refused rather than \
-                         importing a hole as if it were content (RFC 005 D-4)"
-                        .to_string(),
-            });
-        }
+        check_flags(e)?;
 
         // Build the base chain from `rev` back to a full snapshot, guarding against cycles/over-length.
         let mut chain = Vec::new();
@@ -325,8 +335,116 @@ impl Revlog {
                 return Err(read_err("revision length does not match the index"));
             }
         }
+        self.verify_node(rev, &text)?;
         Ok(text)
     }
+
+    /// The node of parent revision `parent` (`NULL_REV` → twenty zero bytes, Mercurial's null id).
+    fn parent_node(&self, parent: i32) -> Result<[u8; 20], Error> {
+        if parent == NULL_REV {
+            return Ok([0u8; 20]);
+        }
+        usize::try_from(parent)
+            .ok()
+            .and_then(|p| self.entries.get(p))
+            .map(|e| e.node)
+            .ok_or_else(|| read_err("revlog parent revision out of range"))
+    }
+
+    /// Verify that `text` (revision `rev`'s reconstructed raw text) hashes to the entry's node, exactly as
+    /// Mercurial's `storageutil.hashrevisionsha1` does: SHA-1 over the two parent nodes in ascending order
+    /// and then the raw text. Null is all zeros, so `nullid ‖ p1 ‖ text` (Mercurial's p2-is-null branch) is
+    /// the same computation as the ascending-order rule. The hash is collision-detecting, as Mercurial's
+    /// own is (`utils/hashutil.py` uses sha1dc).
+    fn verify_node(&self, rev: usize, text: &[u8]) -> Result<(), Error> {
+        let e = self
+            .entries
+            .get(rev)
+            .ok_or_else(|| read_err("revision out of range"))?;
+        let p1 = self.parent_node(e.p1)?;
+        let p2 = self.parent_node(e.p2)?;
+        let (lo, hi) = if p1 <= p2 { (p1, p2) } else { (p2, p1) };
+        check_revision_hash(&e.node, &lo, &hi, text)
+    }
+}
+
+/// The verdict for one revision: `text` hashed as Mercurial does (collision-detecting SHA-1 over the two
+/// parent nodes, already in ascending order, then the raw text) must equal `node`. Factored out of
+/// [`Revlog::verify_node`] so the collision and mismatch paths can be exercised without a store.
+fn check_revision_hash(
+    node: &[u8; 20],
+    lo: &[u8; 20],
+    hi: &[u8; 20],
+    text: &[u8],
+) -> Result<(), Error> {
+    use sha1_checked::{CollisionResult, Digest, Sha1};
+
+    let mut hasher = Sha1::new();
+    Digest::update(&mut hasher, lo);
+    Digest::update(&mut hasher, hi);
+    Digest::update(&mut hasher, text);
+    let result = hasher.try_finalize();
+    if result.has_collision() {
+        return Err(read_err(format!(
+            "revision {} triggers SHA-1 collision detection (crafted store)",
+            crate::util::hex(node)
+        )));
+    }
+    let CollisionResult::Ok(digest) = result else {
+        return Err(read_err(
+            "SHA-1 collision detection reported an unexpected state",
+        ));
+    };
+    if digest.as_slice() != node.as_slice() {
+        return Err(read_err(format!(
+            "revision {} does not match its content (corrupt or crafted store)",
+            crate::util::hex(node)
+        )));
+    }
+    Ok(())
+}
+
+/// Refuse a revision whose flags mean its stored text is not the text its node hashes, or that this reader
+/// cannot interpret. Mirrors Mercurial's own `flagutil._processflagsfunc` (`revlogutils/flagutil.py`):
+/// an unknown flag is refused there too ("incompatible revision flag").
+fn check_flags(e: &Entry) -> Result<(), Error> {
+    if e.is_censored() {
+        return Err(Error::FloorRefusal {
+            feature: floor::CENSORED_REVISION.to_string(),
+            reason: "a censored revision's content was deliberately removed; refused rather than \
+                     importing a hole as if it were content"
+                .to_string(),
+        });
+    }
+    if e.flags & REVIDX_ELLIPSIS != 0 {
+        return Err(Error::FloorRefusal {
+            feature: floor::ELLIPSIS_REVISION.to_string(),
+            reason:
+                "an ellipsis revision (from a narrow clone) does not hash to its text, so its node \
+                     cannot be verified; refused rather than carrying an unverifiable identifier"
+                    .to_string(),
+        });
+    }
+    if e.flags & REVIDX_EXTSTORED != 0 {
+        return Err(Error::FloorRefusal {
+            feature: floor::EXTERNAL_STORAGE_REVISION.to_string(),
+            reason: "an externally stored revision holds a pointer, not the text its node hashes, so its \
+                     node cannot be verified; refused rather than carrying an unverifiable identifier"
+                .to_string(),
+        });
+    }
+    let unknown =
+        e.flags & !(REVIDX_ISCENSORED | REVIDX_ELLIPSIS | REVIDX_EXTSTORED | HASH_NEUTRAL_FLAGS);
+    if unknown != 0 {
+        return Err(Error::FloorRefusal {
+            feature: floor::UNKNOWN_REVISION_FLAG.to_string(),
+            reason: format!(
+                "a revision carries flag bits ({unknown:#06x}) that Mercurial does not define; refused \
+                 rather than misread"
+            ),
+        });
+    }
+    Ok(())
 }
 
 /// Decompress one revlog chunk by its leading marker byte (verified against real stores):

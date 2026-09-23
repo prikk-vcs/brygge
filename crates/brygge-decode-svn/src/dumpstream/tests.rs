@@ -126,3 +126,45 @@ fn a_declared_length_past_the_end_is_a_typed_refusal_not_a_panic() {
     let err = parse_dump(&d).unwrap_err();
     assert!(matches!(err, crate::Error::Read(_)));
 }
+
+#[test]
+fn a_non_utf8_node_path_is_a_read_error_that_shows_the_bytes_escaped() {
+    // A dumpstream's paths are UTF-8 by the format's own definition, so this is a malformed dump (`Read`,
+    // not a repository-shape refusal) — but the message must show the offending bytes losslessly.
+    let mut d = header();
+    d.extend(revision(0, &[("svn:date", "2024-01-01T00:00:00.000000Z")]));
+    d.extend(revision(1, &[("svn:log", "x")]));
+    d.extend(b"Node-path: caf\xE9/\xFFx\nNode-kind: file\nNode-action: add\n\n");
+    let err = parse_dump(&d).unwrap_err();
+    match err {
+        crate::Error::Read(m) => {
+            assert!(m.contains("caf\\xE9/\\xFFx"), "escaped bytes shown: {m}");
+            assert!(!m.contains('\u{FFFD}'), "no lossy substitution: {m}");
+        }
+        other => panic!("expected Read, got {other:?}"),
+    }
+}
+
+#[test]
+fn escaping_keeps_valid_utf8_verbatim_and_escapes_only_invalid_bytes() {
+    use super::escape_invalid_utf8;
+    assert_eq!(escape_invalid_utf8("café/日本".as_bytes()), "café/日本");
+    assert_eq!(escape_invalid_utf8(b"a\xC3"), "a\\xC3");
+    assert_eq!(escape_invalid_utf8(b"\xFF\xFEok"), "\\xFF\\xFEok");
+}
+
+#[test]
+fn an_overlong_offending_line_is_truncated_in_the_message() {
+    let mut d = header();
+    d.extend(revision(0, &[("svn:date", "2024-01-01T00:00:00.000000Z")]));
+    d.extend(revision(1, &[("svn:log", "x")]));
+    d.extend(b"Node-path: ");
+    d.extend(std::iter::repeat_n(0xFFu8, 100_000));
+    d.extend(b"\nNode-kind: file\nNode-action: add\n\n");
+    match parse_dump(&d).unwrap_err() {
+        crate::Error::Read(m) => {
+            assert!(m.len() < 2_000, "message stays bounded: {} bytes", m.len())
+        }
+        other => panic!("expected Read, got {other:?}"),
+    }
+}

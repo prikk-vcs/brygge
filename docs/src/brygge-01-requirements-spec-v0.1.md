@@ -3,18 +3,18 @@
 | | |
 |---|---|
 | Document | brygge Requirements (what it must do, must never do, and must decide) |
-| Version | v0.2 (draft for review) |
-| Date | 2026-09-03 |
-| Basis | RFC 113 (History import foundations, Proposed) as the governing import contract; prikk reality per the 2026-08-31 audit (then 0.27.1; the live core has since moved to 0.28 — the prikk-side dependencies §11 are to be **re-verified against the current prikk when encoder design begins**, and none of them gate the decode/IR half); project rules in `.git-exclude/rules/` |
+| Version | v0.3 (for the 0.1.0 release) |
+| Date | 2026-09-24 (v0.3: prikk facts re-verified against prikk 0.46.0 on 2026-09-23, and the owner rulings on RFC 113 recorded; v0.2 2026-09-03) |
+| Basis | RFC 113 (History import foundations, **Accepted**; §4.3–§4.5 ruled by prikk's owner on 2026-09-13) as the governing import contract; prikk reality per the 2026-08-31 audit (prikk 0.27.1), **re-verified against prikk 0.46.0 on 2026-09-23** (§11, §12); none of the prikk-side dependencies gate the decode/IR half; project rules in `.git-exclude/rules/` |
 | Not | a design, a schema, an API, or code. Where a decision belongs to a human, it is named in §11/§12 and left there. |
 | ID scheme | `PU-` purpose · `NG-` non-goal · `PR-` preserve rule · `HO-` honesty rule · `VF-` verification · `ID-` idempotence · `FA-` failure · `BN-` boundary · `IR-` IR obligation · `SRC-` per-source · `UD-` prikk-side dependency · `OQ-` open question |
 
-> **Delivery status (2026-09-12).** The **decode → IR half is delivered** against these requirements for all
-> four named sources (Git, hg, SVN, CVS) — see
-> [`development/handoffs/HANDOFF.md`](development/handoffs/HANDOFF.md) and `rfcs/`. This
-> document remains the stable contract those decoders satisfy. The **encode → prikk half** (§11 UD-*, §12
-> OQ-1/OQ-2) is owner/prikk-gated and not yet started past design; its §11 UD table (written at prikk
-> 0.27.1) is to be **re-verified against the current prikk** when encoder design begins.
+> **Delivery status (2026-09-24).** The **decode → IR half is built** against these requirements for all
+> four named sources (Git, hg, SVN, CVS) and is being prepared as the first release, **0.1.0** — see
+> [`development/handoffs/HANDOFF.md`](development/handoffs/HANDOFF.md), `ROADMAP.md` and `rfcs/`. This
+> document remains the stable contract those decoders satisfy. The **encode → prikk half** waits on prikk:
+> §11 and §12 record prikk's state and rulings as re-verified against prikk 0.46.0 on 2026-09-23.
+> **prikk decides its import design; brygge informs it** (ROADMAP, Track B).
 
 **brygge** (Norwegian: *wharf* — where cargo is landed) carries version-control history **out of** existing systems (Git, Mercurial, Subversion, CVS — and, by design, others) and **into** a different one, through an **intermediate representation (IR)** that belongs to no particular system. The pipeline is two deliberately separated halves: **decode** a source into the IR; **encode** a target from the IR. The first target is prikk; the IR and decoders are meant to be reusable so other version-control projects can write their own encoders and get import "for free," and so a new *source* is a new decoder against the same IR, not a redesign.
 
@@ -30,7 +30,7 @@ The governing sentence, inherited from RFC 113 and binding on everything below: 
 
 **(b) prikk's receiving surface for imports is *ruled but not built*.** This is the single most important fact for scoping brygge, and it is easy to get wrong. RFC 113 §4.1/§4.2 and §3.1 are *ruled*; the runnable prikk surface behind them is not:
 
-| Thing brygge would need on the prikk side | State in prikk 0.27.1 | Consequence for brygge |
+| Thing brygge would need on the prikk side | State in prikk 0.27.1 (the 2026-08-31 audit; §11 has the 0.46.0 state) | Consequence for brygge |
 |---|---|---|
 | An `Attestation` carrying import provenance | Type defined and gated, **never constructed in production**; current fields (`policy_version`, `plugin_set_hash`, plugin `results`, Pass/Warn/Fail status) are **audit-shaped, not import-shaped** — using it for imports "is a format change if so" (RFC 113 §4.1) | brygge cannot assume an import-attestation shape exists; it is a **prikk-side dependency (UD-1)** |
 | An `Import` block kind | Code defined, but **currently refused** by prikk's block validator ("Block kind is not authorized") | brygge cannot produce a prikk-storable import block today — **UD-2** |
@@ -47,7 +47,7 @@ The honest reading: brygge can be built and be genuinely useful **now** for deco
 - **PU-2 — Encode prikk from the IR** as the first target, satisfying prikk's import contract (RFC 113) once its receiving surface exists (UD-1…UD-3). Until then, encode a *reviewable proposal*, not sealed history.
 - **PU-3 — Be a reusable VCS-abstraction, not a prikk-only feeder — in both directions.** The IR is the reusable core. **Targets:** a second target's encoder must be writable against the IR alone, without reading brygge's prikk encoder and without brygge changing; prikk is the **first and most demanding** client (it needs node identity and provenance), not the only one, and a snapshot-based target must also be encodable from the same IR. **Sources:** a new source (the owner names Git, Mercurial, Subversion, CVS, *"etc."*) must be a **new decoder implemented against the shared IR obligations (§10)**, not a modification of the IR or of existing decoders. Source-extensibility and target-extensibility are symmetric properties of the same IR; neither may bake in the other side's assumptions (IR-1/IR-6).
 - **PU-4 — Make the fidelity of an import legible to the person who ran it and to a later third party** — the honesty and verification requirements (§4, §5) are the product, as much as the bytes.
-- **PU-5 — Carry the dependency weight prikk refuses to.** brygge exists *because* a Git decoder needs `gix` (~100 crates) or `libgit2` (C), which would be a step change in prikk's five-crate audited surface. brygge owns that weight so prikk stays small; this is a purpose because it governs brygge's boundaries (§8) — brygge's output must be checkable by a prikk that never links a single brygge dependency.
+- **PU-5 — Carry the dependency weight prikk refuses to.** brygge exists *because* a Git decoder needs `gix` (~100 crates) or `libgit2` (C), which would be a step change in prikk's deliberately small audited dependency surface. brygge owns that weight so prikk stays small; this is a purpose because it governs brygge's boundaries (§8) — brygge's output must be checkable by a prikk that never links a single brygge dependency.
 - **PU-6 — The decode → IR half is independently stabilizable, and stability is a deliverable.** Because decode depends only on the (decades-stable) source systems and not on prikk, the decode/IR half must be able to reach a **durable, versioned contract** (IX-07 for the IR; a stable tool surface for `decode`/`inspect`/`verify`) **before** the encode-to-prikk half is finished — indeed before prikk's receiving surface exists at all. Every requirement is written so that decode, the IR, inspection, and internal/against-source verification form a complete product on their own (PU-1), with the encoder as a separable consumer. "Stabilize the first half" is therefore a property the requirements must not obstruct: no decode/IR obligation may be defined in terms of a prikk-side dependency (§11).
 
 ## 2. Non-goals (NG-…) — stated as firmly as the goals
@@ -139,7 +139,7 @@ The four named sources form a **difficulty gradient**, which is also the recomme
 - **BN-2 — The target owns: admission, trust, verification, and storage.** Whether the produced objects are accepted, whether they are trusted, whether they are sealed, and how they are stored are the target's decisions. brygge produces material *about which* the target decides (NG-6).
 - **BN-3 — The provenance interface is the boundary.** brygge's obligation to the target is to supply provenance (PR-6) sufficient for the target to make its admission/trust/dedup/seal decisions; the target's obligation is to have a place to put it and a policy about it. For prikk that place is an `Attestation` (RFC 113 §4.1) — which does not yet fit (UD-1).
 - **BN-4 — brygge never manipulates target history.** No merge, rebase, reconcile, or seal on the target's behalf. A re-import is a fresh translation (ID-2); what the target does with it is the target's.
-- **BN-5 — brygge's dependency weight stops at its own boundary.** brygge may depend on `gix`/`libgit2`/SVN/CVS libraries freely (PU-5), but **nothing brygge produces may require the target to link any of them**. A prikk repository must be able to verify a brygge import using only prikk's own five-crate surface; the import's checkability (VF-3) must not route through a brygge dependency. This is the concrete meaning of "brygge carries the weight, prikk does not."
+- **BN-5 — brygge's dependency weight stops at its own boundary.** brygge may depend on `gix`/`libgit2`/SVN/CVS libraries freely (PU-5), but **nothing brygge produces may require the target to link any of them**. A prikk repository must be able to verify a brygge import using only prikk's own dependency surface; the import's checkability (VF-3) must not route through a brygge dependency. This is the concrete meaning of "brygge carries the weight, prikk does not."
 
 ## 9. Failure behaviour (FA-…)
 
@@ -164,19 +164,26 @@ The IR is the reusable core (PU-3) and the place all three honesty disciplines l
 
 These are prikk's to build (RFC 113 §4); brygge's requirements name them so no requirement above silently assumes them. They gate PU-2 (real prikk imports), not PU-1/PU-3 (decode, IR, other targets).
 
-| ID | Dependency | prikk state today | What it gates |
+| ID | Dependency | prikk state (re-verified at prikk 0.46.0, 2026-09-23) | What it gates |
 |---|---|---|---|
-| **UD-1** | An `Attestation` shape that fits import provenance | Type defined, never constructed; current fields are audit-shaped; import use "is a format change" (RFC 113 §4.1, RFC 114 frozen surface) | BN-3, VF-4 for prikk — brygge cannot emit a prikk import attestation until its shape exists |
-| **UD-2** | An authorized `Import` block kind (or a ruling that imports use `Normal` blocks) | `Import` kind **defined but refused** by the block validator | Whether brygge can produce prikk-storable import blocks at all |
-| **UD-3** | A ruling on whether imported history may be sealed, and by whom | Open owner question (RFC 113 §4.4) | Whether a brygge import can become sealed prikk history or only an unsealed proposal |
-| **UD-4** | A deterministic identity contract for import-time fields | prikk pins history `created_at=0`, but `AttestationPayload` carries an **authoritative** `created_at` | ID-4 / VF-1 — brygge must know which import fields are identity-bearing so re-runs are reproducible |
-| **UD-5** | Format stability (Badge criterion 2) and sync (criterion 1) | Both open (RFC 113 §6) | Writing "the largest repositories in the project's life against an unstated format contract" is a risk brygge must not take before the format is stable; and an import that cannot be exchanged is half a migration |
+| **UD-1** | An `Attestation` shape that fits import provenance | **Unbuilt.** The type exists but is audit-shaped; import use is a prikk format change (RFC 113 §4.1, RFC 114) | BN-3, VF-4 for prikk: no prikk import attestation can exist until its shape does |
+| **UD-2** | An authorized `Import` block kind (or a ruling that imports use `Normal` blocks) | **Unbuilt.** The `Import` kind is defined but refused by the block validator | Whether prikk can store import blocks at all |
+| **UD-3** | A ruling on whether imported history may be sealed, and by whom | **Ruled 2026-09-13** (RFC 113 §4.4): only an adopted maintainer seals imported history | Settled: imported history can become sealed prikk history, by an adopted maintainer's act |
+| **UD-4** | A deterministic identity contract for import-time fields | **Ruled 2026-09-23** by prikk's architect (reply to brygge letter 001): an import attestation's `created_at` is the zero sentinel, and its payload is wholly identity-bearing | ID-4 / VF-1: re-runs are reproducible; brygge's IR carries no import time either (IR contract 0.2.0) |
+| **UD-5** | Format stability (Badge criterion 2) and sync (criterion 1) | **Met** (prikk RFC 114 format stability; sync) | Settled |
 
-Until UD-1…UD-3 land, brygge's prikk encoder produces a **reviewable proposal** (labelled, unsealed, `Unverifiable`), never sealed history — and says so.
+**The importer is prikk's own import command, run by an adopted maintainer** (prikk's architect,
+2026-09-23). prikk's import theme is unscheduled; brygge informs it with its requirements, and its encoder
+(ROADMAP Track B1) is built once UD-1 and UD-2 exist, conforming to what prikk decides.
 
 ## 12. Open questions — the ones that are not brygge's to answer (OQ-…)
 
 Per RFC 113 §4.3–§4.5, these belong to the **receiving project's owner**. brygge names each, states what it changes downstream, and stops.
+
+*Status (re-verified 2026-09-23):* **OQ-1, OQ-2 and OQ-3 (for Git) were ruled by prikk's owner on
+2026-09-13** (RFC 113 §4.3–§4.5): the importer signs the import declaration; only an adopted maintainer
+seals imported history; and for Git, refuse, never approximate. The questions are kept below as posed,
+because the requirements above cite them. OQ-4 remains prikk's to specify.
 
 - **OQ-1 — What, if anything, the importer signs.** *"I imported this from that source"* is a true, signable claim; *"this person authored this"* is not the importer's to assert. **Downstream effect:** whether every prikk import carries a signed import-attestation (and what `verify` says about an import with none) — it changes what a bundle receiver sees and whether an import has any authenticated provenance at all. This is DC-35 territory (who may sign what). **Not brygge's.**
 - **OQ-2 — Whether imported history may be sealed at all, and by whom.** Sealing is a maintainer act with a verified signature; a maintainer sealing imported blocks makes a real inclusion claim. **Downstream effect:** whether a migration ends in native sealed history or a permanently-unsealed imported tier — the difference between "migrated to prikk" and "readable in prikk." **Not brygge's** (UD-3).

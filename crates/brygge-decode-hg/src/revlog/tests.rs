@@ -321,3 +321,331 @@ fn a_snapshot_length_mismatch_against_the_index_is_a_read_error() {
         other => panic!("expected Error::Read, got {other:?}"),
     }
 }
+
+// ---- release-prep §1: every revision is verified against its node ---------------------------------------
+
+/// Mercurial's revision hash, written out independently of the reader under test:
+/// `sha1(min(p1,p2) ‖ max(p1,p2) ‖ text)` with the null parent as 20 zero bytes
+/// (`utils/storageutil.py` `hashrevisionsha1`).
+fn hg_node(text: &[u8], p1: [u8; 20], p2: [u8; 20]) -> [u8; 20] {
+    use sha1_checked::{Digest, Sha1};
+    let (a, b) = if p1 < p2 { (p1, p2) } else { (p2, p1) };
+    let mut h = Sha1::new();
+    Digest::update(&mut h, a);
+    Digest::update(&mut h, b);
+    Digest::update(&mut h, text);
+    h.finalize().into()
+}
+
+/// One hand-built revision: the text it is *stored* with, the text its node is *computed* from, its
+/// parents (revision numbers within the same revlog, `-1` for null) and flags.
+struct HandRev<'a> {
+    stored: &'a [u8],
+    hashed: &'a [u8],
+    p1: i32,
+    p2: i32,
+    flags: u16,
+}
+
+impl<'a> HandRev<'a> {
+    fn honest(text: &'a [u8], p1: i32, p2: i32) -> Self {
+        Self {
+            stored: text,
+            hashed: text,
+            p1,
+            p2,
+            flags: 0,
+        }
+    }
+}
+
+/// Hand-build a split revlog of full-snapshot revisions with **correct** nodes (except where a `HandRev`
+/// stores different text than it hashed). Returns the index path and every revision's node.
+fn write_revlog(dir: &Path, name: &str, revs: &[HandRev<'_>]) -> (PathBuf, Vec<[u8; 20]>) {
+    let mut nodes: Vec<[u8; 20]> = Vec::new();
+    let mut index = Vec::new();
+    let mut data = Vec::new();
+    for (i, r) in revs.iter().enumerate() {
+        let node_of = |p: i32| -> [u8; 20] {
+            if p < 0 {
+                [0u8; 20]
+            } else {
+                nodes[usize::try_from(p).unwrap()]
+            }
+        };
+        let node = hg_node(r.hashed, node_of(r.p1), node_of(r.p2));
+        let mut chunk = vec![b'u'];
+        chunk.extend_from_slice(r.stored);
+        let mut entry = vec![0u8; 64];
+        if i == 0 {
+            entry[0..4].copy_from_slice(&1u32.to_be_bytes()); // format version 1, not inline
+        }
+        entry[6..8].copy_from_slice(&r.flags.to_be_bytes());
+        entry[8..12].copy_from_slice(&u32::try_from(chunk.len()).unwrap().to_be_bytes());
+        entry[12..16].copy_from_slice(&u32::try_from(r.stored.len()).unwrap().to_be_bytes());
+        entry[16..20].copy_from_slice(&i32::try_from(i).unwrap().to_be_bytes()); // full snapshot
+        entry[20..24].copy_from_slice(&i32::try_from(i).unwrap().to_be_bytes()); // link_rev
+        entry[24..28].copy_from_slice(&r.p1.to_be_bytes());
+        entry[28..32].copy_from_slice(&r.p2.to_be_bytes());
+        entry[32..52].copy_from_slice(&node);
+        index.extend_from_slice(&entry);
+        data.extend_from_slice(&chunk);
+        nodes.push(node);
+    }
+    let index_path = dir.join(format!("{name}.i"));
+    std::fs::write(&index_path, &index).unwrap();
+    std::fs::write(dir.join(format!("{name}.d")), &data).unwrap();
+    (index_path, nodes)
+}
+
+fn hex(node: &[u8; 20]) -> String {
+    crate::util::hex(node)
+}
+
+#[test]
+fn honest_revisions_verify_including_a_merge_and_either_parent_order() {
+    let dir = unique_dir("verify-ok");
+    let (path, _) = write_revlog(
+        &dir,
+        "ok",
+        &[
+            HandRev::honest(b"root\n", -1, -1),
+            HandRev::honest(b"child\n", 0, -1),
+            // Mercurial's filelog stores a has-meta revision as (null, p) as well as (p, null): the hash
+            // is symmetric in its parents, and both orders must verify.
+            HandRev::honest(b"swapped\n", -1, 1),
+            HandRev::honest(b"merge\n", 1, 2),
+            HandRev::honest(b"merge, other order\n", 2, 1),
+        ],
+    );
+    let rl = Revlog::open(&path).unwrap();
+    for rev in 0..rl.len() {
+        rl.revision(rev)
+            .unwrap_or_else(|e| panic!("rev {rev} should verify: {e:?}"));
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn text_altered_without_updating_the_node_is_refused_naming_the_node() {
+    let dir = unique_dir("verify-altered");
+    let (path, nodes) = write_revlog(
+        &dir,
+        "bad",
+        &[
+            HandRev::honest(b"root\n", -1, -1),
+            HandRev {
+                stored: b"tampered\n",
+                hashed: b"original\n",
+                p1: 0,
+                p2: -1,
+                flags: 0,
+            },
+        ],
+    );
+    let rl = Revlog::open(&path).unwrap();
+    rl.revision(0)
+        .expect("the untouched revision still verifies");
+    match rl.revision(1) {
+        Err(crate::Error::Read(msg)) => {
+            assert_eq!(
+                msg,
+                format!(
+                    "revision {} does not match its content (corrupt or crafted store)",
+                    hex(&nodes[1])
+                )
+            );
+        }
+        other => panic!("expected the exact mismatch Read error, got {other:?}"),
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_wrong_parent_changes_the_hash_and_is_refused() {
+    // The node commits to the parents too: the same text under a different parent does not verify.
+    let dir = unique_dir("verify-parent");
+    let (path, _) = write_revlog(&dir, "p", &[HandRev::honest(b"a\n", -1, -1)]);
+    let mut index = std::fs::read(&path).unwrap();
+    // Append a second revision whose node was computed with the root as p1, but whose index entry (copied
+    // from the root's) claims null parents.
+    let mut second = index[..64].to_vec();
+    second[0..4].copy_from_slice(&[0, 0, 0, 0]);
+    let root_node: [u8; 20] = index[32..52].try_into().unwrap();
+    second[32..52].copy_from_slice(&hg_node(b"a\n", root_node, [0u8; 20]));
+    second[16..20].copy_from_slice(&1i32.to_be_bytes());
+    index.extend_from_slice(&second); // p1/p2 stay -1 (copied from the root entry)
+    std::fs::write(&path, &index).unwrap();
+    let mut data = std::fs::read(dir.join("p.d")).unwrap();
+    data.extend_from_slice(b"ua\n");
+    std::fs::write(dir.join("p.d"), &data).unwrap();
+    let rl = Revlog::open(&path).unwrap();
+    rl.revision(0).unwrap();
+    match rl.revision(1) {
+        Err(crate::Error::Read(msg)) => {
+            assert!(msg.contains("does not match its content"), "{msg}")
+        }
+        other => panic!("expected a mismatch, got {other:?}"),
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_parent_revision_out_of_range_is_a_read_error_not_a_panic() {
+    let dir = unique_dir("verify-oob");
+    let (path, _) = write_revlog(&dir, "oob", &[HandRev::honest(b"a\n", -1, -1)]);
+    let mut index = std::fs::read(&path).unwrap();
+    index[24..28].copy_from_slice(&7i32.to_be_bytes()); // p1 = rev 7, which does not exist
+    std::fs::write(&path, &index).unwrap();
+    let rl = Revlog::open(&path).unwrap();
+    assert!(matches!(rl.revision(0), Err(crate::Error::Read(_))));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_filelog_revision_with_copy_metadata_verifies_because_the_header_is_hashed() {
+    // A filelog revision's raw text starts with `\1\ncopy: …\ncopyrev: …\n\1\n`; the node hashes all of it.
+    let dir = unique_dir("verify-meta");
+    let with_header: &[u8] =
+        b"\x01\ncopy: old.txt\ncopyrev: 0123456789abcdef0123456789abcdef01234567\n\x01\ncontent\n";
+    let (path, nodes) = write_revlog(&dir, "meta", &[HandRev::honest(with_header, -1, -1)]);
+    let rl = Revlog::open(&path).unwrap();
+    assert_eq!(rl.revision(0).unwrap(), with_header);
+
+    // ... and a node computed over the header-stripped text does NOT verify the stored header'd text.
+    let stripped: &[u8] = b"content\n";
+    assert_ne!(nodes[0], hg_node(stripped, [0; 20], [0; 20]));
+    let dir2 = unique_dir("verify-meta-stripped");
+    let (path2, _) = write_revlog(
+        &dir2,
+        "meta",
+        &[HandRev {
+            stored: with_header,
+            hashed: stripped,
+            p1: -1,
+            p2: -1,
+            flags: 0,
+        }],
+    );
+    let rl2 = Revlog::open(&path2).unwrap();
+    assert!(matches!(rl2.revision(0), Err(crate::Error::Read(_))));
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&dir2);
+}
+
+// The revision-flag table (release-prep §1): which flags still verify, which are refused.
+
+fn flagged(flags: u16) -> Result<Vec<u8>, crate::Error> {
+    let dir = unique_dir("flags");
+    let (path, _) = write_revlog(
+        &dir,
+        "f",
+        &[HandRev {
+            stored: b"text\n",
+            hashed: b"text\n",
+            p1: -1,
+            p2: -1,
+            flags,
+        }],
+    );
+    let rl = Revlog::open(&path).unwrap();
+    let r = rl.revision(0);
+    let _ = std::fs::remove_dir_all(&dir);
+    r
+}
+
+#[test]
+fn the_hash_neutral_flags_verify_as_normal() {
+    for (name, flag) in [
+        ("has-copies-info", 1u16 << 12),
+        ("has-meta", 1 << 11),
+        ("delta-is-snapshot", 1 << 10),
+        ("delta-has-quality", 1 << 9),
+        ("delta-is-good", 1 << 8),
+        ("delta-p1-small", 1 << 7),
+        ("delta-p2-small", 1 << 6),
+    ] {
+        assert_eq!(
+            flagged(flag).unwrap(),
+            b"text\n",
+            "flag {name} should verify"
+        );
+    }
+    assert_eq!(
+        flagged((1 << 12) | (1 << 11) | (1 << 10)).unwrap(),
+        b"text\n"
+    );
+}
+
+fn assert_refused(flags: u16, feature: &str) {
+    match flagged(flags) {
+        Err(crate::Error::FloorRefusal { feature: f, .. }) => assert_eq!(f, feature),
+        other => panic!("flags {flags:#06x}: expected FloorRefusal({feature}), got {other:?}"),
+    }
+}
+
+#[test]
+fn flags_whose_stored_text_is_not_the_hashed_text_are_refused_by_name() {
+    assert_refused(1 << 15, "censored-revision");
+    assert_refused(1 << 14, "ellipsis-revision");
+    assert_refused(1 << 13, "external-storage-revision");
+    // A neutral flag does not rescue a refused one.
+    assert_refused((1 << 14) | (1 << 11), "ellipsis-revision");
+}
+
+#[test]
+fn a_flag_bit_mercurial_does_not_define_is_refused() {
+    for bit in 0..6u16 {
+        assert_refused(1 << bit, "unknown-revision-flag");
+    }
+}
+
+// ---- review 012 F-2: the collision path and the ordinary path through the same helper ----------------
+
+const SHAMBLES: &[u8] = include_bytes!("testdata/sha-mbles-1.bin");
+
+fn arr20(b: &[u8]) -> [u8; 20] {
+    b.try_into().unwrap()
+}
+
+#[test]
+fn a_sha1_collision_input_is_refused_with_the_exact_collision_error() {
+    // The SHAmbles vector, split so it is fed to the hash as `lo ‖ hi ‖ text` (the real chosen-prefix
+    // collision block), exactly as a crafted revision would present it.
+    assert_eq!(SHAMBLES.len(), 640);
+    let lo = arr20(&SHAMBLES[0..20]);
+    let hi = arr20(&SHAMBLES[20..40]);
+    let text = &SHAMBLES[40..];
+    let node = [0xabu8; 20];
+    let err = super::check_revision_hash(&node, &lo, &hi, text).unwrap_err();
+    let expected = format!(
+        "revision {} triggers SHA-1 collision detection (crafted store)",
+        crate::util::hex(&node)
+    );
+    assert!(
+        matches!(&err, crate::Error::Read(m) if *m == expected),
+        "expected the exact collision error, got {err:?}"
+    );
+}
+
+#[test]
+fn an_ordinary_input_passes_through_the_same_helper_and_a_wrong_node_does_not() {
+    use sha1_checked::{Digest, Sha1};
+    let lo = [1u8; 20];
+    let hi = [2u8; 20];
+    let text = b"ordinary revision text";
+    let mut h = Sha1::new();
+    Digest::update(&mut h, lo);
+    Digest::update(&mut h, hi);
+    Digest::update(&mut h, text);
+    let node: [u8; 20] = h.finalize().into();
+    super::check_revision_hash(&node, &lo, &hi, text).unwrap();
+
+    let wrong = [0u8; 20];
+    let err = super::check_revision_hash(&wrong, &lo, &hi, text).unwrap_err();
+    let expected = format!(
+        "revision {} does not match its content (corrupt or crafted store)",
+        crate::util::hex(&wrong)
+    );
+    assert!(matches!(&err, crate::Error::Read(m) if *m == expected));
+}

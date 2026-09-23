@@ -27,9 +27,10 @@ impl Source {
                 if shown.starts_with(':') || shown.contains("://") {
                     return Err(Error::FloorRefusal {
                         feature: floor::REMOTE_SOURCE.to_string(),
-                        reason: "brygge reads a local CVS repository directly; a :pserver:/:ext:/URL \
-                                 source is refused, and no `cvs` client is run (INV-3, RFC 007 §D-1)"
-                            .to_string(),
+                        reason:
+                            "brygge reads a local CVS repository directly; a :pserver:/:ext:/URL \
+                                 source is refused, and no `cvs` client is run"
+                                .to_string(),
                     });
                 }
                 if !path.is_dir() {

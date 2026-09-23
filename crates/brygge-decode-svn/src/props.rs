@@ -83,10 +83,10 @@ pub fn symlink_target(content: &[u8]) -> Option<Vec<u8>> {
 pub fn check_externals(node_path: &str, props: &PropSlice) -> Result<(), Error> {
     if has(props, SVN_EXTERNALS) {
         return Err(Error::FloorRefusal {
-            feature: SVN_EXTERNALS.to_string(),
+            feature: crate::floor::EXTERNALS.to_string(),
             reason: format!(
                 "svn:externals on '{node_path}' references other repositories (a network/trust \
-                 surface, INV-3); refused rather than resolved (RFC 006 §4)"
+                 surface); refused rather than resolved"
             ),
         });
     }

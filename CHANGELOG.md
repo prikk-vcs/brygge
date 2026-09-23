@@ -9,6 +9,38 @@ own commit.
 
 ## [Unreleased]
 
+### 0.1.0 release preparation: verified Mercurial nodes, one floor vocabulary, plain-language text
+
+#### Changed
+
+- **Breaking:** floor features are now identifiers (lowercase kebab-case), and the same concept has the same
+  identifier in every decoder (`non-utf8-path` in Git, hg and CVS; `remote-source` in SVN and CVS). Refusals
+  and `params["floor"]` use them, so **`params["floor"]` changes in every Git, hg and SVN artifact**.
+  Renamed: Git `replace-ref`, `shallow-clone`, `object-alternates`, `redirected-git-directory`,
+  `non-utf8-ref-name`, `non-utf8-commit-header-name`, `sha256-object-format`; hg `censored-revision`,
+  `unfinished-merge`, `non-utf8-extra-key`; SVN `svn-externals`. Each decoder's README has a Floor table.
+- **Breaking:** artifact text (drop and flag reasons, refusal messages) and `--help` no longer carry internal
+  RFC/requirement numbers or stale phrases, so the reasons in artifacts change. `--help`'s vocabulary now
+  lists **flagged**.
+- **Breaking (repositories with a secret root):** the Mercurial `repo_id` is now the smallest root node among
+  the *published* changesets, not among all changesets, so it equals the identity of an `hg clone` of the
+  repository and every identifier that reaches the artifact comes from a changeset that was read and verified.
+  A repository whose smallest-node root is secret gets a different `repo_id`; other repositories are unchanged.
+- Mercurial: a non-UTF-8 manifest path is now a refusal (exit 20, bytes shown as `\xNN`) instead of a read
+  error, matching Git and CVS. Subversion keeps a read error (a dumpstream's paths are UTF-8 by definition)
+  and now shows the bytes as `\xNN`.
+- The output artifact's temporary file is created exclusively: a file or symlink already at that path makes
+  the write fail and is never followed, truncated or removed.
+
+#### Added
+
+- Mercurial: every revision brygge reads (changelog, manifest, filelog) is checked against its node with
+  Mercurial's own revision hash (collision-detecting SHA-1), so a crafted store cannot present content under
+  a node it does not hash to. Revisions whose stored text is not the hashed text (ellipsis, external
+  storage) and unknown revision flags are refused by name. Adds a dependency edge to `sha1-checked`, already
+  in the lock file through `gix`; no new crate.
+- CI runs the documentation link check.
+
 ### Hardening: overflow checks stay on in release builds
 
 #### Changed

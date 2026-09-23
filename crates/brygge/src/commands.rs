@@ -390,27 +390,31 @@ pub fn faithfulness_statement(kind: SourceKind) -> &'static str {
     }
 }
 
-/// Write `bytes` atomically to `out` (CR-13): a temp file in the same directory, flushed and
-/// `sync_all`'d, then renamed over `out`. On any failure the temp file is removed and `out` is untouched.
+/// Write `bytes` atomically to `out`: a temp file in the same directory, flushed and `sync_all`'d, then
+/// renamed over `out`. The temp file is created with `create_new`, so a pre-existing file or symlink at
+/// that path is an error — never followed, never truncated, and never removed (it is not ours). On any
+/// later failure the temp file we created is removed and `out` is untouched.
 fn atomic_write(out: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let dir = out
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
-    let file_name = out
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "artifact".to_string());
-    let tmp = dir.join(format!(".{file_name}.brygge-tmp-{}", std::process::id()));
+    // Built from the raw `OsStr` name, never a lossy conversion, so a non-UTF-8 output name still works.
+    let mut tmp_name = std::ffi::OsString::from(".");
+    tmp_name.push(out.file_name().unwrap_or_else(|| "artifact".as_ref()));
+    tmp_name.push(format!(".brygge-tmp-{}", std::process::id()));
+    let tmp = dir.join(tmp_name);
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&tmp)?;
     let result = (|| -> std::io::Result<()> {
-        let mut f = std::fs::File::create(&tmp)?;
         f.write_all(bytes)?;
         f.sync_all()?;
         std::fs::rename(&tmp, out)?;
         // The rename is atomic but not yet durable across a power loss until the directory entry
-        // itself is synced (review 003 A-2). Best-effort: some platforms cannot open a directory as a
-        // file at all, and the rename has already succeeded either way, so a failure here is not the
-        // write's failure.
+        // itself is synced. Best-effort: some platforms cannot open a directory as a file at all, and
+        // the rename has already succeeded either way, so a failure here is not the write's failure.
         if let Ok(d) = std::fs::File::open(dir) {
             let _ = d.sync_all();
         }

@@ -151,7 +151,7 @@ fn dump_local_repo(path: &Path, limits: &Limits) -> Result<Vec<u8>, Error> {
         return Err(Error::FloorRefusal {
             feature: floor::REMOTE_SOURCE.to_string(),
             reason: "brygge dumps only a local repository; a URL/remote source is refused, and \
-                     `svnrdump` (network) is out of scope (INV-3, RFC 006 §4)"
+                     `svnrdump` (network) is out of scope"
                 .to_string(),
         });
     }

@@ -167,6 +167,39 @@ fn header_true(headers: &[(String, String)], key: &str) -> bool {
     header_get(headers, key) == Some("true")
 }
 
+/// How many bytes of an offending line an error message shows, so a hostile dump cannot make a message
+/// arbitrarily long.
+const MAX_SHOWN_BYTES: usize = 256;
+
+/// Render `bytes` as valid UTF-8 kept verbatim and each invalid byte escaped as `\xNN` — never a lossy
+/// substitution, which would silently alter the bytes an error message names.
+pub(crate) fn escape_invalid_utf8(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(bytes.len());
+    let mut rest = bytes;
+    while !rest.is_empty() {
+        match std::str::from_utf8(rest) {
+            Ok(valid) => {
+                out.push_str(valid);
+                break;
+            }
+            Err(e) => {
+                let valid_up_to = e.valid_up_to();
+                out.push_str(
+                    std::str::from_utf8(rest.get(..valid_up_to).unwrap_or(&[])).unwrap_or_default(),
+                );
+                let bad_len = e.error_len().unwrap_or(rest.len() - valid_up_to).max(1);
+                let bad_end = (valid_up_to + bad_len).min(rest.len());
+                for &b in rest.get(valid_up_to..bad_end).unwrap_or(&[]) {
+                    let _ = write!(out, "\\x{b:02X}");
+                }
+                rest = rest.get(bad_end..).unwrap_or(&[]);
+            }
+        }
+    }
+    out
+}
+
 /// Read a header block: `Header: value` lines until a blank line or EOF.
 fn read_header_block(cur: &mut Cursor) -> Result<Vec<(String, String)>, Error> {
     let mut out = Vec::new();
@@ -174,8 +207,13 @@ fn read_header_block(cur: &mut Cursor) -> Result<Vec<(String, String)>, Error> {
         if line.is_empty() {
             break;
         }
-        let s = std::str::from_utf8(line)
-            .map_err(|_| Error::Read("a dumpstream header line is not valid UTF-8".to_string()))?;
+        let s = std::str::from_utf8(line).map_err(|_| {
+            Error::Read(format!(
+                "a dumpstream header line (a node path, for instance) is not valid UTF-8 (invalid bytes \
+                 shown as \\xNN): {}",
+                escape_invalid_utf8(line.get(..MAX_SHOWN_BYTES).unwrap_or(line))
+            ))
+        })?;
         match s.split_once(": ") {
             Some((k, v)) => out.push((k.to_string(), v.to_string())),
             None => {

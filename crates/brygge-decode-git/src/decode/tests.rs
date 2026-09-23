@@ -348,7 +348,7 @@ fn refuses_shallow_and_grafts_and_replace() {
     .unwrap();
     assert!(matches!(
         decode(r.path(), &Options::default()),
-        Err(crate::Error::FloorRefusal { ref feature, .. }) if feature == "shallow clone"
+        Err(crate::Error::FloorRefusal { ref feature, .. }) if feature == "shallow-clone"
     ));
 
     // Grafts.
@@ -377,7 +377,7 @@ fn refuses_shallow_and_grafts_and_replace() {
     r.git(&["replace", &c2, &c1]);
     assert!(matches!(
         decode(r.path(), &Options::default()),
-        Err(crate::Error::FloorRefusal { ref feature, .. }) if feature == "replace ref"
+        Err(crate::Error::FloorRefusal { ref feature, .. }) if feature == "replace-ref"
     ));
 }
 
@@ -881,7 +881,7 @@ fn alternates_are_refused_but_an_empty_file_is_not() {
     );
 
     match decode(&clone_dir, &Options::default()) {
-        Err(crate::Error::FloorRefusal { feature, .. }) => assert_eq!(feature, "object alternates"),
+        Err(crate::Error::FloorRefusal { feature, .. }) => assert_eq!(feature, "object-alternates"),
         other => panic!("expected an object-alternates refusal, got {other:?}"),
     }
     let _ = std::fs::remove_dir_all(&clone_dir);
@@ -926,7 +926,7 @@ fn redirected_git_directory_is_refused_but_main_repo_succeeds() {
     // The linked worktree's `.git` is a file (a `gitdir:` redirect).
     match decode(&worktree_dir, &Options::default()) {
         Err(crate::Error::FloorRefusal { feature, .. }) => {
-            assert_eq!(feature, "redirected git directory");
+            assert_eq!(feature, "redirected-git-directory");
         }
         other => panic!("expected a redirected-git-directory refusal, got {other:?}"),
     }
@@ -967,7 +967,7 @@ fn a_symlinked_git_directory_is_refused() {
 
     match decode(&outer, &Options::default()) {
         Err(crate::Error::FloorRefusal { feature, .. }) => {
-            assert_eq!(feature, "redirected git directory");
+            assert_eq!(feature, "redirected-git-directory");
         }
         other => panic!("expected a redirected-git-directory refusal, got {other:?}"),
     }
@@ -994,7 +994,7 @@ fn a_symlinked_objects_directory_is_refused() {
 
     match decode(r.path(), &Options::default()) {
         Err(crate::Error::FloorRefusal { feature, .. }) => {
-            assert_eq!(feature, "redirected git directory");
+            assert_eq!(feature, "redirected-git-directory");
         }
         other => panic!("expected a redirected-git-directory refusal, got {other:?}"),
     }
@@ -1030,7 +1030,7 @@ fn a_symlinked_pack_file_is_refused() {
 
     match decode(r.path(), &Options::default()) {
         Err(crate::Error::FloorRefusal { feature, .. }) => {
-            assert_eq!(feature, "redirected git directory");
+            assert_eq!(feature, "redirected-git-directory");
         }
         other => panic!("expected a redirected-git-directory refusal, got {other:?}"),
     }
@@ -1165,7 +1165,7 @@ fn non_utf8_path_is_refused_with_escaped_bytes_and_commit_hex() {
 
     match decode(r.path(), &Options::default()) {
         Err(crate::Error::FloorRefusal { feature, reason }) => {
-            assert_eq!(feature, "non-UTF-8 path");
+            assert_eq!(feature, "non-utf8-path");
             assert!(
                 reason.contains("\\xFF"),
                 "reason should escape the invalid byte: {reason}"
@@ -1214,7 +1214,7 @@ fn non_utf8_ref_name_is_refused() {
 
     match decode(r.path(), &Options::default()) {
         Err(crate::Error::FloorRefusal { feature, reason }) => {
-            assert_eq!(feature, "non-UTF-8 ref name");
+            assert_eq!(feature, "non-utf8-ref-name");
             assert!(
                 reason.contains("\\xFF"),
                 "reason should escape the invalid byte: {reason}"
@@ -1516,7 +1516,7 @@ fn a_sha256_object_format_repository_is_refused_with_the_named_floor_feature() {
     let _ = std::fs::remove_dir_all(&dir);
     match result {
         Err(crate::Error::FloorRefusal { feature, .. }) => {
-            assert_eq!(feature, "SHA-256 object format");
+            assert_eq!(feature, "sha256-object-format");
         }
         other => panic!("expected FloorRefusal naming the SHA-256 feature, got {other:?}"),
     }
@@ -1906,7 +1906,7 @@ fn a_non_utf8_replace_ref_name_is_refused_with_escaped_bytes() {
     }
     match decode(r.path(), &Options::default()) {
         Err(crate::Error::FloorRefusal { feature, reason }) => {
-            assert_eq!(feature, "replace ref");
+            assert_eq!(feature, "replace-ref");
             assert!(reason.contains("\\xFF"), "escaped byte expected: {reason}");
             assert!(
                 !reason.contains('\u{FFFD}'),
@@ -2049,8 +2049,113 @@ fn a_non_utf8_commit_header_name_is_refused() {
 
     match decode(r.path(), &Options::default()) {
         Err(crate::Error::FloorRefusal { feature, .. }) => {
-            assert_eq!(feature, "non-UTF-8 commit header name");
+            assert_eq!(feature, "non-utf8-commit-header-name");
         }
         other => panic!("expected a FloorRefusal, got {other:?}"),
     }
+}
+
+// ---- release-prep §4: no internal reference identifiers in user-facing artifact text -----------------
+
+/// True if `text` contains something like `RFC 004`, `CR-16`, `PR-7`, `NG-5`, `INV-3` — an internal
+/// requirement/RFC/review reference (`\b(RFC|OQ|CR|PR|INV|NG|SRC|FS|VF|HO|CL|CT|FA)[- ]?[0-9]`), hand-rolled.
+/// A space between the prefix and the number is also matched, which the handoff's own pattern would miss.
+fn has_internal_reference(text: &str) -> Option<String> {
+    const PREFIXES: [&str; 13] = [
+        "RFC", "OQ", "CR", "PR", "INV", "NG", "SRC", "FS", "VF", "HO", "CL", "CT", "FA",
+    ];
+    let bytes = text.as_bytes();
+    for prefix in PREFIXES {
+        let mut from = 0;
+        while let Some(off) = text[from..].find(prefix) {
+            let at = from + off;
+            from = at + prefix.len();
+            let before_ok = at == 0 || !bytes[at - 1].is_ascii_alphanumeric();
+            if !before_ok {
+                continue;
+            }
+            let mut i = at + prefix.len();
+            if i < bytes.len() && (bytes[i] == b' ' || bytes[i] == b'-') {
+                i += 1;
+            }
+            if i < bytes.len() && bytes[i].is_ascii_digit() {
+                return Some(text[at..(i + 1).min(text.len())].to_string());
+            }
+        }
+    }
+    None
+}
+
+#[test]
+fn the_reference_matcher_finds_what_it_should() {
+    assert!(has_internal_reference("see RFC 004 D-5").is_some());
+    assert!(has_internal_reference("(CR-16)").is_some());
+    assert!(has_internal_reference("(NG-5, RFC 011 D-5)").is_some());
+    assert!(has_internal_reference("(RFC 011 D-4)").is_some());
+    assert!(has_internal_reference("OQ-2").is_some());
+    assert!(has_internal_reference("(FA-1)").is_some());
+    assert!(has_internal_reference("per OQ-B").is_none()); // a letter, not a number, follows
+    assert!(has_internal_reference("local state, not history").is_none());
+    assert!(has_internal_reference("a CRC32 check").is_none());
+}
+
+fn assert_no_internal_references(ir: &brygge_ir::Ir, what: &str) {
+    for d in &ir.loss.dropped {
+        for text in [&d.what, &d.reason] {
+            assert!(
+                has_internal_reference(text).is_none(),
+                "{what}: a drop's text carries an internal reference: {text:?}"
+            );
+        }
+    }
+    for f in &ir.flags {
+        for text in [&f.what, &f.reason] {
+            assert!(
+                has_internal_reference(text).is_none(),
+                "{what}: a flag's text carries an internal reference: {text:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn no_drop_or_flag_text_carries_an_internal_reference() {
+    // Every record `loss_boundary` can produce, forced on at once (a fixture cannot reach all of them).
+    let mut namespaces = std::collections::BTreeMap::new();
+    namespaces.insert("refs/remotes", 2u64);
+    let counts = super::ParseCounts {
+        unparseable_times: 1,
+        unparseable_offsets: 1,
+        undecodable_encodings: 1,
+    };
+    for only in [
+        super::DroppedOnlyCommits::Counted(3),
+        super::DroppedOnlyCommits::Unavailable,
+    ] {
+        let lb = super::loss_boundary(&namespaces, only, 1, 1, counts, 1);
+        assert!(
+            lb.dropped.len() >= 9,
+            "expected every record: {:?}",
+            lb.dropped
+        );
+        for d in &lb.dropped {
+            for text in [&d.what, &d.reason] {
+                assert!(
+                    has_internal_reference(text).is_none(),
+                    "a drop's text carries an internal reference: {text:?}"
+                );
+            }
+        }
+    }
+
+    // And what real decodes of this crate's fixtures actually record.
+    if !git_available() {
+        return;
+    }
+    let r = build_rich_repo();
+    let ir = decode(r.path(), &crate::Options::default()).unwrap();
+    assert_no_internal_references(&ir, "the rich repository");
+    let empty = TempRepo::new();
+    let ir = decode(empty.path(), &crate::Options::default()).unwrap();
+    assert_no_internal_references(&ir, "an empty repository");
 }

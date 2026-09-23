@@ -39,3 +39,6 @@ pub(crate) const ALL: &[&str] = &[
 pub(crate) fn joined() -> String {
     ALL.join(",")
 }
+
+#[cfg(test)]
+mod tests;

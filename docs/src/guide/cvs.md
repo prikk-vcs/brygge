@@ -35,11 +35,13 @@ because there is no honest way to import them:
 
 - **`default-branch-with-later-trunk`** — a file whose default (vendor) `branch` is still set, but which
   also has trunk revisions after that branch's branch point (possible with `cvs admin -b`). A checkout
-  gives the branch tip while the trunk moved on, so the file has no single main line. Reset the default
-  branch with `cvs admin -b` (no argument) on the source, or repair the file by hand, then import again.
+  gives the branch tip while the trunk moved on, so the file has no single main line. In a **copy** of the
+  repository, reset the default branch with `cvs admin -b` (no argument) on that file, or repair it by
+  hand, then import the copy. The consequence: the file's main line then follows the trunk, and the vendor
+  branch's revisions are counted as branch revisions and not imported.
 - **`non-utf8-symbol-name`** — a tag or branch symbol whose name is not valid UTF-8 (shown with `\xNN`
-  for the invalid bytes). Ref names in the IR are text and are never converted lossily. Rename or remove
-  the symbol on the source (`cvs rtag -d` / `cvs rtag -r`), then import again.
+  for the invalid bytes). Ref names in the IR are text and are never converted lossily. In a **copy** of the
+  repository, rename or remove the symbol (`cvs rtag -d` / `cvs rtag -r`), then import the copy.
 
 ## Seeing a repository's branches before migrating
 

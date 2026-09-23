@@ -47,9 +47,7 @@ pub fn check(requires_body: &str) -> Result<(), Error> {
         if let Some((_, label)) = FLOOR.iter().find(|(k, _)| *k == req) {
             return Err(Error::FloorRefusal {
                 feature: req.to_string(),
-                reason: format!(
-                    "{label} is refused rather than approximated (RFC 005 D-4, owner-ratified floor)"
-                ),
+                reason: format!("{label} is refused rather than approximated"),
             });
         }
         let reason = match req {
@@ -61,9 +59,9 @@ pub fn check(requires_body: &str) -> Result<(), Error> {
             }
             "narrowhg" | "narrowhg-lightweight" | "narrow" => {
                 "narrow (partial) clones are not a complete history; refused rather than importing a \
-                 truncated view as if whole (FA-1)"
+                 truncated view as if whole"
             }
-            _ => "unknown repository requirement; refused rather than misread (format-safety gate)",
+            _ => "unknown repository requirement; refused rather than misread",
         };
         return Err(Error::UnsupportedFormat {
             requirement: req.to_string(),
