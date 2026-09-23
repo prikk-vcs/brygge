@@ -3,8 +3,8 @@
 | | |
 |---|---|
 | Document | brygge External Design (black-box view) |
-| Version | v0.2 (draft for review) |
-| Date | 2026-09-03 |
+| Version | v0.3 (draft for review) |
+| Date | 2026-09-23 (v0.3: §2.1 command surface revised per owner ruling D-7; v0.2 2026-09-03) |
 | Inputs | brygge Requirements v0.2 (`brygge-01-requirements-spec-v0.1.md`) — cited as PU/NG/PR/HO/VF/ID/FA/BN/IR/UD/OQ; RFC 113 (import contract); prikk reality (0.27.1 audit; core now at 0.28 — the prikk-side gates are unchanged in kind and remain owner-open); project rules |
 | Scope | WHAT brygge exposes at its boundaries — its command surface, the external contract of the **IR (intermediate representation)**, the fidelity and provenance outputs, and the interaction flows — for **the parts that can be designed before the owner's open questions are settled.** The requirements are explicit that OQ-1…OQ-3 gate per-source encoder design; this document honours that by designing the pipeline, the IR contract, and the honesty surface now, and **stopping** at each gated point (§8). |
 | Not | internal architecture, the IR's byte schema (the requirements forbid a schema), APIs, or code. |
@@ -14,7 +14,7 @@
 > `inspect`, `verify --internal` / `--against-source`, and `summary`, with human + machine output (CL-07)
 > and the CL-08 outcome-class exit codes. The **IR external contract (IX-*) is frozen at 1.0.0** (RFC 003
 > D-7) and held all four sources with no change. The **GATED-** surfaces (the prikk encoder) remain
-> owner/prikk-gated (§8; RFC 008). See [`../../HANDOFF.md`](../../HANDOFF.md). This document remains the
+> owner/prikk-gated (§8; RFC 008). See [`HANDOFF.md`](development/handoffs/HANDOFF.md). This document remains the
 > black-box contract the CLI satisfies.
 
 Design stance carried from requirements: **facts derive, judgment is authored, the join is checked** — so every user-visible surface makes the derived-vs-stated distinction inescapable (HO-1), makes loss legible (HO-2), and never lets honesty be turned off (HO-5). Where a Git mental model expects "just import it," the surface redirects to "decode, review fidelity, then encode a proposal."
@@ -67,18 +67,64 @@ Note AC-04 is listed to mark the boundary: brygge's obligation to them is proven
 
 ### 2.1 Command surface (CL-…)
 
-The command surface makes the **decode/encode separation** visible and the **honesty outputs** unavoidable. It is a tool surface, not a target's VCS surface — brygge issues no VCS verbs against the target (BD-04).
+The command surface makes the **decode/encode separation** visible and the **honesty outputs** unavoidable. It is a tool surface, not a target's VCS surface: brygge issues no VCS verbs against the target (BD-04).
 
-- **CL-01 — `brygge decode <source-kind> <source-location> --ir <out>`** — read a source into an IR artifact. `<source-kind>` ∈ {`git`,`hg`,`svn`,`cvs`} today, each with its own honestly-scoped support (SRC-*); the set is **open by design** — a new source is a new `<source-kind>` value backed by a new decoder against the shared IR obligations (PU-3, IR-5), not a brygge redesign. Decode stands alone (PU-1) and needs no target; it is the half brygge stabilizes first (PU-6). Records the inference parameters it used into the IR (PR-5), and always writes a fidelity record for the decode half (FS-01).
-- **CL-02 — `brygge inspect --ir <file>`** — read an IR artifact and report, for AC-02: its atoms, each atom's **epistemic status** (stated-by-source vs derived-by-decoder, IR-2), the opaque source identifiers preserved (IR-3), and the loss boundary (IR-4). Read-only; the reviewer's microscope.
-- **CL-03 — `brygge encode <target-kind> --ir <file> --out <proposal>`** — build a target proposal from an IR. `<target-kind>` starts at `prikk`; the command is designed so a second target is a new `<target-kind>` value implemented against the IR alone (PU-3, IR-5), not a brygge change. For prikk today it emits a **reviewable proposal** — labelled, unsealed, authorship `Unverifiable` — never sealed history (§8 GATED-1/2/3). Always writes the encode-half fidelity record (FS-01).
-- **CL-04 — `brygge verify`** — two modes, matching the two checkable meanings of "faithful":
-  - `--internal --import <proposal-or-ir>` → the VF-3 check any reader can run without the source: every derived record marked, loss boundary stated, authorship `Unverifiable`, content/ancestry internally consistent, provenance names its source.
-  - `--against-source <source-location> --import <proposal-or-ir>` → the VF-2 round-check for AC-03: using the opaquely-preserved source identifiers (PR-4), confirm the import corresponds atom-by-atom to the original source, **without trusting brygge**.
-- **CL-05 — `brygge summary --import <proposal-or-ir>`** — reproduce the fidelity summary (FS-01) from the objects themselves, demonstrating HO-4's "recoverable by a later reader without brygge's run log." That this reproduces byte-for-byte what the run printed is the externally-testable form of "the summary travels with the import."
-- **CL-06 — `--version`, `--help`, per-command `--help`.** brygge is a tool, so unlike stikk it *does* own its full command vocabulary and help surface.
-- **CL-07 — Machine-readable output.** Every command that reports (`inspect`, `verify`, `summary`, and the tail of `decode`/`encode`) offers a stable machine-readable form so a migration can be scripted and gated in CI; the human form is the default. (The requirements forbid a schema for the *IR*; this is the *tool's* report format, a separate, versioned contract — CT-04.)
-- **CL-08 — Exit codes carry the outcome class** (a lesson taken from stikk's audit of prikk's coarse 0/1): `0` clean; a distinct non-zero for *import completed with recorded loss* (the normal, honest outcome — not an error, but not silent either); a distinct non-zero for *refused a source feature below the floor* (FA-3); another for *source violated its own conventions and was not resolved* (FA-2); another for *partial/interrupted* (FA-1); and a generic failure. A CI gate can therefore distinguish "faithful within stated limits" from "hit the floor" without parsing prose.
+**Revised in v0.3 (2026-09-23, owner ruling D-7).** The surface is three verbs with one noun per concept, and nothing is silently ignored.
+
+**Vocabulary** (used identically in the CLI, reports, README and this document): *source* (the repository or dumpfile read), *artifact* (the IR file brygge writes), *stated*, *derived*, *dropped*, *refused*. Imported authorship is **Unverifiable**: it cannot be checked, which is different from "not yet checked".
+
+- **CL-01 — `brygge decode <source-kind> <source> --out <artifact> [source options]`**
+  - Reads a source into an IR artifact. `<source-kind>` ∈ {`git`,`hg`,`svn`,`cvs`} today, each with its own honestly-scoped support (SRC-*).
+  - The set is **open by design**: a new source is a new `<source-kind>` value backed by a new decoder against the shared IR obligations (PU-3, IR-5), not a brygge redesign.
+  - `--out` is **required**; `decode` never runs without producing its artifact.
+  - Decode stands alone (PU-1) and needs no target. It records the inference parameters it used in the IR (PR-5), states the source's faithfulness scope before running (FS-05), and prints the fidelity report at the end (FS-01).
+  - **Source options** each create a *derived* layer and are named for what they do:
+    - `--infer-renames` (git, hg): exact-content rename inference, marked derived;
+    - `--reconstruct-refs` (svn, cvs): branch/tag reconstruction by convention or symbol, marked derived.
+
+    An option given for a source kind it does not apply to is **refused** with a message naming the option and the kinds it applies to (exit `2`). It is never silently ignored.
+- **CL-02 — `brygge inspect <artifact> [--atoms]`**
+  - Reads an artifact without the source.
+  - By default it prints the **fidelity report**: exactly what `decode` printed, reconstructed from the artifact alone (FS-02, HO-4).
+  - `--atoms` adds the reviewer's detail: each atom's **epistemic status** (stated vs derived, IR-2), its opaque source identifiers (IR-3), its derived records with their parameters, and the loss boundary (IR-4). This is the advanced view; the default stays small for newcomers.
+  - Read-only.
+- **CL-03 — `encode` is not part of the surface until Track B1.**
+  - The prikk encoder is designed to conform to prikk's import foundations once they exist (ROADMAP Track B).
+  - No placeholder command is listed in help. An `encode` invocation is an unknown command whose message says the encoder is not available yet.
+  - The design intent stands: a target is a `<target-kind>` value implemented against the IR alone (PU-3, IR-5), writing its own fidelity record (FS-01).
+- **CL-04 — `brygge verify <artifact> [--against-source <source>]`** — the two checkable meanings of "faithful", kept visibly separate (VF-4):
+  - **Always:** the VF-3 checks any reader can run without the source.
+    - Every derived record is well-formed and carries its parameters.
+    - The loss boundary is stated.
+    - Content and ancestry are internally consistent.
+    - The per-source honesty invariants hold (e.g. every CVS changeset is derived).
+    - Provenance names its source and parameters.
+    - Authorship is reported as Unverifiable *by construction*. This is not presented as a check that could pass or fail.
+  - **With `--against-source`, additionally:** the VF-2 round-check for AC-03. Brygge re-derives from the original source using the recorded parameters and confirms correspondence atom by atom, keyed on the preserved source identifiers (PR-4), without trusting the earlier run.
+  - The report shows the two results as separate lines and never merges them into one verdict.
+- **CL-05 — merged into CL-02.** The fidelity report is `inspect`'s default output. (The former `summary` verb is withdrawn: one verb reads an artifact.)
+- **CL-06 — `--version`, `--help`, per-command `--help`.** brygge is a tool, so unlike stikk it *does* own its full command vocabulary and help surface. Help lists only commands that exist.
+- **CL-07 — Machine-readable output (`--format machine`).**
+  - Every reporting command offers a stable, versioned, line-oriented form (CT-04), so a migration can be scripted and gated in CI. The human form is the default.
+  - **Text that comes from a source repository is untrusted.**
+    - It never appears in a machine-format *key*. Items are indexed instead.
+    - Machine *values* use a specified escaping, so no source text can forge a line or a key.
+    - In the human form, control characters are shown escaped, so no source text can drive or disguise the terminal (threat model T-1/T-3).
+- **CL-08 — Exit codes carry the outcome class.**
+  - The codes (a lesson taken from stikk's audit of prikk's coarse 0/1):
+
+    | Code | Meaning |
+    |---|---|
+    | `0` | clean |
+    | `10` | completed with **recorded loss** (the normal, honest outcome: not an error, but not silent either) |
+    | `20` | a source feature **refused** below the floor (FA-3) |
+    | `30` | a convention or confidence line crossed (FA-2) |
+    | `40` | partial/interrupted, reserved (FA-1) |
+    | `50` | a `verify` check failed |
+    | `1` | runtime failure (unreadable input, I/O, an internal decoder fault) |
+    | `2` | **usage error** (bad arguments, an option given where it does not apply) |
+
+  - A CI gate can therefore tell "faithful within stated limits" from "hit the floor", and "called wrongly" from "broke", without parsing prose.
 
 ### 2.2 The IR's external contract (IX-…)
 
@@ -95,7 +141,7 @@ The requirements forbid a schema (they are requirements on the IR, IR-1…IR-6).
 ### 2.3 The fidelity & honesty surface (FS-…)
 
 - **FS-01 — Every run emits a fidelity record, and it is unskippable** (HO-4, HO-5): at the end of `decode` and of `encode`, brygge states what was preserved, what was derived (with confidence/parameters), what was dropped (by class), and what was refused. No flag suppresses it (HO-5); verbosity may vary, existence may not.
-- **FS-02 — The summary is recoverable from the objects, not just printed** (HO-4): `brygge summary` (CL-05) reconstructs it from the IR/proposal alone. This is the external proof that honesty "travels with the import" and cannot be lost by deleting a log.
+- **FS-02 — The summary is recoverable from the objects, not just printed** (HO-4): `brygge inspect <artifact>` (CL-02) reconstructs it from the artifact alone. This is the external proof that honesty "travels with the import" and cannot be lost by deleting a log.
 - **FS-03 — Derived records are visibly marked wherever they appear** (HO-1): in `inspect`, in the summary, and in the target proposal, an inferred rename / reconstructed CVS changeset / inferred SVN branch reads as *derived by brygge*, distinct from a source-stated fact, without the reader re-running the heuristic.
 - **FS-04 — Authorship is shown `Unverifiable`, never dressed up** (HO-3, NG-3): nowhere in any brygge surface does imported authorship read as sound, verified, or native. A GPG-signed Git commit is shown with its signature *preserved* and *verifying nothing in the target* — the two are never conflated (VF-4).
 - **FS-05 — Per-source faithfulness is stated before the run, not after** (VF-5): `decode`/`encode` for a given source declare, up front, what faithfulness *can* mean for that source and what it cannot — most sharply for CVS (FS-06).
@@ -122,16 +168,16 @@ This is brygge's obligation *to the target* (BN-3) — the interface across the 
 
 Numbered user-action → system-response. Each cites the requirement it realizes.
 
-- **FL-01 — Decode a Git repository (AC-01).** 1. `brygge decode git <path> --ir out.ir`. 2. brygge states, up front, Git's faithfulness scope (FS-05) and any features it will refuse under the floor (CF-03). 3. It reads content, ancestry, messages as claims (PR-1/2/3), preserves commit SHAs and GPG signatures opaquely (PR-4), and **marks every inferred rename as derived** with its similarity parameters (HO-1/FS-03). 4. It writes the IR and prints the decode fidelity record (FS-01): preserved / derived / dropped / refused. 5. Exit code carries the outcome class (CL-08).
-- **FL-02 — Inspect the IR before trusting it (AC-02).** 1. `brygge inspect --ir out.ir`. 2. brygge lists atoms with each one's epistemic status (IX-02) — a reviewer sees exactly which records are source-stated and which are brygge-derived, and the parameters behind each derivation. 3. The reviewer reads the loss boundary (IX-04): what class was dropped, what was derived. No target is involved; this is fidelity review, not migration.
-- **FL-03 — Encode a prikk proposal and read its fidelity (AC-01).** 1. `brygge encode prikk --ir out.ir --out proposal`. 2. brygge builds a prikk **proposal** — labelled, unsealed, authorship `Unverifiable` (FS-04) — because sealing/admission is the target's and the prikk import surface is not yet built (§8). 3. It attaches provenance (PX-01) in the shape prikk will settle (PX-04). 4. It prints the encode fidelity record (FS-01) and states, in-band, that this is a proposal the target has not admitted (FA-4). 
-- **FL-04 — Verify internally, then against the source (AC-02 then AC-03).** 1. `brygge verify --internal --import proposal` confirms every derived record is marked, the loss boundary is stated, authorship is `Unverifiable`, and provenance names its source (VF-3) — provable with no source present. 2. A third party runs `brygge verify --against-source <original-git> --import proposal`; using the preserved SHAs (PR-4), brygge confirms the import corresponds to the original atom-by-atom **without trusting brygge** (VF-2). 3. The report distinguishes "corresponds to source" (VF-2) from "internally honest" (VF-3) — never conflating them (VF-4).
+- **FL-01 — Decode a Git repository (AC-01).** 1. `brygge decode git <path> --out out.ir`. 2. brygge states, up front, Git's faithfulness scope (FS-05) and any features it will refuse under the floor (CF-03). 3. It reads content, ancestry, messages as claims (PR-1/2/3), preserves commit SHAs and GPG signatures opaquely (PR-4), and **marks every inferred rename as derived** with its similarity parameters (HO-1/FS-03). 4. It writes the IR and prints the decode fidelity record (FS-01): preserved / derived / dropped / refused. 5. Exit code carries the outcome class (CL-08).
+- **FL-02 — Inspect the IR before trusting it (AC-02).** 1. `brygge inspect out.ir --atoms`. 2. brygge lists atoms with each one's epistemic status (IX-02) — a reviewer sees exactly which records are source-stated and which are brygge-derived, and the parameters behind each derivation. 3. The reviewer reads the loss boundary (IX-04): what class was dropped, what was derived. No target is involved; this is fidelity review, not migration.
+- **FL-03 — Encode a prikk proposal and read its fidelity (AC-01).** *(Design intent for Track B1; not in the current surface, see CL-03. The concrete flow is settled by RFC 008, conforming to prikk's import foundations.)* 1. `brygge encode prikk …`. 2. brygge builds a prikk **proposal** — labelled, unsealed, authorship `Unverifiable` (FS-04) — because sealing/admission is the target's and the prikk import surface is not yet built (§8). 3. It attaches provenance (PX-01) in the shape prikk will settle (PX-04). 4. It prints the encode fidelity record (FS-01) and states, in-band, that this is a proposal the target has not admitted (FA-4). 
+- **FL-04 — Verify internally, then against the source (AC-02 then AC-03).** 1. `brygge verify out.ir` confirms every derived record is marked, the loss boundary is stated, authorship is `Unverifiable`, and provenance names its source (VF-3) — provable with no source present. 2. A third party runs `brygge verify out.ir --against-source <original-git>`; using the preserved SHAs (PR-4), brygge confirms the import corresponds to the original atom-by-atom **without trusting brygge** (VF-2). 3. The report distinguishes "corresponds to source" (VF-2) from "internally honest" (VF-3) — never conflating them (VF-4).
 - **FL-05 — Re-run and get identical output (AC-01, ID-1/VF-1).** 1. The migrator re-runs the same `decode`+`encode` with the same parameters and brygge version. 2. brygge produces the **same IR and the same proposal**. 3. If anything differs, brygge states the cause (new version, changed parameters, changed source) — "I ran it again and got different history" is never silent (ID-1). 4. For a content-addressed target, any field brygge cannot make deterministic (e.g., an import timestamp, if prikk's provenance object carries authoritative time) is named as a stated non-determinism, not left to silently perturb ids (ID-4, UD-4).
 - **FL-06 — Hit a refused feature (AC-01, FA-3).** 1. A Git repo uses submodules / an octopus merge beyond the target's parent limit / grafts. 2. brygge **refuses** the feature with a named reason (not an approximation), tells the migrator exactly which feature and why, and exits with the "hit the floor" class (CL-08). 3. The migrator knows precisely who can migrate and who is told no — set by policy (CF-03), not guessed.
 - **FL-07 — An SVN repo that violates its own convention (AC-01, FA-2, SRC-S1).** 1. `brygge decode svn …` finds a layout that breaks the `/trunk`/`/branches/x` convention branch identity depends on. 2. brygge does **not** silently pick an interpretation: it refuses, or it imports with the reconstructed branch recorded as a **derived judgment** the migrator must accept (HO-1). 3. Mergeinfo, being advisory and frequently wrong, is dropped-with-record or carried-as-advisory-and-labelled, never promoted to a real merge parent (PR-8/SRC-S2).
 - **FL-08 — A CVS run surfaces its lossy reconstruction (AC-01, SRC-C3).** 1. `brygge decode cvs …` announces, *before running* (FS-06), that a faithful-in-VF-2's-sense import is not achievable and the deliverable is a lossy, explicitly-labelled reconstruction. 2. It preserves per-file content and history faithfully, and reconstructs changesets by clustering (with the window recorded as a parameter, PR-5). 3. Every reconstructed changeset is marked **derived** (HO-1); the fidelity summary makes the reconstruction's uncertainty prominent, not buried (FS-01). 4. The migrator was told the honest deliverable up front, so no promise was made and broken.
 - **FL-09 — Interrupted import (AC-01, FA-1/FA-4/FA-5).** 1. A run stops mid-stream. 2. What was and was not imported is stated; the partial result is distinguishable from a complete one (FA-1). 3. Because admission is the target's (BN-2), brygge's safe failure is a clearly-incomplete-and-labelled proposal the target has not admitted — never a half-admitted history that looks whole (FA-4). 4. Re-running reproduces the same result up to the failure point (FA-5).
-- **FL-10 — Decode a Mercurial repository (AC-01, SRC-H1…H4)** *(conceptually the second source, after FL-01).* 1. `brygge decode hg <path> --ir out.ir`. 2. brygge states hg's faithfulness scope (FS-05) and any floor refusals (CF-03). 3. Where the source **recorded** a rename (`hg mv`), brygge carries it as a **source-stated** fact — *not* marked derived (SRC-H2, IX-02); where it did not, brygge carries delete+create as stated, marking a rename **derived** only if it infers one (HO-1/FS-03). The inspect and fidelity surfaces therefore show hg imports with **fewer derived marks** than an equivalent Git import — a visible, checkable consequence of hg recording more. 4. Named branches and bookmarks are mapped to the IR's branch-identity notion without privileging one; phases and obsolescence markers are dropped-with-record as representation/advisory (PR-7/PR-8, HO-2); `.hgtags` history is preserved as content. 5. Fidelity record + outcome-class exit as FL-01.
+- **FL-10 — Decode a Mercurial repository (AC-01, SRC-H1…H4)** *(conceptually the second source, after FL-01).* 1. `brygge decode hg <path> --out out.ir`. 2. brygge states hg's faithfulness scope (FS-05) and any floor refusals (CF-03). 3. Where the source **recorded** a rename (`hg mv`), brygge carries it as a **source-stated** fact — *not* marked derived (SRC-H2, IX-02); where it did not, brygge carries delete+create as stated, marking a rename **derived** only if it infers one (HO-1/FS-03). The inspect and fidelity surfaces therefore show hg imports with **fewer derived marks** than an equivalent Git import — a visible, checkable consequence of hg recording more. 4. Named branches and bookmarks are mapped to the IR's branch-identity notion without privileging one; phases and obsolescence markers are dropped-with-record as representation/advisory (PR-7/PR-8, HO-2); `.hgtags` history is preserved as content. 5. Fidelity record + outcome-class exit as FL-01.
 
 ---
 
