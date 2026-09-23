@@ -434,6 +434,48 @@ fn decode_of_a_submodule_exits_floor_refusal() {
     assert!(!out.exists(), "no artifact is written on a refusal");
 }
 
+// ---- RFC 010 §2.6: a ResourceLimit from any decoder maps to exit 20 --------------------------------
+
+#[test]
+fn a_resource_limit_from_every_decoder_maps_to_floor_refusal_with_the_stated_message() {
+    let (code, msg) = map_cvs_error(CvsError::ResourceLimit {
+        what: "an RCS file".to_string(),
+        ceiling: "100 bytes".to_string(),
+    });
+    assert_eq!(code, exit::FLOOR_REFUSAL);
+    assert_eq!(
+        msg,
+        "refused: an RCS file exceeds brygge's ceiling (100 bytes)"
+    );
+
+    let (code, msg) = map_svn_error(SvnError::ResourceLimit {
+        what: "the dumpstream".to_string(),
+        ceiling: "100 bytes".to_string(),
+    });
+    assert_eq!(code, exit::FLOOR_REFUSAL);
+    assert_eq!(
+        msg,
+        "refused: the dumpstream exceeds brygge's ceiling (100 bytes)"
+    );
+
+    let (code, msg) = map_git_error(GitError::ResourceLimit {
+        what: "a blob".to_string(),
+        ceiling: "100 bytes".to_string(),
+    });
+    assert_eq!(code, exit::FLOOR_REFUSAL);
+    assert_eq!(msg, "refused: a blob exceeds brygge's ceiling (100 bytes)");
+
+    let (code, msg) = map_hg_error(HgError::ResourceLimit {
+        what: "a decompressed revision".to_string(),
+        ceiling: "100 bytes".to_string(),
+    });
+    assert_eq!(code, exit::FLOOR_REFUSAL);
+    assert_eq!(
+        msg,
+        "refused: a decompressed revision exceeds brygge's ceiling (100 bytes)"
+    );
+}
+
 #[test]
 fn missing_artifact_is_a_plain_failure() {
     let missing = std::env::temp_dir().join("brygge-cli-nope-does-not-exist.ir");

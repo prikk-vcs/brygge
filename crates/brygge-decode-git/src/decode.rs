@@ -28,6 +28,41 @@ type TagIdentity = (ObjectId, Vec<Vec<u8>>);
 
 const DECODER: &str = "brygge-decode-git";
 
+/// Resource ceilings (RFC 010 D-4). One place for every Git ceiling; tests construct a small instance
+/// instead of needing gigabytes.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Limits {
+    /// The maximum size of one blob, checked from the object **header** (no inflation) before it is
+    /// read.
+    pub(crate) max_blob_bytes: u64,
+    /// The maximum number of commits imported from one repository, checked during the walk, before any
+    /// atom is built.
+    pub(crate) max_commits: u64,
+    /// The maximum length of one path, checked while walking trees.
+    pub(crate) max_path_bytes: usize,
+    /// The maximum tree nesting depth, checked while walking trees (`walk_tree` is iterative — an
+    /// explicit stack — precisely so a deep tree cannot overflow the process stack; RFC 010 CR-10).
+    pub(crate) max_tree_depth: usize,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            max_blob_bytes: 1024 * 1024 * 1024,
+            max_commits: 10_000_000,
+            max_path_bytes: 4096,
+            max_tree_depth: 256,
+        }
+    }
+}
+
+fn resource_limit(what: &str, ceiling: impl std::fmt::Display) -> Error {
+    Error::ResourceLimit {
+        what: what.to_string(),
+        ceiling: ceiling.to_string(),
+    }
+}
+
 fn read_err(e: impl std::fmt::Display) -> Error {
     Error::Read(e.to_string())
 }
@@ -69,8 +104,13 @@ fn escape_invalid_utf8(bytes: &[u8]) -> String {
 /// # Errors
 /// [`Error::Open`] if the path is not a readable repository; [`Error::FloorRefusal`] on a refused source
 /// feature (submodule, grafts, shallow, replace ref — RFC 004 D-4); [`Error::Read`] on a malformed
-/// object; [`Error::Ir`] if the assembled IR violates an invariant.
+/// object; [`Error::ResourceLimit`] on a resource ceiling (RFC 010); [`Error::Ir`] if the assembled IR
+/// violates an invariant.
 pub fn decode(path: &Path, opts: &Options) -> Result<Ir, Error> {
+    decode_with(path, opts, &Limits::default())
+}
+
+pub(crate) fn decode_with(path: &Path, opts: &Options, limits: &Limits) -> Result<Ir, Error> {
     let repo = open::open(path)?;
     open::check_repo_floor(&repo)?;
 
@@ -79,7 +119,8 @@ pub fn decode(path: &Path, opts: &Options) -> Result<Ir, Error> {
     // CR-05: walk tips come only from carried refs (non-symbolic refs/heads/* and refs/tags/*,
     // a tag peeled to its commit). Compute this set first — before anything is read for atoms —
     // so a commit reachable only from a dropped namespace (refs/remotes/*, refs/notes/*,
-    // refs/stash, ...) is never read as history.
+    // refs/stash, ...) is never read as history. RFC 010: the commit count is bounded here, during
+    // the walk, before any atom is built.
     let carried_tips: Vec<ObjectId> = refs
         .iter()
         .filter(|r| matches!(r.kind, ScannedKind::Branch(_) | ScannedKind::Tag(_)))
@@ -93,6 +134,12 @@ pub fn decode(path: &Path, opts: &Options) -> Result<Ir, Error> {
             .map_err(read_err)?
         {
             set.insert(info.map_err(read_err)?.id);
+            if set.len() as u64 > limits.max_commits {
+                return Err(resource_limit(
+                    "the commit count",
+                    format!("{} commits", limits.max_commits),
+                ));
+            }
         }
     }
 
@@ -148,7 +195,7 @@ pub fn decode(path: &Path, opts: &Options) -> Result<Ir, Error> {
             .map_err(read_err)?;
 
         let child_tree = commit.tree_id().map_err(read_err)?.detach();
-        let child_snap = snapshot(&repo, child_tree, *id, &mut snap_cache)?;
+        let child_snap = snapshot(&repo, child_tree, *id, limits, &mut snap_cache)?;
 
         let ps = parents.get(id).cloned().unwrap_or_default();
         let base_snap = match ps.first() {
@@ -159,12 +206,13 @@ pub fn decode(path: &Path, opts: &Options) -> Result<Ir, Error> {
                     .try_into_commit()
                     .map_err(read_err)?;
                 let p_tree = p_commit.tree_id().map_err(read_err)?.detach();
-                snapshot(&repo, p_tree, *p0, &mut snap_cache)?
+                snapshot(&repo, p_tree, *p0, limits, &mut snap_cache)?
             }
             None => Snapshot::new(),
         };
 
-        let (ops, rename_hints) = diff_to_ops(&repo, &base_snap, &child_snap, opts, &mut builder)?;
+        let (ops, rename_hints) =
+            diff_to_ops(&repo, &base_snap, &child_snap, opts, limits, &mut builder)?;
         let (metadata, unparseable) = build_metadata(&commit)?;
         unparseable_times += unparseable;
         let signatures = extract_signatures(&commit)?;
@@ -508,72 +556,96 @@ fn snapshot(
     repo: &gix::Repository,
     tree_id: ObjectId,
     commit_id: ObjectId,
+    limits: &Limits,
     cache: &mut HashMap<ObjectId, Snapshot>,
 ) -> Result<Snapshot, Error> {
     if let Some(s) = cache.get(&tree_id) {
         return Ok(s.clone());
     }
     let mut out = Snapshot::new();
-    walk_tree(repo, tree_id, "", commit_id, &mut out)?;
+    walk_tree(repo, tree_id, commit_id, limits, &mut out)?;
     cache.insert(tree_id, out.clone());
     Ok(out)
 }
 
+/// Walk a tree into a flat path→(oid,mode) snapshot, **iteratively** (RFC 010 CR-10): an explicit stack,
+/// not recursion, so an attacker-chosen tree depth cannot overflow the process stack — which no
+/// `catch_unwind` boundary (CR-16's `guard_decoder`) can contain. `max_tree_depth` and `max_path_bytes`
+/// are enforced as the stack grows; the resulting snapshot is identical to a recursive walk's (the
+/// traversal order differs, but `out` is a flat, order-independent map of full paths).
 fn walk_tree(
     repo: &gix::Repository,
-    tree_id: ObjectId,
-    prefix: &str,
+    root_tree_id: ObjectId,
     commit_id: ObjectId,
+    limits: &Limits,
     out: &mut Snapshot,
 ) -> Result<(), Error> {
-    let tree = repo
-        .find_object(tree_id)
-        .map_err(read_err)?
-        .try_into_tree()
-        .map_err(read_err)?;
-    for entry in tree.iter() {
-        let entry = entry.map_err(read_err)?;
-        let raw_name = entry.filename(); // &BStr; CR-03/D-3(i): checked below, never `to_str_lossy`.
-        let Ok(name) = std::str::from_utf8(raw_name) else {
-            return Err(Error::FloorRefusal {
-                feature: "non-UTF-8 path".to_string(),
-                reason: format!(
-                    "commit {commit_id}: path '{prefix}{}{}' is not valid UTF-8 (invalid bytes \
-                     shown as \\xNN)",
-                    if prefix.is_empty() { "" } else { "/" },
-                    escape_invalid_utf8(raw_name)
-                ),
-            });
-        };
-        let path = if prefix.is_empty() {
-            name.to_string()
-        } else {
-            format!("{prefix}/{name}")
-        };
-        let mode = entry.mode();
-        let oid = entry.oid().to_owned();
-        match mode.kind() {
-            gix::objs::tree::EntryKind::Tree => {
-                walk_tree(repo, oid, &path, commit_id, out)?;
-            }
-            gix::objs::tree::EntryKind::Commit => {
+    // (tree id, path prefix built so far, this tree's own nesting depth; the root is depth 1).
+    let mut stack: Vec<(ObjectId, String, usize)> = vec![(root_tree_id, String::new(), 1)];
+    while let Some((tree_id, prefix, depth)) = stack.pop() {
+        let tree = repo
+            .find_object(tree_id)
+            .map_err(read_err)?
+            .try_into_tree()
+            .map_err(read_err)?;
+        for entry in tree.iter() {
+            let entry = entry.map_err(read_err)?;
+            let raw_name = entry.filename(); // &BStr; CR-03/D-3(i): checked below, never `to_str_lossy`.
+            let Ok(name) = std::str::from_utf8(raw_name) else {
                 return Err(Error::FloorRefusal {
-                    feature: "submodule".to_string(),
+                    feature: "non-UTF-8 path".to_string(),
                     reason: format!(
-                        "submodule (gitlink) at '{path}' points outside this repository; refused \
-                         rather than approximated"
+                        "commit {commit_id}: path '{prefix}{}{}' is not valid UTF-8 (invalid bytes \
+                         shown as \\xNN)",
+                        if prefix.is_empty() { "" } else { "/" },
+                        escape_invalid_utf8(raw_name)
                     ),
                 });
+            };
+            let path = if prefix.is_empty() {
+                name.to_string()
+            } else {
+                format!("{prefix}/{name}")
+            };
+            if path.len() > limits.max_path_bytes {
+                return Err(resource_limit(
+                    "a path",
+                    format!("{} bytes", limits.max_path_bytes),
+                ));
             }
-            _ => {
-                // CR-03 §2.3.4: valid UTF-8 paths cannot collide at this point (git trees disallow
-                // duplicate entry names, and entry names cannot contain '/'); this is defense in depth.
-                if out.contains_key(&path) {
-                    return Err(Error::Read(format!(
-                        "commit {commit_id}: duplicate path '{path}' in tree snapshot"
-                    )));
+            let mode = entry.mode();
+            let oid = entry.oid().to_owned();
+            match mode.kind() {
+                gix::objs::tree::EntryKind::Tree => {
+                    let child_depth = depth + 1;
+                    if child_depth > limits.max_tree_depth {
+                        return Err(resource_limit(
+                            "the tree nesting",
+                            format!("{} levels", limits.max_tree_depth),
+                        ));
+                    }
+                    stack.push((oid, path, child_depth));
                 }
-                out.insert(path, (oid, u32::from(mode.value())));
+                gix::objs::tree::EntryKind::Commit => {
+                    return Err(Error::FloorRefusal {
+                        feature: "submodule".to_string(),
+                        reason: format!(
+                            "submodule (gitlink) at '{path}' points outside this repository; refused \
+                             rather than approximated"
+                        ),
+                    });
+                }
+                _ => {
+                    // CR-03 §2.3.4: valid UTF-8 paths cannot collide at this point (git trees disallow
+                    // duplicate entry names, and entry names cannot contain '/'); this is defense in
+                    // depth.
+                    if out.contains_key(&path) {
+                        return Err(Error::Read(format!(
+                            "commit {commit_id}: duplicate path '{path}' in tree snapshot"
+                        )));
+                    }
+                    out.insert(path, (oid, u32::from(mode.value())));
+                }
             }
         }
     }
@@ -588,6 +660,7 @@ fn diff_to_ops(
     base: &Snapshot,
     child: &Snapshot,
     opts: &Options,
+    limits: &Limits,
     builder: &mut IrBuilder,
 ) -> Result<(Vec<PathOp>, Vec<RenameHint>), Error> {
     let mut ops = Vec::new();
@@ -597,7 +670,7 @@ fn diff_to_ops(
     for (path, (oid, mode)) in child {
         match base.get(path) {
             None => {
-                let blob = builder.add_blob(blob_bytes(repo, *oid)?);
+                let blob = builder.add_blob(blob_bytes(repo, *oid, limits)?);
                 ops.push(PathOp::Add {
                     path: path.clone(),
                     blob,
@@ -608,7 +681,7 @@ fn diff_to_ops(
             }
             Some((base_oid, base_mode)) => {
                 if base_oid != oid || base_mode != mode {
-                    let blob = builder.add_blob(blob_bytes(repo, *oid)?);
+                    let blob = builder.add_blob(blob_bytes(repo, *oid, limits)?);
                     ops.push(PathOp::Modify {
                         path: path.clone(),
                         blob,
@@ -660,7 +733,17 @@ fn diff_to_ops(
     Ok((ops, hints))
 }
 
-fn blob_bytes(repo: &gix::Repository, oid: ObjectId) -> Result<Vec<u8>, Error> {
+/// Read one blob's bytes, refusing before allocation if it exceeds `limits.max_blob_bytes` (RFC 010
+/// CR-10) — checked from the object **header** (`find_header`, which gives the size without inflating
+/// the blob), not after a full read.
+fn blob_bytes(repo: &gix::Repository, oid: ObjectId, limits: &Limits) -> Result<Vec<u8>, Error> {
+    let header = repo.find_header(oid).map_err(read_err)?;
+    if header.size() > limits.max_blob_bytes {
+        return Err(resource_limit(
+            "a blob",
+            format!("{} bytes", limits.max_blob_bytes),
+        ));
+    }
     Ok(repo
         .find_object(oid)
         .map_err(read_err)?

@@ -35,6 +35,21 @@ fn rejects_bad_paths_and_overlong_paths() {
     );
 }
 
+#[test]
+fn an_overlong_path_is_an_unsupported_format_not_a_read_error() {
+    // RFC 010 CR-15: a path needing the hashed `dh/` encoding is a refusal (CL-08 exit 20), not a
+    // generic read failure (exit 1) — the CLI maps `UnsupportedFormat` to `FLOOR_REFUSAL`. A single long
+    // component (not `"x/".repeat(..)`, whose trailing slash would trip the empty-component check
+    // first) that pushes the encoded length past the budget.
+    let overlong = format!("{}.txt", "x".repeat(200));
+    match store_path(&overlong) {
+        Err(crate::Error::UnsupportedFormat { requirement, .. }) => {
+            assert_eq!(requirement, "hashed store path");
+        }
+        other => panic!("expected UnsupportedFormat, got {other:?}"),
+    }
+}
+
 fn hg_available() -> bool {
     Command::new("hg")
         .arg("--version")

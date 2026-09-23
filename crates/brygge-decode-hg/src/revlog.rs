@@ -20,6 +20,31 @@ const REVIDX_ISCENSORED: u16 = 1 << 15;
 /// The null revision (`-1`): a missing parent or base.
 pub const NULL_REV: i32 = -1;
 
+/// Resource ceilings for reconstructing a revlog revision (RFC 010 D-4, CR-17). One place for every
+/// revlog ceiling; tests construct a small instance instead of needing gigabytes.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Limits {
+    /// The maximum size of one reconstructed revision text — checked on every decompressed chunk and on
+    /// the output of every `mpatch` application, so a revlog decompression bomb (a small stored chunk
+    /// that inflates to an enormous text) is refused rather than exhausting the host.
+    pub(crate) max_revision_bytes: u64,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            max_revision_bytes: 1024 * 1024 * 1024,
+        }
+    }
+}
+
+fn resource_limit(what: &str, max_revision_bytes: u64) -> Error {
+    Error::ResourceLimit {
+        what: what.to_string(),
+        ceiling: format!("{max_revision_bytes} bytes"),
+    }
+}
+
 fn read_err(msg: impl std::fmt::Display) -> Error {
     Error::Read(msg.to_string())
 }
@@ -57,6 +82,9 @@ pub struct Entry {
     data_pos: usize,
     /// Length of the stored (compressed) chunk.
     comp_len: usize,
+    /// The full revision text length the index records for this revision (RFC 010 CR-17) — checked
+    /// against the reconstructed text, never trusted as a pre-allocation size.
+    uncomp_len: usize,
 }
 
 impl Entry {
@@ -132,6 +160,7 @@ impl Revlog {
         let offset_flags = u64_be(buf, at)?;
         let flags = (offset_flags & 0xFFFF) as u16;
         let comp_len = u32_be(buf, at + 8)? as usize;
+        let uncomp_len = u32_be(buf, at + 12)? as usize;
         let base_rev = u32_be(buf, at + 16)? as i32;
         let p1 = u32_be(buf, at + 24)? as i32;
         let p2 = u32_be(buf, at + 28)? as i32;
@@ -145,6 +174,7 @@ impl Revlog {
             p1,
             p2,
             node,
+            uncomp_len,
             data_pos,
             comp_len,
         })
@@ -223,12 +253,19 @@ impl Revlog {
             .ok_or_else(|| read_err("revlog chunk out of range"))
     }
 
-    /// Reconstruct the full revision text for `rev` (following the delta chain to a snapshot).
+    /// Reconstruct the full revision text for `rev` (following the delta chain to a snapshot), under
+    /// the default [`Limits`].
     ///
     /// # Errors
-    /// [`Error::Read`] on a malformed chunk, an unknown compression marker, a bad delta, or a cyclic /
-    /// over-long base chain; [`Error::FloorRefusal`] on a censored revision (RFC 005 D-4).
+    /// [`Error::Read`] on a malformed chunk, an unknown compression marker, a bad delta, a cyclic /
+    /// over-long base chain, or a reconstructed length that does not match the index (RFC 010 CR-17);
+    /// [`Error::FloorRefusal`] on a censored revision (RFC 005 D-4); [`Error::ResourceLimit`] if a
+    /// decompressed chunk or a patched text exceeds the ceiling.
     pub fn revision(&self, rev: usize) -> Result<Vec<u8>, Error> {
+        self.revision_with(rev, &Limits::default())
+    }
+
+    pub(crate) fn revision_with(&self, rev: usize, limits: &Limits) -> Result<Vec<u8>, Error> {
         let e = self
             .entries
             .get(rev)
@@ -266,11 +303,21 @@ impl Revlog {
 
         let mut text: Vec<u8> = Vec::new();
         for (i, &r) in chain.iter().enumerate() {
-            let raw = decompress(self.chunk(r)?)?;
-            if i == 0 {
-                text = raw; // the snapshot
+            let raw = decompress(self.chunk(r)?, limits)?;
+            text = if i == 0 {
+                raw // the snapshot
             } else {
-                text = mpatch(&text, &raw)?;
+                mpatch(&text, &raw, limits)?
+            };
+            // RFC 010 CR-17: every step's reconstructed text — the snapshot and each intermediate delta
+            // application — must equal the length the index recorded for *that* revision. A mismatch is
+            // a malformed store (index/data disagree), not a resource ceiling.
+            let step_entry = self
+                .entries
+                .get(r)
+                .ok_or_else(|| read_err("base chain out of range"))?;
+            if text.len() != step_entry.uncomp_len {
+                return Err(read_err("revision length does not match the index"));
             }
         }
         Ok(text)
@@ -278,8 +325,10 @@ impl Revlog {
 }
 
 /// Decompress one revlog chunk by its leading marker byte (verified against real stores):
-/// `0x00` raw (byte 0 included) · `u` raw (byte 0 dropped) · `x` zlib · `0x28` zstd frame.
-fn decompress(chunk: &[u8]) -> Result<Vec<u8>, Error> {
+/// `0x00` raw (byte 0 included) · `u` raw (byte 0 dropped) · `x` zlib · `0x28` zstd frame. Bounded at
+/// `limits.max_revision_bytes` + 1 for zlib and zstd alike (RFC 010 CR-17): a compression bomb — a small
+/// stored chunk that inflates to an enormous text — is refused, not allocated.
+fn decompress(chunk: &[u8], limits: &Limits) -> Result<Vec<u8>, Error> {
     let Some(&first) = chunk.first() else {
         return Ok(Vec::new());
     };
@@ -289,16 +338,31 @@ fn decompress(chunk: &[u8]) -> Result<Vec<u8>, Error> {
         b'x' => {
             let mut out = Vec::new();
             flate2::read::ZlibDecoder::new(chunk)
+                .take(limits.max_revision_bytes + 1)
                 .read_to_end(&mut out)
                 .map_err(|e| read_err(format!("zlib: {e}")))?;
+            if out.len() as u64 > limits.max_revision_bytes {
+                return Err(resource_limit(
+                    "a decompressed revision",
+                    limits.max_revision_bytes,
+                ));
+            }
             Ok(out)
         }
         0x28 => {
             let mut dec = ruzstd::StreamingDecoder::new(chunk)
                 .map_err(|e| read_err(format!("zstd init: {e}")))?;
             let mut out = Vec::new();
-            dec.read_to_end(&mut out)
+            (&mut dec)
+                .take(limits.max_revision_bytes + 1)
+                .read_to_end(&mut out)
                 .map_err(|e| read_err(format!("zstd: {e}")))?;
+            if out.len() as u64 > limits.max_revision_bytes {
+                return Err(resource_limit(
+                    "a decompressed revision",
+                    limits.max_revision_bytes,
+                ));
+            }
             Ok(out)
         }
         other => Err(read_err(format!(
@@ -308,8 +372,9 @@ fn decompress(chunk: &[u8]) -> Result<Vec<u8>, Error> {
 }
 
 /// Apply a Mercurial delta (`bdiff`/`mpatch` format) to `base`: a sequence of hunks, each
-/// `start(u32be) end(u32be) len(u32be) data[len]`, replacing `base[start..end]` with `data`.
-fn mpatch(base: &[u8], delta: &[u8]) -> Result<Vec<u8>, Error> {
+/// `start(u32be) end(u32be) len(u32be) data[len]`, replacing `base[start..end]` with `data`. The output
+/// is bounded at `limits.max_revision_bytes` (RFC 010 CR-17), the same ceiling as decompression.
+fn mpatch(base: &[u8], delta: &[u8], limits: &Limits) -> Result<Vec<u8>, Error> {
     let mut out = Vec::with_capacity(base.len());
     let mut pos = 0usize; // consumed position in base
     let mut i = 0usize; // position in delta
@@ -336,6 +401,12 @@ fn mpatch(base: &[u8], delta: &[u8]) -> Result<Vec<u8>, Error> {
         .get(pos..)
         .ok_or_else(|| read_err("delta base tail out of range"))?;
     out.extend_from_slice(tail);
+    if out.len() as u64 > limits.max_revision_bytes {
+        return Err(resource_limit(
+            "a patched revision",
+            limits.max_revision_bytes,
+        ));
+    }
     Ok(out)
 }
 

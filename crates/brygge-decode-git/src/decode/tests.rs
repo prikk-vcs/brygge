@@ -1186,3 +1186,157 @@ fn tag_on_a_blob_is_not_a_ref_record_but_is_counted() {
         "the drop is counted, not silently skipped: {whats:?}"
     );
 }
+
+// --- RFC 010 CR-10: resource ceilings ----------------------------------------------------------------
+
+/// Run `git <args>` with `stdin_data` piped in and pinned identity/dates, returning trimmed stdout.
+fn git_stdin(dir: &Path, args: &[&str], stdin_data: &[u8]) -> String {
+    use std::io::Write as _;
+    let mut child = Command::new("git")
+        .current_dir(dir)
+        .args(args)
+        .env("GIT_AUTHOR_NAME", "A U Thor")
+        .env("GIT_AUTHOR_EMAIL", "author@example.com")
+        .env("GIT_AUTHOR_DATE", "2005-04-07T22:13:13 +0000")
+        .env("GIT_COMMITTER_NAME", "C O Mitter")
+        .env("GIT_COMMITTER_EMAIL", "committer@example.com")
+        .env("GIT_COMMITTER_DATE", "2005-04-07T22:13:13 +0000")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(stdin_data).unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(
+        out.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+/// A tree nested exactly `depth` levels deep (the innermost level holds one file, `leaf.txt`), built
+/// with `git mktree`, without touching the filesystem (a git tree entry name has no OS path-length
+/// limit, only the ceiling brygge itself enforces).
+fn build_nested_tree(r: &TempRepo, depth: usize) -> String {
+    assert!(depth >= 1);
+    let blob = git_stdin(r.path(), &["hash-object", "-w", "--stdin"], b"leaf\n");
+    let mut tree = git_stdin(
+        r.path(),
+        &["mktree"],
+        format!("100644 blob {blob}\tleaf.txt\n").as_bytes(),
+    );
+    for _ in 1..depth {
+        tree = git_stdin(
+            r.path(),
+            &["mktree"],
+            format!("040000 tree {tree}\td\n").as_bytes(),
+        );
+    }
+    tree
+}
+
+fn commit_tree(r: &TempRepo, tree: &str, msg: &str) -> String {
+    let commit = git_stdin(r.path(), &["commit-tree", tree, "-m", msg], b"");
+    r.git(&["update-ref", "refs/heads/main", &commit]);
+    commit
+}
+
+#[test]
+fn a_blob_over_the_limit_is_refused() {
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let r = TempRepo::new();
+    r.write("big.bin", &"x".repeat(5_000_000));
+    r.commit_all("big blob");
+
+    // The header check (`find_header`) runs before any read of the blob's content; a limit far below
+    // the real size is refused instantly rather than after inflating 5 MB.
+    let limits = Limits {
+        max_blob_bytes: 1024,
+        ..Limits::default()
+    };
+    match decode_with(r.path(), &Options::default(), &limits) {
+        Err(crate::Error::ResourceLimit { .. }) => {}
+        other => panic!("expected a resource-limit refusal, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_deep_tree_is_refused_by_depth_but_a_shallower_one_decodes() {
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let limits = Limits {
+        max_tree_depth: 50,
+        ..Limits::default()
+    };
+
+    let too_deep = TempRepo::new();
+    let tree = build_nested_tree(&too_deep, 60);
+    commit_tree(&too_deep, &tree, "60 levels");
+    match decode_with(too_deep.path(), &Options::default(), &limits) {
+        Err(crate::Error::ResourceLimit { .. }) => {}
+        other => panic!("expected a resource-limit refusal, got {other:?}"),
+    }
+
+    let shallow_enough = TempRepo::new();
+    let tree = build_nested_tree(&shallow_enough, 40);
+    commit_tree(&shallow_enough, &tree, "40 levels");
+    let ir = decode_with(shallow_enough.path(), &Options::default(), &limits)
+        .expect("40 levels is within the injected 50-level ceiling");
+    assert_eq!(ir.atoms.len(), 1);
+}
+
+#[test]
+fn a_path_over_the_limit_is_refused() {
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let r = TempRepo::new();
+    let blob = git_stdin(r.path(), &["hash-object", "-w", "--stdin"], b"x\n");
+    let long_name = "a".repeat(5000);
+    let tree = git_stdin(
+        r.path(),
+        &["mktree"],
+        format!("100644 blob {blob}\t{long_name}\n").as_bytes(),
+    );
+    commit_tree(&r, &tree, "long path");
+
+    let limits = Limits {
+        max_path_bytes: 100,
+        ..Limits::default()
+    };
+    match decode_with(r.path(), &Options::default(), &limits) {
+        Err(crate::Error::ResourceLimit { .. }) => {}
+        other => panic!("expected a resource-limit refusal, got {other:?}"),
+    }
+}
+
+#[test]
+fn the_commit_cap_refuses_when_exceeded() {
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let r = TempRepo::new();
+    for i in 0..5 {
+        r.write("a.txt", &format!("{i}\n"));
+        r.commit_all(&format!("c{i}"));
+    }
+    let limits = Limits {
+        max_commits: 2,
+        ..Limits::default()
+    };
+    match decode_with(r.path(), &Options::default(), &limits) {
+        Err(crate::Error::ResourceLimit { .. }) => {}
+        other => panic!("expected a resource-limit refusal, got {other:?}"),
+    }
+}

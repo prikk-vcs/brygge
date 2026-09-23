@@ -60,6 +60,14 @@ pub enum Error {
         /// Why it is refused rather than approximated.
         reason: String,
     },
+    /// A resource ceiling was hit (a malformed or hostile revlog); refused rather than exhausting the
+    /// host (RFC 010, `brygge-03` T-8/C-2d).
+    ResourceLimit {
+        /// A noun phrase for what exceeded its ceiling (e.g. `"a decompressed revision"`).
+        what: String,
+        /// The ceiling's value, with its unit (e.g. `"1073741824 bytes"`).
+        ceiling: String,
+    },
     /// The assembled IR violated a `brygge-ir` invariant (a decoder bug, not bad input).
     Ir(brygge_ir::Error),
 }
@@ -81,6 +89,9 @@ impl std::fmt::Display for Error {
                     f,
                     "refused Mercurial feature '{feature}' below the floor: {reason}"
                 )
+            }
+            Self::ResourceLimit { what, ceiling } => {
+                write!(f, "refused: {what} exceeds brygge's ceiling ({ceiling})")
             }
             Self::Ir(e) => write!(f, "IR assembly failed: {e}"),
         }

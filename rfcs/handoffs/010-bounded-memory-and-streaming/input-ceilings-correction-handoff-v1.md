@@ -22,7 +22,8 @@ decompression ratio, and says a hit is a recorded refusal, never an OOM or a han
 ## 1. Principle
 
 A ceiling is enforced **before** the memory it protects is allocated. Hitting one is a **refusal**:
-- a typed `Error::ResourceLimit { limit }` whose text names the ceiling and its value;
+- a typed `Error::ResourceLimit { what, ceiling }` naming what exceeded and the ceiling with its unit
+  (§2.6);
 - exit **20**, the same class as any floor refusal, because brygge refused rather than exhausted;
 - never a panic, an OOM, a stack overflow or a hang.
 
@@ -38,7 +39,9 @@ it with small values (`pub(crate)`, not public API), so no test needs gigabytes.
 - **`svnadmin dump`:**
   - spawn with piped stdout and stderr (the fixed argv is unchanged);
   - read stdout through `take(MAX_DUMP_BYTES + 1)`. On overflow, kill the child, wait for it, and refuse;
-  - read stderr on a separate thread, capped at 64 KiB, so a full stderr pipe cannot deadlock the child;
+  - read stderr on a separate thread, **keeping** only the first 64 KiB but **draining** it to EOF
+    (discarding the rest), so the child is never starved, killed or deadlocked by brygge's reader
+    *(amended after review 005, R-1)*;
   - a non-zero exit is `Error::Open` with the (neutralized, capped) stderr, as today.
 
 ### 2.2 CVS (`crates/brygge-decode-cvs/src/scan.rs`, `rcs.rs`)
@@ -72,7 +75,8 @@ it with small values (`pub(crate)`, not public API), so no test needs gigabytes.
 
 ### 2.5 Git (`crates/brygge-decode-git/src/`)
 
-1. **Add** `Error::ResourceLimit { limit: String }` (the enum is `#[non_exhaustive]`, so this is additive).
+1. **Add** `Error::ResourceLimit { what: String, ceiling: String }` (§2.6). The enum is
+   `#[non_exhaustive]`, so this is additive.
 2. **Ceilings, with their defaults:**
 
    | Ceiling | Default | Checked |
@@ -90,7 +94,10 @@ it with small values (`pub(crate)`, not public API), so no test needs gigabytes.
 ### 2.6 CLI mapping (`crates/brygge/src/commands.rs`)
 
 `ResourceLimit` from **every** decoder maps to exit **20**, with the message
-`refused: <what> exceeds brygge's ceiling (<limit>)`. Today it falls through to exit 1.
+`refused: <what> exceeds brygge's ceiling (<ceiling>)`. Today it falls through to exit 1.
+*(Amended after review 005, R-2.)* Every decoder's variant is
+`ResourceLimit { what: String, ceiling: String }`: `what` is a noun phrase ("a blob"), and `ceiling`
+is the value with its unit ("1073741824 bytes").
 
 ### 2.7 Documentation
 

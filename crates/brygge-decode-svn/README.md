@@ -20,3 +20,13 @@ brygge's **Subversion source decoder** (RFC 006, milestone M3). Reads an SVN his
 The only crate that reads SVN (RFC 009 D-1); [`brygge_ir`] and `verify --internal` link none of it. It
 reads untrusted input, so every parser is bounds-checked and panic-free. See
 `rfcs/handoffs/006-subversion-decoder/` for the implementation handoff and the security review.
+
+## Ceilings
+
+Checked before the memory it protects is allocated; a hit is a typed refusal (exit 20), never an OOM or a
+hang (RFC 010 D-4):
+
+| Ceiling | Default | Checked |
+|---|---|---|
+| Dumpstream size | 8 GiB | from a dumpfile's metadata, or bounded while reading `svnadmin dump`'s stdout — before either is fully read |
+| `svnadmin dump` stderr | 64 KiB | while reading `svnadmin dump`'s stderr, concurrently with stdout so a full pipe on either stream cannot deadlock the child |

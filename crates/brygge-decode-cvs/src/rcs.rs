@@ -416,7 +416,8 @@ impl<'a> Cursor<'a> {
 pub fn parse_rcs(data: &[u8]) -> Result<RcsFile, Error> {
     if data.len() > MAX_RCS_BYTES {
         return Err(Error::ResourceLimit {
-            limit: format!("RCS file over {MAX_RCS_BYTES} bytes"),
+            what: "an RCS file".to_string(),
+            ceiling: format!("{MAX_RCS_BYTES} bytes"),
         });
     }
     let mut cur = Cursor::new(data);

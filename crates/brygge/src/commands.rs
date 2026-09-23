@@ -208,6 +208,76 @@ fn guard_decoder<T>(f: impl FnOnce() -> T) -> Result<T, String> {
     })
 }
 
+/// The message every decoder's `ResourceLimit { what, ceiling }` maps to (RFC 010 §2.6, 2026-09-23
+/// review 005 R-2): one place, shared by all four sources, and identical to each decoder's own `Display`
+/// (a user reads the same sentence whichever way the error reaches them).
+fn resource_limit_message(what: &str, ceiling: &str) -> String {
+    format!("refused: {what} exceeds brygge's ceiling ({ceiling})")
+}
+
+fn map_cvs_error(e: CvsError) -> (i32, String) {
+    match e {
+        CvsError::FloorRefusal { feature, reason } => (
+            exit::FLOOR_REFUSAL,
+            format!("refused CVS feature '{feature}' below the floor: {reason}"),
+        ),
+        CvsError::ResourceLimit { what, ceiling } => {
+            (exit::FLOOR_REFUSAL, resource_limit_message(&what, &ceiling))
+        }
+        other => (exit::FAILURE, format!("decode failed: {other}")),
+    }
+}
+
+fn map_svn_error(e: SvnError) -> (i32, String) {
+    match e {
+        SvnError::FloorRefusal { feature, reason } => (
+            exit::FLOOR_REFUSAL,
+            format!("refused Subversion feature '{feature}' below the floor: {reason}"),
+        ),
+        SvnError::UnsupportedFormat { what, reason } => (
+            exit::FLOOR_REFUSAL,
+            format!("unsupported Subversion dump form '{what}': {reason}"),
+        ),
+        SvnError::ResourceLimit { what, ceiling } => {
+            (exit::FLOOR_REFUSAL, resource_limit_message(&what, &ceiling))
+        }
+        other => (exit::FAILURE, format!("decode failed: {other}")),
+    }
+}
+
+fn map_git_error(e: GitError) -> (i32, String) {
+    match e {
+        GitError::FloorRefusal { feature, reason } => (
+            exit::FLOOR_REFUSAL,
+            format!("refused Git feature '{feature}' below the floor: {reason}"),
+        ),
+        GitError::ResourceLimit { what, ceiling } => {
+            (exit::FLOOR_REFUSAL, resource_limit_message(&what, &ceiling))
+        }
+        other => (exit::FAILURE, format!("decode failed: {other}")),
+    }
+}
+
+fn map_hg_error(e: HgError) -> (i32, String) {
+    match e {
+        HgError::FloorRefusal { feature, reason } => (
+            exit::FLOOR_REFUSAL,
+            format!("refused Mercurial feature '{feature}' below the floor: {reason}"),
+        ),
+        HgError::UnsupportedFormat {
+            requirement,
+            reason,
+        } => (
+            exit::FLOOR_REFUSAL,
+            format!("unsupported Mercurial format '{requirement}': {reason}"),
+        ),
+        HgError::ResourceLimit { what, ceiling } => {
+            (exit::FLOOR_REFUSAL, resource_limit_message(&what, &ceiling))
+        }
+        other => (exit::FAILURE, format!("decode failed: {other}")),
+    }
+}
+
 /// Decode `repo` with the chosen source decoder, mapping decoder errors to a `(exit code, message)`.
 /// A refused format/feature is a clean refusal (`FLOOR_REFUSAL`), not a generic failure. The decoder
 /// invocation itself is panic-guarded (`guard_decoder`, CR-16) for all four sources, since this is the
@@ -223,13 +293,7 @@ fn decode_source(kind: SourceKind, repo: &Path, opts: &SourceOpts) -> Result<Ir,
             };
             guard_decoder(|| brygge_decode_cvs::decode(&src, &cvs))
                 .map_err(|fault| (exit::FAILURE, fault))?
-                .map_err(|e| match e {
-                    CvsError::FloorRefusal { feature, reason } => (
-                        exit::FLOOR_REFUSAL,
-                        format!("refused CVS feature '{feature}' below the floor: {reason}"),
-                    ),
-                    other => (exit::FAILURE, format!("decode failed: {other}")),
-                })
+                .map_err(map_cvs_error)
         }
         SourceKind::Svn => {
             // A directory is a repository (dumped read-only via `svnadmin dump`); a file is a dumpfile.
@@ -244,17 +308,7 @@ fn decode_source(kind: SourceKind, repo: &Path, opts: &SourceOpts) -> Result<Ir,
             };
             guard_decoder(|| brygge_decode_svn::decode(&src, &svn))
                 .map_err(|fault| (exit::FAILURE, fault))?
-                .map_err(|e| match e {
-                    SvnError::FloorRefusal { feature, reason } => (
-                        exit::FLOOR_REFUSAL,
-                        format!("refused Subversion feature '{feature}' below the floor: {reason}"),
-                    ),
-                    SvnError::UnsupportedFormat { what, reason } => (
-                        exit::FLOOR_REFUSAL,
-                        format!("unsupported Subversion dump form '{what}': {reason}"),
-                    ),
-                    other => (exit::FAILURE, format!("decode failed: {other}")),
-                })
+                .map_err(map_svn_error)
         }
         SourceKind::Git => {
             let git = brygge_decode_git::Options {
@@ -263,13 +317,7 @@ fn decode_source(kind: SourceKind, repo: &Path, opts: &SourceOpts) -> Result<Ir,
             };
             guard_decoder(|| brygge_decode_git::decode(repo, &git))
                 .map_err(|fault| (exit::FAILURE, fault))?
-                .map_err(|e| match e {
-                    GitError::FloorRefusal { feature, reason } => (
-                        exit::FLOOR_REFUSAL,
-                        format!("refused Git feature '{feature}' below the floor: {reason}"),
-                    ),
-                    other => (exit::FAILURE, format!("decode failed: {other}")),
-                })
+                .map_err(map_git_error)
         }
         SourceKind::Hg => {
             let hg = brygge_decode_hg::Options {
@@ -278,20 +326,7 @@ fn decode_source(kind: SourceKind, repo: &Path, opts: &SourceOpts) -> Result<Ir,
             };
             guard_decoder(|| brygge_decode_hg::decode(repo, &hg))
                 .map_err(|fault| (exit::FAILURE, fault))?
-                .map_err(|e| match e {
-                    HgError::FloorRefusal { feature, reason } => (
-                        exit::FLOOR_REFUSAL,
-                        format!("refused Mercurial feature '{feature}' below the floor: {reason}"),
-                    ),
-                    HgError::UnsupportedFormat {
-                        requirement,
-                        reason,
-                    } => (
-                        exit::FLOOR_REFUSAL,
-                        format!("unsupported Mercurial format '{requirement}': {reason}"),
-                    ),
-                    other => (exit::FAILURE, format!("decode failed: {other}")),
-                })
+                .map_err(map_hg_error)
         }
     }
 }

@@ -18,3 +18,14 @@ a CVS repository's RCS `,v` files directly and reconstructs changesets, producin
 The only crate that reads CVS (RFC 009 D-1); [`brygge_ir`] and `verify --internal` link none of it. It reads
 untrusted input, so every parser is bounds-checked and panic-free. See `rfcs/handoffs/007-cvs-decoder/` for
 the implementation handoff and the security review.
+
+## Ceilings
+
+Checked before the memory it protects is allocated; a hit is a typed refusal (exit 20), never an OOM or a
+hang (RFC 010 D-4):
+
+| Ceiling | Default | Checked |
+|---|---|---|
+| `,v` file size | 512 MiB | from filesystem metadata, before the file is read |
+| `,v` files per repository | 5,000,000 files | while walking the repository tree, before a file over the count is read |
+| RCS delta chain length | 1,000,000 revisions | while reconstructing a revision, guarding against a cyclic or unbounded chain |

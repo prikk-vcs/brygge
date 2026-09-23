@@ -28,10 +28,17 @@ pub struct Changeset {
 /// Parse changeset text.
 ///
 /// # Errors
-/// [`Error::Read`] if the header is malformed (missing manifest node, user, or date line).
+/// [`Error::UnsupportedFormat`] if the changeset metadata is not valid UTF-8 (RFC 010 CR-15: this build
+/// carries text as `str`, not bytes; RFC 011 will carry it byte-exact); [`Error::Read`] if the header is
+/// malformed (missing manifest node, user, or date line).
 pub fn parse(text: &[u8]) -> Result<Changeset, Error> {
-    let text = std::str::from_utf8(text)
-        .map_err(|_| Error::Read("changelog entry is not valid UTF-8".to_string()))?;
+    let text = std::str::from_utf8(text).map_err(|_| Error::UnsupportedFormat {
+        requirement: "non-UTF-8 changeset metadata".to_string(),
+        reason:
+            "this build carries changeset metadata as text; it will be carried byte-exact once \
+                 the IR contract re-cut (RFC 011) lands"
+                .to_string(),
+    })?;
     let (header, description) = match text.split_once("\n\n") {
         Some((h, d)) => (h, d.to_string()),
         None => (text, String::new()),

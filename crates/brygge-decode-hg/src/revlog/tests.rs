@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use super::Revlog;
+use super::{Limits, Revlog};
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -190,4 +190,134 @@ fn a_big_file_uses_zstd_and_a_delta_that_reconstruct() {
         expected.as_bytes(),
         "delta+zstd reconstruction is exact"
     );
+}
+
+// ---- RFC 010 CR-17: decompression and mpatch ceilings, and the index length check -----------------
+
+fn unique_dir(label: &str) -> PathBuf {
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!(
+        "brygge-hg-revlog-{label}-{}-{n}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+/// Hand-build a minimal split (non-inline) revlog holding one full-snapshot revision, with a chosen
+/// stored chunk and a chosen (possibly wrong) recorded uncompressed length — so a ceiling or a
+/// length-mismatch can be exercised directly, without needing `hg` to produce a malformed store.
+fn write_single_rev_revlog(dir: &Path, name: &str, chunk: &[u8], uncomp_len: u32) -> PathBuf {
+    let mut entry = vec![0u8; 64];
+    entry[0..4].copy_from_slice(&1u32.to_be_bytes()); // format version 1, not inline
+    entry[8..12].copy_from_slice(&u32::try_from(chunk.len()).unwrap().to_be_bytes()); // comp_len
+    entry[12..16].copy_from_slice(&uncomp_len.to_be_bytes());
+    // base_rev (bytes 16..20) left at 0 == rev 0 -> a full snapshot.
+    entry[24..28].copy_from_slice(&(-1i32).to_be_bytes()); // p1 = NULL_REV
+    entry[28..32].copy_from_slice(&(-1i32).to_be_bytes()); // p2 = NULL_REV
+    let index_path = dir.join(format!("{name}.i"));
+    std::fs::write(&index_path, &entry).unwrap();
+    std::fs::write(dir.join(format!("{name}.d")), chunk).unwrap();
+    index_path
+}
+
+#[test]
+fn a_zlib_chunk_that_inflates_past_the_limit_is_refused() {
+    use std::io::Write as _;
+    let payload = vec![0u8; 200_000]; // highly compressible
+    let mut enc = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+    enc.write_all(&payload).unwrap();
+    let chunk = enc.finish().unwrap();
+    assert_eq!(
+        chunk.first(),
+        Some(&b'x'),
+        "a zlib stream's first byte is the 'x' marker"
+    );
+
+    let dir = unique_dir("zlib-bomb");
+    let index_path = write_single_rev_revlog(&dir, "rev", &chunk, payload.len() as u32);
+    let rl = Revlog::open(&index_path).expect("open revlog");
+    let limits = Limits {
+        max_revision_bytes: 1024,
+    };
+    let result = rl.revision_with(0, &limits);
+    let _ = std::fs::remove_dir_all(&dir);
+    match result {
+        Err(crate::Error::ResourceLimit { .. }) => {}
+        other => panic!("expected a resource-limit refusal, got {other:?}"),
+    }
+}
+
+fn zstd_available() -> bool {
+    Command::new("zstd")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+#[test]
+fn a_zstd_chunk_that_inflates_past_the_limit_is_refused() {
+    if !zstd_available() {
+        eprintln!("skipping: zstd not available");
+        return;
+    }
+    use std::io::Write as _;
+    let payload = vec![1u8; 200_000]; // highly compressible
+    let mut child = Command::new("zstd")
+        .args(["-q", "-c"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn zstd");
+    child
+        .stdin
+        .take()
+        .expect("piped stdin")
+        .write_all(&payload)
+        .unwrap();
+    let output = child.wait_with_output().expect("zstd output");
+    assert!(output.status.success(), "zstd compression failed");
+    let chunk = output.stdout;
+    assert_eq!(
+        chunk.first(),
+        Some(&0x28),
+        "a zstd frame's first byte is the 0x28 marker"
+    );
+
+    let dir = unique_dir("zstd-bomb");
+    let index_path = write_single_rev_revlog(&dir, "rev", &chunk, payload.len() as u32);
+    let rl = Revlog::open(&index_path).expect("open revlog");
+    let limits = Limits {
+        max_revision_bytes: 1024,
+    };
+    let result = rl.revision_with(0, &limits);
+    let _ = std::fs::remove_dir_all(&dir);
+    match result {
+        Err(crate::Error::ResourceLimit { .. }) => {}
+        other => panic!("expected a resource-limit refusal, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_snapshot_length_mismatch_against_the_index_is_a_read_error() {
+    // Marker 0x00 is raw (byte 0 included), so the reconstructed text is exactly this chunk.
+    let mut chunk = vec![0x00];
+    chunk.extend_from_slice(b"hello world");
+    let claimed_uncomp_len = 999; // deliberately wrong: the real length is chunk.len() == 12
+
+    let dir = unique_dir("length-mismatch");
+    let index_path = write_single_rev_revlog(&dir, "rev", &chunk, claimed_uncomp_len);
+    let rl = Revlog::open(&index_path).expect("open revlog");
+    let result = rl.revision(0);
+    let _ = std::fs::remove_dir_all(&dir);
+    match result {
+        Err(crate::Error::Read(msg)) => {
+            assert!(
+                msg.contains("does not match the index"),
+                "unexpected message: {msg}"
+            );
+        }
+        other => panic!("expected Error::Read, got {other:?}"),
+    }
 }

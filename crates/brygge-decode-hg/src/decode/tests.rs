@@ -285,3 +285,75 @@ fn a_subrepo_is_refused() {
         other => panic!("expected a subrepo floor refusal, got {other:?}"),
     }
 }
+
+// ---- RFC 010 CR-15: the format gate and repo_id ----------------------------------------------------
+
+#[cfg(unix)]
+#[test]
+fn an_unreadable_requires_file_is_an_open_error_not_silently_ignored() {
+    if !hg_available() {
+        eprintln!("skipping: hg not on PATH");
+        return;
+    }
+    use std::os::unix::fs::PermissionsExt;
+
+    let r = Repo::new();
+    r.write("a.txt", "a\n");
+    r.commit("1136239445", "c0");
+
+    let requires_path = r.path().join(".hg").join("requires");
+    let original = std::fs::metadata(&requires_path).unwrap().permissions();
+    std::fs::set_permissions(&requires_path, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+    if std::fs::read_to_string(&requires_path).is_ok() {
+        // The current user ignores Unix permission bits (e.g. running as root): the premise doesn't
+        // hold here, so the test cannot exercise the "unreadable" case.
+        std::fs::set_permissions(&requires_path, original).unwrap();
+        eprintln!("skipping: the current user can read a mode-000 file (likely running as root)");
+        return;
+    }
+
+    let result = decode(r.path(), &Options::default());
+    std::fs::set_permissions(&requires_path, original).unwrap();
+    match result {
+        Err(crate::Error::Open(_)) => {}
+        other => panic!("expected Error::Open (not a silently-empty format gate), got {other:?}"),
+    }
+}
+
+#[test]
+fn repo_id_is_independent_of_pull_order_across_multiple_roots() {
+    if !hg_available() {
+        eprintln!("skipping: hg not on PATH");
+        return;
+    }
+    let a = Repo::new();
+    a.write("a.txt", "a\n");
+    a.commit("1136239445", "root a");
+
+    let b = Repo::new();
+    b.write("b.txt", "b\n");
+    b.commit("1136239450", "root b");
+
+    // Two repositories, each pulling both unrelated histories in a different order — a real store
+    // with more than one root, numbered oppositely by local pull order.
+    let x = Repo::new();
+    if !x.try_run(&["pull", "--force", a.path().to_str().unwrap()])
+        || !x.try_run(&["pull", "--force", b.path().to_str().unwrap()])
+    {
+        eprintln!("skipping: this hg would not pull unrelated histories with --force");
+        return;
+    }
+    let y = Repo::new();
+    assert!(y.try_run(&["pull", "--force", b.path().to_str().unwrap()]));
+    assert!(y.try_run(&["pull", "--force", a.path().to_str().unwrap()]));
+
+    let ir_x = decode(x.path(), &Options::default()).expect("decode x");
+    let ir_y = decode(y.path(), &Options::default()).expect("decode y");
+    assert_eq!(ir_x.atoms.len(), 2, "both roots are carried in x");
+    assert_eq!(ir_y.atoms.len(), 2, "both roots are carried in y");
+    assert_eq!(
+        ir_x.provenance.source.repo_id, ir_y.provenance.source.repo_id,
+        "repo_id (the smallest root node) must not depend on local pull/revision order"
+    );
+}

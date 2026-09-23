@@ -14,3 +14,15 @@ Status: **foundation increment** — the crate, the error/option types, and the 
 changelog/manifest/filelog mapping, the fncache path encoding, and `decode()` are built against real
 Mercurial fixtures (needs Mercurial installed), per the handoff at
 `rfcs/handoffs/005-mercurial-decoder/hg-decoder-implementation-handoff-v1.md`.
+
+## Ceilings
+
+Checked before the memory it protects is allocated; a hit is a typed refusal (exit 20), never an OOM or a
+hang (RFC 010 D-4):
+
+| Ceiling | Default | Checked |
+|---|---|---|
+| Reconstructed revision size | 1 GiB | on every decompressed revlog chunk (zlib and zstd alike) and on the output of every `mpatch` delta application |
+
+Every reconstructed revision's length is also checked against the length its index entry records — a
+mismatch is a malformed store (`Error::Read`), not a ceiling.

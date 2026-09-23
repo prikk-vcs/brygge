@@ -34,9 +34,16 @@ pub fn decode(path: &Path, opts: &Options) -> Result<Ir, Error> {
     let changelog = Revlog::open(&store.join("00changelog.i"))?;
     let manifest_log = Revlog::open(&store.join("00manifest.i"))?;
 
-    let repo_id = changelog
-        .entry(0)
-        .map(|e| e.node.to_vec())
+    // Git parity (RFC 010 CR-15): the smallest **root** changeset node, not revision 0. Mercurial's
+    // revision numbers are assigned by local pull/commit order, not content, so two clones of one
+    // repository pulled in different orders can number the same changesets differently; a repository
+    // with more than one root (e.g. grafted-together histories) makes "revision 0" ambiguous besides.
+    let repo_id = (0..changelog.len())
+        .filter_map(|rev| changelog.entry(rev))
+        .filter(|e| e.p1 == NULL_REV && e.p2 == NULL_REV)
+        .map(|e| e.node)
+        .min()
+        .map(|node| node.to_vec())
         .unwrap_or_default();
 
     let provenance = ImportProvenance {
@@ -156,13 +163,24 @@ fn locate(path: &Path) -> Result<(PathBuf, PathBuf), Error> {
     Ok((root, store))
 }
 
+/// Read one `requires` file: absence is "no requirements" (`Ok("")`); any other read failure — a
+/// permission error above all — is [`Error::Open`], not a silent empty read (RFC 010 CR-15). Today's
+/// format-safety gate must not be disabled by something as ordinary as a permission bit.
+fn read_requires_file(path: &Path) -> Result<String, Error> {
+    match std::fs::read_to_string(path) {
+        Ok(body) => Ok(body),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(e) => Err(Error::Open(format!("cannot read {}: {e}", path.display()))),
+    }
+}
+
 /// Read and check `.hg/requires` (and `.hg/store/requires` under share-safe) — the format-safety gate.
 fn check_requirements(root: &Path, store: &Path) -> Result<(), Error> {
-    let mut body = std::fs::read_to_string(root.join(".hg").join("requires")).unwrap_or_default();
-    let store_req = store.join("requires");
-    if store_req.exists() {
+    let mut body = read_requires_file(&root.join(".hg").join("requires"))?;
+    let store_body = read_requires_file(&store.join("requires"))?;
+    if !store_body.is_empty() {
         body.push('\n');
-        body.push_str(&std::fs::read_to_string(&store_req).unwrap_or_default());
+        body.push_str(&store_body);
     }
     requires::check(&body)
 }

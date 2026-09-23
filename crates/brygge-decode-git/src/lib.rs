@@ -50,6 +50,14 @@ pub enum Error {
         /// Why it is refused rather than approximated.
         reason: String,
     },
+    /// A resource ceiling was hit (a malformed or hostile repository); refused rather than exhausting
+    /// the host (RFC 010, `brygge-03` T-8/C-2d).
+    ResourceLimit {
+        /// A noun phrase for what exceeded its ceiling (e.g. `"a blob"`, `"the commit count"`).
+        what: String,
+        /// The ceiling's value, with its unit (e.g. `"1073741824 bytes"`, `"256 levels"`).
+        ceiling: String,
+    },
     /// The assembled IR violated a `brygge-ir` invariant (signals a decoder bug, not bad input).
     Ir(brygge_ir::Error),
 }
@@ -64,6 +72,9 @@ impl std::fmt::Display for Error {
                     f,
                     "refused Git feature '{feature}' below the floor: {reason}"
                 )
+            }
+            Self::ResourceLimit { what, ceiling } => {
+                write!(f, "refused: {what} exceeds brygge's ceiling ({ceiling})")
             }
             Self::Ir(e) => write!(f, "IR assembly failed: {e}"),
         }

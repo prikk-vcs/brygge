@@ -17,8 +17,9 @@ const MAX_STORE_PATH: usize = 120;
 /// (e.g. `"data/_sub/_file._t_x_t.i"`).
 ///
 /// # Errors
-/// [`Error::Read`] if the encoded path would exceed the store length budget (the hashed `dh/` encoding is
-/// not implemented in this build) or the logical path is empty/absolute.
+/// [`Error::UnsupportedFormat`] if the encoded path would exceed the store length budget (the hashed
+/// `dh/` encoding is not implemented in this build); [`Error::Read`] if the logical path is
+/// empty/absolute or has an invalid component.
 pub fn store_path(logical: &str) -> Result<String, Error> {
     if logical.is_empty() || logical.starts_with('/') {
         return Err(Error::Read(format!(
@@ -39,10 +40,13 @@ pub fn store_path(logical: &str) -> Result<String, Error> {
     }
     out.push_str(".i");
     if out.len() > MAX_STORE_PATH {
-        return Err(Error::Read(format!(
-            "path {logical:?} needs Mercurial's hashed store encoding (>{MAX_STORE_PATH} bytes), \
-             which this build does not implement; refused rather than misread"
-        )));
+        return Err(Error::UnsupportedFormat {
+            requirement: "hashed store path".to_string(),
+            reason: format!(
+                "path {logical:?} needs Mercurial's hashed store encoding (>{MAX_STORE_PATH} bytes), \
+                 which this build does not implement; refused rather than misread"
+            ),
+        });
     }
     Ok(out)
 }

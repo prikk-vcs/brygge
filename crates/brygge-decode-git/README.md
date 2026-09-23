@@ -28,6 +28,18 @@ Or run the example against any repository:
 cargo run -p brygge-decode-git --example decode_repo -- /path/to/repo [--infer-renames]
 ```
 
+## Ceilings
+
+Every ceiling is checked before the memory it protects is allocated, and a hit is a typed refusal (exit
+20), never an OOM, a stack overflow, or a hang (RFC 010 D-4):
+
+| Ceiling | Default | Checked |
+|---|---|---|
+| Blob size | 1 GiB | from the object header (no inflation) before the blob is read |
+| Commit count | 10,000,000 commits | during the walk, before any atom is built |
+| Path length | 4,096 bytes | per path, while walking trees |
+| Tree nesting depth | 256 levels | per level, while walking trees (`walk_tree` is iterative — an explicit stack — so an attacker-chosen depth cannot overflow the process stack) |
+
 Status: **Built (ROADMAP M1); not yet released** — commits→atoms, tree-snapshot diff→literal ops,
 opaque SHA/signature, branches+tags, the owner-ratified floor (submodules, replace/grafts, shallow all
 refused), the representation loss boundary, byte-deterministic (pack-independent) output,
