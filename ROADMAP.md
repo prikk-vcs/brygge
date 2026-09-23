@@ -95,8 +95,8 @@ design (prikk RFC 113 §6).
     and brygge's no-key constraint).
   - **prikk re-checks its floor at admission, always.** brygge's pre-flight is a convenience for users,
     never an authority.
-  - **Source times, author names and messages are claims carried in the import statement.** A prikk
-    patch has no author-name field, and no object's own timestamp carries a source time.
+  - **Source times and author names are claims carried in the import statement.** A prikk patch has no
+    author-name field, and no object's own timestamp carries a source time.
   - **An import attestation pins `created_at` to the zero sentinel, and its whole payload is
     identity-bearing,** so re-imports reproduce ids (brygge's UD-4, ruled by prikk).
   - **Personal data:** identities are carried as-is; pseudonymisation is a later owner decision on the
@@ -105,6 +105,8 @@ design (prikk RFC 113 §6).
   - provenance per import, with per-atom source identifiers inside it (a prikk format change);
   - the floor published in a checkable form;
   - how non-UTF-8 author text is carried (silent transcoding is ruled out);
+  - where imported **messages** go: a prikk patch has a message field, so the choice is that field
+    (where valid UTF-8), the import statement, or both. It is not yet ruled (prikk reply 003);
   - how `NodeId`s are authored from brygge's evidence. prikk will send that rule to brygge before
     implementing it.
 
@@ -116,15 +118,20 @@ design (prikk RFC 113 §6).
   written.
 - Gaps found while conforming go back to prikk as further letters (requirements or questions), never as
   a proposed prikk design.
-- **Risk — feasibility at scale (open, prikk-side).**
-  - **The figure:** prikk's build cost (commit + seal) grows roughly quadratically with history depth.
-    Its best evidence is a single-run projection of 23–101 hours at depth 2,048 (prikk RFC 139).
-  - **Nothing shipped has improved it:** anchored snapshots improved reads, not builds.
+- **Risk — feasibility at scale (open, prikk-side; corrected per prikk reply 003).**
+  - **The figure:** prikk's `seal` reads O(N) objects per block, so seal time grows linearly with depth
+    and cumulatively about quadratically. The best evidence is a single-run projection of 23–101 hours at
+    depth 2,048 (prikk RFC 133 §5b, RFC 139). **That projection stands.**
+  - **The item that would change its shape** is reducing seal's per-block object reads, and **it is not
+    scheduled.** prikk will schedule it with its import work, and will tell brygge when.
+  - **A different, smaller cost:** `commit` baseline reconstruction (prikk RFC 136 increment 2c, queued).
+    It does not decide the projection.
+  - **The one lever known now:** batching several atoms into one block divides the number of seals. That
+    is reasoned from the mechanism, not measured, and it lowers the constant, not the shape. The batching
+    policy is prikk's foundations decision. brygge's IR keeps atom boundaries, so either policy can be
+    encoded.
   - **Why it matters:** real migrations are 10⁴–10⁶ commits.
-  - **What prikk has said:** an import is not forced to one block per atom. Its RFC 136 increment 2c
-    (anchoring the baseline reconstruction) is the item that decides feasibility, and prikk will report
-    its measurement when it lands.
-  - **brygge's plan:** size nothing against a number until then.
+  - **brygge's plan:** size nothing against a number until prikk reports.
 
 ### Phase B2 — a second target encoder
 - Proves PU-3: a non-prikk target's encoder written against the IR alone, with no brygge change.
