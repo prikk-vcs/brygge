@@ -85,26 +85,46 @@ The owner's rulings of 2026-09-23 replace the earlier B0 "interim proposal" plan
 format from brygge would be built to be thrown away, and it could set a precedent for prikk's own import
 design (prikk RFC 113 §6).
 
-### Phase B0 — requirements to prikk (proactive, no code)
-- Once RFC 011 fixes the IR's provenance content, brygge drafts **letter 001 to prikk**: what an importer
-  needs from prikk's import contract, stated as requirements with rationale, plus open questions. Topics:
-  - the provenance an import declaration must carry;
-  - deterministic import-time fields (UD-4);
-  - who the importer is, and where its signing key lives (RFC 113 §4.3–§4.4);
-  - a floor pre-flight that reports every refusal before writing;
-  - personal data in author identities.
-- It is sent with the owner's authorization. prikk decides if, when and how to answer.
+### Phase B0 — requirements to prikk (proactive, no code) — letter 001 sent 2026-09-23, answered
+- **Letter 001** (an importer's requirements and questions) was sent with the owner's authorization. prikk
+  answered the same day (its replies 001 and 002).
+- **What prikk has settled, and brygge builds to:**
+  - **Derived marks live at the operation**, in the object the importer writes (RFC 113 §4.2).
+  - **The importer is prikk's own import command, run by an adopted maintainer.** brygge's encoder
+    produces unsigned material and **never touches signing** (a prikk architect ruling from §4.3/§4.4
+    and brygge's no-key constraint).
+  - **prikk re-checks its floor at admission, always.** brygge's pre-flight is a convenience for users,
+    never an authority.
+  - **Source times, author names and messages are claims carried in the import statement.** A prikk
+    patch has no author-name field, and no object's own timestamp carries a source time.
+  - **An import attestation pins `created_at` to the zero sentinel, and its whole payload is
+    identity-bearing,** so re-imports reproduce ids (brygge's UD-4, ruled by prikk).
+  - **Personal data:** identities are carried as-is; pseudonymisation is a later owner decision on the
+    target side.
+- **Direction, still owed by prikk's foundations design:**
+  - provenance per import, with per-atom source identifiers inside it (a prikk format change);
+  - the floor published in a checkable form;
+  - how non-UTF-8 author text is carried (silent transcoding is ruled out);
+  - how `NodeId`s are authored from brygge's evidence. prikk will send that rule to brygge before
+    implementing it.
 
 ### Phase B1 — the prikk encoder (RFC 008)
 - **Starts** once prikk's architect has accepted the RFC 113 foundations design (after the owner schedules
   prikk's import theme, prikk ROADMAP theme 17).
-- brygge's RFC 008 then **conforms** to that design.
-  - brygge's own standing constraint (BN-4) is that it holds no prikk maintainer key. How and by whom
-    the import declaration is signed is prikk's decision; letter 001 asks.
-  - prikk's floor (RFC 113 §4.5) is enforced by the encoder as a pre-flight that reports every refusal
-    before anything is written.
+- brygge's RFC 008 then **conforms** to that design. It produces unsigned material for prikk's import
+  command, and it enforces prikk's floor as a pre-flight that reports every refusal before anything is
+  written.
 - Gaps found while conforming go back to prikk as further letters (requirements or questions), never as
   a proposed prikk design.
+- **Risk — feasibility at scale (open, prikk-side).**
+  - **The figure:** prikk's build cost (commit + seal) grows roughly quadratically with history depth.
+    Its best evidence is a single-run projection of 23–101 hours at depth 2,048 (prikk RFC 139).
+  - **Nothing shipped has improved it:** anchored snapshots improved reads, not builds.
+  - **Why it matters:** real migrations are 10⁴–10⁶ commits.
+  - **What prikk has said:** an import is not forced to one block per atom. Its RFC 136 increment 2c
+    (anchoring the baseline reconstruction) is the item that decides feasibility, and prikk will report
+    its measurement when it lands.
+  - **brygge's plan:** size nothing against a number until then.
 
 ### Phase B2 — a second target encoder
 - Proves PU-3: a non-prikk target's encoder written against the IR alone, with no brygge change.
@@ -119,7 +139,7 @@ design (prikk RFC 113 §6).
 | **0.1.0** — first published release | **Honest decode** | The intake review's correction set: the `verify --internal` checks, CVS mainline-only with its user guidance, text/path integrity, non-history exclusion, resource bounds, output neutralization, the three-verb CLI (`decode`/`inspect`/`verify`), the narrowed public API; **RFC 011 (the IR contract re-cut)**; per-source user guides (the published VF-5 statements); threat model v0.3; `CHANGELOG.md` | The owner's rulings on the intake review (done 2026-09-23) | Every correction closed with its tests; RFCs 001–007 and 009 moved to `done/` as "Implemented (0.1.0)"; release notes; the owner authorizes the cut |
 | **0.2.0** | **Scale** | RFC 010 increments 2 (SVN dumpstream iterator) and 3 (CVS reconstruction bound); a new increment bounding the Git snapshot cache; a Git scenario in `tools/bench`; increment 4 only if measured | 0.1.0 released | Before/after measurements recorded; byte-identical output |
 | **0.3.0** | **Source reach** | CVS branch-aware import (lifts 0.1.0's mainline-only limit); SVN delta dumps (svndiff); hg hashed long paths; CVS adaptive clustering windows | 0.2.0 released; per-item RFC amendment and security review | Each lifted limit has fixtures against real tools |
-| **B0** | **Requirements to prikk** | Letter 001: an importer's requirements and questions (no code) | RFC 011 accepted | The owner authorizes sending |
+| **B0** | **Requirements to prikk** | Letter 001: an importer's requirements and questions (no code) | RFC 011 accepted | **Done 2026-09-23:** sent and answered (see Track B0) |
 | **B1** | **prikk encoder** | RFC 008, conforming to prikk's import foundations | prikk's foundations accepted (see Track B) | Per RFC 008 |
 | **1.0.0** | — | The owner's decision alone. Its criteria are to be restated when 1.0 is discussed (the former "prikk proposal encoder (B0)" criterion was withdrawn with B0) | — | — |
 
@@ -175,10 +195,14 @@ Re-verified against prikk 0.46.0 on 2026-09-23:
   - OQ-2/UD-3 — only an adopted maintainer seals imported history;
   - OQ-3 for Git — refuse, never approximate.
 - **Met:** UD-5, format stability (prikk RFC 114) and sync.
+- **Ruled by prikk's architect, 2026-09-23 (reply to brygge letter 001):**
+  - UD-4: an import attestation's `created_at` is the zero sentinel, and its payload is wholly
+    identity-bearing;
+  - the importer is prikk's own import command, run by an adopted maintainer.
 - **Still unbuilt in prikk:**
-  - UD-1 — an import-shaped `Attestation`;
-  - UD-2 — an authorized `Import` block kind;
-  - UD-4 — deterministic import-time fields.
+  - UD-1: an import-shaped `Attestation`, with the direction set to provenance per import, a prikk format
+    change;
+  - UD-2: an authorized `Import` block kind.
 - **prikk's import theme (theme 17) is unscheduled.** brygge informs it proactively (Track B0); the
   encoder waits for it (Track B1).
 
