@@ -4,21 +4,37 @@ How brygge gets from a design set to a dependable migration tool. This is a **di
 milestones**, not a dated schedule: work ships when it is correct, tested, and honest. Requirement and
 design ids (e.g. `PR-4`, `IX-06`, `HO-1`, `INV-2`) refer to the design set in
 [`docs/src/`](docs/src/) (`brygge-01` requirements, `brygge-02` external design, `brygge-03` threat
-model). The governing upstream is prikk **RFC 113** (the import contract).
+model). The governing upstream is prikk **RFC 113** (the import contract; accepted, owner-ruled
+2026-09-13).
 
-> **Status (2026-09-12): Track A is delivered.** Phases A0–A4 shipped — all four sources (Git, hg, SVN,
-> CVS) decode into the IR, which is **frozen at 1.0.0** (RFC 003 D-7) and held all four with no contract
-> change. Track B (encode → prikk) remains gated on prikk. For the current state, the invariants, and the
-> prioritized backlog, read [`HANDOFF.md`](HANDOFF.md); this file remains the direction/milestone record.
+> **Status (2026-09-23): Track A is built, not yet released.** All four sources (Git, hg, SVN, CVS) decode
+> into the IR, but **no version of brygge has been released**. The incoming architect's intake review
+> found defects in correctness, honesty and contract evolution that must be fixed before a first release.
+> The owner has authorized the release plan below: a correction cycle ending in **0.1.0, the first
+> published release**. brygge is in **v0 development**: breaking changes made to improve or fix it are
+> acceptable. Track B (encode → prikk): **prikk decides, brygge informs proactively**. brygge sends its
+> import requirements to prikk; the encoder is built once prikk's import foundations exist (see Track B).
+> For the invariants, the architecture and how to build, read
+> [`HANDOFF.md`](docs/src/development/handoffs/HANDOFF.md).
 
 ## Guiding rules (constant across the roadmap)
 
 - **Design before implementation.** Requirements → external design → threat model → **RFC + handoff** →
   implementation → tests → example. Never inverted. (Owner's standing directive.)
-- **Two tracks, deliberately decoupled.** The **decode → IR (intermediate representation) track** depends only on the (decades-stable)
-  source systems and on nothing in prikk, so it is what brygge **stabilizes first** (PU-6). The
-  **encode-to-prikk track** is gated on prikk's open decisions (UD-1…UD-3, OQ-1…OQ-3) and advances only
-  as they land; it never blocks the first track.
+- **The owner's design philosophy decides close calls:** *finally clean, safe and secure, robust and
+  sophisticated design*. APIs and the user experience must not let anyone be confused or misunderstand:
+  one name per concept, nothing silently ignored, approximated or implied.
+- **Two tracks, deliberately decoupled.** The **decode → IR (intermediate representation) track** depends
+  only on the (decades-stable) source systems and on nothing in prikk, so it is what brygge stabilizes
+  first (PU-6). The **encode-to-prikk track** follows prikk; it never blocks the first track.
+- **prikk decides; brygge informs, proactively.** prikk is the primary project and owns its import
+  contract. brygge knows an importer's requirements best, so it **proactively** sends prikk its
+  requirements (with rationale and evidence) and its questions, whenever they are needed.
+  - It states needs, constraints and, where useful, options with trade-offs.
+  - It never presses prikk to design in the direction brygge would like, never presents a brygge design as
+    prikk's, and never ships anything that could set a precedent for prikk (prikk RFC 113 §6).
+  - brygge then conforms to what prikk decides.
+  - Letters are sent only with the owner's authorization.
 - **Honesty is a security property, not a feature** (INV-1). No milestone ships a surface that could
   read as native/verified imported history.
 - **Carry the weight at the boundary** (INV-4/INV-5). Heavy decoder deps stay isolated behind the
@@ -32,8 +48,8 @@ model). The governing upstream is prikk **RFC 113** (the import contract).
 
 The near-term product. Complete and useful with no encoder and no prikk (PU-1).
 
-### Phase A0 — Foundations (the IR and the tool spine) — ✅ delivered
-The substrate every decoder and encoder shares. No source-specific parsing yet.
+### Phase A0 — Foundations (the IR and the tool spine) — built
+The substrate every decoder and encoder shares.
 - The **IR internal representation** satisfying `IR-1…IR-6` / `IX-01…07`: faithfulness-with-provenance,
   per-atom epistemic status, opaque source ids first-class, the loss boundary, encoder-agnostic,
   versioned (RFC 001).
@@ -41,111 +57,129 @@ The substrate every decoder and encoder shares. No source-specific parsing yet.
   fidelity summary **recoverable from the objects** (HO-1/HO-2/HO-4, FS-02).
 - **Determinism, the IR artifact format, versioning, and an integrity digest** (RFC 003): `VF-1`,
   `IX-07`, and the tamper-detectability the threat model needs (C-3b).
-- The **dependency-surface & supply-chain policy** (RFC 009, security-foundational, brought early):
-  `gix` vs `libgit2`, FFI isolation, `cargo-deny`/`cargo-audit` gates (INV-4).
-- The **tool spine**: `decode`/`inspect`/`verify`/`summary` command surface (CL-*), machine-readable
-  output (CL-07), outcome-class exit codes (CL-08).
+- The **dependency-surface & supply-chain policy** (RFC 009): `gix` vs `libgit2`, FFI isolation,
+  `cargo-deny`/`cargo-audit` gates (INV-4).
+- The **tool spine**: the command surface (CL-*), machine-readable output (CL-07), outcome-class exit
+  codes (CL-08).
 
-### Phase A1 — Git decoder → **the first stable decode/IR deliverable** — ✅ delivered (M1)
-- Decode Git → IR: content/ancestry/messages as claims (PR-1/2/3); commit SHAs and GPG signatures
-  preserved opaquely (PR-4); **every inferred rename marked derived** with its parameters (HO-1);
-  identity inference lives in the (later) encoder, visibly, not hidden in the IR (IR-1).
-- `inspect`, `verify --internal` (VF-3), and `verify --against-source` (VF-2, the round-check).
-- The floor **mechanism** (CF-03) with refusal-with-reason (FA-3); the floor's **contents** for Git are
-  owner-set (OQ-3).
-- **This phase reaches a durable decode/IR contract for Git — the "first half stabilized."**
+### Phase A1 — Git decoder — built (M1)
+- Content, ancestry and messages as claims (PR-1/2/3); commit SHAs and signatures preserved opaquely
+  (PR-4); inferred renames marked derived with their parameters (HO-1); against-source verification
+  (VF-2); the owner-ratified floor (FA-3).
 
-### Phase A2 — Mercurial decoder — ✅ delivered (M2)
-- Validates the IR's cross-source claim (IX-06) with an epistemically **different** source: hg often
-  **states** renames (SRC-H2), so hg imports carry fewer derived marks than Git — a visible, checkable
-  consequence. Named branches vs bookmarks, phases, obsmarkers handled per SRC-H3.
-- Proves source-extensibility: a new source is a new decoder against the unchanged IR (PU-3).
+### Phase A2 — Mercurial decoder — built (M2)
+- Validates the IR's cross-source claim (IX-06) with a source that often **states** renames (SRC-H2).
+  Named branches vs bookmarks, phases, obsmarkers handled per SRC-H3.
 
-### Phase A3 — SVN decoder — ✅ delivered (M3)
+### Phase A3 — SVN decoder — built (M3)
 - Branch identity reconstructed by convention as **derived** records (SRC-S1); mergeinfo
-  dropped-with-record or carried-as-advisory, never promoted (SRC-S2). Stresses derived-branch discipline.
+  dropped-with-record, never promoted (SRC-S2).
 
-### Phase A4 — CVS decoder (honest, lossy, labelled) — ✅ delivered (M4)
+### Phase A4 — CVS decoder (honest, lossy, labelled) — built (M4)
 - Changeset reconstruction by clustering, every changeset marked derived (SRC-C1/C2); the surface states
-  **before running** that a VF-2-faithful import is not achievable (SRC-C3/FS-06). The honesty stress test.
+  **before running** that a VF-2-faithful import is not achievable (SRC-C3/FS-06).
 
-## Track B — encode → target (gated; runs in parallel where it can)
+## Track B — encode → target (prikk decides, brygge informs)
 
-### Phase B0 — prikk **reviewable proposal** (buildable now, unsealed)
-- `encode prikk` emits a **labelled, unsealed, `Unverifiable`** proposal with provenance content (PX-*),
-  in a clearly-interim form (RFC 008). No seal path, no `Import` block prikk would reject today
-  (GATED-1/2/3). Useful for review immediately; safe because the target admits nothing.
+The owner's rulings of 2026-09-23 replace the earlier B0 "interim proposal" plan. An interim, prikk-shaped
+format from brygge would be built to be thrown away, and it could set a precedent for prikk's own import
+design (prikk RFC 113 §6).
 
-### Phase B1 — real prikk imports (gated on prikk)
-- Advances only as prikk lands **UD-1** (an import-shaped `Attestation`), **UD-2** (an authorized import
-  block kind or a `Normal`-block ruling), **UD-3/OQ-2** (whether imports may be sealed and by whom),
-  **OQ-1** (what the importer signs), and format stability (**UD-5**). Each is owner/prikk territory;
-  brygge tracks them and targets whatever prikk settles.
+### Phase B0 — requirements to prikk (proactive, no code)
+- Once RFC 011 fixes the IR's provenance content, brygge drafts **letter 001 to prikk**: what an importer
+  needs from prikk's import contract, stated as requirements with rationale, plus open questions. Topics:
+  - the provenance an import declaration must carry;
+  - deterministic import-time fields (UD-4);
+  - who the importer is, and where its signing key lives (RFC 113 §4.3–§4.4);
+  - a floor pre-flight that reports every refusal before writing;
+  - personal data in author identities.
+- It is sent with the owner's authorization. prikk decides if, when and how to answer.
+
+### Phase B1 — the prikk encoder (RFC 008)
+- **Starts** once prikk's architect has accepted the RFC 113 foundations design (after the owner schedules
+  prikk's import theme, prikk ROADMAP theme 17).
+- brygge's RFC 008 then **conforms** to that design.
+  - brygge's own standing constraint (BN-4) is that it holds no prikk maintainer key. How and by whom
+    the import declaration is signed is prikk's decision; letter 001 asks.
+  - prikk's floor (RFC 113 §4.5) is enforced by the encoder as a pre-flight that reports every refusal
+    before anything is written.
+- Gaps found while conforming go back to prikk as further letters (requirements or questions), never as
+  a proposed prikk design.
 
 ### Phase B2 — a second target encoder
-- Proves PU-3: a non-prikk target's encoder written against the IR alone, no brygge change. Optionally a
-  snapshot target, to prove the IR privileges no identity model (IX-05).
+- Proves PU-3: a non-prikk target's encoder written against the IR alone, with no brygge change.
+  Optionally a snapshot target, to prove the IR privileges no identity model (IX-05).
 
 ---
 
-## Milestones & versions
+## Release plan (authorized by the owner 2026-09-23)
 
-| Milestone | Version | Contents | Track | Status |
+| Release | Theme | Scope | Entry | Exit (in addition to the gate suite) |
 |---|---|---|---|---|
-| **M0** | 0.1.0-dev | Foundations: IR contract v1, honesty machinery, determinism+integrity, dep policy + supply-chain gates, tool spine | A0 | ✅ delivered |
-| **M1** | **0.1.0** | **Git decode → IR + inspect + verify (internal & against-source).** The first stable decode/IR deliverable | A1 | ✅ delivered |
-| **M2** | 0.2.0 | Mercurial decoder; IR cross-source claim validated | A2 | ✅ delivered |
-| **M3** | 0.3.0 | SVN decoder | A3 | ✅ delivered |
-| **M4** | 0.4.0 | CVS decoder (lossy, labelled) | A4 | ✅ delivered |
-| **IR-1.0** | — | The **IR contract is frozen** once M1 proves it and M2 validates it cross-source; thereafter additive-only (see release cycles) | A | ✅ **frozen at 1.0.0** (RFC 003 D-7); held all four sources with no change |
-| **B0** | ships within 0.x once designed | prikk reviewable-proposal encoder (unsealed) | B0 | ⏸ gated (RFC 008) |
-| **1.0.0** | 1.0 | Decode/IR half stable across ≥ 2 sources + prikk proposal encoder + IR contract frozen. (Sealed prikk imports may still be gated — 1.0 is the *decode/IR product's* stability, not the gated encoder's.) | A + B0 | pending B0 + release |
+| **0.1.0** — first published release | **Honest decode** | The intake review's correction set: the `verify --internal` checks, CVS mainline-only with its user guidance, text/path integrity, non-history exclusion, resource bounds, output neutralization, the three-verb CLI (`decode`/`inspect`/`verify`), the narrowed public API; **RFC 011 (the IR contract re-cut)**; per-source user guides (the published VF-5 statements); threat model v0.3; `CHANGELOG.md` | The owner's rulings on the intake review (done 2026-09-23) | Every correction closed with its tests; RFCs 001–007 and 009 moved to `done/` as "Implemented (0.1.0)"; release notes; the owner authorizes the cut |
+| **0.2.0** | **Scale** | RFC 010 increments 2 (SVN dumpstream iterator) and 3 (CVS reconstruction bound); a new increment bounding the Git snapshot cache; a Git scenario in `tools/bench`; increment 4 only if measured | 0.1.0 released | Before/after measurements recorded; byte-identical output |
+| **0.3.0** | **Source reach** | CVS branch-aware import (lifts 0.1.0's mainline-only limit); SVN delta dumps (svndiff); hg hashed long paths; CVS adaptive clustering windows | 0.2.0 released; per-item RFC amendment and security review | Each lifted limit has fixtures against real tools |
+| **B0** | **Requirements to prikk** | Letter 001: an importer's requirements and questions (no code) | RFC 011 accepted | The owner authorizes sending |
+| **B1** | **prikk encoder** | RFC 008, conforming to prikk's import foundations | prikk's foundations accepted (see Track B) | Per RFC 008 |
+| **1.0.0** | — | The owner's decision alone. Its criteria are to be restated when 1.0 is discussed (the former "prikk proposal encoder (B0)" criterion was withdrawn with B0) | — | — |
+
+**0.1.0 also includes the hg *published view*:** secret and hidden changesets are excluded by brygge
+itself, and counted in the report, rather than refused (owner ruling D-4, 2026-09-23).
+
+## Milestones (built, not released)
+
+| Milestone | Contents | Status |
+|---|---|---|
+| **M0** | Foundations: IR contract, honesty machinery, determinism + integrity, dependency policy + supply-chain gates, tool spine | built |
+| **M1** | Git decoder + inspect + verify (internal & against-source) | built |
+| **M2** | Mercurial decoder; IR cross-source claim validated | built |
+| **M3** | SVN decoder | built |
+| **M4** | CVS decoder (lossy, labelled) | built |
+| **IR contract** | Frozen at 1.0.0 on 2026-09-08 as a **pre-release** freeze. It is re-cut by RFC 011 before the first release (owner ruling D-1, 2026-09-23); the released label is settled with RFC 011 | re-cut in 0.1.0 |
 
 The **IR contract version (IX-07) is a first-class compatibility promise, separate from the tool
-version** — a consumer (a foreign encoder, an inspector) pins the IR contract, not the brygge binary.
+version**: a consumer (a foreign encoder, an inspector) pins the IR contract, not the brygge binary.
 
 ---
 
 ## Release cycles
 
-- **Milestone-driven minors.** Each source completes a minor (0.1 Git, 0.2 hg, 0.3 SVN, 0.4 CVS). A
-  minor ships only when its source's decode + inspect + both verify modes are green and its fidelity
-  surface is honest per source (VF-5).
-- **The IR contract has its own semver, tracked in the IR artifact.** Pre-freeze (before IR-1.0): a
-  minor may change the IR contract with a version bump and a stated migration. Post-freeze: the IR
-  contract is **additive-only**; a breaking change is a new major of the contract, deliberate and rare.
+- **v0 policy (owner, 2026-09-23).** brygge has never been in production use. Until 1.0, breaking changes
+  made to improve or fix it are acceptable, and are stated in the release notes.
+- **One minor per theme.** Patch releases for fixes that change no scope. Each release has entry and exit
+  criteria. The architect reports readiness with a release recommendation; **the owner authorizes every
+  cut, tag and publication.**
+- **The IR contract has its own version, carried in every artifact.** How it evolves (tagged fields with
+  a critical bit: an unknown critical field is refused, an unknown non-critical field is skipped and
+  reported) is specified by RFC 011.
 - **Security releases are out-of-band.** A dependency advisory (`cargo-audit`/`cargo-deny`, C-4d) or a
-  threat-model control failure triggers a prompt patch release; the threat model is revisited per the
-  project rule (a release touching a new parser, a new dependency, or an untrusted-input path **updates**
-  `brygge-03`; others **re-verify** it).
-- **Tags are bare versions (no `v`)**, gates are CI-enforced, and the release mechanics mirror the
-  ecosystem's other projects (bare-version tag → gate → release). Publishing/tagging is **owner-only**
-  (see `GOVERNANCE.md`).
-- **What "done" means for a release:** the gates green (fmt · clippy `-D warnings` · test · **supply-chain
-  gates**), the fidelity/honesty surfaces present and unsuppressible (INV-1), and — for any release
-  touching untrusted input or dependencies — the threat model updated.
+  threat-model control failure triggers a prompt patch release. The threat model is revisited per the
+  project rule: a release touching a new parser, a new dependency, or an untrusted-input path **updates**
+  `brygge-03`; others **re-verify** it.
+- **Tags are bare versions (no `v`)** and gates are CI-enforced. Publishing and tagging are **owner-only**
+  (see [`GOVERNANCE.md`](docs/src/development/handoffs/GOVERNANCE.md)).
+- **What "done" means for a release:**
+  - the gates are green (fmt · clippy `-D warnings` · test · **supply-chain gates**);
+  - the fidelity/honesty surfaces are present and unsuppressible (INV-1);
+  - for any release touching untrusted input or dependencies, the threat model is updated;
+  - RFCs shipped in the release move to `done/`.
 
 ---
 
 ## Dependencies on prikk (do not block Track A)
 
-brygge names these so no plan silently assumes them; all are prikk/owner territory (RFC 113 §4a) and gate
-only Track B past B0:
+Re-verified against prikk 0.46.0 on 2026-09-23:
 
-- **UD-1** import-shaped `Attestation`; **UD-2** authorized import block kind; **UD-3/OQ-2** sealing
-  ruling; **OQ-1** importer signing (DC-35); **OQ-3** the per-source floor contents; **UD-5** format
-  stability + sync. The UD table in `brygge-01` §11 is to be **re-verified against the current prikk**
-  (now 0.28) when Track B design begins.
+- **Ruled by prikk's owner, 2026-09-13 (RFC 113 §4.3–§4.5):**
+  - OQ-1 — the importer signs the import declaration;
+  - OQ-2/UD-3 — only an adopted maintainer seals imported history;
+  - OQ-3 for Git — refuse, never approximate.
+- **Met:** UD-5, format stability (prikk RFC 114) and sync.
+- **Still unbuilt in prikk:**
+  - UD-1 — an import-shaped `Attestation`;
+  - UD-2 — an authorized `Import` block kind;
+  - UD-4 — deterministic import-time fields.
+- **prikk's import theme (theme 17) is unscheduled.** brygge informs it proactively (Track B0); the
+  encoder waits for it (Track B1).
 
-## What was built, and what is next
-
-The founding build order (delivered): **RFC 001 (IR foundations) + RFC 009 (dependency policy)** → RFC
-002/003 (honesty + determinism) → the four decoders along the gradient (RFC 004 Git → 005 hg → 006 SVN →
-007 CVS), reaching M1–M4, with the IR frozen at 1.0.0 (RFC 003 D-7) after it held every source unchanged.
-Nothing in Track A waited on prikk.
-
-**What is next** is the prioritized backlog in [`HANDOFF.md`](HANDOFF.md) §8: the RFC 010 memory/streaming
-increments (measurement-gated), the queued decoder follow-ups (SVN svndiff, CVS refinements), folding the
-threat-model residuals, the deferred TUI (a separate crate, if pursued), and — owner/prikk-gated —
-Track B (RFC 008, the prikk encoder). The method is unchanged: the architect writes each RFC + handoff; the
-implementer builds against it; the owner rules the owner-only decisions and authorizes every release.
+`brygge-01` §11 is updated to this state in the 0.1.0 documentation sweep.
