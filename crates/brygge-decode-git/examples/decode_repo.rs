@@ -38,7 +38,8 @@ fn main() {
                 let subject = atom
                     .metadata
                     .message
-                    .as_deref()
+                    .as_ref()
+                    .and_then(brygge_ir::Text::as_utf8)
                     .unwrap_or("")
                     .lines()
                     .next()

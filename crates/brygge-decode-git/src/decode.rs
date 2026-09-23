@@ -1,5 +1,7 @@
 //! The decode orchestration (RFC 004 D-2/D-3/D-5): read a Git object database and build a
-//! [`brygge_ir::Ir`], entirely *Stated* except opt-in marked-*Derived* rename hints.
+//! [`brygge_ir::Ir`], entirely *Stated* except opt-in marked-*Derived* copy records. Every object read
+//! — commit, tree, blob, annotated tag — is re-hashed against its claimed id before use (batch-2 handoff
+//! §1.1, RFC 004 batch-2 corrections).
 //!
 //! History is walked **parent-first** (an atom's `AtomId` is computed from its parents' `AtomId`s), and
 //! per-commit path operations are computed by diffing full tree **snapshots** (child against first
@@ -13,8 +15,9 @@ use gix::bstr::ByteSlice;
 
 use brygge_ir::builder::{AtomDraft, IrBuilder};
 use brygge_ir::model::{
-    AtomId, DropRecord, Identity, ImportProvenance, Ir, LossBoundary, LossClass, MetadataClaims,
-    PathOp, RefKind, RefRecord, RenameHint, SourceIdentity, SourceKind,
+    Annotation, AtomId, CopyRecord, DropRecord, Extra, Identity, ImportProvenance, Ir,
+    LossBoundary, LossClass, MetadataClaims, PathOp, RefKind, RefRecord, Signature, SourceIdentity,
+    SourceKind, Text, Time,
 };
 use brygge_ir::status::{Derivation, DerivationKind, EpistemicStatus};
 
@@ -23,8 +26,9 @@ use crate::{Error, Options, decoder_version, floor, open};
 /// The full path → (blob/link/gitlink object id, mode) contents of a tree.
 type Snapshot = BTreeMap<String, (ObjectId, u32)>;
 
-/// An annotated tag's opaque object id and any signatures, preserved in a ref's `source` (`PR-4`).
-type TagIdentity = (ObjectId, Vec<Vec<u8>>);
+/// An annotated tag's opaque object id, any signatures, and its tagger/time/message, preserved in a ref's
+/// `source`/`annotation` (`PR-4`, batch-2 handoff §1.6).
+type TagIdentity = (ObjectId, Vec<Signature>, Option<Annotation>);
 
 const DECODER: &str = "brygge-decode-git";
 
@@ -43,6 +47,10 @@ pub(crate) struct Limits {
     /// The maximum tree nesting depth, checked while walking trees (`walk_tree` is iterative — an
     /// explicit stack — precisely so a deep tree cannot overflow the process stack; RFC 010 CR-10).
     pub(crate) max_tree_depth: usize,
+    /// The maximum number of tag objects peeled through for one ref (a tag pointing at a tag, and so
+    /// on), checked while peeling (batch-2 handoff §1.1, review 011 R-2) — an attacker-chosen chain of
+    /// tag objects cannot force unbounded verified reads for one ref.
+    pub(crate) max_tag_chain: usize,
 }
 
 impl Default for Limits {
@@ -52,6 +60,7 @@ impl Default for Limits {
             max_commits: 10_000_000,
             max_path_bytes: 4096,
             max_tree_depth: 256,
+            max_tag_chain: 32,
         }
     }
 }
@@ -65,6 +74,23 @@ fn resource_limit(what: &str, ceiling: impl std::fmt::Display) -> Error {
 
 fn read_err(e: impl std::fmt::Display) -> Error {
     Error::Read(e.to_string())
+}
+
+/// Look up `id` and verify its content actually hashes to it, before returning it (batch-2 handoff §1.1,
+/// PR-4/VF-2): a crafted or corrupt repository must not be able to present content under an id it does
+/// not hash to, with brygge then preserving that lie as the source's own identifier. Used at every site
+/// that reads a commit, tree, blob, or annotated tag object — the entire object-read surface of this
+/// decoder goes through here.
+fn find_verified_object(repo: &gix::Repository, id: ObjectId) -> Result<gix::Object<'_>, Error> {
+    let object = repo.find_object(id).map_err(read_err)?;
+    let computed =
+        gix::objs::compute_hash(repo.object_hash(), object.kind, &object.data).map_err(read_err)?;
+    if computed != id {
+        return Err(Error::Read(format!(
+            "object {id} does not match its content (corrupt or crafted repository)"
+        )));
+    }
+    Ok(object)
 }
 
 /// Render `bytes` as valid UTF-8 kept verbatim and each invalid byte escaped as `\xNN` — never
@@ -114,7 +140,8 @@ pub(crate) fn decode_with(path: &Path, opts: &Options, limits: &Limits) -> Resul
     let repo = open::open(path)?;
     open::check_repo_floor(&repo)?;
 
-    let (refs, symbolic_ref_count) = scan_refs(&repo)?;
+    let (refs, symbolic_ref_count, nested_tag_objects, tagger_time_counts) =
+        scan_refs(&repo, limits)?;
 
     // CR-05: walk tips come only from carried refs (non-symbolic refs/heads/* and refs/tags/*,
     // a tag peeled to its commit). Compute this set first — before anything is read for atoms —
@@ -130,6 +157,11 @@ pub(crate) fn decode_with(path: &Path, opts: &Options, limits: &Limits) -> Resul
     if !carried_tips.is_empty() {
         for info in repo
             .rev_walk(carried_tips.clone())
+            // batch-2 handoff §1.1 (review 011 R-1): the commit-graph is an unverified cache of parent
+            // ids. Walking from it, not from the verified commit objects, would let a crafted
+            // `objects/info/commit-graph` drop or fabricate a parent, silently altering history that
+            // object-level verification alone could never see.
+            .use_commit_graph(false)
             .all()
             .map_err(read_err)?
         {
@@ -174,6 +206,7 @@ pub(crate) fn decode_with(path: &Path, opts: &Options, limits: &Limits) -> Resul
             repo_id: repo_id.clone(),
             atom_id: repo_id.clone(),
             signatures: Vec::new(),
+            extras: Vec::new(),
         },
         brygge_version: decoder_version().to_string(),
         decoder: DECODER.to_string(),
@@ -183,18 +216,15 @@ pub(crate) fn decode_with(path: &Path, opts: &Options, limits: &Limits) -> Resul
             params.insert("floor".to_string(), floor::joined());
             params
         },
-        import_time: None,
     };
 
     let mut builder = IrBuilder::new(provenance);
     let mut sha_to_atom: HashMap<ObjectId, AtomId> = HashMap::new();
     let mut snap_cache: HashMap<ObjectId, Snapshot> = HashMap::new();
-    let mut unparseable_times = 0u64;
+    let mut time_counts = ParseCounts::default();
 
     for id in &order {
-        let commit = repo
-            .find_object(*id)
-            .map_err(read_err)?
+        let commit = find_verified_object(&repo, *id)?
             .try_into_commit()
             .map_err(read_err)?;
 
@@ -204,9 +234,7 @@ pub(crate) fn decode_with(path: &Path, opts: &Options, limits: &Limits) -> Resul
         let ps = parents.get(id).cloned().unwrap_or_default();
         let base_snap = match ps.first() {
             Some(p0) => {
-                let p_commit = repo
-                    .find_object(*p0)
-                    .map_err(read_err)?
+                let p_commit = find_verified_object(&repo, *p0)?
                     .try_into_commit()
                     .map_err(read_err)?;
                 let p_tree = p_commit.tree_id().map_err(read_err)?.detach();
@@ -215,35 +243,44 @@ pub(crate) fn decode_with(path: &Path, opts: &Options, limits: &Limits) -> Resul
             None => Snapshot::new(),
         };
 
-        let (ops, rename_hints) =
-            diff_to_ops(&repo, &base_snap, &child_snap, opts, limits, &mut builder)?;
-        let (metadata, unparseable) = build_metadata(&commit)?;
-        unparseable_times += unparseable;
-        let signatures = extract_signatures(&commit)?;
         let parent_atoms: Vec<AtomId> = ps
             .iter()
             .filter_map(|p| sha_to_atom.get(p).copied())
             .collect();
+        let (ops, copies) = diff_to_ops(
+            &repo,
+            &base_snap,
+            &child_snap,
+            opts,
+            limits,
+            &mut builder,
+            parent_atoms.first().copied(),
+        )?;
+        let (metadata, counts) = build_metadata(&commit)?;
+        time_counts.unparseable_times += counts.unparseable_times;
+        time_counts.unparseable_offsets += counts.unparseable_offsets;
+        time_counts.undecodable_encodings += counts.undecodable_encodings;
+        let (signatures, extras) = signatures_and_extras(&commit, *id)?;
 
         let atom_id = builder.add_atom(AtomDraft {
             parents: parent_atoms,
             ops,
-            rename_hints,
+            copies,
             metadata,
             source: SourceIdentity {
                 kind: SourceKind::Git,
                 repo_id: repo_id.clone(),
                 atom_id: id.as_bytes().to_vec(),
                 signatures,
+                extras,
             },
             status: EpistemicStatus::Stated,
-        });
+        })?;
         sha_to_atom.insert(*id, atom_id);
     }
 
     // Refs, the dropped-namespace loss records, and annotated-tag identity preservation (OQ-B).
     let mut dropped_namespace_counts: BTreeMap<&'static str, u64> = BTreeMap::new();
-    let mut annotated_tags = 0u64;
     let mut non_commit_refs = 0u64;
     for r in &refs {
         match &r.kind {
@@ -256,6 +293,7 @@ pub(crate) fn decode_with(path: &Path, opts: &Options, limits: &Limits) -> Resul
                             target,
                             status: EpistemicStatus::Stated,
                             source: None,
+                            annotation: None,
                         })?;
                     }
                     // CR-06: peeled to a tree or blob, not a commit — recorded, not silently skipped.
@@ -264,23 +302,29 @@ pub(crate) fn decode_with(path: &Path, opts: &Options, limits: &Limits) -> Resul
             }
             ScannedKind::Tag(name) => match r.commit.and_then(|c| sha_to_atom.get(&c).copied()) {
                 Some(target) => {
-                    // An annotated tag preserves its own opaque object id + signature (PR-4/SRC-G3);
-                    // its tagger and message have no slot in the RefRecord and are recorded as loss.
-                    let source = r.tag_identity.as_ref().map(|(tag_id, signatures)| {
-                        annotated_tags += 1;
-                        SourceIdentity {
-                            kind: SourceKind::Git,
-                            repo_id: repo_id.clone(),
-                            atom_id: tag_id.as_bytes().to_vec(),
-                            signatures: signatures.clone(),
-                        }
-                    });
+                    // An annotated tag preserves its own opaque object id + signature (PR-4/SRC-G3) as
+                    // `source`, and its tagger/time/message as `annotation` (RFC 011 D-9, batch-2
+                    // handoff §1.6) — nothing about it is lost any more.
+                    let (source, annotation) = match &r.tag_identity {
+                        Some((tag_id, signatures, annotation)) => (
+                            Some(SourceIdentity {
+                                kind: SourceKind::Git,
+                                repo_id: repo_id.clone(),
+                                atom_id: tag_id.as_bytes().to_vec(),
+                                signatures: signatures.clone(),
+                                extras: Vec::new(),
+                            }),
+                            annotation.clone(),
+                        ),
+                        None => (None, None),
+                    };
                     builder.add_ref(RefRecord {
                         name: name.clone(),
                         kind: RefKind::Tag,
                         target,
                         status: EpistemicStatus::Stated,
                         source,
+                        annotation,
                     })?;
                 }
                 // CR-06: peeled to a tree or blob, not a commit — recorded, not silently skipped.
@@ -292,13 +336,16 @@ pub(crate) fn decode_with(path: &Path, opts: &Options, limits: &Limits) -> Resul
         }
     }
 
+    time_counts.unparseable_times += tagger_time_counts.unparseable_times;
+    time_counts.unparseable_offsets += tagger_time_counts.unparseable_offsets;
+
     builder.set_loss(loss_boundary(
         &dropped_namespace_counts,
         dropped_only_commits,
         non_commit_refs,
-        annotated_tags,
         symbolic_ref_count,
-        unparseable_times,
+        time_counts,
+        nested_tag_objects,
     ));
     builder.finish().map_err(Error::Ir)
 }
@@ -308,14 +355,20 @@ enum DroppedOnlyCommits {
     /// The exact count.
     Counted(u64),
     /// The walk itself failed (e.g. a corrupt or missing commit in dropped-only history); the count is
-    /// unknown rather than guessed. `reason` is the underlying error's display text.
-    Unavailable(String),
+    /// unknown rather than guessed. The record this becomes carries a **fixed** reason (batch-2 handoff
+    /// §1.2, review 011 R-4): the underlying error's own text is not carried anywhere. A decoder library
+    /// does not write to the process's stderr — that would bypass the CLI's neutralization
+    /// (`crates/brygge/src/display.rs`) — so the fixed drop record is the whole diagnostic a caller
+    /// gets; `git fsck` is how a human investigates the fault directly.
+    Unavailable,
 }
 
 /// Count commits reachable only from `dropped_tips`, never `carried_tips` (CR-05). This never fails the
 /// decode (2026-09-23 review R-2 of this handoff): any error during the walk — setup or iteration —
 /// becomes [`DroppedOnlyCommits::Unavailable`] instead of propagating, since this is a loss-record count,
-/// not a requirement for the decode to succeed.
+/// not a requirement for the decode to succeed. The underlying error's own text is discarded, never
+/// printed (review 011 R-4): it is not deterministic (it can include object ids, allocator state), never
+/// identity-bearing, and printing it would be this decoder's only unneutralized output.
 fn count_dropped_only_commits(
     repo: &gix::Repository,
     dropped_tips: Vec<ObjectId>,
@@ -324,16 +377,20 @@ fn count_dropped_only_commits(
     if dropped_tips.is_empty() {
         return DroppedOnlyCommits::Counted(0);
     }
-    let walk = match repo.rev_walk(dropped_tips).with_hidden(carried_tips).all() {
-        Ok(walk) => walk,
-        Err(e) => return DroppedOnlyCommits::Unavailable(e.to_string()),
+    let Ok(walk) = repo
+        .rev_walk(dropped_tips)
+        .with_hidden(carried_tips)
+        .use_commit_graph(false)
+        .all()
+    else {
+        return DroppedOnlyCommits::Unavailable;
     };
     let mut count = 0u64;
     for info in walk {
-        match info {
-            Ok(_) => count += 1,
-            Err(e) => return DroppedOnlyCommits::Unavailable(e.to_string()),
+        if info.is_err() {
+            return DroppedOnlyCommits::Unavailable;
         }
+        count += 1;
     }
     DroppedOnlyCommits::Counted(count)
 }
@@ -358,10 +415,17 @@ const HEADS_PREFIX: &[u8] = b"refs/heads/";
 const TAGS_PREFIX: &[u8] = b"refs/tags/";
 
 /// Scan refs: refuse replace refs (RFC 004 D-4), categorise the rest, and peel each to a commit id.
-/// Returns the carried refs plus a count of symbolic refs skipped (CR-16).
-fn scan_refs(repo: &gix::Repository) -> Result<(Vec<ScannedRef>, u64), Error> {
+/// Returns the carried refs, a count of symbolic refs skipped (CR-16), a count of intermediate tag
+/// objects hopped through in any tag-of-a-tag chain (batch-2 handoff §1.1, review 011 R-2), and how many
+/// of any annotated tags' own tagger time/offset fields failed to parse (review 011 R-3a).
+fn scan_refs(
+    repo: &gix::Repository,
+    limits: &Limits,
+) -> Result<(Vec<ScannedRef>, u64, u64, ParseCounts), Error> {
     let mut out = Vec::new();
     let mut symbolic_refs = 0u64;
+    let mut nested_tag_objects = 0u64;
+    let mut tagger_time_counts = ParseCounts::default();
     let platform = repo.references().map_err(read_err)?;
     for r in platform.all().map_err(read_err)? {
         let mut r = r.map_err(read_err)?;
@@ -373,8 +437,9 @@ fn scan_refs(repo: &gix::Repository) -> Result<(Vec<ScannedRef>, u64), Error> {
             return Err(Error::FloorRefusal {
                 feature: floor::REPLACE_REF.to_string(),
                 reason: format!(
-                    "{name} rewrites the object graph a reader would see; refused rather than \
-                     importing the rewritten view silently"
+                    "{} rewrites the object graph a reader would see; refused rather than \
+                     importing the rewritten view silently",
+                    escape_invalid_utf8(&raw_name)
                 ),
             });
         }
@@ -418,10 +483,19 @@ fn scan_refs(repo: &gix::Repository) -> Result<(Vec<ScannedRef>, u64), Error> {
             // Checked valid UTF-8 just above.
             let suffix_str = std::str::from_utf8(suffix).unwrap_or_default().to_string();
             if is_branch {
-                (ScannedKind::Branch(suffix_str), peel_carried(repo, &mut r)?)
+                // A branch carries no annotation, so a tag object it points at (via `update-ref`) has its
+                // tagger/message/signature dropped: every hop is counted (review 011 F-2).
+                let (commit, nested) = peel_carried(repo, direct, limits, false)?;
+                nested_tag_objects += nested;
+                (ScannedKind::Branch(suffix_str), commit)
             } else {
-                tag_identity = annotated_tag_identity(repo, direct)?;
-                (ScannedKind::Tag(suffix_str), peel_carried(repo, &mut r)?)
+                let (identity, counts) = annotated_tag_identity(repo, direct)?;
+                tag_identity = identity;
+                tagger_time_counts.unparseable_times += counts.unparseable_times;
+                tagger_time_counts.unparseable_offsets += counts.unparseable_offsets;
+                let (commit, nested) = peel_carried(repo, direct, limits, true)?;
+                nested_tag_objects += nested;
+                (ScannedKind::Tag(suffix_str), commit)
             }
         } else {
             // Dropped namespaces are peeled leniently: they contribute no atom and no hard error, only
@@ -448,65 +522,142 @@ fn scan_refs(repo: &gix::Repository) -> Result<(Vec<ScannedRef>, u64), Error> {
             tag_identity,
         });
     }
-    Ok((out, symbolic_refs))
+    Ok((out, symbolic_refs, nested_tag_objects, tagger_time_counts))
 }
 
-/// Peel a `refs/heads/*` or `refs/tags/*` ref to its commit (CR-06). A ref whose target is missing
-/// entirely is a broken repository (`Error::Read`), not a drop. A ref that peels cleanly to a tree or
-/// blob is `None` — the caller counts it as a non-commit-target ref rather than silently skipping it.
+/// Peel a `refs/heads/*` or `refs/tags/*` ref to its commit (CR-06), verifying **every** object on the
+/// way — including any intermediate tag in a tag-of-a-tag chain (batch-2 handoff §1.1, review 011 R-2).
+/// A ref whose target is missing entirely, or a chain longer than `limits.max_tag_chain`, is refused. A
+/// chain that ends at a tree or blob gives `None` — the caller counts it as a non-commit-target ref
+/// rather than silently skipping it. Returns the number of tag objects hopped through whose data is not
+/// carried. For a `refs/tags/*` ref (`direct_tag_is_carried`), the outer (`direct`) tag itself is carried as
+/// the ref's annotation by [`annotated_tag_identity`], so only *intermediate* tags count (an ordinary
+/// annotated tag pointing at a commit has zero). A branch carries no annotation, so for it every tag hop
+/// counts (review 011 F-2).
 fn peel_carried(
     repo: &gix::Repository,
-    r: &mut gix::Reference<'_>,
-) -> Result<Option<ObjectId>, Error> {
-    let id = r.peel_to_id().map_err(read_err)?.detach();
-    match repo.find_object(id) {
-        Ok(o) if matches!(o.kind, gix::objs::Kind::Commit) => Ok(Some(id)),
-        Ok(_) => Ok(None),
-        Err(e) => Err(read_err(e)),
+    direct: ObjectId,
+    limits: &Limits,
+    direct_tag_is_carried: bool,
+) -> Result<(Option<ObjectId>, u64), Error> {
+    let mut current = direct;
+    let mut hops = 0usize;
+    let mut nested_tags = 0u64;
+    loop {
+        let object = find_verified_object(repo, current)?;
+        match object.kind {
+            gix::objs::Kind::Commit => return Ok((Some(current), nested_tags)),
+            gix::objs::Kind::Tag => {
+                hops += 1;
+                if hops > limits.max_tag_chain {
+                    return Err(resource_limit(
+                        "the tag chain",
+                        format!("{} tag(s)", limits.max_tag_chain),
+                    ));
+                }
+                if hops > 1 || !direct_tag_is_carried {
+                    nested_tags += 1;
+                }
+                let tag = object.try_into_tag().map_err(read_err)?;
+                let decoded = tag.decode().map_err(read_err)?;
+                current = decoded.target();
+            }
+            _ => return Ok((None, nested_tags)),
+        }
     }
 }
 
-/// If `direct` is an **annotated** tag object, return its id and any GPG signature, preserved opaquely
-/// (`PR-4`/`SRC-G3` — the tag verifies nothing in any target, but is the cryptographic link back to the
-/// source). Returns `None` for a lightweight tag (whose direct target is the commit itself).
+/// If `direct` is an **annotated** tag object, return its id, any GPG signature (preserved opaquely,
+/// `PR-4`/`SRC-G3` — the tag verifies nothing in any target, but is the cryptographic link back to the
+/// source), and its tagger/time/message as an [`Annotation`] (batch-2 handoff §1.6), plus how many of the
+/// tagger's time/offset fields failed to parse (review 011 R-3a — counted exactly like author/committer
+/// times, never silently dropped). Returns `None` (with zero counts) for a lightweight tag, whose direct
+/// target is the commit itself — one verified read decides which (review 011 R-5: no separate, unverified
+/// pre-check).
 fn annotated_tag_identity(
     repo: &gix::Repository,
     direct: ObjectId,
-) -> Result<Option<TagIdentity>, Error> {
-    let Ok(object) = repo.find_object(direct) else {
-        return Ok(None);
-    };
+) -> Result<(Option<TagIdentity>, ParseCounts), Error> {
+    let object = find_verified_object(repo, direct)?;
     if !matches!(object.kind, gix::objs::Kind::Tag) {
-        return Ok(None);
+        return Ok((None, ParseCounts::default()));
     }
     let tag = object.try_into_tag().map_err(read_err)?;
-    let signatures = tag
-        .decode()
-        .map_err(read_err)?
+    let decoded = tag.decode().map_err(read_err)?;
+    let signatures = decoded
         .signature
-        .map(|s| s.to_vec())
+        .map(|s| Signature {
+            label: "gpgsig".to_string(),
+            bytes: s.to_vec(),
+        })
         .into_iter()
         .collect();
-    Ok(Some((direct, signatures)))
+    let mut counts = ParseCounts::default();
+    let tagger_sig = decoded.tagger().map_err(read_err)?;
+    let tagger = tagger_sig.map(|sig| Identity {
+        name: Text {
+            bytes: sig.name.to_vec(),
+            encoding: None,
+        },
+        email: Some(Text {
+            bytes: sig.email.to_vec(),
+            encoding: None,
+        }),
+    });
+    let time = tagger_sig.and_then(|sig| {
+        let seconds = strict_seconds(sig.time);
+        if seconds.is_none() {
+            counts.unparseable_times += 1;
+        }
+        seconds.map(|seconds| {
+            let offset_minutes = strict_offset_minutes(sig.time);
+            if offset_minutes.is_none() {
+                counts.unparseable_offsets += 1;
+            }
+            Time {
+                seconds,
+                offset_minutes,
+            }
+        })
+    });
+    let message = Text {
+        bytes: decoded.message.to_vec(),
+        encoding: None,
+    };
+    let annotation = Annotation {
+        tagger,
+        time,
+        message: Some(message),
+    };
+    Ok((Some((direct, signatures, Some(annotation))), counts))
 }
 
-/// Map each commit to its parents that are within `set` (external parents become roots).
+/// Map each commit to its parents, all of which must be within `set` (batch-2 handoff §1.1, review 011
+/// R-1). `set` was built by walking the *full* ancestry from the carried tips with the commit-graph
+/// disabled, so every parent a verified commit actually names must also be in `set` — a shallow
+/// repository or one using grafts is already refused before this runs (`open::check_repo_floor`). A
+/// verified parent that the walk did not reach means the walk and the commit content disagree, which a
+/// crafted or corrupt repository could otherwise use to hide or fabricate history; that is refused
+/// outright rather than silently treating the commit as a root.
 fn commit_parents(
     repo: &gix::Repository,
     set: &BTreeSet<ObjectId>,
 ) -> Result<BTreeMap<ObjectId, Vec<ObjectId>>, Error> {
     let mut parents = BTreeMap::new();
     for id in set {
-        let commit = repo
-            .find_object(*id)
-            .map_err(read_err)?
+        let commit = find_verified_object(repo, *id)?
             .try_into_commit()
             .map_err(read_err)?;
-        let ps: Vec<ObjectId> = commit
-            .parent_ids()
-            .map(|p| p.detach())
-            .filter(|p| set.contains(p))
-            .collect();
+        let mut ps = Vec::new();
+        for p in commit.parent_ids() {
+            let p = p.detach();
+            if !set.contains(&p) {
+                return Err(Error::Read(
+                    "history walk disagrees with commit content".to_string(),
+                ));
+            }
+            ps.push(p);
+        }
         parents.insert(*id, ps);
     }
     Ok(parents)
@@ -587,9 +738,7 @@ fn walk_tree(
     // (tree id, path prefix built so far, this tree's own nesting depth; the root is depth 1).
     let mut stack: Vec<(ObjectId, String, usize)> = vec![(root_tree_id, String::new(), 1)];
     while let Some((tree_id, prefix, depth)) = stack.pop() {
-        let tree = repo
-            .find_object(tree_id)
-            .map_err(read_err)?
+        let tree = find_verified_object(repo, tree_id)?
             .try_into_tree()
             .map_err(read_err)?;
         for entry in tree.iter() {
@@ -657,8 +806,9 @@ fn walk_tree(
 }
 
 /// Diff `base` → `child` into literal path operations (all *Stated*), plus — only if
-/// `opts.infer_renames` — marked *Derived* rename hints for exact-content moves. The literal
-/// delete+add always remain; a hint sits beside them, never in place of them (RFC 004 D-3).
+/// `opts.infer_renames` — marked *Derived* copy records for exact-content moves, each naming
+/// `from_parent` (the atom's first parent, already added to `builder`) as `from_atom`. The literal
+/// delete+add always remain; a copy record sits beside them, never in place of them (RFC 004 D-3).
 fn diff_to_ops(
     repo: &gix::Repository,
     base: &Snapshot,
@@ -666,7 +816,8 @@ fn diff_to_ops(
     opts: &Options,
     limits: &Limits,
     builder: &mut IrBuilder,
-) -> Result<(Vec<PathOp>, Vec<RenameHint>), Error> {
+    from_parent: Option<AtomId>,
+) -> Result<(Vec<PathOp>, Vec<CopyRecord>), Error> {
     let mut ops = Vec::new();
     let mut added_by_oid: BTreeMap<ObjectId, Vec<String>> = BTreeMap::new();
     let mut deleted_by_oid: BTreeMap<ObjectId, Vec<String>> = BTreeMap::new();
@@ -706,35 +857,40 @@ fn diff_to_ops(
         }
     }
 
-    let mut hints = Vec::new();
+    let mut copies = Vec::new();
     if opts.infer_renames {
-        // Exact-content moves only (RFC 004 D-3, OQ-A). A hint is emitted **only** when a blob deleted
-        // at exactly one path reappears added at exactly one path — an unambiguous 1:1 move. An
-        // ambiguous many-to-many identical-content case (the same bytes deleted at several paths and
-        // added at several) is left unmarked: brygge does not guess which path became which. Nothing is
-        // lost by declining — the literal delete+add ops remain (D-3). Similarity-based detection above
-        // exact content is OQ-A, deferred until a consumer can give a threshold a fitness signal.
-        for (oid, froms) in &deleted_by_oid {
-            let [from] = froms.as_slice() else {
-                continue; // this blob was deleted at several paths — ambiguous, decline to guess
-            };
-            let Some([to]) = added_by_oid.get(oid).map(Vec::as_slice) else {
-                continue; // not re-added, or re-added at several paths — decline to guess
-            };
-            hints.push(RenameHint {
-                from: from.clone(),
-                to: to.clone(),
-                status: EpistemicStatus::Derived(Derivation {
-                    kind: DerivationKind::InferredRename,
-                    by: DECODER.to_string(),
-                    decoder_version: decoder_version().to_string(),
-                    params: opts.as_params(),
-                    confidence: Some(100),
-                }),
-            });
+        // Exact-content moves only (RFC 004 D-3, OQ-A). A copy record is emitted **only** when a blob
+        // deleted at exactly one path reappears added at exactly one path — an unambiguous 1:1 move,
+        // and only when there is a parent to name as `from_atom` (a root commit's base snapshot is
+        // always empty, so this never actually triggers for a root). An ambiguous many-to-many
+        // identical-content case (the same bytes deleted at several paths and added at several) is left
+        // unmarked: brygge does not guess which path became which. Nothing is lost by declining — the
+        // literal delete+add ops remain (D-3). Similarity-based detection above exact content is OQ-A,
+        // deferred until a consumer can give a threshold a fitness signal.
+        if let Some(from_atom) = from_parent {
+            for (oid, froms) in &deleted_by_oid {
+                let [from] = froms.as_slice() else {
+                    continue; // this blob was deleted at several paths — ambiguous, decline to guess
+                };
+                let Some([to]) = added_by_oid.get(oid).map(Vec::as_slice) else {
+                    continue; // not re-added, or re-added at several paths — decline to guess
+                };
+                copies.push(CopyRecord {
+                    from: from.clone(),
+                    from_atom,
+                    to: to.clone(),
+                    status: EpistemicStatus::Derived(Derivation {
+                        kind: DerivationKind::InferredRename,
+                        by: DECODER.to_string(),
+                        decoder_version: decoder_version().to_string(),
+                        params: opts.as_params(),
+                        confidence: Some(100),
+                    }),
+                });
+            }
         }
     }
-    Ok((ops, hints))
+    Ok((ops, copies))
 }
 
 /// Read one blob's bytes, refusing before allocation if it exceeds `limits.max_blob_bytes` (RFC 010
@@ -748,9 +904,7 @@ fn blob_bytes(repo: &gix::Repository, oid: ObjectId, limits: &Limits) -> Result<
             format!("{} bytes", limits.max_blob_bytes),
         ));
     }
-    Ok(repo
-        .find_object(oid)
-        .map_err(read_err)?
+    Ok(find_verified_object(repo, oid)?
         .try_into_blob()
         .map_err(read_err)?
         .data
@@ -772,62 +926,170 @@ fn strict_seconds(raw: &str) -> Option<i64> {
     token.parse::<i64>().ok()
 }
 
-/// Build message/authorship claims. Times are parsed strictly ([`strict_seconds`], CR-16): an unparseable
-/// time becomes an absent claim, never a fabricated or salvaged one (NG-5). Returns the claims plus how
-/// many of the two time fields failed to parse, for the caller to fold into the loss boundary.
-fn build_metadata(commit: &gix::Commit<'_>) -> Result<(MetadataClaims, u64), Error> {
+/// Parse the timezone-offset field of a raw signature `time` string strictly (RFC 011 D-5, batch-2
+/// handoff §1.4). The token following the seconds must be a sign followed by exactly four digits
+/// (`+HHMM`/`-HHMM`): `offset_minutes = sign × (HH × 60 + MM)`, and the result must fit `i16` with
+/// `MM < 60`. Anything else is `None` — never gix's own lenient parser, which silently yields `+0000`
+/// for a malformed offset.
+fn strict_offset_minutes(raw: &str) -> Option<i16> {
+    let mut tokens = raw.split_whitespace();
+    let _seconds = tokens.next()?;
+    let tz = tokens.next()?;
+    let sign = match tz.as_bytes().first()? {
+        b'+' => 1i32,
+        b'-' => -1i32,
+        _ => return None,
+    };
+    let digits = tz.get(1..)?;
+    if digits.len() != 4 || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let hh: i32 = digits.get(..2)?.parse().ok()?;
+    let mm: i32 = digits.get(2..)?.parse().ok()?;
+    if mm >= 60 {
+        return None;
+    }
+    i16::try_from(sign * (hh * 60 + mm)).ok()
+}
+
+/// Build message/authorship claims. Names, emails and the message are carried as [`Text`] from the raw
+/// bytes gix already read — no lossy conversion (RFC 011 §5: the Git row). The commit's `encoding`
+/// header, when present and valid UTF-8, becomes `Text.encoding` **on the message only** (RFC 011 D-4,
+/// batch-2 handoff §1.3) — names and emails keep `encoding: None`, meaning "not stated", never "UTF-8".
+/// Times are parsed strictly ([`strict_seconds`], CR-16) and their offsets strictly
+/// ([`strict_offset_minutes`], §1.4): an unparseable time becomes an absent claim, and an unparseable
+/// offset on an otherwise-valid time becomes `offset_minutes: None` — never fabricated or salvaged
+/// (NG-5). Returns the claims plus how many of the two time fields
+/// failed to parse, for the caller to fold into the loss boundary.
+fn build_metadata(commit: &gix::Commit<'_>) -> Result<(MetadataClaims, ParseCounts), Error> {
     let author = commit.author().map_err(read_err)?;
     let committer = commit.committer().map_err(read_err)?;
-    let message = commit.message_raw().map_err(read_err)?;
-    let mut unparseable = 0u64;
+    let decoded = commit.decode().map_err(read_err)?;
+    let message = decoded.message;
+
+    let mut counts = ParseCounts::default();
+    let message_encoding = match decoded.encoding {
+        Some(e) => match std::str::from_utf8(e) {
+            Ok(s) => Some(s.to_string()),
+            Err(_) => {
+                // Review 011 R-3b: a declared `encoding` header that is itself not valid UTF-8 is not
+                // carried, but it is counted — never silently dropped.
+                counts.undecodable_encodings += 1;
+                None
+            }
+        },
+        None => None,
+    };
     let author_time = strict_seconds(author.time);
     if author_time.is_none() {
-        unparseable += 1;
+        counts.unparseable_times += 1;
+    }
+    let author_offset = strict_offset_minutes(author.time);
+    if author_time.is_some() && author_offset.is_none() {
+        counts.unparseable_offsets += 1;
     }
     let commit_time = strict_seconds(committer.time);
     if commit_time.is_none() {
-        unparseable += 1;
+        counts.unparseable_times += 1;
     }
+    let commit_offset = strict_offset_minutes(committer.time);
+    if commit_time.is_some() && commit_offset.is_none() {
+        counts.unparseable_offsets += 1;
+    }
+    let raw_text = |bytes: &[u8]| Text {
+        bytes: bytes.to_vec(),
+        encoding: None,
+    };
     Ok((
         MetadataClaims {
             author: Some(Identity {
-                name: author.name.to_str_lossy().into_owned(),
-                email: author.email.to_str_lossy().into_owned(),
+                name: raw_text(author.name.as_ref()),
+                email: Some(raw_text(author.email.as_ref())),
+            }),
+            author_time: author_time.map(|seconds| Time {
+                seconds,
+                offset_minutes: author_offset,
             }),
             committer: Some(Identity {
-                name: committer.name.to_str_lossy().into_owned(),
-                email: committer.email.to_str_lossy().into_owned(),
+                name: raw_text(committer.name.as_ref()),
+                email: Some(raw_text(committer.email.as_ref())),
             }),
-            message: Some(message.to_str_lossy().into_owned()),
-            author_time,
-            commit_time,
+            commit_time: commit_time.map(|seconds| Time {
+                seconds,
+                offset_minutes: commit_offset,
+            }),
+            message: Some(Text {
+                bytes: message.to_vec(),
+                encoding: message_encoding,
+            }),
         },
-        unparseable,
+        counts,
     ))
 }
 
-/// The commit's GPG signature, preserved opaquely (RFC 004 D-2 / SRC-G3). It verifies nothing in any
-/// target; it is carried, never interpreted.
-fn extract_signatures(commit: &gix::Commit<'_>) -> Result<Vec<Vec<u8>>, Error> {
-    let decoded = commit.decode().map_err(read_err)?;
-    Ok(match decoded.extra_headers().pgp_signature() {
-        Some(sig) => vec![sig.to_vec()],
-        None => Vec::new(),
-    })
+/// How many author/committer/tagger times, and how many of their timezone offsets (only counted when
+/// the time itself parsed), failed strict parsing (batch-2 handoff §1.4); and how many commits'
+/// `encoding` header value was not valid UTF-8 and so could not be carried (review 011 R-3b).
+#[derive(Debug, Clone, Copy, Default)]
+struct ParseCounts {
+    unparseable_times: u64,
+    unparseable_offsets: u64,
+    undecodable_encodings: u64,
 }
 
-/// The Git loss boundary (RFC 004 D-5): the representation-class drops, every one class-stated, plus the
-/// annotated-tag metadata that the IR `RefRecord` cannot yet hold, symbolic refs skipped (CR-16), any
-/// author/committer time that failed to parse (CR-16), commits reachable only from a dropped ref
-/// namespace (CR-05), and refs that peel to a tree or blob rather than a commit (CR-06) — recorded,
-/// never silently omitted (`PR-9`).
+/// The commit's signatures (`gpgsig`/`gpgsig-sha256`, RFC 004 D-2/SRC-G3 — preserved opaquely, verifying
+/// nothing in any target) and every other extra header as a labelled [`Extra`] (RFC 011 D-9, batch-2
+/// handoff §1.5), both in header order. `mergetag` — a signed, embedded tag object — is carried as an
+/// ordinary `Extra`, like any other header this decoder does not otherwise model; a multi-line header
+/// value arrives already unfolded (continuation lines joined, Git's own convention) since gix's own
+/// commit parser does this. A header **name** that is not valid UTF-8 is a floor refusal (review 011
+/// R-3c): gix does not itself enforce that header names are ASCII, so a crafted commit can carry one,
+/// and `Extra`/`Signature` labels are text.
+fn signatures_and_extras(
+    commit: &gix::Commit<'_>,
+    id: ObjectId,
+) -> Result<(Vec<Signature>, Vec<Extra>), Error> {
+    let decoded = commit.decode().map_err(read_err)?;
+    let mut signatures = Vec::new();
+    let mut extras = Vec::new();
+    for (name, value) in &decoded.extra_headers {
+        let Ok(label) = std::str::from_utf8(name) else {
+            return Err(Error::FloorRefusal {
+                feature: floor::NON_UTF8_COMMIT_HEADER_NAME.to_string(),
+                reason: format!(
+                    "commit {id}: header name '{}' is not valid UTF-8 (invalid bytes shown as \\xNN)",
+                    escape_invalid_utf8(name)
+                ),
+            });
+        };
+        match label {
+            "gpgsig" | "gpgsig-sha256" => signatures.push(Signature {
+                label: label.to_string(),
+                bytes: value.to_vec(),
+            }),
+            _ => extras.push(Extra {
+                label: label.to_string(),
+                bytes: value.to_vec(),
+            }),
+        }
+    }
+    Ok((signatures, extras))
+}
+
+/// The Git loss boundary (RFC 004 D-5): the representation-class drops, every one class-stated, plus
+/// symbolic refs skipped (CR-16), any author/committer/tagger time or timezone offset that failed to
+/// parse (CR-16, batch-2 handoff §1.4), any undecodable `encoding` header (review 011 R-3b), commits
+/// reachable only from a dropped ref namespace (CR-05), refs that peel to a tree or blob rather than a
+/// commit (CR-06), and any intermediate tag object in a tag-of-a-tag chain (batch-2 handoff §1.1, review
+/// 011 R-2) — recorded, never silently omitted (`PR-9`). An annotated tag's own tagger/time/message is
+/// no longer dropped (batch-2 handoff §1.6): it is carried in the ref's `annotation`.
 fn loss_boundary(
     dropped_namespace_counts: &BTreeMap<&'static str, u64>,
     dropped_only_commits: DroppedOnlyCommits,
     non_commit_refs: u64,
-    annotated_tags: u64,
     symbolic_refs: u64,
-    unparseable_times: u64,
+    time_counts: ParseCounts,
+    nested_tag_objects: u64,
 ) -> LossBoundary {
     let mut dropped = vec![
         DropRecord {
@@ -867,17 +1129,11 @@ fn loss_boundary(
                         .to_string(),
             });
         }
-        DroppedOnlyCommits::Unavailable(reason) => {
+        DroppedOnlyCommits::Unavailable => {
             dropped.push(DropRecord {
                 class: LossClass::Representation,
-                what: format!(
-                    "commits reachable only from dropped refs (count unavailable: {reason})"
-                ),
-                reason:
-                    "workflow state (stash, notes, remote-tracking), not authored history of a \
-                         carried ref (RFC 004 D-5, OQ-B); the count itself could not be computed, \
-                         stated rather than guessed"
-                        .to_string(),
+                what: "commits reachable only from dropped refs (count unavailable)".to_string(),
+                reason: "a commit in dropped-only history could not be read".to_string(),
             });
         }
     }
@@ -887,20 +1143,6 @@ fn loss_boundary(
             what: format!("refs to non-commit objects ({non_commit_refs})"),
             reason: "a tag or branch naming a tree or blob; the IR's refs point at history atoms \
                      (PR-9)"
-                .to_string(),
-        });
-    }
-    if annotated_tags > 0 {
-        // The annotated tag's object id and signature ARE preserved (in the ref's source, PR-4/SRC-G3);
-        // its tagger and message are authored content the RefRecord has no slot for — so this is an
-        // `Other`-class (not representation) drop, and it makes the import an honest "recorded loss"
-        // (CL-08) rather than clean. A future brygge-ir RefRecord metadata slot would close it.
-        dropped.push(DropRecord {
-            class: LossClass::Other,
-            what: format!("annotated tag tagger and message ({annotated_tags} tag(s))"),
-            reason: "authored tag metadata with no RefRecord slot in this IR contract; the tag's \
-                     object id and signature are preserved as source identity, the rest is recorded \
-                     here rather than silently omitted (PR-9, RFC 004 OQ-B)"
                 .to_string(),
         });
     }
@@ -914,12 +1156,50 @@ fn loss_boundary(
                     .to_string(),
         });
     }
-    if unparseable_times > 0 {
+    if time_counts.unparseable_times > 0 {
         dropped.push(DropRecord {
             class: LossClass::Other,
-            what: format!("unparseable author/committer times ({unparseable_times})"),
+            what: format!(
+                "unparseable author/committer/tagger times ({})",
+                time_counts.unparseable_times
+            ),
             reason: "the source's time field could not be parsed; the claim is absent rather than \
                      fabricated (NG-5, CR-16)"
+                .to_string(),
+        });
+    }
+    if time_counts.unparseable_offsets > 0 {
+        dropped.push(DropRecord {
+            class: LossClass::Other,
+            what: format!(
+                "unparseable author/committer/tagger timezone offsets ({})",
+                time_counts.unparseable_offsets
+            ),
+            reason: "the source's timezone offset could not be parsed strictly (`+HHMM`/`-HHMM`); \
+                     the time is carried without an offset rather than a fabricated or salvaged one \
+                     (NG-5, RFC 011 D-5)"
+                .to_string(),
+        });
+    }
+    if time_counts.undecodable_encodings > 0 {
+        dropped.push(DropRecord {
+            class: LossClass::Other,
+            what: format!(
+                "undecodable encoding headers ({})",
+                time_counts.undecodable_encodings
+            ),
+            reason:
+                "the commit's declared `encoding` header value was not valid UTF-8, so it is not \
+                     carried on the message's `Text.encoding` (RFC 011 D-4)"
+                    .to_string(),
+        });
+    }
+    if nested_tag_objects > 0 {
+        dropped.push(DropRecord {
+            class: LossClass::Other,
+            what: format!("nested tag objects not carried ({nested_tag_objects})"),
+            reason: "an intermediate tag object in a tag-of-a-tag chain; only the outer tag's \
+                     annotation is carried (RFC 011 D-9)"
                 .to_string(),
         });
     }

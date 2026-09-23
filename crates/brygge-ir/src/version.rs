@@ -1,22 +1,24 @@
-//! The IR contract version and its read gate (RFC 003 D-7, requirement `IX-07`).
+//! The IR contract version and its read gate (RFC 011 D-3, requirement `IX-07`).
 //!
 //! The contract version is **independent of the brygge tool version** and travels in every artifact's
-//! manifest. A reader **refuses an unknown major** rather than misread it — the same discipline as
-//! prikk's format gates. **Frozen at 1.0 (RFC 003 D-7, 2026-09-08)** — Git (M1) and Mercurial (M2)
-//! exercised the contract with no change, so it is now **additive-only within major 1**: new optional
-//! fields and new versioned enum variants only, never a field removed or repurposed. A breaking change
-//! would be a deliberate, rare contract 2.0 shipped with a converter.
+//! container header (RFC 011 §2.3). RFC 011 re-cut the contract to **0.2.0**, superseding the 1.0.0
+//! freeze recorded in RFC 003 D-7: the wire format changed too much (tagged records, a critical bit, a
+//! strict canonical form) to keep calling it 1.0. While major stays `0`, RFC 011 D-3's rule applies: a
+//! breaking change (a critical field or variant added or changed) bumps `0.y`; a purely additive,
+//! non-critical-only change bumps `0.y.z`. A reader accepts only its own exact `0.y` (skipping unknown
+//! non-critical fields within it) and refuses any other `0.y` with a stated message. Once major reaches
+//! `1` (declared with brygge 1.0), the familiar rule resumes: major is breaking, minor is additive.
 
 use crate::Error;
 
 /// A semantic version of the IR contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ContractVersion {
-    /// Major — a change here is breaking; a reader refuses a major it does not know.
+    /// Major — while `0`, any breaking change bumps this (RFC 011 D-3); from `1`, a breaking change.
     pub major: u32,
-    /// Minor — additive within a major after the freeze.
+    /// Minor — while major is `0`, a reader accepts only its own exact minor; from major `1`, additive.
     pub minor: u32,
-    /// Patch.
+    /// Patch — non-critical-only additions while major is `0`; otherwise unused by the read gate.
     pub patch: u32,
 }
 
@@ -31,13 +33,16 @@ impl ContractVersion {
         }
     }
 
-    /// True when a build supporting up to [`CURRENT`] may read an artifact declaring `self`
-    /// (RFC 003 D-7): the major must be known. A newer minor/patch within a known major is readable
-    /// (additive-only forward compatibility), and a pre-freeze major-0 artifact stays readable under the
-    /// frozen major 1.
+    /// True when a build supporting [`CURRENT`] may read an artifact declaring `self` (RFC 011 D-3):
+    /// while major `0`, only this build's exact `0.y` is accepted; from major `1`, any minor within
+    /// this build's major is accepted (additive-only forward compatibility).
     #[must_use]
-    pub const fn is_readable(self) -> bool {
-        self.major <= CURRENT.major
+    pub const fn accepts(self) -> bool {
+        if CURRENT.major == 0 {
+            self.major == 0 && self.minor == CURRENT.minor
+        } else {
+            self.major == CURRENT.major
+        }
     }
 }
 
@@ -47,21 +52,22 @@ impl std::fmt::Display for ContractVersion {
     }
 }
 
-/// The IR contract version this build writes and reads. **Frozen at 1.0.0** (RFC 003 D-7, 2026-09-08):
-/// additive-only within major 1 from here; a breaking change is a deliberate contract 2.0 with a converter.
-pub const CURRENT: ContractVersion = ContractVersion::new(1, 0, 0);
+/// The IR contract version this build writes and reads (RFC 011, accepted 2026-09-23; re-cuts the prior
+/// 1.0.0 freeze).
+pub const CURRENT: ContractVersion = ContractVersion::new(0, 2, 0);
 
-/// Check that an artifact's declared contract version is readable, else [`Error::UnsupportedContractMajor`].
+/// Check that an artifact's declared contract version is readable, else [`Error::UnsupportedContract`].
 ///
 /// # Errors
-/// Returns [`Error::UnsupportedContractMajor`] when `found.major` exceeds this build's.
+/// Returns [`Error::UnsupportedContract`] when `found` is not [`ContractVersion::accepts`]-ed by this
+/// build.
 pub fn ensure_readable(found: ContractVersion) -> Result<(), Error> {
-    if found.is_readable() {
+    if found.accepts() {
         Ok(())
     } else {
-        Err(Error::UnsupportedContractMajor {
-            found: found.major,
-            supported: CURRENT.major,
+        Err(Error::UnsupportedContract {
+            found,
+            supported: CURRENT,
         })
     }
 }

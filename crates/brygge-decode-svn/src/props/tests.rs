@@ -48,9 +48,12 @@ fn file_mode_reflects_special_and_executable() {
 
 #[test]
 fn symlink_target_strips_the_link_prefix() {
-    assert_eq!(symlink_target(b"link target/path"), b"target/path".to_vec());
-    // content without the prefix is carried verbatim (defensive).
-    assert_eq!(symlink_target(b"target/path"), b"target/path".to_vec());
+    assert_eq!(
+        symlink_target(b"link target/path"),
+        Some(b"target/path".to_vec())
+    );
+    // content without the prefix is rejected, not guessed at (CR-07.1).
+    assert_eq!(symlink_target(b"target/path"), None);
 }
 
 #[test]

@@ -11,6 +11,16 @@ with **no network feature** — brygge reads a local object database and perform
 (INV-3) — and executes **no source-provided code**: no hooks, filters/smudge, or submodule fetch
 (RFC 009 D-4). `#![forbid(unsafe_code)]`.
 
+**Every object is verified** (batch-2 corrections, RFC 004): a commit, tree, blob, or tag is re-hashed
+against its claimed id before its content is trusted, and history is walked with the on-disk
+`commit-graph` cache disabled, taking every commit's parents from its own verified content — so a
+crafted or corrupt repository cannot present content under an id it does not hash to, or use a stale or
+crafted `commit-graph` to drop or fabricate a parent. A repository declaring
+`extensions.objectFormat = sha256` is refused (`SHA-256 object format`): this build's `gix` dependency
+only reads SHA-1 object stores. An annotated tag's tagger/time/message is carried as its ref's
+`annotation`, and every other commit header (`mergetag`, and anything this decoder does not otherwise
+model) is carried as a labelled `Extra`; `gpgsig`/`gpgsig-sha256` are carried as labelled `Signature`s.
+
 ## Usage
 
 ```rust,no_run
@@ -39,6 +49,7 @@ Every ceiling is checked before the memory it protects is allocated, and a hit i
 | Commit count | 10,000,000 commits | during the walk, before any atom is built |
 | Path length | 4,096 bytes | per path, while walking trees |
 | Tree nesting depth | 256 levels | per level, while walking trees (`walk_tree` is iterative — an explicit stack — so an attacker-chosen depth cannot overflow the process stack) |
+| Tag chain length | 32 tags | while peeling a tag-of-a-tag ref to its final target (batch-2 corrections) |
 
 Status: **Built (ROADMAP M1); not yet released** — commits→atoms, tree-snapshot diff→literal ops,
 opaque SHA/signature, branches+tags, the owner-ratified floor (submodules, replace/grafts, shallow all

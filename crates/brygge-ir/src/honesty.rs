@@ -1,24 +1,26 @@
-//! The honesty machinery: the recoverable fidelity report (RFC 002 D-3/D-6, `HO-4/FS-02`).
+//! The honesty machinery: the recoverable fidelity report (RFC 002 D-3/D-6, `HO-4/FS-02`, report v2 per
+//! RFC 011 §3).
 //!
 //! [`summary`] is a **pure function of the [`Ir`]**, so a later reader reproduces the exact end-of-run
 //! summary from the artifact alone — the external proof that honesty travels with the import and cannot
 //! be lost with a log. The report is **always complete**: there is no flag that drops the derived,
-//! dropped, or provenance sections (`HO-5/CF-02`); verbosity affects rendering, never presence.
+//! dropped, or flagged sections (`HO-5/CF-02`); verbosity affects rendering, never presence.
 
 use std::collections::BTreeMap;
 
-use crate::model::{Ir, LossClass};
+use crate::model::{FlagKind, Ir, LossClass};
 use crate::status::EpistemicStatus;
 
 /// The machine-report contract version (RFC 002 D-3), independent of the IR contract and the tool.
-pub const REPORT_VERSION: u32 = 1;
+/// Bumped to 2 by RFC 011: `refused` is replaced with `flagged`.
+pub const REPORT_VERSION: u32 = 2;
 
 /// The `dropped` label for [`LossClass::Representation`] (matches [`class_label`]), used by
 /// [`FidelityReport::render_human`] to split the representation-class count onto its own "not history"
 /// line (handoff `cli-and-verify-handoff-v2.md` §3.4).
 const REPRESENTATION_LABEL: &str = "representation";
 
-/// What an import preserved, derived, dropped, and refused. Grouped counts are in sorted-key order for
+/// What an import preserved, derived, dropped, and flagged. Grouped counts are in sorted-key order for
 /// deterministic rendering.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FidelityReport {
@@ -36,8 +38,8 @@ pub struct FidelityReport {
     pub derived: BTreeMap<String, u64>,
     /// Dropped data, grouped by loss-class label → count (RFC 002 D-2).
     pub dropped: BTreeMap<String, u64>,
-    /// Source features refused below the floor — empty at the IR level; decoders fill it (`FA-3`).
-    pub refused: Vec<String>,
+    /// Flagged conditions, grouped by flag-kind label → summed count (RFC 011 D-8).
+    pub flagged: BTreeMap<String, u64>,
 }
 
 /// Compute the fidelity report from an [`Ir`] (pure — `FS-02`).
@@ -54,8 +56,8 @@ pub fn summary(ir: &Ir) -> FidelityReport {
         for op in &atom.ops {
             note(op_status(op), &mut derived);
         }
-        for hint in &atom.rename_hints {
-            note(&hint.status, &mut derived);
+        for copy in &atom.copies {
+            note(&copy.status, &mut derived);
         }
     }
     for rf in &ir.refs {
@@ -69,6 +71,13 @@ pub fn summary(ir: &Ir) -> FidelityReport {
             .or_insert(0) += 1;
     }
 
+    let mut flagged: BTreeMap<String, u64> = BTreeMap::new();
+    for flag in &ir.flags {
+        *flagged
+            .entry(flag_label(flag.kind).to_string())
+            .or_insert(0) += flag.count;
+    }
+
     FidelityReport {
         report_version: REPORT_VERSION,
         atoms: ir.atoms.len() as u64,
@@ -77,7 +86,7 @@ pub fn summary(ir: &Ir) -> FidelityReport {
         content_bytes: ir.content.total_bytes(),
         derived,
         dropped,
-        refused: Vec::new(),
+        flagged,
     }
 }
 
@@ -98,8 +107,8 @@ impl FidelityReport {
         for (class, n) in &self.dropped {
             let _ = writeln!(s, "dropped.{class}={n}");
         }
-        for r in &self.refused {
-            let _ = writeln!(s, "refused={r}");
+        for (kind, n) in &self.flagged {
+            let _ = writeln!(s, "flagged.{kind}={n}");
         }
         s
     }
@@ -164,13 +173,13 @@ impl FidelityReport {
                 let _ = writeln!(s, "    {class}: {n}");
             }
         }
-        if !self.refused.is_empty() {
+        if !self.flagged.is_empty() {
             let _ = writeln!(
                 s,
-                "  refused:   a source feature below the floor — refused rather than guessed:"
+                "  flagged:   recorded, and why this import needs your attention:"
             );
-            for r in &self.refused {
-                let _ = writeln!(s, "    {r}");
+            for (kind, n) in &self.flagged {
+                let _ = writeln!(s, "    {kind}: {n}");
             }
         }
         s
@@ -178,9 +187,12 @@ impl FidelityReport {
 }
 
 fn op_status(op: &crate::model::PathOp) -> &EpistemicStatus {
-    use crate::model::PathOp::{Add, Delete, Modify};
+    use crate::model::PathOp::{Add, Delete, Modify, Replace};
     match op {
-        Add { status, .. } | Modify { status, .. } | Delete { status, .. } => status,
+        Add { status, .. }
+        | Modify { status, .. }
+        | Delete { status, .. }
+        | Replace { status, .. } => status,
     }
 }
 
@@ -189,6 +201,13 @@ fn class_label(class: LossClass) -> &'static str {
         LossClass::Representation => "representation",
         LossClass::AdvisoryUnreliable => "advisory-unreliable",
         LossClass::Other => "other",
+    }
+}
+
+fn flag_label(kind: FlagKind) -> &'static str {
+    match kind {
+        FlagKind::ConventionViolation => "convention-violation",
+        FlagKind::BelowConfidenceFloor => "below-confidence-floor",
     }
 }
 

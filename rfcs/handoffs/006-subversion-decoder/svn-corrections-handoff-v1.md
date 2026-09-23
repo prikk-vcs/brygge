@@ -54,14 +54,16 @@ With `--reconstruct-refs`:
   lives under its prefix at the last revision. Its target stays the last revision that touched the root.
 - **A root that existed and no longer does** (deleted, or moved away) is not emitted. Count it:
   `deleted or moved branches/tags not represented (N)`, class `Other`, with reason *"the IR's refs name
-  live history; a deleted SVN branch or tag has no live head"*.
+  live history; a deleted, moved or never-filled SVN branch or tag has no live head"* *(amended after
+  review 010: a root that only ever held an empty directory lands here too)*.
 - **A moved root** appears under its new name, if the new name follows the layout.
 
 ### 2.4 Empty directories (CR-07.4)
 
 Count a directory as an **empty directory** only if, **after the revision**, no file lives under it. That
-applies to directories added in the revision, whether by `add` or copied. A directory that received files
-in the same revision is not empty.
+applies to directories added **or replaced** in the revision, whether by `add`, `replace` or copied. A
+directory that received files in the same revision is not empty. *(Amended after review 010: a replaced
+directory is a stated directory too; leaving it out would drop it without a record.)*
 
 ### 2.5 Layout honesty (CR-07.5)
 
@@ -70,7 +72,9 @@ layout recognizes (trunk, `branches/<x>`, `tags/<y>`).
 - If there are any, add `Flag { kind: ConventionViolation, what: "paths outside the trunk/branches/tags
   layout (N)", count: N, reason: "the repository partly follows the layout; these paths belong to no
   reconstructed branch or tag" }`. The CLI exits 30.
-- The existing whole-layout-not-found flag is unchanged.
+- The existing whole-layout-not-found flag is unchanged, and it is the **only** flag when the layout is
+  not found at all: this partial-layout flag fires only when the layout was found. One condition, one
+  flag. *(Clarified after review 010.)*
 
 ### 2.6 Source form (CR-07.6)
 
@@ -81,8 +85,16 @@ layout recognizes (trunk, `branches/<x>`, `tags/<y>`).
   - if the given source's form differs from the recorded `source_form` (a directory vs a file), report
     **`not-checked`** with reason *"the artifact was made from a <form>; verify against the same form"*,
     and exit `1`, per the handoff-1 rules;
-  - if the forms match but `svnadmin_version` differs and the comparison then fails, the detail adds
-    *"(svnadmin versions differ: <a> vs <b>)"*.
+  - if the forms match, compare the two IRs **with `svnadmin_version` excluded** (set the re-decode's value
+    to the artifact's), because the version is a fact about the tool, not the history:
+    - equal → **corresponds**, and the human output adds *"svnadmin versions differ (<a> vs <b>); the
+      history is identical"* when they differ;
+    - not equal → fail, and the detail adds *"(svnadmin versions differ: <a> vs <b>)"* when they differ.
+  - *(Amended after review 010, R-1: comparing whole IRs made any `svnadmin` upgrade a false failure.)*
+- **`svnadmin_version` hygiene** *(added after review 010, R-5)*:
+  - printable ASCII only, capped at 128 bytes;
+  - the output bound lives in `Limits`;
+  - a failed `--version` is `Error::Open`, never a silently absent param.
 
 ### 2.7 Claims (CR-04)
 

@@ -22,7 +22,16 @@ mod filelog;
 mod floor;
 mod fncache;
 mod manifest;
+/// The `.hg/store/obsstore` reader (RFC 005 corrections handoff §1.2); crate-internal, reached only
+/// from `published`.
+mod obsstore;
 mod options;
+/// Computes the published view (RFC 005 corrections handoff §1, D-4): phases, obsolescence, and the
+/// pinned set; crate-internal, reached only from `decode()`.
+mod phases;
+/// Computes which changesets `hg clone` would transfer (RFC 005 corrections handoff §1, D-4);
+/// crate-internal, reached only from `decode()`.
+mod published;
 /// The format-safety gate (RFC 005 §1): crate-internal (CR-20), reached only from `decode()`.
 mod requires;
 /// The low-level Mercurial revlog reader (index + delta chains + decompression); crate-internal (CR-20)

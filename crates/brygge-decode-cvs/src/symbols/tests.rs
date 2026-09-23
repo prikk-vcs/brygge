@@ -18,6 +18,7 @@ fn file(path: &str, symbols: &[(&str, &[u32])]) -> CvsFile {
                 .map(|(n, r)| (n.to_string(), RevNum(r.to_vec())))
                 .collect(),
             expand: None,
+            branch: None,
             revisions: BTreeMap::new(),
         },
     }

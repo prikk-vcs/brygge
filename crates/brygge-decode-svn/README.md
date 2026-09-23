@@ -9,8 +9,8 @@ brygge's **Subversion source decoder** (RFC 006, milestone M3). Reads an SVN his
   dumpfile is supplied). `svnadmin dump` emits a uniform stream from FSFS or BDB, so the on-disk backend is
   never touched.
 - **What it carries:** a **`Stated`** linear revision spine; **`Stated`** copies (`copyfrom` →
-  `RenameHint`); symlinks and exec bits; an **opt-in, `Derived`** branch/tag layer reconstructed by layout
-  convention (off by default).
+  `CopyRecord`, with the correct source revision resolved as `from_atom`); symlinks and exec bits; an
+  **opt-in, `Derived`** branch/tag layer reconstructed by layout convention (off by default).
 - **What it refuses (the floor, RFC 006 OQ-B):** `svn:externals`, URL/remote sources, unknown dump-format
   versions, and **delta-format dumps** (svndiff — deferred; re-dump without `--deltas`). A
   convention-violating layout is **imported with a loud `Derived` record**, not refused.

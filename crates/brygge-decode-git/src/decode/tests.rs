@@ -161,8 +161,14 @@ fn decodes_a_rich_history_all_stated() {
     // Metadata claims are carried.
     let any = &ir.atoms[0];
     assert_eq!(
-        any.metadata.author.as_ref().unwrap().email,
-        "author@example.com"
+        any.metadata
+            .author
+            .as_ref()
+            .unwrap()
+            .email
+            .as_ref()
+            .and_then(brygge_ir::Text::as_utf8),
+        Some("author@example.com")
     );
     assert!(any.metadata.commit_time.is_some());
 
@@ -219,12 +225,12 @@ fn renames_off_by_default_on_marks_derived() {
     r.write("new/name.txt", "identical content\n");
     r.commit_all("move file");
 
-    // Off by default: the literal delete+add, no rename hint.
+    // Off by default: the literal delete+add, no copy record.
     let ir = decode(r.path(), &Options::default()).unwrap();
-    assert!(ir.atoms.iter().all(|a| a.rename_hints.is_empty()));
+    assert!(ir.atoms.iter().all(|a| a.copies.is_empty()));
     assert!(brygge_ir::honesty::summary(&ir).derived.is_empty());
 
-    // On: a Derived InferredRename hint appears beside the still-present literal ops.
+    // On: a Derived InferredRename copy record appears beside the still-present literal ops.
     let opts = Options {
         infer_renames: true,
         rename_threshold: 100,
@@ -233,12 +239,20 @@ fn renames_off_by_default_on_marks_derived() {
     let move_atom = ir
         .atoms
         .iter()
-        .find(|a| !a.rename_hints.is_empty())
-        .expect("the move commit carries a rename hint");
-    let hint = &move_atom.rename_hints[0];
-    assert_eq!(hint.from, "old/name.txt");
-    assert_eq!(hint.to, "new/name.txt");
-    assert!(hint.status.is_derived(), "an inferred rename is Derived");
+        .find(|a| !a.copies.is_empty())
+        .expect("the move commit carries a copy record");
+    let copy = &move_atom.copies[0];
+    assert_eq!(copy.from, "old/name.txt");
+    assert_eq!(copy.to, "new/name.txt");
+    assert_eq!(
+        copy.from_atom, move_atom.parents[0],
+        "from_atom is the first parent"
+    );
+    assert!(
+        move_atom.is_move(copy),
+        "a delete+add move is reported as a move"
+    );
+    assert!(copy.status.is_derived(), "an inferred rename is Derived");
     // The literal delete+add are still there, never collapsed.
     assert!(
         move_atom.ops.iter().any(
@@ -270,29 +284,19 @@ fn loss_boundary_records_representation_drops() {
     let whats: Vec<&str> = ir.loss.dropped.iter().map(|d| d.what.as_str()).collect();
     assert!(whats.iter().any(|w| w.contains("packfile")));
     assert!(whats.iter().any(|w| w.contains("reflogs")));
-    // The representation drops are all Representation-class; the one non-representation drop is the
-    // annotated tag v1's tagger/message (OQ-B), which the RefRecord cannot hold.
     assert!(
         ir.loss
             .dropped
             .iter()
-            .filter(|d| matches!(d.class, brygge_ir::LossClass::Representation))
-            .count()
-            >= 3
+            .all(|d| matches!(d.class, brygge_ir::LossClass::Representation)),
+        "an annotated tag's tagger/time/message is now carried in `annotation`, not dropped \
+         (batch-2 handoff §1.6): {:?}",
+        ir.loss.dropped
     );
-    let other: Vec<&brygge_ir::DropRecord> = ir
-        .loss
-        .dropped
-        .iter()
-        .filter(|d| !matches!(d.class, brygge_ir::LossClass::Representation))
-        .collect();
-    assert_eq!(
-        other.len(),
-        1,
-        "only the annotated-tag metadata is a non-representation drop"
+    assert!(
+        !whats.iter().any(|w| w.contains("annotated tag")),
+        "the old annotated-tag drop record is gone: {whats:?}"
     );
-    assert!(other[0].what.contains("annotated tag"));
-    assert!(matches!(other[0].class, brygge_ir::LossClass::Other));
 }
 
 #[test]
@@ -539,7 +543,7 @@ fn overflowing_numeric_time_becomes_an_absent_claim_not_a_fabricated_one() {
         ir.loss
             .dropped
             .iter()
-            .any(|d| d.what == "unparseable author/committer times (2)"),
+            .any(|d| d.what == "unparseable author/committer/tagger times (2)"),
         "both the author and committer time failed to parse"
     );
 }
@@ -571,7 +575,7 @@ fn a_time_token_that_is_not_purely_digits_becomes_an_absent_claim() {
         ir.loss
             .dropped
             .iter()
-            .any(|d| d.what == "unparseable author/committer times (2)")
+            .any(|d| d.what == "unparseable author/committer/tagger times (2)")
     );
 }
 
@@ -594,6 +598,38 @@ fn strict_seconds_accepts_well_formed_tokens_and_rejects_malformed_ones() {
     );
     assert_eq!(strict_seconds(""), None);
     assert_eq!(strict_seconds("   "), None);
+}
+
+#[test]
+fn strict_offset_minutes_accepts_well_formed_tokens_and_rejects_malformed_ones() {
+    assert_eq!(strict_offset_minutes("1112911993 +0900"), Some(540));
+    assert_eq!(strict_offset_minutes("1112911993 -0130"), Some(-90));
+    assert_eq!(strict_offset_minutes("1112911993 +0000"), Some(0));
+    assert_eq!(
+        strict_offset_minutes("1112911993 +09"),
+        None,
+        "not exactly four digits"
+    );
+    assert_eq!(
+        strict_offset_minutes("1112911993 +0960"),
+        None,
+        "MM must be < 60"
+    );
+    assert_eq!(
+        strict_offset_minutes("1112911993 0900"),
+        None,
+        "no sign is not +HHMM/-HHMM"
+    );
+    assert_eq!(
+        strict_offset_minutes("1112911993 +09a0"),
+        None,
+        "non-digit in the offset"
+    );
+    assert_eq!(
+        strict_offset_minutes("1112911993"),
+        None,
+        "missing offset token entirely"
+    );
 }
 
 #[test]
@@ -640,10 +676,36 @@ fn annotated_tag_preserves_identity_and_records_loss() {
         hex, tag_sha,
         "the preserved id is the tag object's sha, not the commit's"
     );
-    // Its authored tagger/message are recorded as loss, never silently dropped (PR-9).
-    assert!(ir.loss.dropped.iter().any(
-        |d| d.what.contains("annotated tag") && matches!(d.class, brygge_ir::LossClass::Other)
-    ));
+    // Its tagger/time/message are now carried, not dropped (batch-2 handoff §1.6).
+    assert!(
+        !ir.loss
+            .dropped
+            .iter()
+            .any(|d| d.what.contains("annotated tag")),
+        "the old annotated-tag drop record is gone"
+    );
+    let annotation = tag
+        .annotation
+        .as_ref()
+        .expect("an annotated tag's tagger/time/message is carried as an Annotation");
+    assert_eq!(
+        annotation.tagger.as_ref().and_then(|t| t.name.as_utf8()),
+        Some("C O Mitter")
+    );
+    assert_eq!(
+        annotation.message.as_ref().and_then(|m| m.as_utf8()),
+        Some("the first release\n")
+    );
+    assert!(annotation.time.is_some());
+    // An annotated-tag-only repository (no other loss) exits clean, per the handoff's own required test.
+    assert!(
+        ir.loss
+            .dropped
+            .iter()
+            .all(|d| matches!(d.class, brygge_ir::LossClass::Representation)),
+        "nothing but representation-class drops remain: {:?}",
+        ir.loss.dropped
+    );
 }
 
 #[test]
@@ -699,7 +761,7 @@ fn ambiguous_identical_content_move_is_not_marked() {
     let ir = decode(r.path(), &opts).unwrap();
     // A 2->2 identical-content shuffle is ambiguous: brygge does not guess which became which.
     assert!(
-        ir.atoms.iter().all(|a| a.rename_hints.is_empty()),
+        ir.atoms.iter().all(|a| a.copies.is_empty()),
         "ambiguous identical-content moves are left unmarked (OQ-A)"
     );
     assert!(brygge_ir::honesty::summary(&ir).derived.is_empty());
@@ -1023,12 +1085,21 @@ fn corrupt_dropped_only_history_does_not_fail_the_decode() {
 
     let ir = decode(r.path(), &Options::default()).unwrap();
     assert_eq!(ir.atoms.len(), 1, "carried history (c1) is intact");
-    let whats: Vec<&str> = ir.loss.dropped.iter().map(|d| d.what.as_str()).collect();
+    // The record is fixed (batch-2 handoff §1.2) — never the raw gix error text, which is neither
+    // deterministic nor identity-bearing.
     assert!(
-        whats
+        ir.loss
+            .dropped
             .iter()
-            .any(|w| w.starts_with("commits reachable only from dropped refs (count unavailable")),
-        "{whats:?}"
+            .any(|d| d.what == "commits reachable only from dropped refs (count unavailable)"),
+        "{:?}",
+        ir.loss.dropped
+    );
+    let ir2 = decode(r.path(), &Options::default()).unwrap();
+    assert_eq!(
+        brygge_ir::to_bytes(&ir),
+        brygge_ir::to_bytes(&ir2),
+        "decoding twice gives identical bytes, count-unavailable case included"
     );
 }
 
@@ -1355,4 +1426,631 @@ fn provenance_floor_param_equals_the_declared_list() {
     let ir = decode(r.path(), &Options::default()).unwrap();
     let expected = crate::floor::joined();
     assert_eq!(ir.provenance.params.get("floor"), Some(&expected));
+}
+
+// --- batch-2 handoff §1.1: every read object is verified against its id -----------------------------
+
+#[test]
+fn a_retargeted_loose_object_is_refused_naming_the_id() {
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let r = TempRepo::new();
+    r.write("a.txt", "victim content\n");
+    r.commit_all("c1");
+    let victim_blob = r.git(&["hash-object", "--", "a.txt"]);
+
+    // A second, distinct blob of the same kind, loose in the same store.
+    let attacker_blob = git_stdin(
+        r.path(),
+        &["hash-object", "-w", "--stdin"],
+        b"attacker content\n",
+    );
+    assert_ne!(victim_blob, attacker_blob);
+
+    let loose_path = |sha: &str| {
+        r.path()
+            .join(".git")
+            .join("objects")
+            .join(&sha[..2])
+            .join(&sha[2..])
+    };
+    let victim_path = loose_path(&victim_blob);
+    let attacker_path = loose_path(&attacker_blob);
+    assert!(victim_path.exists(), "victim blob must be loose");
+    assert!(attacker_path.exists(), "attacker blob must be loose");
+    // Retarget: the victim's id now names the attacker's content on disk. Git writes loose objects
+    // read-only, so the victim file's permissions are relaxed before overwriting it.
+    let attacker_bytes = std::fs::read(&attacker_path).unwrap();
+    let mut perms = std::fs::metadata(&victim_path).unwrap().permissions();
+    #[allow(clippy::permissions_set_readonly_false)]
+    perms.set_readonly(false);
+    std::fs::set_permissions(&victim_path, perms).unwrap();
+    std::fs::write(&victim_path, attacker_bytes).unwrap();
+
+    match decode(r.path(), &Options::default()) {
+        Err(crate::Error::Read(msg)) => {
+            assert!(msg.contains(&victim_blob), "names the mismatched id: {msg}");
+            assert!(msg.contains("does not match its content"));
+        }
+        other => panic!("expected Error::Read naming the mismatched object, got {other:?}"),
+    }
+}
+
+#[test]
+fn an_ordinary_repository_decodes_with_every_object_verified() {
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let r = build_rich_repo();
+    let ir = decode(r.path(), &Options::default()).unwrap();
+    assert!(!ir.atoms.is_empty());
+}
+
+// --- batch-2 handoff §1.1 investigation: a SHA-256 object-format repository -------------------------
+
+#[test]
+fn a_sha256_object_format_repository_is_refused_with_the_named_floor_feature() {
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("brygge-git-sha256-{}-{n}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let out = Command::new("git")
+        .current_dir(&dir)
+        .args(["init", "-q", "--object-format=sha256"])
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .output()
+        .unwrap();
+    if !out.status.success() {
+        eprintln!("skipping: installed git does not support --object-format=sha256");
+        let _ = std::fs::remove_dir_all(&dir);
+        return;
+    }
+    let result = decode(&dir, &Options::default());
+    let _ = std::fs::remove_dir_all(&dir);
+    match result {
+        Err(crate::Error::FloorRefusal { feature, .. }) => {
+            assert_eq!(feature, "SHA-256 object format");
+        }
+        other => panic!("expected FloorRefusal naming the SHA-256 feature, got {other:?}"),
+    }
+}
+
+// --- batch-2 handoff §1.3: the message's declared encoding, on the message only ----------------------
+
+#[test]
+fn a_declared_message_encoding_is_carried_on_the_message_only() {
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let r = TempRepo::new();
+    r.write("a.txt", "a\n");
+    r.git(&["add", "-A"]);
+    let tree = r.git(&["write-tree"]);
+    let mut body = format!(
+        "tree {tree}\n\
+         author A U Thor <author@example.com> 1112911993 +0000\n\
+         committer A U Thor <author@example.com> 1112911993 +0000\n\
+         encoding ISO-8859-1\n\
+         \n"
+    )
+    .into_bytes();
+    // Latin-1 'é' (0xE9) — not valid UTF-8 on its own, carried byte-exact regardless.
+    body.extend_from_slice(&[0xE9, b'\n']);
+    let sha = git_stdin(
+        r.path(),
+        &[
+            "hash-object",
+            "-t",
+            "commit",
+            "-w",
+            "--literally",
+            "--stdin",
+        ],
+        &body,
+    );
+    r.git(&["update-ref", "refs/heads/main", &sha]);
+
+    let ir = decode(r.path(), &Options::default()).unwrap();
+    let atom = &ir.atoms[0];
+    let msg = atom.metadata.message.as_ref().unwrap();
+    assert_eq!(msg.bytes, vec![0xE9, b'\n']);
+    assert_eq!(msg.encoding.as_deref(), Some("ISO-8859-1"));
+    let author_name = &atom.metadata.author.as_ref().unwrap().name;
+    assert_eq!(
+        author_name.encoding, None,
+        "names keep encoding: None — \"not stated\", never the message's encoding"
+    );
+}
+
+// --- batch-2 handoff §1.4: a malformed offset is counted in the loss boundary ------------------------
+
+#[test]
+fn a_malformed_timezone_offset_is_absent_and_counted() {
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let r = TempRepo::new();
+    // Well-formed seconds, malformed offset (three digits).
+    commit_with_raw_time(&r, "1112911993 +090");
+
+    let ir = decode(r.path(), &Options::default()).unwrap();
+    let atom = &ir.atoms[0];
+    let author_time = atom.metadata.author_time.expect("seconds still parsed");
+    assert_eq!(author_time.seconds, 1_112_911_993);
+    assert_eq!(
+        author_time.offset_minutes, None,
+        "a malformed offset is absent, never salvaged or defaulted"
+    );
+    assert!(
+        ir.loss.dropped.iter().any(|d| d
+            .what
+            .starts_with("unparseable author/committer/tagger timezone offsets")),
+        "{:?}",
+        ir.loss.dropped
+    );
+}
+
+// --- batch-2 handoff §1.5: signatures and extras, in header order -------------------------------------
+
+#[test]
+fn a_mergetag_header_is_carried_as_an_extra_with_unfolded_bytes() {
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let r = TempRepo::new();
+    r.write("a.txt", "a\n");
+    r.git(&["add", "-A"]);
+    let tree = r.git(&["write-tree"]);
+    // A `mergetag` header's continuation lines are each prefixed with one space (git's own header
+    // folding); gix unfolds them back to real newlines, stripping the leading space.
+    let body = format!(
+        "tree {tree}\n\
+         author A U Thor <author@example.com> 1112911993 +0000\n\
+         committer A U Thor <author@example.com> 1112911993 +0000\n\
+         mergetag object 0000000000000000000000000000000000000000\n\
+        \x20type commit\n\
+        \x20tag faketag\n\
+        \x20tagger t <t@example.com> 0 +0000\n\
+        \x20\n\
+        \x20fake mergetag message\n\
+         \n\
+         c1\n"
+    );
+    let sha = git_stdin(
+        r.path(),
+        &[
+            "hash-object",
+            "-t",
+            "commit",
+            "-w",
+            "--literally",
+            "--stdin",
+        ],
+        body.as_bytes(),
+    );
+    r.git(&["update-ref", "refs/heads/main", &sha]);
+
+    let ir = decode(r.path(), &Options::default()).unwrap();
+    let atom = &ir.atoms[0];
+    let extra = atom
+        .source
+        .extras
+        .iter()
+        .find(|e| e.label == "mergetag")
+        .expect("mergetag carried as an Extra");
+    let expected = "object 0000000000000000000000000000000000000000\ntype commit\ntag faketag\n\
+                     tagger t <t@example.com> 0 +0000\n\nfake mergetag message\n";
+    assert_eq!(String::from_utf8_lossy(&extra.bytes), expected);
+}
+
+#[test]
+fn gpgsig_and_gpgsig_sha256_are_both_carried_as_signatures_in_header_order() {
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let r = TempRepo::new();
+    r.write("a.txt", "a\n");
+    r.git(&["add", "-A"]);
+    let tree = r.git(&["write-tree"]);
+    let body = format!(
+        "tree {tree}\n\
+         author A U Thor <author@example.com> 1112911993 +0000\n\
+         committer A U Thor <author@example.com> 1112911993 +0000\n\
+         gpgsig -----BEGIN PGP SIGNATURE-----\n\
+        \x20\n\
+        \x20fake-sha1-signature\n\
+        \x20-----END PGP SIGNATURE-----\n\
+         gpgsig-sha256 -----BEGIN PGP SIGNATURE-----\n\
+        \x20\n\
+        \x20fake-sha256-signature\n\
+        \x20-----END PGP SIGNATURE-----\n\
+         \n\
+         c1\n"
+    );
+    let sha = git_stdin(
+        r.path(),
+        &[
+            "hash-object",
+            "-t",
+            "commit",
+            "-w",
+            "--literally",
+            "--stdin",
+        ],
+        body.as_bytes(),
+    );
+    r.git(&["update-ref", "refs/heads/main", &sha]);
+
+    let ir = decode(r.path(), &Options::default()).unwrap();
+    let atom = &ir.atoms[0];
+    let labels: Vec<&str> = atom
+        .source
+        .signatures
+        .iter()
+        .map(|s| s.label.as_str())
+        .collect();
+    assert_eq!(
+        labels,
+        vec!["gpgsig", "gpgsig-sha256"],
+        "both signature labels are present, in header order"
+    );
+    assert!(atom.source.extras.is_empty(), "neither is also an Extra");
+}
+
+// --- review 011 R-1: history comes from verified commits, not the commit-graph cache -----------------
+
+/// Locate a chunk's `(offset, size)` in a commit-graph file: 8-byte header (`CGPH`, version, hash
+/// version, chunk count, base-graph count), then `chunks + 1` table entries of a 4-byte id and an
+/// 8-byte big-endian offset; a chunk ends where the next entry's offset begins.
+fn commit_graph_chunk(bytes: &[u8], id: &[u8; 4]) -> (usize, usize) {
+    assert_eq!(&bytes[..4], b"CGPH");
+    let chunks = usize::from(bytes[6]);
+    for i in 0..chunks {
+        let e = 8 + i * 12;
+        if &bytes[e..e + 4] == id {
+            let off = |at: usize| u64::from_be_bytes(bytes[at + 4..at + 12].try_into().unwrap());
+            let start = usize::try_from(off(e)).unwrap();
+            let end = usize::try_from(off(e + 12)).unwrap();
+            return (start, end - start);
+        }
+    }
+    panic!("chunk {id:?} not found");
+}
+
+#[test]
+fn a_crafted_commit_graph_cannot_drop_a_parent_and_the_walk_never_reads_it() {
+    // Review 011 R-1/F-1: a hand-corrupted `objects/info/commit-graph` that says the tip has no parent.
+    // This test fails if `.use_commit_graph(false)` is removed from either walk in `decode.rs`.
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let r = TempRepo::new();
+    for (i, msg) in ["c1", "c2", "c3", "c4"].iter().enumerate() {
+        r.write("a.txt", &format!("{i}\n"));
+        r.commit_all(msg);
+    }
+    let baseline = decode(r.path(), &Options::default()).unwrap();
+    assert_eq!(baseline.atoms.len(), 4);
+
+    r.git(&["commit-graph", "write", "--reachable"]);
+    let graph_path = r.path().join(".git/objects/info/commit-graph");
+    let mut bytes = std::fs::read(&graph_path).unwrap();
+
+    // Find the tip's index in the sorted OID lookup, then blank its parent-1 field in `CDAT`
+    // (36 bytes per commit for SHA-1: 20 tree id, 4 parent-1, 4 parent-2, 8 generation/date).
+    let tip_hex = r.git(&["rev-parse", "HEAD"]);
+    let tip: Vec<u8> = (0..20)
+        .map(|i| u8::from_str_radix(&tip_hex[i * 2..i * 2 + 2], 16).unwrap())
+        .collect();
+    let (oidl, oidl_len) = commit_graph_chunk(&bytes, b"OIDL");
+    let idx = (0..oidl_len / 20)
+        .find(|i| bytes[oidl + i * 20..oidl + i * 20 + 20] == tip[..])
+        .expect("the tip is in the graph");
+    let (cdat, _) = commit_graph_chunk(&bytes, b"CDAT");
+    let parent1 = cdat + idx * 36 + 20;
+    bytes[parent1..parent1 + 4].copy_from_slice(&0x7000_0000u32.to_be_bytes()); // GRAPH_PARENT_NONE
+    let mut perms = std::fs::metadata(&graph_path).unwrap().permissions();
+    #[allow(clippy::permissions_set_readonly_false)]
+    perms.set_readonly(false);
+    std::fs::set_permissions(&graph_path, perms).unwrap();
+    std::fs::write(&graph_path, &bytes).unwrap();
+
+    // First: the corruption bites — a default gix walk over this graph sees fewer commits than exist.
+    let repo = gix::open(r.path()).unwrap();
+    let tip_id = repo.head_id().unwrap().detach();
+    let with_graph = repo.rev_walk([tip_id]).all().unwrap().count();
+    let without_graph = repo
+        .rev_walk([tip_id])
+        .use_commit_graph(false)
+        .all()
+        .unwrap()
+        .count();
+    assert_eq!(without_graph, 4);
+    assert!(
+        with_graph < without_graph,
+        "the crafted graph must actually truncate a default walk ({with_graph} vs {without_graph}), \
+         or this test proves nothing"
+    );
+
+    // Then: the decode never reads the graph at all, so it must equal the no-graph baseline exactly.
+    // A `Read("history walk disagrees with commit content")` is what the defense-in-depth check in
+    // `commit_parents` would give if a walk *did* trust the graph — accepting it here would let the
+    // test pass with `use_commit_graph(false)` removed, so it is deliberately not accepted.
+    let ir = decode(r.path(), &Options::default())
+        .expect("the graph is ignored, so the decode succeeds exactly as without it");
+    assert_eq!(
+        ir, baseline,
+        "a present commit-graph must never change history"
+    );
+}
+
+// --- review 011 R-2: tag chains are verified all the way --------------------------------------------
+
+#[test]
+fn a_tag_of_a_tag_verifies_the_final_target_and_counts_the_nested_tag() {
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let r = TempRepo::new();
+    r.write("a.txt", "a\n");
+    r.commit_all("c1");
+    r.git(&["tag", "-a", "inner", "-m", "inner tag"]);
+    let inner_sha = r.git(&["rev-parse", "inner"]);
+    // An outer annotated tag pointing at the *inner tag object*, not at the commit.
+    let outer_body = format!(
+        "object {inner_sha}\n\
+         type tag\n\
+         tag outer\n\
+         tagger A U Thor <author@example.com> 1112911993 +0000\n\
+         \n\
+         outer tag\n"
+    );
+    let outer_sha = git_stdin(
+        r.path(),
+        &["hash-object", "-t", "tag", "-w", "--literally", "--stdin"],
+        outer_body.as_bytes(),
+    );
+    r.git(&["update-ref", "refs/tags/outer", &outer_sha]);
+    // Remove the plain, single-hop `inner` ref so only the two-hop `outer` ref exercises this path
+    // (both are still carried refs, which is fine — `inner` just adds an extra, uninteresting ref).
+
+    let ir = decode(r.path(), &Options::default()).unwrap();
+    let outer_ref = ir
+        .refs
+        .iter()
+        .find(|rf| rf.name == "outer")
+        .expect("outer tag ref is carried");
+    // The target resolves all the way to the one commit atom.
+    assert_eq!(outer_ref.target, ir.atoms[0].id);
+    assert!(
+        ir.loss
+            .dropped
+            .iter()
+            .any(|d| d.what == "nested tag objects not carried (1)"),
+        "{:?}",
+        ir.loss.dropped
+    );
+}
+
+#[test]
+fn a_branch_pointing_at_a_tag_object_counts_that_tag_as_not_carried() {
+    // Review 011 F-2: a branch carries no annotation, so the tag it points at loses its tagger/message.
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let r = TempRepo::new();
+    r.write("a.txt", "a\n");
+    r.commit_all("c1");
+    r.git(&["tag", "-a", "t", "-m", "a tag"]);
+    let tag_sha = r.git(&["rev-parse", "t"]);
+    r.git(&["tag", "-d", "t"]);
+    // `git update-ref` refuses a non-commit under refs/heads/, so write the loose ref as a crafted (or
+    // hand-edited) repository would have it.
+    std::fs::write(r.path().join(".git/refs/heads/x"), format!("{tag_sha}\n")).unwrap();
+
+    let ir = decode(r.path(), &Options::default()).unwrap();
+    assert!(
+        ir.refs.iter().any(|rf| rf.name == "x"),
+        "the branch is carried, pointing at the commit"
+    );
+    assert!(
+        ir.loss
+            .dropped
+            .iter()
+            .any(|d| d.what == "nested tag objects not carried (1)"),
+        "{:?}",
+        ir.loss.dropped
+    );
+}
+
+#[test]
+fn a_non_utf8_replace_ref_name_is_refused_with_escaped_bytes() {
+    // Review 011 F-3: the replace-ref refusal must not convert the name lossily.
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    use std::os::unix::ffi::OsStrExt;
+
+    let r = TempRepo::new();
+    r.write("a.txt", "a\n");
+    r.commit_all("c1");
+    let head = r.git(&["rev-parse", "HEAD"]);
+    let mut name_bytes = b"refs/replace/bad-".to_vec();
+    name_bytes.push(0xFF);
+    let ref_name = std::ffi::OsStr::from_bytes(&name_bytes).to_os_string();
+    let out = Command::new("git")
+        .current_dir(r.path())
+        .arg("update-ref")
+        .arg(&ref_name)
+        .arg(&head)
+        .output()
+        .unwrap();
+    if !out.status.success() {
+        eprintln!("skipping: this git/platform rejects a non-UTF-8 ref name");
+        return;
+    }
+    match decode(r.path(), &Options::default()) {
+        Err(crate::Error::FloorRefusal { feature, reason }) => {
+            assert_eq!(feature, "replace ref");
+            assert!(reason.contains("\\xFF"), "escaped byte expected: {reason}");
+            assert!(
+                !reason.contains('\u{FFFD}'),
+                "no lossy substitution: {reason}"
+            );
+        }
+        other => panic!("expected a replace-ref refusal, got {other:?}"),
+    }
+}
+
+// --- review 011 R-3: nothing unparseable is silent ---------------------------------------------------
+
+#[test]
+fn an_unparseable_tagger_time_is_counted_like_author_and_committer_times() {
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let r = TempRepo::new();
+    r.write("a.txt", "a\n");
+    r.commit_all("c1");
+    let commit_sha = r.git(&["rev-parse", "HEAD"]);
+    // Well-formed seconds, malformed offset (three digits) — the same shape as the existing
+    // commit-level malformed-offset test, which is known to parse structurally; only the offset token
+    // itself is what strict parsing rejects.
+    let tag_body = format!(
+        "object {commit_sha}\n\
+         type commit\n\
+         tag broken\n\
+         tagger A U Thor <author@example.com> 1112911993 +090\n\
+         \n\
+         broken tagger offset\n"
+    );
+    let tag_sha = git_stdin(
+        r.path(),
+        &["hash-object", "-t", "tag", "-w", "--literally", "--stdin"],
+        tag_body.as_bytes(),
+    );
+    r.git(&["update-ref", "refs/tags/broken", &tag_sha]);
+
+    let ir = decode(r.path(), &Options::default()).unwrap();
+    let tagged = ir.refs.iter().find(|rf| rf.name == "broken").unwrap();
+    let annotation = tagged.annotation.as_ref().expect("annotation is carried");
+    let time = annotation.time.expect("seconds still parsed");
+    assert_eq!(time.seconds, 1_112_911_993);
+    assert_eq!(
+        time.offset_minutes, None,
+        "a malformed tagger offset is absent, never salvaged or defaulted"
+    );
+    assert!(
+        ir.loss.dropped.iter().any(|d| d
+            .what
+            .starts_with("unparseable author/committer/tagger timezone offsets")),
+        "{:?}",
+        ir.loss.dropped
+    );
+}
+
+#[test]
+fn a_non_utf8_encoding_header_value_is_not_carried_and_is_counted() {
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let r = TempRepo::new();
+    r.write("a.txt", "a\n");
+    r.git(&["add", "-A"]);
+    let tree = r.git(&["write-tree"]);
+    let mut body = format!(
+        "tree {tree}\n\
+         author A U Thor <author@example.com> 1112911993 +0000\n\
+         committer A U Thor <author@example.com> 1112911993 +0000\n\
+         encoding "
+    )
+    .into_bytes();
+    body.extend_from_slice(&[0xff, 0xfe]); // not valid UTF-8
+    body.extend_from_slice(b"\n\nc1\n");
+    let sha = git_stdin(
+        r.path(),
+        &[
+            "hash-object",
+            "-t",
+            "commit",
+            "-w",
+            "--literally",
+            "--stdin",
+        ],
+        &body,
+    );
+    r.git(&["update-ref", "refs/heads/main", &sha]);
+
+    let ir = decode(r.path(), &Options::default()).unwrap();
+    let atom = &ir.atoms[0];
+    assert_eq!(
+        atom.metadata.message.as_ref().unwrap().encoding,
+        None,
+        "an undecodable encoding value is not carried"
+    );
+    assert!(
+        ir.loss
+            .dropped
+            .iter()
+            .any(|d| d.what == "undecodable encoding headers (1)"),
+        "{:?}",
+        ir.loss.dropped
+    );
+}
+
+#[test]
+fn a_non_utf8_commit_header_name_is_refused() {
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let r = TempRepo::new();
+    r.write("a.txt", "a\n");
+    r.git(&["add", "-A"]);
+    let tree = r.git(&["write-tree"]);
+    let mut body = format!(
+        "tree {tree}\n\
+         author A U Thor <author@example.com> 1112911993 +0000\n\
+         committer A U Thor <author@example.com> 1112911993 +0000\n"
+    )
+    .into_bytes();
+    body.extend_from_slice(&[0xff, 0xfe]); // the header *name* itself is not valid UTF-8
+    body.extend_from_slice(b" some-value\n\nc1\n");
+    let sha = git_stdin(
+        r.path(),
+        &[
+            "hash-object",
+            "-t",
+            "commit",
+            "-w",
+            "--literally",
+            "--stdin",
+        ],
+        &body,
+    );
+    r.git(&["update-ref", "refs/heads/main", &sha]);
+
+    match decode(r.path(), &Options::default()) {
+        Err(crate::Error::FloorRefusal { feature, .. }) => {
+            assert_eq!(feature, "non-UTF-8 commit header name");
+        }
+        other => panic!("expected a FloorRefusal, got {other:?}"),
+    }
 }

@@ -13,6 +13,7 @@ homepage.workspace     = true
 
 [dependencies]
 brygge-ir = { workspace = true }
+sha2 = { workspace = true }
 
 [lints]
 workspace = true

@@ -59,8 +59,15 @@ report.
 
 **Refs** (`--reconstruct-refs`):
 - tags reconstruct as today, but only against main-line changesets;
+- **a tag that names no main-line revision** (a vendor release tag once the vendor branch is cleared, or
+  a tag on a release branch) is not reconstructed. Record it as drop `what = "CVS tags on branch
+  revisions not reconstructed (N)"`, class `Other`, with the same reason. It is never skipped silently.
+  *(Added after review 008, R-1.)*
 - **branch symbols are not reconstructed.** Record them as drop `what = "CVS branch symbols not
   reconstructed (M)"`, class `Other`, with the same reason.
+- **A branch symbol** is one in magic form (second-to-last component `0`, e.g. `1.2.0.2`) **or** a
+  literal odd-length number of at least three components (the vendor branch, e.g. `1.1.1`, which RCS
+  stores literally). A branch's name is looked up in both forms. *(Added after review 008, R-2.)*
 
 **Faithfulness statement:** append to the CVS text in `crates/brygge/src/commands.rs`
 `faithfulness_statement`:
@@ -86,7 +93,10 @@ report.
 - `overlap` = how many of the cluster's paths are also touched by another cluster whose date range
   intersects this cluster's range widened by `window` on both sides.
 - `confidence = floor(time_score × (paths − overlap/2) / paths)`, computed in integers with the division
-  last.
+  last. **Normative integer form** *(fixed after review 008)*: `time_score × (2·paths − overlap) div
+  (2·paths)`, clamped to `0..=100`.
+- All date and window arithmetic saturates: a window of `u64::MAX` or an extreme date never wraps.
+  *(Added after review 008, R-3.)*
 - A split singleton from step 5 has confidence `min(50, its own score)`: its placement is brygge's
   judgment.
 
@@ -100,19 +110,23 @@ report.
 | `date_rule` | `latest-per-file` |
 | `order_splits` | the atom's split count, `0` normally |
 
-**CLI:** from this handoff on, `verify`'s `derivations` check **requires** `date_rule` for
-`ReconstructedChangeset`. Remove the handoff-5 exemption comment.
+**CLI:** from this handoff on, `verify`'s `derivations` check **requires** `date_rule` and
+`confidence_rule` for `ReconstructedChangeset` (`confidence_rule` added after review 008, R-8). Remove the handoff-5 exemption comment.
 
 ### 2.3 Identity and claims (CR-08.1, CR-04)
 
 - **`repo_id`:** SHA-256 over the concatenation, in ascending path order, of
-  `path ‖ 0x00 ‖ decimal date of 1.1 ‖ 0x00 ‖ author of 1.1 ‖ 0x0A`, for every file with a revision
-  `1.1`. It is a content-derived fingerprint, never a filesystem path. The same repository decoded from
+  `path ‖ 0x00 ‖ rev ‖ 0x00 ‖ decimal date of rev ‖ 0x00 ‖ author of rev ‖ 0x0A`, where `rev` is the
+  file's **lowest-numbered trunk revision** (normally `1.1`), for every file that has one. A repository
+  with no trunk revision at all is `Error::Read("no main-line revisions")`. *(Amended after review 008,
+  R-6: fingerprinting only `1.1` gave every repository without one the same id.)* It is a content-derived fingerprint, never a filesystem path. The same repository decoded from
   two locations gives identical bytes.
 - **Claims:**
-  - `author` = the committer login, as a `Text`, with **`email` absent**;
+  - `author` = the committer login, as a `Text` carrying the **exact bytes** (no lossy conversion), with
+    **`email` absent**;
   - `author_time` = the representative date, as `Time { seconds, offset_minutes: Some(0) }` (RCS dates
-    are UTC by definition);
+    are UTC by definition). An unparseable RCS date, or a year outside `1970..=9999`, is
+    `Error::Read`: a date is never fabricated *(added after review 008, R-3)*;
   - **`committer` and `commit_time` are absent** (the one-claim rule, RFC 011 D-5);
   - the message is the log, as bytes.
 
@@ -125,6 +139,11 @@ Add each of these to `floor.rs`. Each is a `FloorRefusal` (exit 20) with a named
 | the same repo-relative path as both `dir/f,v` and `dir/Attic/f,v` | `path in Attic and live` | names the path, says the repository is inconsistent, and suggests `cvs admin`/manual repair of the source |
 | a symlink anywhere under the repository root, file or directory (checked with `symlink_metadata`, never followed) | `symlink in repository` | names the entry; brygge reads only the repository it is given |
 | a path component that is not valid UTF-8 | `non-UTF-8 path` | shows invalid bytes as `\xNN`; no lossy conversion anywhere on a path, and `,v` detection is done on bytes |
+| a symbol name that is not valid UTF-8 *(added after review 008, R-4)* | `non-UTF-8 symbol name` | shows invalid bytes as `\xNN` |
+| a default `branch` set while trunk revisions follow its branch point (`cvs admin -b`) *(added after review 008, R-5)* | `default branch with later trunk` | names the file; its main line is ambiguous |
+
+Feature names follow the crate's kebab-case convention (`path-in-attic-and-live`, …). A present but
+unparseable `branch` field is `Error::Read`, not "unset".
 
 ### 2.5 Documentation (the D-2 guidance)
 

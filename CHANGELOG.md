@@ -9,7 +9,192 @@ own commit.
 
 ## [Unreleased]
 
-### Project hygiene (this handoff)
+### Hardening: overflow checks stay on in release builds
+
+#### Changed
+
+- `[profile.release]` sets `overflow-checks = true`. A wrap of an integer that reaches a claim (found in
+  the CVS date parser during review) would otherwise be silent in release builds; with checks on, any
+  such wrap becomes a panic, which the decoder panic boundary turns into a typed failure (exit 1), never
+  a false value.
+
+### IR contract re-cut to 0.2.0
+
+#### Changed
+
+- **Breaking:** the IR contract is re-cut from the frozen 1.0.0 to **`0.2.0`** (RFC 011): tagged records
+  with a critical bit replace the positional codec, a strict canonical form is enforced on read, and the
+  integrity digest covers the stored bytes directly (never a re-encoding). **Pre-release artifacts must
+  be re-decoded** — a format-1 artifact is refused with a clear message (`Error::PreReleaseArtifact`),
+  its metadata never parsed.
+- The model gains `Text` (byte-exact, not assumed UTF-8) and `Time` (with an optional source UTC
+  offset); `RenameHint` is renamed `CopyRecord` and gains `from_atom`, so a copy names the exact earlier
+  atom it came from; `PathOp` gains `Replace`; `Flag`/`FlagKind` replace the magic-string exit-30
+  detection (`LAYOUT_UNMATCHED`/`UNDER_FLOOR`, removed); `Signature` and `Extra` carry opaque
+  source-specific data by label; `RefRecord` gains an optional `Annotation`. `ImportProvenance` loses
+  `import_time`.
+- `from_bytes` now returns `Decoded { ir, skipped_non_critical_fields }`, surfacing how many fields from
+  a newer contract minor were skipped (always non-critical, so never able to change what the artifact
+  claims).
+- The fidelity report is v2 (`REPORT_VERSION = 2`): `refused` is replaced with `flagged`, populated from
+  `ir.flags`.
+- SVN copies now resolve the **correct** source revision as `from_atom` (previously not representable);
+  Git/hg/CVS carry message and identity text as raw bytes (no lossy UTF-8 conversion).
+- The CLI: `verify`'s verdict is three-valued (`pass`/`fail`/`incomplete` — a requested
+  `--against-source` that could not be checked no longer reports `PASS` while exiting non-zero);
+  `inspect --atoms` shows copies (marking moves), flags, signatures and extras; machine formats bump to
+  `inspect_version=3`/`verify_version=3`.
+
+#### Added
+
+- The published IR wire-format reference, `docs/src/reference/ir-artifact-format.md` (`PU-3`): every
+  primitive, canonical rule, the container layout and read order, every record's field table, and an
+  annotated, byte-verified worked example.
+- A required-test suite in `brygge-ir`: round-trip coverage for every record/enum/variant; one test per
+  canonical rule in RFC 011 §2.2/§2.5; unknown-field handling (critical and non-critical); the version
+  gate (pre-release, wrong minor, accepted patch bump); digest tamper detection per container section; an
+  `AtomId` compatibility vector; and a panic-freedom sweep over every truncation and single-byte mutation
+  of a valid artifact.
+
+### CVS decoder corrections: main line only, honest clustering, content-derived identity
+
+#### Changed
+
+- **Breaking (artifact contents change):** brygge now imports a CVS repository's **main line only**
+  (owner ruling D-2): the trunk, plus — while a vendor branch is set — that branch's own revisions (what
+  a plain `cvs checkout` actually yields). Every other revision is a branch revision: excluded, and
+  recorded in a single drop record with its count, never silently landing in a replayed main-line tree
+  (CR-01). Branch symbols (tags naming a branch, not a revision) are likewise not reconstructed, and are
+  counted in their own drop record — including a **vendor** branch's own symbol, which RCS stores as a
+  literal odd-length number rather than the usual magic form, and which now correctly counts as a branch
+  rather than an unresolvable tag (review 008 R-2). A **tag** that names no main-line revision at all
+  (common once main-line-only import excludes what it pointed at) is counted in its own drop record too,
+  never silently skipped (review 008 R-1). See `docs/src/guide/cvs.md` for what this means for a
+  migration.
+- **Clustering is now deterministic and trustworthy (CR-08.2):** revisions are grouped by `(author,
+  log)` first, then split by time window and by at-most-one-revision-per-path — replacing the old
+  sequential greedy pass, which could fragment an interleaved author's own commits. Confidence now also
+  accounts for how much a cluster's paths overlap other nearby clusters (rule `span-overlap-v1`), not
+  just its own time span; all of its date/window arithmetic saturates rather than wrapping on an extreme
+  input (review 008 R-3). A rare inter-cluster date-skew artifact that would place a later-numbered
+  revision before an earlier one is repaired by splitting it into its own changeset, counted
+  (`order_splits`). Every `ReconstructedChangeset` derivation now carries `confidence_rule` and
+  `date_rule`, both of which `verify`'s `derivations` check requires from this point on (review 008 R-8).
+- **`repo_id` is now a content-derived fingerprint (CR-08.1)**, not the operator's filesystem path: a
+  SHA-256 over every file's lowest-numbered trunk revision (path, revision, date, author), in path order
+  — not necessarily `1.1`, since a file need not start there (review 008 R-6). The same repository
+  decoded from two different locations now gives byte-identical artifacts. A repository with no trunk
+  revision anywhere is refused (`Error::Read("no main-line revisions")`) rather than fingerprinted as an
+  empty hash.
+- **No committer or commit time the source never stated (CR-04):** only `author`/`author_time` are
+  carried (the one-claim rule); `author_time.offset_minutes` is always `Some(0)` (RCS dates are UTC). An
+  unparseable date, or a year outside `1970..=9999`, is now a read error rather than a fabricated `1970`
+  claim (review 008 R-3). The author login is now carried as the source's exact bytes, never converted
+  lossily (review 008 R-4).
+- **Repository-shape refusals added (CR-08.3/8.4/CR-03):** the same path present in both `Attic/` and
+  live, a symlink anywhere under the repository root, and a non-UTF-8 path component (shown as `\xNN`,
+  never converted lossily) are now refused rather than silently mishandled. Two more join them: a
+  non-UTF-8 symbol name (review 008 R-4), and a file whose default branch is set but which also has
+  trunk revisions after that branch's branch point — an ambiguous main line brygge refuses to guess
+  (review 008 R-5) — as does a present-but-unparseable `branch` admin field, now a read error instead of
+  a silent "no vendor branch".
+- The faithfulness statement printed before every CVS run now states the main-line-only limitation.
+
+### Mercurial decoder corrections: the published view, true copy sources, claims and extras
+
+#### Changed
+
+- **Breaking (artifact contents change):** brygge now imports a Mercurial repository's **published
+  view** (owner ruling D-4, revised) — exactly what `hg clone` would transfer. Secret/archived/internal
+  changesets (phase `>= 2`) are excluded; obsolete (rewritten or pruned) changesets are excluded unless
+  they are an ancestor of something non-obsolete or pinned (a bookmark target, a working-directory
+  parent, or a local tag — `.hgtags` does **not** pin, correcting the handoff's first draft). Both
+  exclusions are counted in the loss boundary, never silent. A repository with an unresolved merge in
+  progress is refused (floor feature `unfinished merge`) rather than guessed at.
+- A stated copy's `from_atom` now names its **true** source changeset (RFC 011 D-6), resolved by: p1,
+  else p2, else the copy's own filelog linkrev (if published and an ancestor), else a bounded
+  first-parent ancestry walk — never placed on a guess. A copy that cannot be placed this way is omitted
+  and counted (`copy sources not resolvable (N)`); a copy stated on a path that already existed (a
+  modify, not an add) is counted separately, since the IR's copy model has no home for it.
+- **One-claim rule:** `committer`/`commit_time` are no longer copied from `user`/`date` — they are always
+  absent (hg states only one identity/time per changeset).
+- The timezone offset now converts correctly (`offset_minutes = -(tz / 60)`, hg's seconds-west
+  convention); an offset that does not divide evenly into minutes is counted
+  (`unrepresentable timezone offsets (N)`) rather than silently dropped.
+- Every changelog extra except `branch` is now carried as a labelled `Extra` (notably `close`, meaning a
+  closed branch), decoded byte-exact per Mercurial's own escaping — but stricter: an escape, a duplicate
+  key, or an entry with no `:` that `hg` itself could never have written is refused, not guessed. A
+  non-UTF-8 extras key is a floor refusal.
+- Bookmarks naming an unimported changeset are now counted, never skipped silently.
+- The obsstore reader's `usingsha256` flag bit is corrected to `2` (was `1 << 8`), matching
+  `obsutil.py`'s definition (`bumpedfix = 1`, `usingsha256 = 2`).
+
+### SVN decoder corrections: symlinks, replacements, live refs, layout honesty, source form
+
+#### Changed
+
+- **Breaking (artifact contents change):**
+  - **`PathOp::Replace` is now produced** (CR-07.2, RFC 011 D-7): an `svn rm`+`svn add` (or a `replace`
+    node) at one path in one revision is carried as a stated replacement, even when the content is
+    identical, instead of being folded into `Modify`.
+  - **Reconstructed refs now name only live history** (CR-07.3): with `--reconstruct-refs`, a branch or
+    tag root is emitted only if at least one file still lives under it in the final tree. A deleted or
+    moved-away root is not emitted; it is counted (`deleted or moved branches/tags not represented (N)`).
+    A moved root appears only under its new name.
+  - **A repository that only partly follows the trunk/branches/tags convention is now flagged**
+    (CR-07.5): paths outside every recognized root are counted and raise a `ConventionViolation` `Flag`
+    (CLI exit 30) — but only when the layout was found at all; a flat repository still raises just the
+    one whole-layout-not-found flag, never both.
+  - **The source form is now recorded**: `source_form` (`dumpfile` or `svnadmin-dump`) and, for a live
+    decode, `svnadmin_version`, both in provenance params. `verify --against-source` reports
+    `not-checked` (never a false mismatch) when the given source's form differs from what was recorded,
+    and ignores an `svnadmin` version difference alone when comparing two `svnadmin-dump` decodes.
+  - **No committer or commit time the source never stated (CR-04):** only `author`/`author_time` are
+    carried (the one-claim rule); `author_time.offset_minutes` is always `Some(0)` (`svn:date` is UTC).
+    An unparseable `svn:date` is counted, never guessed.
+- **Fixed a content-corruption bug (CR-07.1):** a symlink retargeted in a revision with no property block
+  of its own (properties inherited implicitly, as SVN itself behaves) previously stored the raw
+  `link <target>` text as file content instead of the bare target.
+- **Fixed an honesty gap (CR-07.4):** every added *or replaced* directory that ends up with no file under
+  it after the revision is now counted as an empty directory; before, only `add`-kind directories were
+  checked, so a replaced empty directory could be silently dropped with no record.
+
+### Git decoder corrections batch 2: verified history, verified tag chains, encodings, timezones, extras, annotations
+
+#### Changed
+
+- **Breaking (a real integrity gap closed):** history is now walked with the on-disk `commit-graph`
+  cache disabled (`.use_commit_graph(false)`) and every commit's parents are read from its own verified
+  content; a verified commit whose parent the walk did not otherwise reach is refused
+  (`Error::Read("history walk disagrees with commit content")`) rather than silently treated as a root.
+  A crafted `objects/info/commit-graph` could previously drop or fabricate a parent — truncating or
+  altering the imported history — even though every individual object was already re-hashed against its
+  id. `RR-git-object-id-unverified` and `RR-git-loose-object-symlink` close.
+- **Breaking:** a tag of a tag is now peeled and verified all the way to its final target,
+  bounded by a new `max_tag_chain` ceiling (default 32). Every intermediate tag object is counted
+  (`nested tag objects not carried (N)`) rather than silently followed without verification.
+- **Breaking:** `params["floor"]` gains `SHA-256 object format`, refusing (rather than misreading) a
+  repository using `extensions.objectFormat = sha256`, which this build's `gix` dependency cannot read
+  or verify (only `sha1` is enabled).
+- **Breaking:** annotated tags are now carried (`RefRecord.annotation`: tagger, time, message), and the
+  old "annotated tag tagger and message" drop record is gone — a repository whose only recorded loss was
+  annotated tags now exits `0`. `gpgsig`/`gpgsig-sha256` are carried as labelled `Signature`s; every
+  other commit header (including `mergetag`, unfolded byte-exact) is carried as a labelled `Extra`.
+- **Breaking:** the commit `encoding` header, when present and valid UTF-8, is carried on the message's
+  `Text.encoding` only (never also as an `Extra`); an undecodable `encoding` value is counted
+  (`undecodable encoding headers (N)`), never silently dropped or misapplied.
+- **Breaking:** author/committer/tagger timezone offsets are parsed strictly (`+HHMM`/`-HHMM`, `MM < 60`)
+  — never gix's lenient parser, which silently defaults to `+0000`. A malformed offset is absent and
+  counted (`unparseable author/committer/tagger timezone offsets (N)`), never fabricated; the same
+  applies to a tagger's own time now, not just the author's and committer's.
+- A non-UTF-8 commit header **name** is a new floor refusal, `non-UTF-8 commit header name` — labels are
+  text.
+- The "commits reachable only from dropped refs (count unavailable)" record's reason is now the fixed
+  text `"a commit in dropped-only history could not be read"`; the decoder no longer writes to the
+  process's stderr (it was the only decoder in the workspace that did, bypassing the CLI's
+  neutralization).
+
+### `97b0b03` — Project hygiene: enforced isolation, declared floors, narrow APIs, accurate docs
 
 #### Added
 

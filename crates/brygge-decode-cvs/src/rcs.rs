@@ -9,7 +9,8 @@
 
 use std::collections::BTreeMap;
 
-use crate::Error;
+use crate::scan::escape_invalid_utf8;
+use crate::{Error, floor};
 
 /// Maximum RCS file size the reader will accept (T-8). Correctness first; streaming a larger repository is
 /// OQ-F (deferred).
@@ -56,8 +57,9 @@ impl RevNum {
 pub struct Revision {
     /// Commit time as epoch seconds (from the RCS `date`).
     pub date: i64,
-    /// The committer login (a claim, PR-3).
-    pub author: String,
+    /// The committer login (a claim, PR-3), carried as the source's raw bytes — no lossy UTF-8
+    /// conversion (review 008 R-4).
+    pub author: Vec<u8>,
     /// The RCS state (`Exp`, or `dead` for a deletion).
     pub state: String,
     /// Branch head revisions branching off this revision.
@@ -79,6 +81,10 @@ pub struct RcsFile {
     pub symbols: Vec<(String, RevNum)>,
     /// The `expand` mode, if any (`b`/`o` mark binary; keyword expansion otherwise).
     pub expand: Option<String>,
+    /// The admin section's `branch` field, if set: the vendor (default) branch `cvs import` establishes
+    /// (e.g. `1.1.1`). While set, that branch's own revisions are what a trunk checkout yields, so they
+    /// belong to the main line (CVS corrections handoff §2.1). `None` once a real trunk commit clears it.
+    pub branch: Option<RevNum>,
     /// All revisions by number.
     pub revisions: BTreeMap<RevNum, Revision>,
 }
@@ -179,7 +185,7 @@ impl RcsFile {
 /// A revision's delta-section metadata (parsed before its `log`/`text` in the deltatext section).
 struct DeltaMeta {
     date: i64,
-    author: String,
+    author: Vec<u8>,
     state: String,
     branches: Vec<RevNum>,
     next: Option<RevNum>,
@@ -327,8 +333,17 @@ impl<'a> Cursor<'a> {
         }
     }
 
-    /// Read a token: a run up to whitespace or one of `;:@`. May be empty.
+    /// Read a token: a run up to whitespace or one of `;:@`. May be empty. Structural-only (revision
+    /// numbers, keywords, RCS states): lossy conversion is fine here because these are never identity- or
+    /// reference-bearing source text. For the `author` field and symbol names, use [`Self::token_bytes`]
+    /// instead (review 008 R-4).
     fn token(&mut self) -> String {
+        String::from_utf8_lossy(&self.token_bytes()).into_owned()
+    }
+
+    /// Read a token as raw bytes — a run up to whitespace or one of `;:@`. May be empty. No lossy
+    /// conversion: the caller decides how to handle non-UTF-8 content (review 008 R-4).
+    fn token_bytes(&mut self) -> Vec<u8> {
         self.skip_ws();
         let start = self.pos;
         while let Some(b) = self.peek() {
@@ -337,7 +352,7 @@ impl<'a> Cursor<'a> {
             }
             self.pos += 1;
         }
-        String::from_utf8_lossy(self.data.get(start..self.pos).unwrap_or(&[])).into_owned()
+        self.data.get(start..self.pos).unwrap_or(&[]).to_vec()
     }
 
     fn expect(&mut self, ch: u8) -> Result<(), Error> {
@@ -423,6 +438,7 @@ pub fn parse_rcs(data: &[u8]) -> Result<RcsFile, Error> {
     let mut head: Option<RevNum> = None;
     let mut symbols: Vec<(String, RevNum)> = Vec::new();
     let mut expand: Option<String> = None;
+    let mut branch: Option<RevNum> = None;
 
     // ---- admin section: keyword-led fields until the first delta (a numeric token). ----
     loop {
@@ -451,16 +467,31 @@ pub fn parse_rcs(data: &[u8]) -> Result<RcsFile, Error> {
                         cur.pos += 1;
                         break;
                     }
-                    let name = cur.token();
-                    if name.is_empty() {
+                    let name_bytes = cur.token_bytes();
+                    if name_bytes.is_empty() {
                         cur.pos += 1;
                         continue;
                     }
+                    // No lossy conversion on a symbol name (review 008 R-4): a symbol is a reference,
+                    // and the IR's ref names are Rust `String`s, so a non-UTF-8 one cannot be carried.
+                    let name =
+                        String::from_utf8(name_bytes.clone()).map_err(|_| Error::FloorRefusal {
+                            feature: floor::NON_UTF8_SYMBOL_NAME.to_string(),
+                            reason: format!(
+                                "symbol name '{}' is not valid UTF-8",
+                                escape_invalid_utf8(&name_bytes)
+                            ),
+                        })?;
                     cur.expect(b':')?;
                     let rev = cur.token();
-                    if let Some(r) = RevNum::parse(&rev) {
-                        symbols.push((name, r));
-                    }
+                    // Review 008 F-2: a symbol whose revision does not parse is a malformed file, never a
+                    // silently skipped symbol.
+                    let r = RevNum::parse(&rev).ok_or_else(|| {
+                        Error::Read(format!(
+                            "malformed symbol revision '{rev}' for symbol '{name}' in ,v file"
+                        ))
+                    })?;
+                    symbols.push((name, r));
                 }
             }
             "expand" => {
@@ -468,7 +499,26 @@ pub fn parse_rcs(data: &[u8]) -> Result<RcsFile, Error> {
                 expand = Some(String::from_utf8_lossy(&s).into_owned());
                 cur.expect(b';')?;
             }
-            // `branch`, `access`, `locks` (+ optional `strict`), `comment`, and any newphrase: skip to `;`.
+            "branch" => {
+                let n = cur.token();
+                branch = if n.is_empty() {
+                    None
+                } else {
+                    let r = RevNum::parse(&n).ok_or_else(|| {
+                        Error::Read(format!("malformed branch field '{n}' in ,v file"))
+                    })?;
+                    // Review 008 F-3: a default branch is a branch number — an odd component count of
+                    // at least 3 (`1.1.1`). `branch 1;` is malformed, not a default branch.
+                    if r.0.len() < 3 || r.0.len() % 2 == 0 {
+                        return Err(Error::Read(format!(
+                            "malformed branch field '{n}' in ,v file (not a branch number)"
+                        )));
+                    }
+                    Some(r)
+                };
+                cur.expect(b';')?;
+            }
+            // `access`, `locks` (+ optional `strict`), `comment`, and any newphrase: skip to `;`.
             "strict" => {
                 cur.expect(b';')?;
             }
@@ -492,8 +542,8 @@ pub fn parse_rcs(data: &[u8]) -> Result<RcsFile, Error> {
         }
         let num = RevNum::parse(&tok)
             .ok_or_else(|| Error::Read(format!("expected a revision number, got '{tok}'")))?;
-        let mut date = 0i64;
-        let mut author = String::new();
+        let mut date: Option<i64> = None;
+        let mut author = Vec::new();
         let mut state = String::new();
         let mut branches: Vec<RevNum> = Vec::new();
         let mut next: Option<RevNum> = None;
@@ -505,11 +555,19 @@ pub fn parse_rcs(data: &[u8]) -> Result<RcsFile, Error> {
             match field.as_str() {
                 "date" => {
                     let v = cur.token();
-                    date = parse_rcs_date(&v).unwrap_or(0);
+                    // No fabricated date (review 008 R-3): a malformed or out-of-range date is a
+                    // malformed file, not a silent 1970 claim that would then feed clustering and
+                    // `repo_id`.
+                    date = Some(parse_rcs_date(&v).ok_or_else(|| {
+                        Error::Read(format!(
+                            "unparseable RCS date '{v}' for revision {}",
+                            num.to_dotted()
+                        ))
+                    })?);
                     cur.expect(b';')?;
                 }
                 "author" => {
-                    author = cur.token();
+                    author = cur.token_bytes();
                     cur.expect(b';')?;
                 }
                 "state" => {
@@ -549,6 +607,9 @@ pub fn parse_rcs(data: &[u8]) -> Result<RcsFile, Error> {
                 }
             }
         }
+        let date = date.ok_or_else(|| {
+            Error::Read(format!("revision {} has no date field", num.to_dotted()))
+        })?;
         deltas.insert(
             num,
             DeltaMeta {
@@ -623,6 +684,7 @@ pub fn parse_rcs(data: &[u8]) -> Result<RcsFile, Error> {
         head,
         symbols,
         expand,
+        branch,
         revisions,
     })
 }
@@ -639,10 +701,37 @@ fn parse_rcs_date(s: &str) -> Option<i64> {
     let hour = it.next()?.parse::<i64>().ok()?;
     let min = it.next()?.parse::<i64>().ok()?;
     let sec = it.next()?.parse::<i64>().ok()?;
-    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+    // Bounded years (review 008 R-3): an absurd year must not silently become a valid-looking, wildly
+    // wrong timestamp that then feeds clustering and `repo_id`.
+    if !(1970..=9999).contains(&year) {
         return None;
     }
-    Some(days_from_civil(year, month, day).checked_mul(86_400)? + hour * 3_600 + min * 60 + sec)
+    // Review 008 F-1: every component is bounded, and the arithmetic is checked, so a crafted `,v` can
+    // neither wrap nor normalize an impossible date (Feb 31) into a valid-looking wrong one (defense in
+    // depth: release builds also check overflow, review 011 §9, but a wrap must never be the only guard).
+    if !(1..=12).contains(&month)
+        || !(1..=days_in_month(year, month)).contains(&day)
+        || !(0..=23).contains(&hour)
+        || !(0..=59).contains(&min)
+        || !(0..=60).contains(&sec)
+    {
+        return None;
+    }
+    days_from_civil(year, month, day)
+        .checked_mul(86_400)?
+        .checked_add(hour.checked_mul(3_600)?)?
+        .checked_add(min.checked_mul(60)?)?
+        .checked_add(sec)
+}
+
+/// The number of days in `month` (1..=12) of `year`, with Gregorian leap years.
+fn days_in_month(year: i64, month: i64) -> i64 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        _ if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) => 29,
+        _ => 28,
+    }
 }
 
 /// Days since 1970-01-01 (Howard Hinnant's `days_from_civil`).

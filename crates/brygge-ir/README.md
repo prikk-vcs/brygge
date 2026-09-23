@@ -13,13 +13,21 @@ carries the dependency weight, the target does not".
 Two ideas it enforces at the type level:
 
 - **Faithfulness with provenance, not neutrality.** Every assertion is `Stated` (the source recorded
-  it) or `Derived` (a decoder inferred it, with parameters); a rename is stored as the source's literal
-  delete+create **plus** a marked hint, never collapsed.
+  it) or `Derived` (a decoder inferred it, with parameters); a rename/copy is stored as the source's
+  literal delete+create **plus** a marked [`CopyRecord`], never collapsed.
 - **Evidence for identity, never identity.** There is no node-identity type; a node-identity target
   authors identity itself, visibly, from the IR's evidence.
 
-Design: brygge RFC 001 (IR foundations), 002 (honesty machinery), 003 (determinism/format), under 009
-(dependency policy). See the repository's `rfcs/` and `docs/`.
+**IR contract `0.2.0`** (RFC 011): the wire format is **tagged records with a critical bit** — every
+field carries an id and a critical flag, in a strict canonical form enforced on read (RFC 011 §2.2). An
+unrecognized field fails the read if it is critical, and is skipped (and counted) if it is not — the
+forward-compatibility mechanism a future minor version relies on. The full wire format, its canonical
+rules, and an annotated minimal artifact are published at
+[`docs/src/reference/ir-artifact-format.md`](../../docs/src/reference/ir-artifact-format.md) — the
+contract a foreign encoder or reader author needs (`PU-3`).
+
+Design: brygge RFC 001 (IR foundations), 002 (honesty machinery), 003 (determinism/format, superseded in
+part), 011 (contract re-cut), under 009 (dependency policy). See the repository's `rfcs/` and `docs/`.
 
 ```sh
 cargo run -p brygge-ir --example ir_roundtrip   # build → serialize → verify → report, no source needed

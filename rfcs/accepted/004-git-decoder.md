@@ -167,7 +167,9 @@ against-source-check disciplines the milestone rests on.
   **symbolic ref**, in any namespace, is not a ref shape the IR can express (it has no alias concept) —
   it is not carried, contributes no walk tip, and is recorded as its own `symbolic refs (N)` drop
   (`Representation`); its target, if any, is a distinct ref this same scan carries or drops on its own
-  merits. See `rfcs/handoffs/004-git-decoder/symbolic-ref-panic-correction-handoff-v1.md`.
+  merits. See `rfcs/handoffs/004-git-decoder/symbolic-ref-panic-correction-handoff-v1.md`. **Superseded in part by RFC 011 D-9 (2026-09-23):** the tagger, time and message are now
+  carried in `RefRecord.annotation`, and the `Other`-class loss for them is removed. See
+  `rfcs/handoffs/004-git-decoder/git-corrections-batch2-handoff-v1.md` §1.6.
 - **OQ-C — The floor's exact contents** (D-4) — **RESOLVED 2026-09-04:** the owner ratified refusing all
   four (submodules, octopus-beyond-N, replace+grafts, shallow). The one residual is the **octopus parent
   limit N**, a prikk/OQ-2 value not yet set; until it is, decode carries all parents and the encoder's

@@ -84,6 +84,7 @@ name = "brygge-decode-cvs"
 version = "0.1.0"
 dependencies = [
  "brygge-ir",
+ "sha2",
 ]
 
 [[package]]

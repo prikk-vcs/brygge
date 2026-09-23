@@ -52,3 +52,9 @@ indexing_slicing = "warn"
 # unwinding to convert an unexpected panic inside a decoder or a decoder dependency (e.g. gix) into a
 # typed, documented exit (FAILURE) rather than an unclassified process abort. Do not set
 # `panic = "abort"` here or on any other profile without first revisiting that boundary.
+#
+# Architect decision (review 011 §9): overflow checks stay ON in release. A wrap that reaches a claim
+# (found in the CVS date parser, review 008 F-1) would otherwise be silent; with checks on, any wrap that
+# review misses becomes a panic, which `guard_decoder` turns into a typed failure (exit 1), never a false
+# value. The cost is negligible next to I/O and hashing.
+overflow-checks = true

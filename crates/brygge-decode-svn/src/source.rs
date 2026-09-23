@@ -21,6 +21,9 @@ pub(crate) struct Limits {
     /// The maximum `svnadmin dump` stderr brygge holds, so a chatty or hostile subprocess writing
     /// endless stderr cannot exhaust the host either (CR-10). Only ever used for an error message.
     pub(crate) max_stderr_bytes: usize,
+    /// The maximum bytes brygge reads from `svnadmin --version --quiet` (stdout and stderr each; review
+    /// 010 R-5's "one place" for what was an inline 4 KiB literal), far past any real version string.
+    pub(crate) max_svnadmin_version_bytes: usize,
 }
 
 impl Default for Limits {
@@ -28,8 +31,26 @@ impl Default for Limits {
         Self {
             max_dump_bytes: 8 * 1024 * 1024 * 1024,
             max_stderr_bytes: 64 * 1024,
+            max_svnadmin_version_bytes: 4096,
         }
     }
+}
+
+/// The `svnadmin_version` provenance param never carries more than this many characters (review 010
+/// R-5): a version string never needs more, and it bounds how much of a hostile `svnadmin --version`
+/// output can reach the artifact even after neutralization.
+const MAX_VERSION_LEN: usize = 128;
+
+/// Keep only printable ASCII (`0x20`-`0x7e`) from `bytes`, capped at [`MAX_VERSION_LEN`] characters
+/// (review 010 R-5): an identity-bearing provenance param must never carry a control character or other
+/// non-printable byte, the same discipline `crate::props`/the CLI's `display` module apply elsewhere.
+fn neutralize_version(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .filter(|&&b| (0x20..=0x7e).contains(&b))
+        .map(|&b| b as char)
+        .take(MAX_VERSION_LEN)
+        .collect()
 }
 
 /// Where to read the SVN history from.
@@ -59,10 +80,44 @@ impl Source {
     }
 }
 
-fn over_limit(max_dump_bytes: usize) -> Error {
+/// Run `svnadmin --version --quiet` (a fixed argv, no shell, no network, no repository touched) and
+/// return its first line, neutralized (printable ASCII only, capped at [`MAX_VERSION_LEN`] — review 010
+/// R-5) — the `svnadmin_version` provenance param (CR-07.6).
+pub(crate) fn svnadmin_version() -> Result<String, Error> {
+    let bound = Limits::default().max_svnadmin_version_bytes;
+    let limits = Limits {
+        max_dump_bytes: bound,
+        max_stderr_bytes: bound,
+        max_svnadmin_version_bytes: bound,
+    };
+    let mut cmd = Command::new("svnadmin");
+    cmd.arg("--version").arg("--quiet");
+    let out = run_and_capture(
+        cmd,
+        "svnadmin --version --quiet",
+        "the svnadmin --version output",
+        &limits,
+    )?;
+    version_from_output(&out)
+}
+
+/// The `svnadmin_version` param from `svnadmin --version --quiet`'s output: the neutralized first line,
+/// never empty (review 010 F-2 — an empty result is `Error::Open`, not `""`).
+fn version_from_output(out: &[u8]) -> Result<String, Error> {
+    let first_line = out.split(|&b| b == b'\n').next().unwrap_or_default();
+    let version = neutralize_version(first_line).trim().to_string();
+    if version.is_empty() {
+        return Err(Error::Open(
+            "`svnadmin --version --quiet` printed no usable version".to_string(),
+        ));
+    }
+    Ok(version)
+}
+
+fn over_limit(what: &str, max_bytes: usize) -> Error {
     Error::ResourceLimit {
-        what: "the dumpstream".to_string(),
-        ceiling: format!("{max_dump_bytes} bytes"),
+        what: what.to_string(),
+        ceiling: format!("{max_bytes} bytes"),
     }
 }
 
@@ -74,7 +129,7 @@ fn read_dumpfile_bounded(path: &Path, limits: &Limits) -> Result<Vec<u8>, Error>
     let meta = std::fs::metadata(path)
         .map_err(|e| Error::Open(format!("cannot stat dumpfile {}: {e}", path.display())))?;
     if meta.len() > limits.max_dump_bytes as u64 {
-        return Err(over_limit(limits.max_dump_bytes));
+        return Err(over_limit("the dumpstream", limits.max_dump_bytes));
     }
     let file = std::fs::File::open(path)
         .map_err(|e| Error::Open(format!("cannot read dumpfile {}: {e}", path.display())))?;
@@ -83,7 +138,7 @@ fn read_dumpfile_bounded(path: &Path, limits: &Limits) -> Result<Vec<u8>, Error>
         .read_to_end(&mut bytes)
         .map_err(|e| Error::Open(format!("cannot read dumpfile {}: {e}", path.display())))?;
     if bytes.len() as u64 > limits.max_dump_bytes as u64 {
-        return Err(over_limit(limits.max_dump_bytes));
+        return Err(over_limit("the dumpstream", limits.max_dump_bytes));
     }
     Ok(bytes)
 }
@@ -105,7 +160,12 @@ fn dump_local_repo(path: &Path, limits: &Limits) -> Result<Vec<u8>, Error> {
     // shell. It performs no network I/O and runs no repository hooks.
     let mut cmd = Command::new("svnadmin");
     cmd.arg("dump").arg(path).arg("--quiet");
-    run_and_capture(cmd, &format!("svnadmin dump {}", path.display()), limits)
+    run_and_capture(
+        cmd,
+        &format!("svnadmin dump {}", path.display()),
+        "the dumpstream",
+        limits,
+    )
 }
 
 /// Spawn `command`, capturing stdout (bounded at `limits.max_dump_bytes` + 1) while draining stderr
@@ -116,6 +176,7 @@ fn dump_local_repo(path: &Path, limits: &Limits) -> Result<Vec<u8>, Error> {
 pub(crate) fn run_and_capture(
     mut command: Command,
     program_desc: &str,
+    overflow_what: &str,
     limits: &Limits,
 ) -> Result<Vec<u8>, Error> {
     let mut child = command
@@ -163,7 +224,7 @@ pub(crate) fn run_and_capture(
     read_outcome
         .map_err(|e| Error::Open(format!("failed to read `{program_desc}` output: {e}")))?;
     if overflowed {
-        return Err(over_limit(limits.max_dump_bytes));
+        return Err(over_limit(overflow_what, limits.max_dump_bytes));
     }
     if !status.success() {
         let stderr = String::from_utf8_lossy(&stderr);

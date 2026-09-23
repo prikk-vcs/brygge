@@ -42,7 +42,9 @@ Compute, from the store alone, the set of changesets `hg clone` would transfer. 
   `obsolete.py` `_fm1readmarkers`:
   - a leading version byte;
   - then records, each `u32 size ‖ f64 date ‖ i16 tz ‖ u16 flags ‖ u8 numsuc ‖ u8 numpar ‖ u8 nummeta`;
-  - then the precursor node (20 bytes, or 32 when flag bit `usingsha256` is set);
+  - then the precursor node (20 bytes, or 32 when the `usingsha256` flag, value **`2`**, is set;
+    `bumpedfix` is `1`; see `obsutil.py`). A 32-byte precursor can never name a SHA-1 changeset, so it is
+    treated as not present *(flag value stated after review 009)*;
   - then the successor nodes, the parent nodes (none when `numpar == 3`), the metadata sizes, and the
     metadata.
 - **Only the precursor node is needed.** The reader still checks every declared size against the bytes
@@ -59,12 +61,19 @@ is either:
 - non-obsolete, or
 - **pinned**. The pinned set is:
   - bookmark targets;
-  - the working-directory parents (the first two 20-byte nodes of `.hg/dirstate`, ignoring the null
-    node);
-  - nodes named in `.hg/localtags`;
-  - nodes named in `.hgtags`, read from each non-obsolete head's manifest, where later lines override.
+  - the working-directory parents (the first two 20-byte nodes of `.hg/dirstate`, read with `take(40)`,
+    ignoring the null node);
+  - nodes named in `.hg/localtags`.
+
+`.hgtags` does **not** pin. *(Corrected after review 009: this handoff first listed it, but
+`repoview.pinnedrevs` does not.)* Mercurial also pins an unresolved merge's local and other nodes. brygge
+instead refuses a repository with `.hg/merge/state2` present, as floor feature `unfinished merge`
+("finish or abort the merge in the source first").
 
 This is Mercurial's `repoview.computehidden`.
+
+Bookmark, localtag and phaseroots files are read through one `Limits` ceiling (`max_small_file_bytes`).
+A malformed line in any of them is `Error::Read`. Only the phase values 1, 2, 32 and 96 are accepted.
 
 ### 1.4 Served
 
@@ -79,7 +88,7 @@ This is Mercurial's `repoview.computehidden`.
 | Record | Class | Reason |
 |---|---|---|
 | `changesets not published: secret or archived (N)` | `Other` | *"not published by the source repository (phase), so not imported: brygge imports what the repository would publish"* |
-| `hidden (obsolete) changesets (N)` | `Other` | *"rewritten or pruned by the source's own history editing (obsolescence markers); not part of the published history"* |
+| `hidden (obsolete) changesets (N)`, counting only phase < 2 changesets, so the two records partition the exclusions *(after review 009)* | `Other` | *"rewritten or pruned by the source's own history editing (obsolescence markers); not part of the published history"* |
 
 The existing `obsolescence markers` drop (`AdvisoryUnreliable`) stays.
 
@@ -98,9 +107,17 @@ exactly that file revision:
 3. Else the changeset named by the source revision's **linkrev** in `from`'s filelog, if it is served
    and an ancestor of the current atom.
 4. Else walk the current atom's first-parent ancestry, nearest first, for a served changeset whose
-   manifest maps `from` to that filenode.
+   manifest maps `from` to that filenode. Stop once the walked revision is below `copyrev`'s linkrev: no
+   older changeset can contain that filenode *(bound added after review 009)*.
 5. If none is found, the copy cannot be placed. **Omit** that `CopyRecord` and count it:
-   `copy sources not resolvable (N)`, class `Other`. A stated copy is never placed on a guessed atom.
+   `copy sources not resolvable (N)`, class `Other`. A stated copy is never placed on a guessed atom. A
+   `copy:` without `copyrev:` is counted here too.
+Steps 3–4 serve stores written by Mercurial < 3.3, or by other writers. Since 3.3 (issue4476,
+`commit.py:370-399`), hg records a copy only when its source is in p1 or p2, so current hg cannot produce
+a live fixture for them. They are unit-tested through a lookup seam instead *(recorded after review 009)*.
+
+6. A copy stated on a modify (`hg cp -f` onto an existing path) is counted as `copy metadata on an
+   existing path not carried (N)`, class `Other` *(added after review 009)*.
 
 ## 3. Claims and extras (CR-04, CR-06)
 
@@ -113,7 +130,12 @@ exactly that file revision:
   `tz % 60 != 0`, or the result does not fit `i16`, the offset is `None`, counted as `unrepresentable
   timezone offsets (N)`, class `Other`.
 - **Extras:** every changeset extra except `branch` becomes an `Extra { label: <key>, bytes: <value> }`
-  on the atom's `SourceIdentity`, in the order stored. This carries `close=1`, so a closed branch's head
+  on the atom's `SourceIdentity`, in the order stored.
+  - **Extras are bytes.** Decode them as `changelog.py`'s `decodeextra` does: split on `\0`, unescape
+    the whole entry (`escape_decode` plus the `\0` fix-up), then split at the first `:`.
+  - **Refused as `Read`:** an unknown escape, a duplicate key, or an entry with no `:`.
+  - **A non-UTF-8 key** is floor feature `non-UTF-8 extra key`.
+  - *(Added after review 009.)* This carries `close=1`, so a closed branch's head
   says so in the object. Document that meaning in the crate README.
 - **Bookmarks** naming a changeset that is unknown or not served: count them, `bookmarks naming
   unimported changesets (N)`, class `Other`. Never skip one silently.
@@ -139,7 +161,10 @@ exactly that file revision:
 4. **Pinned stays visible:** an obsolete changeset that a bookmark points at is imported.
 5. **Parity with Mercurial:** for fixtures 1–4, the imported node set equals
    `hg log -r 'not secret()' -T '{node}\n'`. This is the acceptance oracle. `hg log`'s default view
-   already filters hidden, archived and internal changesets, so this is the served set.
+   already filters hidden, archived and internal changesets, so this is the served set. **Also** compare against
+   `hg clone --pull` of the fixture, then `hg log` on the clone: the true transferred set. Use one fixture
+   per case, with no secret ancestor in the hidden, orphan and pinned cases *(tightened after review
+   009)*.
 6. **Obsstore:**
    - version 0 → refused, exit 20;
    - a truncated or oversize-declared record → a typed error, not a panic;

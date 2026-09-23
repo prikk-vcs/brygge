@@ -86,6 +86,7 @@ module style (`foo.rs` + `foo/`, no `mod.rs`), tests as siblings (`#[cfg(test)] 
 | What brygge must do / never do / must decide | `docs/src/brygge-01-requirements-spec-v0.1.md` (requirements, v0.2) |
 | The black-box surface (commands, IR contract, honesty surface, flows) | `docs/src/brygge-02-external-design-v0.1.md` (external design, v0.2) |
 | What brygge defends, against whom, how | `docs/src/brygge-03-threat-model-v0.1.md` (threat model, v0.2) |
+| The exact IR artifact wire format (for a foreign encoder or reader) | `docs/src/reference/ir-artifact-format.md` (contract `0.2.0`, RFC 011, PU-3) |
 | Direction, milestones, release cycles, prikk dependencies | `ROADMAP.md` |
 | How decisions are made, who approves what, the gates | `GOVERNANCE.md` |
 | Every design decision + its build spec | `rfcs/` — see `rfcs/README.md` (the index and the source of truth for RFC state) |

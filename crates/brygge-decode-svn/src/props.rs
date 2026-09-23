@@ -69,12 +69,11 @@ pub fn file_mode(props: &PropSlice) -> u32 {
     }
 }
 
-/// An `svn:special` file stores `link <target>`; the IR symlink blob is the bare target.
+/// An `svn:special` file stores `link <target>`; the IR symlink blob is the bare target. `None` when the
+/// content does not start with the `link ` prefix (CR-07.1): a malformed dump is refused, never guessed.
 #[must_use]
-pub fn symlink_target(content: &[u8]) -> Vec<u8> {
-    content
-        .strip_prefix(b"link ")
-        .map_or_else(|| content.to_vec(), <[u8]>::to_vec)
+pub fn symlink_target(content: &[u8]) -> Option<Vec<u8>> {
+    content.strip_prefix(b"link ").map(<[u8]>::to_vec)
 }
 
 /// Refuse `svn:externals` (reaches other repositories — INV-3, the SVN analogue of submodules).

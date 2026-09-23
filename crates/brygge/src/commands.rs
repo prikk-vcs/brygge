@@ -1,7 +1,7 @@
-//! The command implementations for the three-verb surface (handoff `cli-and-verify-handoff-v2.md`). Each
-//! returns a CL-08 exit code and prints its own output; `main` maps the code to `std::process::exit`.
-//! Every string that can originate in a source repository is routed through [`crate::display`] before it
-//! reaches stdout or stderr (CR-19).
+//! The command implementations for the three-verb surface (handoff `cli-and-verify-handoff-v2.md`,
+//! adapted to IR contract 0.2.0 by the RFC 011 handoff). Each returns a CL-08 exit code and prints its
+//! own output; `main` maps the code to `std::process::exit`. Every string that can originate in a source
+//! repository is routed through [`crate::display`] before it reaches stdout or stderr (CR-19).
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt::Write as _;
@@ -14,16 +14,16 @@ use brygge_decode_hg::Error as HgError;
 use brygge_decode_svn::{
     Error as SvnError, LayoutPolicy, Options as SvnOptions, Source as SvnSource,
 };
-use brygge_ir::model::{AtomId, PathOp, RefKind};
+use brygge_ir::model::{AtomId, FlagKind, PathOp, RefKind, Text};
 use brygge_ir::status::{Derivation, DerivationKind, EpistemicStatus};
-use brygge_ir::{Ir, LossClass};
+use brygge_ir::{Decoded, Ir, LossClass};
 
 use crate::cli::{Format, SourceKind};
 use crate::display;
 use crate::exit;
 
-const VERIFY_VERSION: u32 = 2;
-const INSPECT_VERSION: u32 = 2;
+const VERIFY_VERSION: u32 = 3;
+const INSPECT_VERSION: u32 = 3;
 
 // ---- small shared renderers -------------------------------------------------------------------------
 
@@ -57,6 +57,14 @@ fn loss_class_label(class: LossClass) -> &'static str {
         LossClass::Representation => "representation",
         LossClass::AdvisoryUnreliable => "advisory-unreliable",
         LossClass::Other => "other",
+    }
+}
+
+/// The fixed, lowercase label for a flag kind (never `{:?}`).
+fn flag_kind_label(kind: FlagKind) -> &'static str {
+    match kind {
+        FlagKind::ConventionViolation => "convention-violation",
+        FlagKind::BelowConfidenceFloor => "below-confidence-floor",
     }
 }
 
@@ -103,11 +111,31 @@ fn op_status(op: &PathOp) -> &EpistemicStatus {
     match op {
         PathOp::Add { status, .. }
         | PathOp::Modify { status, .. }
-        | PathOp::Delete { status, .. } => status,
+        | PathOp::Delete { status, .. }
+        | PathOp::Replace { status, .. } => status,
     }
 }
 
-fn read_ir(path: &Path) -> Result<Ir, String> {
+/// Render a `Text` for display: its UTF-8 content when valid, else a fixed, non-source-derived
+/// placeholder naming its byte length — the placeholder never echoes raw bytes that failed to validate,
+/// so it cannot itself become a terminal/log-injection vector.
+fn text_display(t: &Text) -> String {
+    match t.as_utf8() {
+        Some(s) => display::human(s).into_owned(),
+        None => format!("<{} byte(s), not valid UTF-8>", t.bytes.len()),
+    }
+}
+
+/// The first line of a `Text` message (empty when there is none or it is not valid UTF-8).
+fn message_subject(message: Option<&Text>) -> String {
+    message
+        .and_then(Text::as_utf8)
+        .and_then(|s| s.lines().next())
+        .map(|s| display::human(s).into_owned())
+        .unwrap_or_default()
+}
+
+fn read_ir(path: &Path) -> Result<Decoded, String> {
     let bytes = std::fs::read(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
     brygge_ir::from_bytes(&bytes).map_err(|e| format!("{}: {e}", path.display()))
 }
@@ -344,7 +372,9 @@ pub fn faithfulness_statement(kind: SourceKind) -> &'static str {
         }
         SourceKind::Hg => {
             "Mercurial: content, history and messages are carried as recorded, including renames the \
-             source recorded. Authorship is Unverifiable."
+             source recorded. Authorship is Unverifiable. Secret and hidden (obsolete) changesets are \
+             not imported: brygge imports what the repository would publish. Tags are carried as the \
+             .hgtags file, not as refs."
         }
         SourceKind::Svn => {
             "Subversion: revisions are carried as recorded. Branches and tags are only a directory \
@@ -354,7 +384,8 @@ pub fn faithfulness_statement(kind: SourceKind) -> &'static str {
         SourceKind::Cvs => {
             "CVS has no atomic commits: every changeset is brygge's reconstruction (derived), and a \
              changeset cannot be checked against the source. File contents and per-file history are \
-             carried as recorded. Authorship is Unverifiable."
+             carried as recorded. Authorship is Unverifiable. Branch history is not imported in this \
+             version; the main line is."
         }
     }
 }
@@ -434,11 +465,10 @@ pub fn run_decode(
         Format::Human => print!("{}", report.render_human()),
         Format::Machine => print!("{}", report.render_machine()),
     }
-    // Exit class (CL-08): a convention violation (svn ref reconstruction found no layout, FA-2) takes
-    // precedence; else recorded loss if any non-representation drop exists; else clean.
-    if ir.loss.dropped.iter().any(|d| {
-        d.what == brygge_decode_svn::LAYOUT_UNMATCHED || d.what == brygge_decode_cvs::UNDER_FLOOR
-    }) {
+    // Exit class (CL-08): a flagged condition (RFC 011 D-8 — an unresolved SVN layout, a CVS
+    // reconstruction under the confidence floor) takes precedence; else recorded loss if any
+    // non-representation drop exists; else clean.
+    if !ir.flags.is_empty() {
         exit::CONVENTION_VIOLATION
     } else if ir
         .loss
@@ -457,25 +487,33 @@ pub fn run_decode(
 /// `inspect <artifact> [--atoms]`: the default fidelity report (FS-02), with `--atoms` appending the
 /// per-atom listing. Read-only; the artifact is read once.
 pub fn run_inspect(artifact: &Path, atoms: bool, format: Format) -> i32 {
-    let ir = match read_ir(artifact) {
-        Ok(ir) => ir,
+    let decoded = match read_ir(artifact) {
+        Ok(d) => d,
         Err(e) => {
             eprintln!("{}", display::human(&e));
             return exit::FAILURE;
         }
     };
-    let report = brygge_ir::honesty::summary(&ir);
+    if decoded.skipped_non_critical_fields > 0 {
+        eprintln!(
+            "note: {} field(s) from a newer contract were not understood and were skipped (none of \
+             them can change what this artifact claims)",
+            decoded.skipped_non_critical_fields
+        );
+    }
+    let ir = &decoded.ir;
+    let report = brygge_ir::honesty::summary(ir);
     match format {
         Format::Human => {
             print!("{}", report.render_human());
             if atoms {
-                print!("{}", render_atoms_human(&ir));
+                print!("{}", render_atoms_human(ir));
             }
         }
         Format::Machine => {
             print!("{}", report.render_machine());
             if atoms {
-                print!("{}", render_atoms_machine(&ir));
+                print!("{}", render_atoms_machine(ir));
             }
         }
     }
@@ -487,21 +525,14 @@ fn render_atoms_human(ir: &Ir) -> String {
     let _ = writeln!(
         s,
         "IR (contract {}): {} atom(s), {} ref(s), {} blob(s)",
-        ir.contract_version,
+        brygge_ir::version::CURRENT,
         ir.atoms.len(),
         ir.refs.len(),
         ir.content.len()
     );
     let _ = writeln!(s, "atoms (topological order):");
     for atom in &ir.atoms {
-        let subject = atom
-            .metadata
-            .message
-            .as_deref()
-            .unwrap_or("")
-            .lines()
-            .next()
-            .unwrap_or("");
+        let subject = message_subject(atom.metadata.message.as_ref());
         let _ = writeln!(
             s,
             "  {}  [{}]  src:{}  {} op(s)  {}",
@@ -509,16 +540,36 @@ fn render_atoms_human(ir: &Ir) -> String {
             status_label_human(&atom.status),
             short_hex(&atom.source.atom_id),
             atom.ops.len(),
-            display::human(subject),
+            subject,
         );
-        for hint in &atom.rename_hints {
+        for copy in &atom.copies {
+            let label = if atom.is_move(copy) { "move" } else { "copy" };
             let _ = writeln!(
                 s,
-                "      rename {} -> {} [{}]",
-                display::human(&hint.from),
-                display::human(&hint.to),
-                status_label_human(&hint.status)
+                "      {label} {}@{} -> {} [{}]",
+                display::human(&copy.from),
+                short_hex(&copy.from_atom.0),
+                display::human(&copy.to),
+                status_label_human(&copy.status)
             );
+        }
+        if !atom.source.signatures.is_empty() || !atom.source.extras.is_empty() {
+            for sig in &atom.source.signatures {
+                let _ = writeln!(
+                    s,
+                    "      signature {}: {} byte(s)",
+                    display::human(&sig.label),
+                    sig.bytes.len()
+                );
+            }
+            for extra in &atom.source.extras {
+                let _ = writeln!(
+                    s,
+                    "      extra {}: {} byte(s)",
+                    display::human(&extra.label),
+                    extra.bytes.len()
+                );
+            }
         }
     }
     if !ir.refs.is_empty() {
@@ -548,13 +599,28 @@ fn render_atoms_human(ir: &Ir) -> String {
             );
         }
     }
+    let _ = writeln!(s, "flags:");
+    if ir.flags.is_empty() {
+        let _ = writeln!(s, "  (none)");
+    } else {
+        for flag in &ir.flags {
+            let _ = writeln!(
+                s,
+                "  [{}] {} x{} — {}",
+                flag_kind_label(flag.kind),
+                display::human(&flag.what),
+                flag.count,
+                display::human(&flag.reason)
+            );
+        }
+    }
     s
 }
 
 fn render_atoms_machine(ir: &Ir) -> String {
     let mut s = String::new();
     let _ = writeln!(s, "inspect_version={INSPECT_VERSION}");
-    let _ = writeln!(s, "contract_version={}", ir.contract_version);
+    let _ = writeln!(s, "contract_version={}", brygge_ir::version::CURRENT);
     let _ = writeln!(s, "atoms={}", ir.atoms.len());
     for (i, atom) in ir.atoms.iter().enumerate() {
         let _ = writeln!(s, "atom.{i}.id={}", hex(&atom.id.0));
@@ -565,24 +631,28 @@ fn render_atoms_machine(ir: &Ir) -> String {
         let _ = writeln!(
             s,
             "atom.{i}.message={}",
-            display::machine_value(atom.metadata.message.as_deref().unwrap_or(""))
+            display::machine_value(&text_display(
+                atom.metadata.message.as_ref().unwrap_or(&Text::default())
+            ))
         );
-        for (j, hint) in atom.rename_hints.iter().enumerate() {
+        for (j, copy) in atom.copies.iter().enumerate() {
             let _ = writeln!(
                 s,
-                "atom.{i}.rename.{j}.from={}",
-                display::machine_value(&hint.from)
+                "atom.{i}.copy.{j}.from={}",
+                display::machine_value(&copy.from)
+            );
+            let _ = writeln!(s, "atom.{i}.copy.{j}.from_atom={}", hex(&copy.from_atom.0));
+            let _ = writeln!(
+                s,
+                "atom.{i}.copy.{j}.to={}",
+                display::machine_value(&copy.to)
             );
             let _ = writeln!(
                 s,
-                "atom.{i}.rename.{j}.to={}",
-                display::machine_value(&hint.to)
+                "atom.{i}.copy.{j}.status={}",
+                status_label_machine(&copy.status)
             );
-            let _ = writeln!(
-                s,
-                "atom.{i}.rename.{j}.status={}",
-                status_label_machine(&hint.status)
-            );
+            let _ = writeln!(s, "atom.{i}.copy.{j}.move={}", atom.is_move(copy));
         }
     }
     for (i, rf) in ir.refs.iter().enumerate() {
@@ -594,6 +664,11 @@ fn render_atoms_machine(ir: &Ir) -> String {
     for (i, drop) in ir.loss.dropped.iter().enumerate() {
         let _ = writeln!(s, "loss.{i}.class={}", loss_class_label(drop.class));
         let _ = writeln!(s, "loss.{i}.what={}", display::machine_value(&drop.what));
+    }
+    for (i, flag) in ir.flags.iter().enumerate() {
+        let _ = writeln!(s, "flag.{i}.kind={}", flag_kind_label(flag.kind));
+        let _ = writeln!(s, "flag.{i}.what={}", display::machine_value(&flag.what));
+        let _ = writeln!(s, "flag.{i}.count={}", flag.count);
     }
     s
 }
@@ -676,104 +751,108 @@ struct ReplayStats {
 }
 
 /// `replay`: replay each atom's ops against its first parent's tree (a root replays against the empty
-/// tree). `Add` needs the path absent; `Modify`/`Delete` need it present. Every rename hint's `to` exists
-/// in the resulting tree. Memory- and time-bounded (review 003 R-3): a parent's first-parent refcount is
-/// decremented *before* this atom borrows its tree, so the atom holding the **last** reference `take`s
-/// the tree out of the map and mutates it in place — no clone — while an earlier sibling at a branch
-/// point clones, since the tree must still exist for the reference(s) after it. A linear history (every
-/// refcount is 1) therefore clones nothing at all.
+/// tree). `Add` needs the path absent; `Modify`/`Delete`/`Replace` need it present. Every copy's `to` is
+/// checked as part of its atom's own ops (it is always produced by an `Add`/`Modify`/`Replace` in that
+/// same atom); every copy's `from` must be present in `from_atom`'s replayed tree (RFC 011 §4). Memory-
+/// and time-bounded (review 003 R-3, extended by RFC 011's handoff): a tree's retention count covers
+/// both first-parent references and copy `from_atom` references, decremented as each is consumed, so a
+/// tree is dropped the moment nothing later still needs it — a linear history with no copies therefore
+/// clones nothing at all.
 fn replay_ir(ir: &Ir) -> (CheckOutcome, ReplayStats) {
     let mut refcount: HashMap<AtomId, usize> = HashMap::new();
     for atom in &ir.atoms {
         if let Some(p0) = atom.parents.first() {
             *refcount.entry(*p0).or_insert(0) += 1;
         }
+        for copy in &atom.copies {
+            *refcount.entry(copy.from_atom).or_insert(0) += 1;
+        }
     }
     let mut trees: HashMap<AtomId, BTreeSet<String>> = HashMap::new();
     let mut stats = ReplayStats::default();
+
+    macro_rules! fail {
+        ($msg:expr) => {
+            return (CheckOutcome::Fail($msg.to_string()), stats)
+        };
+    }
+
     for atom in &ir.atoms {
-        let mut tree = match atom.parents.first() {
-            Some(p0) => {
-                let remaining = refcount.get_mut(p0).map_or(0, |c| {
+        let p0 = atom.parents.first().copied();
+        let mut tree = match p0 {
+            Some(p) => {
+                let remaining = refcount.get_mut(&p).map_or(0, |c| {
                     *c -= 1;
                     *c
                 });
                 if remaining == 0 {
-                    // The last first-parent reference to this tree: take it, never clone.
-                    match trees.remove(p0) {
+                    match trees.remove(&p) {
                         Some(t) => t,
-                        None => {
-                            return (
-                                CheckOutcome::Fail(
-                                    "an atom's first-parent tree is unavailable (a structural \
-                                     inconsistency)"
-                                        .to_string(),
-                                ),
-                                stats,
-                            );
-                        }
+                        None => fail!(
+                            "an atom's first-parent tree is unavailable (a structural inconsistency)"
+                        ),
                     }
                 } else {
-                    // A branch point: another reference still needs the original, so this one clones.
-                    match trees.get(p0) {
+                    match trees.get(&p) {
                         Some(t) => {
                             stats.clones += 1;
                             t.clone()
                         }
-                        None => {
-                            return (
-                                CheckOutcome::Fail(
-                                    "an atom's first-parent tree is unavailable (a structural \
-                                     inconsistency)"
-                                        .to_string(),
-                                ),
-                                stats,
-                            );
-                        }
+                        None => fail!(
+                            "an atom's first-parent tree is unavailable (a structural inconsistency)"
+                        ),
                     }
                 }
             }
             None => BTreeSet::new(),
         };
-        for op in &atom.ops {
-            match op {
-                PathOp::Add { path, .. } => {
-                    if !tree.insert(path.clone()) {
-                        return (
-                            CheckOutcome::Fail(
-                                "an Add op names an already-present path".to_string(),
-                            ),
-                            stats,
-                        );
+
+        // Copies are checked against the tree state *before* this atom's own ops apply, since
+        // `from_atom` is always an earlier atom, never this one (RFC 011 §2.5).
+        for copy in &atom.copies {
+            let source_tree_has_it = if Some(copy.from_atom) == p0 {
+                tree.contains(&copy.from)
+            } else {
+                match trees.get(&copy.from_atom) {
+                    Some(t) => t.contains(&copy.from),
+                    None => {
+                        fail!("a copy's from_atom tree is unavailable (a structural inconsistency)")
                     }
                 }
-                PathOp::Modify { path, .. } => {
-                    if !tree.contains(path) {
-                        return (
-                            CheckOutcome::Fail("a Modify op names an absent path".to_string()),
-                            stats,
-                        );
-                    }
-                }
-                PathOp::Delete { path, .. } => {
-                    if !tree.remove(path) {
-                        return (
-                            CheckOutcome::Fail("a Delete op names an absent path".to_string()),
-                            stats,
-                        );
+            };
+            if !source_tree_has_it {
+                fail!("a copy's 'from' path is not present in from_atom's replayed tree");
+            }
+            // The first-parent reference (if `from_atom == p0`) was already consumed above, when this
+            // atom's own starting tree was obtained; only a *non*-first-parent copy reference needs its
+            // own decrement here.
+            if Some(copy.from_atom) != p0 {
+                if let Some(c) = refcount.get_mut(&copy.from_atom) {
+                    *c -= 1;
+                    if *c == 0 {
+                        trees.remove(&copy.from_atom);
                     }
                 }
             }
         }
-        for hint in &atom.rename_hints {
-            if !tree.contains(&hint.to) {
-                return (
-                    CheckOutcome::Fail(
-                        "a rename hint's 'to' path is not present in the resulting tree"
-                            .to_string(),
-                    ),
-                    stats,
-                );
+
+        for op in &atom.ops {
+            match op {
+                PathOp::Add { path, .. } => {
+                    if !tree.insert(path.clone()) {
+                        fail!("an Add op names an already-present path");
+                    }
+                }
+                PathOp::Modify { path, .. } | PathOp::Replace { path, .. } => {
+                    if !tree.contains(path) {
+                        fail!("a Modify/Replace op names an absent path");
+                    }
+                }
+                PathOp::Delete { path, .. } => {
+                    if !tree.remove(path) {
+                        fail!("a Delete op names an absent path");
+                    }
+                }
             }
         }
         if refcount.get(&atom.id).copied().unwrap_or(0) > 0 {
@@ -789,8 +868,9 @@ fn check_replay(ir: &Ir) -> CheckOutcome {
 }
 
 /// `derivations`: every `Derived` record has non-empty `by`/`decoder_version`, `confidence <= 100` if
-/// present, and the parameters its kind requires (RFC 011 D-10's registry, already met by every shipped
-/// decoder).
+/// present, and the parameters its kind requires (RFC 011 D-10's registry). `ReconstructedChangeset`
+/// requires `date_rule` and `confidence_rule` from the CVS decoder's own corrections handoff onward
+/// (review 008 R-8: a confidence without the rule that produced it cannot be reviewed).
 fn check_derivations(ir: &Ir) -> CheckOutcome {
     fn check_one(d: &Derivation) -> Result<(), String> {
         if d.by.is_empty() {
@@ -815,7 +895,12 @@ fn check_derivations(ir: &Ir) -> CheckOutcome {
                 }
             }
             DerivationKind::ReconstructedChangeset => {
-                for key in ["window_secs", "cluster_keys"] {
+                for key in [
+                    "window_secs",
+                    "cluster_keys",
+                    "date_rule",
+                    "confidence_rule",
+                ] {
                     if !d.params.contains_key(key) {
                         return Err(format!(
                             "a ReconstructedChangeset derivation is missing required param '{key}'"
@@ -852,8 +937,8 @@ fn check_derivations(ir: &Ir) -> CheckOutcome {
                 return CheckOutcome::Fail(e);
             }
         }
-        for hint in &atom.rename_hints {
-            if let Err(e) = check_status(&hint.status) {
+        for copy in &atom.copies {
+            if let Err(e) = check_status(&copy.status) {
                 return CheckOutcome::Fail(e);
             }
         }
@@ -906,9 +991,9 @@ fn check_source_invariants(ir: &Ir) -> CheckOutcome {
                         "a CVS atom is not Derived(ReconstructedChangeset)".to_string(),
                     );
                 }
-                if !atom.rename_hints.is_empty() {
+                if !atom.copies.is_empty() {
                     return CheckOutcome::Fail(
-                        "a CVS atom carries a rename hint; CVS records no renames".to_string(),
+                        "a CVS atom carries a copy record; CVS records no renames".to_string(),
                     );
                 }
             }
@@ -945,10 +1030,10 @@ fn check_source_invariants(ir: &Ir) -> CheckOutcome {
         }
         brygge_ir::SourceKind::Git => {
             for atom in &ir.atoms {
-                for hint in &atom.rename_hints {
-                    if !hint.status.is_derived() {
+                for copy in &atom.copies {
+                    if !copy.status.is_derived() {
                         return CheckOutcome::Fail(
-                            "a Git rename hint is Stated; Git never states a rename".to_string(),
+                            "a Git copy record is Stated; Git never states a rename".to_string(),
                         );
                     }
                 }
@@ -1002,7 +1087,9 @@ fn check_loss_boundary(ir: &Ir) -> CheckOutcome {
 /// distinct from a genuine mismatch: "could not be checked" is not "does not correspond" — the latter is
 /// a claim of tampering, the former a claim that nothing was compared at all.
 enum AgainstSourceOutcome {
-    Corresponds,
+    /// `Some(note)` carries an informational note even on success (e.g. CR-07.6: the two decodes used
+    /// different `svnadmin` versions but the history is identical) — never a reason to doubt the result.
+    Corresponds(Option<String>),
     DoesNotCorrespond(String),
     Reproduces,
     DoesNotReproduce(String),
@@ -1013,7 +1100,7 @@ enum AgainstSourceOutcome {
 impl AgainstSourceOutcome {
     fn machine_label(&self) -> &'static str {
         match self {
-            Self::Corresponds => "corresponds",
+            Self::Corresponds(_) => "corresponds",
             Self::DoesNotCorrespond(_) => "does-not-correspond",
             Self::Reproduces => "reproduces",
             Self::DoesNotReproduce(_) => "does-not-reproduce",
@@ -1023,7 +1110,7 @@ impl AgainstSourceOutcome {
     }
     fn human_label(&self) -> &'static str {
         match self {
-            Self::Corresponds => "corresponds",
+            Self::Corresponds(_) => "corresponds",
             Self::DoesNotCorrespond(_) => "does not correspond",
             Self::Reproduces => "reproduces",
             Self::DoesNotReproduce(_) => "does not reproduce",
@@ -1034,6 +1121,14 @@ impl AgainstSourceOutcome {
     fn detail(&self) -> Option<&str> {
         match self {
             Self::DoesNotCorrespond(d) | Self::DoesNotReproduce(d) | Self::NotChecked(d) => Some(d),
+            _ => None,
+        }
+    }
+    /// An informational note on a *successful* comparison (review 010 F-4): shown under its own key,
+    /// never as a failure `detail`, so a consumer cannot read "corresponds" plus a detail as a problem.
+    fn note(&self) -> Option<&str> {
+        match self {
+            Self::Corresponds(Some(n)) => Some(n),
             _ => None,
         }
     }
@@ -1058,6 +1153,14 @@ fn run_against_source(ir1: &Ir, repo: &Path) -> AgainstSourceOutcome {
             "against-source verify is not implemented for this IR's source kind".to_string(),
         );
     };
+    // CR-07.6 (SVN): a dumpfile and a live repository are different forms of the same history; comparing
+    // across forms is not a meaningful check (a live repository's `svnadmin dump` can differ from a
+    // hand-supplied dumpfile in ways that carry no signal about the artifact's own correctness).
+    if kind == SourceKind::Svn {
+        if let Some(mismatch) = svn_source_form_mismatch(ir1, repo) {
+            return AgainstSourceOutcome::NotChecked(mismatch);
+        }
+    }
     let opts = SourceOpts {
         infer_renames: infer_renames_from_provenance(ir1),
         reconstruct_refs: reconstruct_refs_from_provenance(ir1),
@@ -1072,18 +1175,78 @@ fn run_against_source(ir1: &Ir, repo: &Path) -> AgainstSourceOutcome {
             return AgainstSourceOutcome::NotChecked(format!("cannot re-decode source: {msg}"));
         }
     };
-    // Compare identity-bearing content (import time is provenance-only — ID-4).
-    let mut a = ir1.clone();
-    let mut b = ir2;
-    a.provenance.import_time = None;
-    b.provenance.import_time = None;
-    let corresponds = a == b;
+    // CR-07.6, review 010 R-1: `svnadmin`'s own version is a fact about the tool, not the history, so an
+    // upgrade between the two decodes must never by itself make this comparison fail. Compare against a
+    // copy of `ir2` with that one param aligned to `ir1`'s; keep the original `ir2` around for the
+    // version-mismatch note, which still reports honestly when the versions actually differed.
+    let ir2_for_compare = align_svnadmin_version(ir1, ir2.clone());
+    // Nothing else in the IR is provenance-only-and-volatile any more (import_time was removed by
+    // RFC 011), so the aligned decodes are compared directly.
+    let corresponds = ir1 == &ir2_for_compare;
+    let versions_differ = svn_version_note(ir1, &ir2);
+    let detail = || {
+        let d = divergence(ir1, &ir2_for_compare);
+        match &versions_differ {
+            Some(v) => format!("{d} (svnadmin versions differ: {v})"),
+            None => d,
+        }
+    };
     match (is_cvs, corresponds) {
         (true, true) => AgainstSourceOutcome::Reproduces,
-        (true, false) => AgainstSourceOutcome::DoesNotReproduce(divergence(&a, &b)),
-        (false, true) => AgainstSourceOutcome::Corresponds,
-        (false, false) => AgainstSourceOutcome::DoesNotCorrespond(divergence(&a, &b)),
+        (true, false) => AgainstSourceOutcome::DoesNotReproduce(detail()),
+        (false, true) => AgainstSourceOutcome::Corresponds(
+            versions_differ
+                .map(|v| format!("svnadmin versions differ ({v}); the history is identical")),
+        ),
+        (false, false) => AgainstSourceOutcome::DoesNotCorrespond(detail()),
     }
+}
+
+/// `Some(reason)` when `repo`'s form (a dumpfile vs a live repository) differs from what `ir1`'s
+/// provenance recorded (CR-07.6). `None` when there is nothing recorded to compare (an artifact from
+/// before this handoff) or the forms already match.
+fn svn_source_form_mismatch(ir1: &Ir, repo: &Path) -> Option<String> {
+    let recorded = ir1.provenance.params.get("source_form")?;
+    let given = if repo.is_file() {
+        "dumpfile"
+    } else {
+        "svnadmin-dump"
+    };
+    if recorded == given {
+        return None;
+    }
+    Some(format!(
+        "the artifact was made from a {recorded}; verify against the same form"
+    ))
+}
+
+/// Set `ir2`'s `svnadmin_version` provenance param to `ir1`'s (CR-07.6, review 010 R-1), so the two are
+/// comparable regardless of which `svnadmin` build produced the re-decode. A no-op unless both have the
+/// param (i.e. both are the `svnadmin-dump` form).
+fn align_svnadmin_version(ir1: &Ir, mut ir2: Ir) -> Ir {
+    if let (Some(a), Some(_)) = (
+        ir1.provenance.params.get("svnadmin_version"),
+        ir2.provenance.params.get("svnadmin_version"),
+    ) {
+        let a = a.clone();
+        ir2.provenance
+            .params
+            .insert("svnadmin_version".to_string(), a);
+    }
+    ir2
+}
+
+/// `Some("<a> vs <b>")` when both decodes are the `svnadmin-dump` form and their recorded versions
+/// actually differ (CR-07.6) — a hint at *why* two decodes of what should be the same history might
+/// diverge, not a claim that the version caused it, and not itself a reason to fail when the histories
+/// otherwise match (see [`align_svnadmin_version`]).
+fn svn_version_note(ir1: &Ir, ir2: &Ir) -> Option<String> {
+    let a = ir1.provenance.params.get("svnadmin_version")?;
+    let b = ir2.provenance.params.get("svnadmin_version")?;
+    if a == b {
+        return None;
+    }
+    Some(format!("{a} vs {b}"))
 }
 
 fn divergence(a: &Ir, b: &Ir) -> String {
@@ -1121,9 +1284,53 @@ const CHECK_NAMES: [&str; 7] = [
     "loss-boundary",
 ];
 
+/// The three-valued verdict (review 003 R-5; mandatory from RFC 011's handoff): `pass` when everything
+/// requested ran and held; `fail` when something that ran did not hold (takes precedence, exit 50);
+/// `incomplete` when a requested `--against-source` could not be checked and nothing that ran failed
+/// (exit 1) — never reported as `pass` when the exit code is not 0.
+enum Verdict {
+    Pass,
+    Fail,
+    Incomplete,
+}
+
+impl Verdict {
+    fn from(internal_pass: bool, against: &AgainstSourceOutcome) -> Self {
+        if !internal_pass || against.is_mismatch() {
+            Self::Fail
+        } else if against.is_not_checked() {
+            Self::Incomplete
+        } else {
+            Self::Pass
+        }
+    }
+    fn machine_label(&self) -> &'static str {
+        match self {
+            Self::Pass => "pass",
+            Self::Fail => "fail",
+            Self::Incomplete => "incomplete",
+        }
+    }
+    fn human_line(&self) -> &'static str {
+        match self {
+            Self::Pass => "  => PASS",
+            Self::Fail => "  => FAIL",
+            Self::Incomplete => "  => INCOMPLETE (a requested check could not run)",
+        }
+    }
+    fn exit_code(&self) -> i32 {
+        match self {
+            Self::Pass => exit::CLEAN,
+            Self::Fail => exit::VERIFY_FAILED,
+            Self::Incomplete => exit::FAILURE,
+        }
+    }
+}
+
 /// `verify <artifact> [--against-source <source>]` (CL-04, CR-02): the internal checks always run; each
 /// can fail. With `--against-source`, additionally re-derive and report the two results separately
-/// (VF-4). Exit `50` if anything fails.
+/// (VF-4). Exit `50` if anything fails; exit `1` if a requested `--against-source` could not be checked
+/// at all and nothing that ran failed (the three-valued verdict, review 003 R-5).
 pub fn run_verify(artifact: &Path, against_source: Option<&Path>, format: Format) -> i32 {
     let bytes = match std::fs::read(artifact) {
         Ok(b) => b,
@@ -1135,9 +1342,9 @@ pub fn run_verify(artifact: &Path, against_source: Option<&Path>, format: Format
     let parsed = brygge_ir::from_bytes(&bytes);
     let mut checks: Vec<(&'static str, CheckOutcome)> = Vec::with_capacity(CHECK_NAMES.len());
     let ir_opt = match &parsed {
-        Ok(ir) => {
+        Ok(decoded) => {
             checks.push(("integrity", CheckOutcome::Pass));
-            Some(ir)
+            Some(&decoded.ir)
         }
         Err(e) => {
             checks.push(("integrity", CheckOutcome::Fail(e.to_string())));
@@ -1170,21 +1377,44 @@ pub fn run_verify(artifact: &Path, against_source: Option<&Path>, format: Format
         ),
         (None, _) => AgainstSourceOutcome::NotRun,
     };
-    // A genuine check failure (internal, or a real against-source mismatch) is exit 50. Otherwise, a
-    // requested against-source that could not be checked at all is a runtime failure, exit 1 — distinct
-    // from both "clean" and "failed a check" (review 003 R-1, CL-08). `verify.result`/the human verdict
-    // line report whether anything that *did* run failed, which "not checked" did not.
-    let overall_pass = internal_pass && !against.is_mismatch();
+    let verdict = Verdict::from(internal_pass, &against);
 
-    render_verify(format, &checks, internal_pass, &against, overall_pass);
+    render_verify(format, &checks, internal_pass, &against, &verdict);
+    verdict.exit_code()
+}
 
-    if !internal_pass || against.is_mismatch() {
-        exit::VERIFY_FAILED
-    } else if against.is_not_checked() {
-        exit::FAILURE
-    } else {
-        exit::CLEAN
+/// The machine-format `verify` lines (a pure function so the exact keys are testable).
+fn verify_machine_lines(
+    checks: &[(&'static str, CheckOutcome)],
+    internal_pass: bool,
+    against: &AgainstSourceOutcome,
+    verdict: &Verdict,
+) -> Vec<String> {
+    let mut out = vec![format!("verify_version={VERIFY_VERSION}")];
+    for (name, outcome) in checks {
+        out.push(format!("verify.check.{name}={}", outcome.label()));
     }
+    out.push("verify.authorship=unverifiable".to_string());
+    out.push(format!(
+        "verify.internal={}",
+        if internal_pass { "pass" } else { "fail" }
+    ));
+    out.push(format!("verify.against_source={}", against.machine_label()));
+    let mut i = 0usize;
+    for (_, outcome) in checks {
+        if let Some(d) = outcome.detail() {
+            out.push(format!("verify.detail.{i}={}", display::machine_value(d)));
+            i += 1;
+        }
+    }
+    if let Some(d) = against.detail() {
+        out.push(format!("verify.detail.{i}={}", display::machine_value(d)));
+    }
+    if let Some(n) = against.note() {
+        out.push(format!("verify.note.0={}", display::machine_value(n)));
+    }
+    out.push(format!("verify.result={}", verdict.machine_label()));
+    out
 }
 
 fn render_verify(
@@ -1192,34 +1422,13 @@ fn render_verify(
     checks: &[(&'static str, CheckOutcome)],
     internal_pass: bool,
     against: &AgainstSourceOutcome,
-    overall_pass: bool,
+    verdict: &Verdict,
 ) {
     match format {
         Format::Machine => {
-            println!("verify_version={VERIFY_VERSION}");
-            for (name, outcome) in checks {
-                println!("verify.check.{name}={}", outcome.label());
+            for line in verify_machine_lines(checks, internal_pass, against, verdict) {
+                println!("{line}");
             }
-            println!("verify.authorship=unverifiable");
-            println!(
-                "verify.internal={}",
-                if internal_pass { "pass" } else { "fail" }
-            );
-            println!("verify.against_source={}", against.machine_label());
-            let mut i = 0usize;
-            for (_, outcome) in checks {
-                if let Some(d) = outcome.detail() {
-                    println!("verify.detail.{i}={}", display::machine_value(d));
-                    i += 1;
-                }
-            }
-            if let Some(d) = against.detail() {
-                println!("verify.detail.{i}={}", display::machine_value(d));
-            }
-            println!(
-                "verify.result={}",
-                if overall_pass { "pass" } else { "fail" }
-            );
         }
         Format::Human => {
             println!("verify — the honesty checks any reader can run with no source (always run):");
@@ -1249,11 +1458,11 @@ fn render_verify(
                 );
             } else if !matches!(against, AgainstSourceOutcome::NotRun) {
                 println!("  against-source: {}", against.human_label());
-                if let Some(d) = against.detail() {
+                if let Some(d) = against.detail().or_else(|| against.note()) {
                     println!("      {}", display::human(d));
                 }
             }
-            println!("  => {}", if overall_pass { "PASS" } else { "FAIL" });
+            println!("{}", verdict.human_line());
         }
     }
 }

@@ -18,11 +18,15 @@ pub struct Symbol {
     pub named: Vec<(String, RevNum)>,
 }
 
-/// Whether a symbol's revision is a CVS **magic branch number** (`1.2.0.2` — the second-to-last component
-/// is `0`), as opposed to a plain tagged revision (`1.2`).
+/// Whether a symbol's revision names a CVS **branch**, in either of the two forms RCS uses (review 008
+/// R-2): the **magic branch number** (`1.2.0.2` — the second-to-last component is `0`), or a **literal**
+/// branch identifier (an odd-length number of at least three components, e.g. `1.1.1` — how a vendor
+/// branch set by `cvs import` is stored). A plain tagged revision (`1.2`, even length) is neither.
 fn is_branch_rev(rev: &RevNum) -> bool {
     let n = rev.0.len();
-    n >= 2 && rev.0.get(n - 2) == Some(&0)
+    let magic = n >= 2 && rev.0.get(n - 2) == Some(&0);
+    let literal = n >= 3 && n % 2 == 1;
+    magic || literal
 }
 
 /// Collect symbols across all files, grouped by name, in deterministic (name-sorted) order.

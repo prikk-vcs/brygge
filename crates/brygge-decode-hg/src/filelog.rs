@@ -1,20 +1,25 @@
 //! Read a file revision from a filelog: its content, and any **source-recorded rename/copy** (RFC 005
 //! D-3, SRC-H2). A filelog revision's text is an optional metadata header — `\x01\n key: value …\x01\n` —
-//! followed by the file content. The header carries `copy` (the rename/copy source path) and `copyrev`.
-//! A rename recorded here is a **stated fact** brygge carries as `Stated`, not a guess.
+//! followed by the file content. The header carries `copy` (the rename/copy source path) and `copyrev`
+//! (the source path's filenode, in its own filelog — RFC 005 corrections handoff §2). A rename recorded
+//! here is a **stated fact** brygge carries as `Stated`, not a guess.
 
 use crate::Error;
 use crate::revlog::Revlog;
+use crate::util::parse_hex20;
 
 const META_MARK: &[u8; 2] = b"\x01\n";
 
-/// One file revision: its raw content and, if the source recorded one, the copy/rename source path.
+/// One file revision: its raw content and, if the source recorded one, the copy/rename source.
 #[derive(Debug, Clone)]
 pub struct FileRev {
     /// The file content (metadata header stripped).
     pub content: Vec<u8>,
     /// The path this file was copied/renamed from, if the source recorded it (`Stated`).
     pub copy_from: Option<String>,
+    /// `copy_from`'s filenode **in its own filelog**, as the source recorded it — the exact file
+    /// revision the copy came from, needed to resolve which changeset it belongs to.
+    pub copy_from_rev: Option<[u8; 20]>,
 }
 
 /// Find the revision in `rl` whose node equals `filenode`.
@@ -41,6 +46,7 @@ fn split_metadata(text: Vec<u8>) -> Result<FileRev, Error> {
         return Ok(FileRev {
             content: text,
             copy_from: None,
+            copy_from_rev: None,
         });
     }
     let rest = text.get(2..).unwrap_or(&[]);
@@ -52,6 +58,7 @@ fn split_metadata(text: Vec<u8>) -> Result<FileRev, Error> {
     let content = rest.get(end + 2..).unwrap_or(&[]).to_vec();
 
     let mut copy_from = None;
+    let mut copy_from_rev = None;
     for line in meta.split(|&b| b == b'\n') {
         if line.is_empty() {
             continue;
@@ -62,9 +69,17 @@ fn split_metadata(text: Vec<u8>) -> Result<FileRev, Error> {
                     .map_err(|_| Error::Read("filelog copy path is not valid UTF-8".to_string()))?
                     .to_string(),
             );
+        } else if let Some(value) = line.strip_prefix(b"copyrev: ") {
+            let hex = std::str::from_utf8(value)
+                .map_err(|_| Error::Read("filelog copyrev is not valid UTF-8".to_string()))?;
+            copy_from_rev = Some(parse_hex20(hex)?);
         }
     }
-    Ok(FileRev { content, copy_from })
+    Ok(FileRev {
+        content,
+        copy_from,
+        copy_from_rev,
+    })
 }
 
 #[cfg(test)]

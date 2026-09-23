@@ -133,18 +133,75 @@ fn check_repository_shape(path: &Path) -> Result<(), Error> {
     Ok(())
 }
 
+/// The largest git `config` file this check reads (bytes), before it gives up scanning for
+/// `extensions.objectFormat` and lets `gix::open` produce its own (less specific) failure. A real git
+/// `config` file naming this extension is a few hundred bytes; this is generous headroom, not a
+/// realistic ceiling on a legitimate repository (RFC 010 posture: bounded before allocation).
+const MAX_CONFIG_PROBE_BYTES: u64 = 1024 * 1024;
+
+/// True if `config` declares `extensions.objectFormat = sha256` (batch-2 handoff §1.1): a line-oriented,
+/// case-insensitive scan for the `[extensions]` section and an `objectFormat` key inside it, matching
+/// exactly the two-line form `git init --object-format=sha256` writes. Read directly rather than through
+/// `gix`, since `gix::open` itself cannot construct a `Kind::Sha256` in a build without Cargo feature
+/// `sha256` and so cannot be asked "what hash does this repository use" in the first place (see
+/// [`crate::floor::SHA256_OBJECT_FORMAT`]'s doc for the citations). Not a general git-config parser —
+/// git's config grammar has quoting and continuation lines this does not attempt; a sha256 declaration
+/// this scan misses still gets refused, just as gix's own generic `Error::Open`.
+fn declares_sha256_object_format(config: &Path) -> bool {
+    let Ok(meta) = std::fs::metadata(config) else {
+        return false;
+    };
+    if meta.len() > MAX_CONFIG_PROBE_BYTES {
+        return false;
+    }
+    let Ok(text) = std::fs::read_to_string(config) else {
+        return false;
+    };
+    let mut in_extensions = false;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if let Some(section) = trimmed.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+            in_extensions = section.trim().eq_ignore_ascii_case("extensions");
+            continue;
+        }
+        if !in_extensions {
+            continue;
+        }
+        let Some((key, value)) = trimmed.split_once('=') else {
+            continue;
+        };
+        if key.trim().eq_ignore_ascii_case("objectformat") {
+            let value = value.trim().trim_matches('"');
+            if value.eq_ignore_ascii_case("sha256") {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Open `path` in isolation: gix's `isolated()` options read **no** global/system/environment
 /// *configuration* and use **no** credentials, so the decode depends only on the repository's own
 /// objects (determinism, VF-1) and cannot be steered by ambient config (INV-2/T-2). brygge enables no
 /// gix network feature (INV-3) and never checks out (so no filter/smudge runs); blob bytes are read raw
 /// from the object database. Repository *shape* (alternates, `gitdir:` redirects, `commondir`) is
 /// refused explicitly, before opening, per the module doc's CR-11 finding: `isolated()` does not cover it.
+/// A SHA-256 object-format repository is refused explicitly too, for the same reason (batch-2 handoff
+/// §1.1): this build cannot read one at all.
 ///
 /// # Errors
-/// [`Error::FloorRefusal`] on a refused repository shape (CR-11); [`Error::Open`] if the path is not a
-/// readable Git repository.
+/// [`Error::FloorRefusal`] on a refused repository shape (CR-11) or a SHA-256 object-format repository;
+/// [`Error::Open`] if the path is not a readable Git repository.
 pub fn open(path: &Path) -> Result<gix::Repository, Error> {
     check_repository_shape(path)?;
+    if declares_sha256_object_format(&git_dir_of(path).join("config")) {
+        return Err(Error::FloorRefusal {
+            feature: floor::SHA256_OBJECT_FORMAT.to_string(),
+            reason: "the repository's object database is content-addressed with SHA-256 \
+                     (`extensions.objectFormat = sha256`); this build reads SHA-1 repositories only"
+                .to_string(),
+        });
+    }
     gix::open_opts(path, gix::open::Options::isolated()).map_err(|e| {
         Error::Open(format!(
             "cannot open Git repository at {}: {e}",

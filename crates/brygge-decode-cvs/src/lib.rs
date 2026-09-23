@@ -15,8 +15,7 @@
 //! [`Options`] (the clustering window and confidence floor; ref reconstruction is **off by default**).
 //!
 //! **Public API:** [`decode`], [`Options`], [`Source`], [`Error`], and [`decoder_version`] — everything a
-//! caller needs. [`UNDER_FLOOR`] is transitional: replaced by the typed refused/violation record of
-//! RFC 011.
+//! caller needs.
 //!
 //! [`ChangeAtom`]: brygge_ir::ChangeAtom
 
@@ -26,6 +25,7 @@
 mod cluster;
 mod decode;
 mod floor;
+mod mainline;
 mod options;
 mod rcs;
 mod scan;
@@ -44,12 +44,6 @@ pub fn decoder_version() -> &'static str {
 
 /// The decoder id recorded into IR provenance and derivations.
 const DECODER: &str = "brygge-decode-cvs";
-
-/// The `what` of the loss record written when the whole import is under the confidence floor (RFC 007
-/// OQ-B). A CLI maps its presence to the CL-08 convention/confidence exit class.
-///
-/// Transitional: replaced by the typed refused/violation record of RFC 011.
-pub const UNDER_FLOOR: &str = "reconstruction confidence below the floor";
 
 /// Everything the CVS decoder can fail with. A refused feature, an unreadable `,v`, or a below-floor
 /// reconstruction is a **typed outcome**, never a panic and never an approximation (`FA-3`, RFC 007).

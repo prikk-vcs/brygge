@@ -27,6 +27,16 @@ defines them durably):
   requested by.
 - **A mismatch** is `Error::Read("object <hex> does not match its content (corrupt or crafted
   repository)")`. The decode stops: a source whose object ids lie cannot be carried faithfully.
+- **History comes from verified objects only** *(added after review 011)*:
+  - both history walks run with `use_commit_graph(false)`. The commit-graph file is an unverified cache
+    of parent ids;
+  - a verified commit's parent that the walk did not reach is `Error::Read("history walk disagrees with
+    commit content")`. Shallow repositories are refused, so a missing parent is never legitimate.
+- **Tag chains** *(added after review 011)*:
+  - peel a tag manually, verifying every object on the way, up to `Limits.max_tag_chain` (default 32);
+  - the outer tag's annotation is carried;
+  - an inner tag object's tagger, message and signature are counted: `nested tag objects not carried
+    (N)`, class `Other`.
 - **Consequences:**
   - the preserved SHA becomes a real link to the content (PR-4, VF-2);
   - it closes `RR-git-loose-object-symlink`. A symlinked loose object now either hashes to its id (so it
@@ -40,7 +50,9 @@ defines them durably):
 
 - The record reads `commits reachable only from dropped refs (count unavailable)`, with a **fixed**
   reason: *"a commit in dropped-only history could not be read"*.
-- The raw error goes to stderr only, neutralized, never into the artifact.
+- The raw error is **not printed**. A library does not write to the process's stderr, since that would
+  bypass the CLI's neutralization. The fixed record is the whole diagnostic, and `git fsck` locates the
+  fault. *(Amended after review 011.)*
 
 ### 1.3 Text and its declared encoding (RFC 011 D-4)
 
@@ -48,6 +60,8 @@ defines them durably):
   as declared. Git's header declares the message's encoding. Names and emails keep `encoding: None`,
   meaning "not stated".
 - The `encoding` header itself is not also carried as an `Extra`: one fact, one place.
+- An `encoding` value that is not valid UTF-8 is not carried. It is counted as `undecodable encoding
+  headers (N)`, class `Other` *(added after review 011)*.
 
 ### 1.4 Timezones (RFC 011 D-5)
 
@@ -56,6 +70,8 @@ defines them durably):
 - **The value:** `offset_minutes = sign × (HH × 60 + MM)`. It must fit `i16` and have `MM < 60`.
 - **Otherwise** it is `None`, counted as `unparseable timezone offsets (N)`, class `Other`. Never use
   gix's defaulting parser: it silently yields `+0000`.
+- The same rule, and the same counts, apply to an annotated tag's **tagger** time *(stated after review
+  011)*.
 
 ### 1.5 Signatures and extras (RFC 011 D-9)
 
@@ -68,6 +84,8 @@ defines them durably):
     header.
   - A multi-line header value is carried exactly as Git stores it, continuation lines joined with `\n`
     and the leading space removed, which is Git's own unfolding.
+  - A header **name** that is not valid UTF-8 is floor feature `non-UTF-8 commit header name`: labels are
+    text *(added after review 011)*.
 
 ### 1.6 Annotated tags (RFC 011 D-9)
 

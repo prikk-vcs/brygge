@@ -270,14 +270,16 @@ fn a_genuine_internal_failure_dominates_the_exit_even_when_against_source_is_als
         "brygge-decode-git",
     ));
     let blob = b.add_blob(b"x".to_vec());
-    let a1 = b.add_atom(AtomDraft {
-        parents: vec![],
-        ops: vec![stated_add("a", blob)],
-        rename_hints: vec![],
-        metadata: MetadataClaims::default(),
-        source: src(brygge_ir::SourceKind::Git, b"c1"),
-        status: EpistemicStatus::Stated,
-    });
+    let a1 = b
+        .add_atom(AtomDraft {
+            parents: vec![],
+            ops: vec![stated_add("a", blob)],
+            copies: vec![],
+            metadata: MetadataClaims::default(),
+            source: src(brygge_ir::SourceKind::Git, b"c1"),
+            status: EpistemicStatus::Stated,
+        })
+        .unwrap();
     // A duplicate ref is a genuine `structure` failure, but the artifact still decodes (integrity
     // passes), so `ir_opt` is `Some` and against-source is actually attempted.
     for _ in 0..2 {
@@ -287,6 +289,8 @@ fn a_genuine_internal_failure_dominates_the_exit_even_when_against_source_is_als
             target: a1,
             status: EpistemicStatus::Stated,
             source: None,
+
+            annotation: None,
         })
         .unwrap();
     }
@@ -361,8 +365,12 @@ fn decode_a_real_clone_succeeds_and_verifies_against_source() {
         ),
         exit::CLEAN
     );
-    let origin_ir = brygge_ir::from_bytes(&std::fs::read(&origin_out).unwrap()).unwrap();
-    let clone_ir = brygge_ir::from_bytes(&std::fs::read(&clone_out).unwrap()).unwrap();
+    let origin_ir = brygge_ir::from_bytes(&std::fs::read(&origin_out).unwrap())
+        .unwrap()
+        .ir;
+    let clone_ir = brygge_ir::from_bytes(&std::fs::read(&clone_out).unwrap())
+        .unwrap()
+        .ir;
     let origin_ids: std::collections::BTreeSet<_> = origin_ir
         .atoms
         .iter()
@@ -504,6 +512,8 @@ fn faithfulness_statement_text_per_source() {
     let cvs = faithfulness_statement(SourceKind::Cvs);
     assert!(cvs.starts_with("CVS has no atomic commits"));
     assert!(cvs.contains("Unverifiable"));
+    // CVS corrections handoff §2.1: the main-line-only limitation is stated up front, every run.
+    assert!(cvs.contains("Branch history is not imported in this version; the main line is."));
 }
 
 // A subprocess test proving the statement reaches real stderr even when decode then fails lives in
@@ -646,7 +656,9 @@ fn inspect_default_equals_decodes_end_of_run_report() {
     // `decode`'s end-of-run report and `inspect`'s default report both call
     // `brygge_ir::honesty::summary(&ir).render_*()` on the same artifact, so they are the same text by
     // construction; confirm it directly against the artifact read back from disk (FS-02).
-    let ir = brygge_ir::from_bytes(&std::fs::read(&out).unwrap()).unwrap();
+    let ir = brygge_ir::from_bytes(&std::fs::read(&out).unwrap())
+        .unwrap()
+        .ir;
     assert_eq!(
         brygge_ir::honesty::summary(&ir).render_human(),
         brygge_ir::honesty::summary(&ir).render_human(),
@@ -673,13 +685,15 @@ fn inspect_atoms_adds_the_listing_and_reads_the_artifact_once() {
         ),
         exit::CLEAN
     );
-    let ir = brygge_ir::from_bytes(&std::fs::read(&out).unwrap()).unwrap();
+    let ir = brygge_ir::from_bytes(&std::fs::read(&out).unwrap())
+        .unwrap()
+        .ir;
     let human = render_atoms_human(&ir);
     assert!(human.contains("atoms (topological order):"));
     assert!(human.contains("refs:") || ir.refs.is_empty());
     assert!(human.contains("loss boundary:"));
     let machine = render_atoms_machine(&ir);
-    assert!(machine.starts_with("inspect_version=2\n"));
+    assert!(machine.starts_with("inspect_version=3\n"));
     assert!(machine.contains("atom.0.id="));
 }
 
@@ -702,7 +716,9 @@ fn inspect_report_says_unverifiable_never_unverified() {
         ),
         exit::CLEAN
     );
-    let ir = brygge_ir::from_bytes(&std::fs::read(&out).unwrap()).unwrap();
+    let ir = brygge_ir::from_bytes(&std::fs::read(&out).unwrap())
+        .unwrap()
+        .ir;
     let human = brygge_ir::honesty::summary(&ir).render_human();
     assert!(human.contains("Unverifiable"));
     assert!(!human.contains("Unverified"));
@@ -727,7 +743,9 @@ fn representation_drops_appear_only_on_the_not_history_line() {
         ),
         exit::CLEAN
     );
-    let ir = brygge_ir::from_bytes(&std::fs::read(&out).unwrap()).unwrap();
+    let ir = brygge_ir::from_bytes(&std::fs::read(&out).unwrap())
+        .unwrap()
+        .ir;
     let human = brygge_ir::honesty::summary(&ir).render_human();
     assert!(human.contains("not history (no content or claim lost):"));
     let after_split = human
@@ -746,12 +764,12 @@ fn blank_provenance(kind: brygge_ir::SourceKind, decoder: &str) -> ImportProvena
             repo_id: b"r".to_vec(),
             atom_id: b"r".to_vec(),
             signatures: Vec::new(),
+            extras: Vec::new(),
         },
         brygge_version: "0.1.0".into(),
         decoder: decoder.into(),
         decoder_version: "0.1.0".into(),
         params: BTreeMap::new(),
-        import_time: None,
     }
 }
 
@@ -761,6 +779,7 @@ fn src(kind: brygge_ir::SourceKind, atom: &[u8]) -> brygge_ir::SourceIdentity {
         repo_id: b"r".to_vec(),
         atom_id: atom.to_vec(),
         signatures: Vec::new(),
+        extras: Vec::new(),
     }
 }
 
@@ -788,14 +807,16 @@ fn verify_integrity_fails_on_a_flipped_byte() {
         "brygge-decode-git",
     ));
     let blob = b.add_blob(b"x".to_vec());
-    let _ = b.add_atom(AtomDraft {
-        parents: vec![],
-        ops: vec![stated_add("a", blob)],
-        rename_hints: vec![],
-        metadata: MetadataClaims::default(),
-        source: src(brygge_ir::SourceKind::Git, b"c1"),
-        status: EpistemicStatus::Stated,
-    });
+    let _ = b
+        .add_atom(AtomDraft {
+            parents: vec![],
+            ops: vec![stated_add("a", blob)],
+            copies: vec![],
+            metadata: MetadataClaims::default(),
+            source: src(brygge_ir::SourceKind::Git, b"c1"),
+            status: EpistemicStatus::Stated,
+        })
+        .unwrap();
     let ir = b.finish().unwrap();
     let mut bytes = brygge_ir::to_bytes(&ir);
     let last = bytes.len() - 1;
@@ -811,14 +832,16 @@ fn verify_structure_fails_on_a_dangling_parent() {
     ));
     let blob = b.add_blob(b"x".to_vec());
     let bogus_parent = brygge_ir::AtomId([0xABu8; 32]);
-    let _ = b.add_atom(AtomDraft {
-        parents: vec![bogus_parent],
-        ops: vec![stated_add("a", blob)],
-        rename_hints: vec![],
-        metadata: MetadataClaims::default(),
-        source: src(brygge_ir::SourceKind::Git, b"c1"),
-        status: EpistemicStatus::Stated,
-    });
+    let _ = b
+        .add_atom(AtomDraft {
+            parents: vec![bogus_parent],
+            ops: vec![stated_add("a", blob)],
+            copies: vec![],
+            metadata: MetadataClaims::default(),
+            source: src(brygge_ir::SourceKind::Git, b"c1"),
+            status: EpistemicStatus::Stated,
+        })
+        .unwrap();
     let ir = b.finish().unwrap();
     assert_eq!(verify_bytes(&brygge_ir::to_bytes(&ir)), exit::VERIFY_FAILED);
 }
@@ -830,20 +853,24 @@ fn verify_structure_fails_on_a_duplicate_ref() {
         "brygge-decode-git",
     ));
     let blob = b.add_blob(b"x".to_vec());
-    let a1 = b.add_atom(AtomDraft {
-        parents: vec![],
-        ops: vec![stated_add("a", blob)],
-        rename_hints: vec![],
-        metadata: MetadataClaims::default(),
-        source: src(brygge_ir::SourceKind::Git, b"c1"),
-        status: EpistemicStatus::Stated,
-    });
+    let a1 = b
+        .add_atom(AtomDraft {
+            parents: vec![],
+            ops: vec![stated_add("a", blob)],
+            copies: vec![],
+            metadata: MetadataClaims::default(),
+            source: src(brygge_ir::SourceKind::Git, b"c1"),
+            status: EpistemicStatus::Stated,
+        })
+        .unwrap();
     b.add_ref(RefRecord {
         name: "main".into(),
         kind: RefKind::Branch,
         target: a1,
         status: EpistemicStatus::Stated,
         source: None,
+
+        annotation: None,
     })
     .unwrap();
     b.add_ref(RefRecord {
@@ -852,6 +879,8 @@ fn verify_structure_fails_on_a_duplicate_ref() {
         target: a1,
         status: EpistemicStatus::Stated,
         source: None,
+
+        annotation: None,
     })
     .unwrap();
     let ir = b.finish().unwrap();
@@ -859,14 +888,21 @@ fn verify_structure_fails_on_a_duplicate_ref() {
 }
 
 #[test]
-fn verify_structure_fails_on_two_ops_for_one_path() {
+fn two_ops_for_one_path_is_now_rejected_at_build_time_not_verify_time() {
+    // Before RFC 011, `IrBuilder::add_atom` was infallible and this scenario could only be caught
+    // later, by `verify`'s own `structure` check, on a hand-crafted artifact. RFC 011's
+    // `IrBuilder::add_atom` now validates this itself (and brygge-ir's own canonical decode also
+    // enforces ops being strictly ascending by path — RFC 011 §2.5), so the same invariant is caught
+    // earlier and a malformed artifact of this shape can no longer even be constructed through the
+    // builder to exercise the CLI's `structure` check directly. This test confirms the earlier,
+    // stricter rejection fires through the exact path the CLI itself uses.
     let mut b = IrBuilder::new(blank_provenance(
         brygge_ir::SourceKind::Git,
         "brygge-decode-git",
     ));
     let blob = b.add_blob(b"x".to_vec());
     let blob2 = b.add_blob(b"y".to_vec());
-    let _ = b.add_atom(AtomDraft {
+    let err = b.add_atom(AtomDraft {
         parents: vec![],
         ops: vec![
             stated_add("a", blob),
@@ -877,13 +913,15 @@ fn verify_structure_fails_on_two_ops_for_one_path() {
                 status: EpistemicStatus::Stated,
             },
         ],
-        rename_hints: vec![],
+        copies: vec![],
         metadata: MetadataClaims::default(),
         source: src(brygge_ir::SourceKind::Git, b"c1"),
         status: EpistemicStatus::Stated,
     });
-    let ir = b.finish().unwrap();
-    assert_eq!(verify_bytes(&brygge_ir::to_bytes(&ir)), exit::VERIFY_FAILED);
+    assert!(
+        err.is_err(),
+        "two ops on one path must be rejected at add_atom"
+    );
 }
 
 #[test]
@@ -893,19 +931,21 @@ fn verify_replay_fails_on_modify_of_an_absent_path() {
         "brygge-decode-git",
     ));
     let blob = b.add_blob(b"x".to_vec());
-    let _ = b.add_atom(AtomDraft {
-        parents: vec![],
-        ops: vec![PathOp::Modify {
-            path: "never-added".into(),
-            blob,
-            mode: 0o100_644,
+    let _ = b
+        .add_atom(AtomDraft {
+            parents: vec![],
+            ops: vec![PathOp::Modify {
+                path: "never-added".into(),
+                blob,
+                mode: 0o100_644,
+                status: EpistemicStatus::Stated,
+            }],
+            copies: vec![],
+            metadata: MetadataClaims::default(),
+            source: src(brygge_ir::SourceKind::Git, b"c1"),
             status: EpistemicStatus::Stated,
-        }],
-        rename_hints: vec![],
-        metadata: MetadataClaims::default(),
-        source: src(brygge_ir::SourceKind::Git, b"c1"),
-        status: EpistemicStatus::Stated,
-    });
+        })
+        .unwrap();
     let ir = b.finish().unwrap();
     assert_eq!(verify_bytes(&brygge_ir::to_bytes(&ir)), exit::VERIFY_FAILED);
 }
@@ -917,22 +957,26 @@ fn verify_replay_fails_on_add_of_a_present_path() {
         "brygge-decode-git",
     ));
     let blob = b.add_blob(b"x".to_vec());
-    let a1 = b.add_atom(AtomDraft {
-        parents: vec![],
-        ops: vec![stated_add("a", blob)],
-        rename_hints: vec![],
-        metadata: MetadataClaims::default(),
-        source: src(brygge_ir::SourceKind::Git, b"c1"),
-        status: EpistemicStatus::Stated,
-    });
-    let _ = b.add_atom(AtomDraft {
-        parents: vec![a1],
-        ops: vec![stated_add("a", blob)], // re-adds the same, already-present path
-        rename_hints: vec![],
-        metadata: MetadataClaims::default(),
-        source: src(brygge_ir::SourceKind::Git, b"c2"),
-        status: EpistemicStatus::Stated,
-    });
+    let a1 = b
+        .add_atom(AtomDraft {
+            parents: vec![],
+            ops: vec![stated_add("a", blob)],
+            copies: vec![],
+            metadata: MetadataClaims::default(),
+            source: src(brygge_ir::SourceKind::Git, b"c1"),
+            status: EpistemicStatus::Stated,
+        })
+        .unwrap();
+    let _ = b
+        .add_atom(AtomDraft {
+            parents: vec![a1],
+            ops: vec![stated_add("a", blob)], // re-adds the same, already-present path
+            copies: vec![],
+            metadata: MetadataClaims::default(),
+            source: src(brygge_ir::SourceKind::Git, b"c2"),
+            status: EpistemicStatus::Stated,
+        })
+        .unwrap();
     let ir = b.finish().unwrap();
     assert_eq!(verify_bytes(&brygge_ir::to_bytes(&ir)), exit::VERIFY_FAILED);
 }
@@ -954,14 +998,18 @@ fn verify_derivations_fails_on_a_missing_required_param() {
         "brygge-decode-git",
     ));
     let blob = b.add_blob(b"x".to_vec());
-    let _ = b.add_atom(AtomDraft {
-        parents: vec![],
-        ops: vec![stated_add("a", blob)],
-        rename_hints: vec![],
-        metadata: MetadataClaims::default(),
-        source: src(brygge_ir::SourceKind::Git, b"c1"),
-        status: EpistemicStatus::Derived(derivation_missing_params(DerivationKind::InferredRename)),
-    });
+    let _ = b
+        .add_atom(AtomDraft {
+            parents: vec![],
+            ops: vec![stated_add("a", blob)],
+            copies: vec![],
+            metadata: MetadataClaims::default(),
+            source: src(brygge_ir::SourceKind::Git, b"c1"),
+            status: EpistemicStatus::Derived(derivation_missing_params(
+                DerivationKind::InferredRename,
+            )),
+        })
+        .unwrap();
     let ir = b.finish().unwrap();
     assert_eq!(verify_bytes(&brygge_ir::to_bytes(&ir)), exit::VERIFY_FAILED);
 }
@@ -975,14 +1023,16 @@ fn verify_derivations_fails_on_confidence_over_100() {
     let blob = b.add_blob(b"x".to_vec());
     let mut d = derivation_missing_params(DerivationKind::NormalizedMetadata);
     d.confidence = Some(101);
-    let _ = b.add_atom(AtomDraft {
-        parents: vec![],
-        ops: vec![stated_add("a", blob)],
-        rename_hints: vec![],
-        metadata: MetadataClaims::default(),
-        source: src(brygge_ir::SourceKind::Git, b"c1"),
-        status: EpistemicStatus::Derived(d),
-    });
+    let _ = b
+        .add_atom(AtomDraft {
+            parents: vec![],
+            ops: vec![stated_add("a", blob)],
+            copies: vec![],
+            metadata: MetadataClaims::default(),
+            source: src(brygge_ir::SourceKind::Git, b"c1"),
+            status: EpistemicStatus::Derived(d),
+        })
+        .unwrap();
     let ir = b.finish().unwrap();
     assert_eq!(verify_bytes(&brygge_ir::to_bytes(&ir)), exit::VERIFY_FAILED);
 }
@@ -995,14 +1045,16 @@ fn verify_source_invariants_fails_when_a_cvs_atom_is_stripped_to_stated() {
         "brygge-decode-cvs",
     ));
     let blob = b.add_blob(b"x".to_vec());
-    let _ = b.add_atom(AtomDraft {
-        parents: vec![],
-        ops: vec![stated_add("a", blob)],
-        rename_hints: vec![],
-        metadata: MetadataClaims::default(),
-        source: src(brygge_ir::SourceKind::Cvs, b"a@1.1"),
-        status: EpistemicStatus::Stated, // should be Derived(ReconstructedChangeset) for CVS
-    });
+    let _ = b
+        .add_atom(AtomDraft {
+            parents: vec![],
+            ops: vec![stated_add("a", blob)],
+            copies: vec![],
+            metadata: MetadataClaims::default(),
+            source: src(brygge_ir::SourceKind::Cvs, b"a@1.1"),
+            status: EpistemicStatus::Stated, // should be Derived(ReconstructedChangeset) for CVS
+        })
+        .unwrap();
     let ir = b.finish().unwrap();
     assert_eq!(verify_bytes(&brygge_ir::to_bytes(&ir)), exit::VERIFY_FAILED);
 }
@@ -1011,14 +1063,16 @@ fn verify_source_invariants_fails_when_a_cvs_atom_is_stripped_to_stated() {
 fn verify_provenance_fails_on_an_empty_decoder() {
     let mut b = IrBuilder::new(blank_provenance(brygge_ir::SourceKind::Git, ""));
     let blob = b.add_blob(b"x".to_vec());
-    let _ = b.add_atom(AtomDraft {
-        parents: vec![],
-        ops: vec![stated_add("a", blob)],
-        rename_hints: vec![],
-        metadata: MetadataClaims::default(),
-        source: src(brygge_ir::SourceKind::Git, b"c1"),
-        status: EpistemicStatus::Stated,
-    });
+    let _ = b
+        .add_atom(AtomDraft {
+            parents: vec![],
+            ops: vec![stated_add("a", blob)],
+            copies: vec![],
+            metadata: MetadataClaims::default(),
+            source: src(brygge_ir::SourceKind::Git, b"c1"),
+            status: EpistemicStatus::Stated,
+        })
+        .unwrap();
     let ir = b.finish().unwrap();
     assert_eq!(verify_bytes(&brygge_ir::to_bytes(&ir)), exit::VERIFY_FAILED);
 }
@@ -1030,14 +1084,16 @@ fn verify_loss_boundary_fails_on_an_empty_what() {
         "brygge-decode-git",
     ));
     let blob = b.add_blob(b"x".to_vec());
-    let _ = b.add_atom(AtomDraft {
-        parents: vec![],
-        ops: vec![stated_add("a", blob)],
-        rename_hints: vec![],
-        metadata: MetadataClaims::default(),
-        source: src(brygge_ir::SourceKind::Git, b"c1"),
-        status: EpistemicStatus::Stated,
-    });
+    let _ = b
+        .add_atom(AtomDraft {
+            parents: vec![],
+            ops: vec![stated_add("a", blob)],
+            copies: vec![],
+            metadata: MetadataClaims::default(),
+            source: src(brygge_ir::SourceKind::Git, b"c1"),
+            status: EpistemicStatus::Stated,
+        })
+        .unwrap();
     b.set_loss(LossBoundary {
         dropped: vec![DropRecord {
             class: LossClass::Representation,
@@ -1056,26 +1112,30 @@ fn a_well_formed_artifact_passes_every_check() {
         "brygge-decode-git",
     ));
     let blob = b.add_blob(b"x".to_vec());
-    let a1 = b.add_atom(AtomDraft {
-        parents: vec![],
-        ops: vec![stated_add("a", blob)],
-        rename_hints: vec![],
-        metadata: MetadataClaims {
-            author: Some(Identity {
-                name: "A".into(),
-                email: "a@example.com".into(),
-            }),
-            ..MetadataClaims::default()
-        },
-        source: src(brygge_ir::SourceKind::Git, b"c1"),
-        status: EpistemicStatus::Stated,
-    });
+    let a1 = b
+        .add_atom(AtomDraft {
+            parents: vec![],
+            ops: vec![stated_add("a", blob)],
+            copies: vec![],
+            metadata: MetadataClaims {
+                author: Some(Identity {
+                    name: brygge_ir::model::Text::utf8("A"),
+                    email: Some(brygge_ir::model::Text::utf8("a@example.com")),
+                }),
+                ..MetadataClaims::default()
+            },
+            source: src(brygge_ir::SourceKind::Git, b"c1"),
+            status: EpistemicStatus::Stated,
+        })
+        .unwrap();
     b.add_ref(RefRecord {
         name: "main".into(),
         kind: RefKind::Branch,
         target: a1,
         status: EpistemicStatus::Stated,
         source: None,
+
+        annotation: None,
     })
     .unwrap();
     let ir = b.finish().unwrap();
@@ -1094,14 +1154,16 @@ fn replay_of_a_linear_10000_atom_history_clones_nothing_and_peaks_at_one() {
     for i in 0..10_000u32 {
         let blob = b.add_blob(format!("content-{i}").into_bytes());
         let path = format!("f{i}.txt");
-        let atom = b.add_atom(AtomDraft {
-            parents: parent.into_iter().collect(),
-            ops: vec![stated_add(&path, blob)],
-            rename_hints: vec![],
-            metadata: MetadataClaims::default(),
-            source: src(brygge_ir::SourceKind::Git, format!("c{i}").as_bytes()),
-            status: EpistemicStatus::Stated,
-        });
+        let atom = b
+            .add_atom(AtomDraft {
+                parents: parent.into_iter().collect(),
+                ops: vec![stated_add(&path, blob)],
+                copies: vec![],
+                metadata: MetadataClaims::default(),
+                source: src(brygge_ir::SourceKind::Git, format!("c{i}").as_bytes()),
+                status: EpistemicStatus::Stated,
+            })
+            .unwrap();
         parent = Some(atom);
     }
     let ir = b.finish().unwrap();
@@ -1126,32 +1188,38 @@ fn replay_of_a_branch_point_clones_once_for_the_earlier_sibling_only() {
         "brygge-decode-git",
     ));
     let blob = b.add_blob(b"root".to_vec());
-    let root = b.add_atom(AtomDraft {
-        parents: vec![],
-        ops: vec![stated_add("root.txt", blob)],
-        rename_hints: vec![],
-        metadata: MetadataClaims::default(),
-        source: src(brygge_ir::SourceKind::Git, b"root"),
-        status: EpistemicStatus::Stated,
-    });
+    let root = b
+        .add_atom(AtomDraft {
+            parents: vec![],
+            ops: vec![stated_add("root.txt", blob)],
+            copies: vec![],
+            metadata: MetadataClaims::default(),
+            source: src(brygge_ir::SourceKind::Git, b"root"),
+            status: EpistemicStatus::Stated,
+        })
+        .unwrap();
     let blob_a = b.add_blob(b"a".to_vec());
-    let _child_a = b.add_atom(AtomDraft {
-        parents: vec![root],
-        ops: vec![stated_add("a.txt", blob_a)],
-        rename_hints: vec![],
-        metadata: MetadataClaims::default(),
-        source: src(brygge_ir::SourceKind::Git, b"a"),
-        status: EpistemicStatus::Stated,
-    });
+    let _child_a = b
+        .add_atom(AtomDraft {
+            parents: vec![root],
+            ops: vec![stated_add("a.txt", blob_a)],
+            copies: vec![],
+            metadata: MetadataClaims::default(),
+            source: src(brygge_ir::SourceKind::Git, b"a"),
+            status: EpistemicStatus::Stated,
+        })
+        .unwrap();
     let blob_b = b.add_blob(b"b".to_vec());
-    let _child_b = b.add_atom(AtomDraft {
-        parents: vec![root],
-        ops: vec![stated_add("b.txt", blob_b)],
-        rename_hints: vec![],
-        metadata: MetadataClaims::default(),
-        source: src(brygge_ir::SourceKind::Git, b"b"),
-        status: EpistemicStatus::Stated,
-    });
+    let _child_b = b
+        .add_atom(AtomDraft {
+            parents: vec![root],
+            ops: vec![stated_add("b.txt", blob_b)],
+            copies: vec![],
+            metadata: MetadataClaims::default(),
+            source: src(brygge_ir::SourceKind::Git, b"b"),
+            status: EpistemicStatus::Stated,
+        })
+        .unwrap();
     let ir = b.finish().unwrap();
     let (outcome, stats) = replay_ir(&ir);
     assert!(
@@ -1173,17 +1241,21 @@ fn a_hostile_commit_message_renders_escaped_in_inspect_atoms_human() {
         "brygge-decode-git",
     ));
     let blob = b.add_blob(b"x".to_vec());
-    let _ = b.add_atom(AtomDraft {
-        parents: vec![],
-        ops: vec![stated_add("a", blob)],
-        rename_hints: vec![],
-        metadata: MetadataClaims {
-            message: Some("clear\x1b[2J and \u{202E}reordered".into()),
-            ..MetadataClaims::default()
-        },
-        source: src(brygge_ir::SourceKind::Git, b"c1"),
-        status: EpistemicStatus::Stated,
-    });
+    let _ = b
+        .add_atom(AtomDraft {
+            parents: vec![],
+            ops: vec![stated_add("a", blob)],
+            copies: vec![],
+            metadata: MetadataClaims {
+                message: Some(brygge_ir::model::Text::utf8(
+                    "clear\x1b[2J and \u{202E}reordered",
+                )),
+                ..MetadataClaims::default()
+            },
+            source: src(brygge_ir::SourceKind::Git, b"c1"),
+            status: EpistemicStatus::Stated,
+        })
+        .unwrap();
     let ir = b.finish().unwrap();
     let human = render_atoms_human(&ir);
     assert!(!human.contains('\x1b'), "the raw ESC byte must not appear");
@@ -1205,17 +1277,21 @@ fn a_line_separator_in_a_commit_subject_renders_escaped_in_inspect_atoms_human()
         "brygge-decode-git",
     ));
     let blob = b.add_blob(b"x".to_vec());
-    let _ = b.add_atom(AtomDraft {
-        parents: vec![],
-        ops: vec![stated_add("a", blob)],
-        rename_hints: vec![],
-        metadata: MetadataClaims {
-            message: Some("subject\u{2028}forged second line".into()),
-            ..MetadataClaims::default()
-        },
-        source: src(brygge_ir::SourceKind::Git, b"c1"),
-        status: EpistemicStatus::Stated,
-    });
+    let _ = b
+        .add_atom(AtomDraft {
+            parents: vec![],
+            ops: vec![stated_add("a", blob)],
+            copies: vec![],
+            metadata: MetadataClaims {
+                message: Some(brygge_ir::model::Text::utf8(
+                    "subject\u{2028}forged second line",
+                )),
+                ..MetadataClaims::default()
+            },
+            source: src(brygge_ir::SourceKind::Git, b"c1"),
+            status: EpistemicStatus::Stated,
+        })
+        .unwrap();
     let ir = b.finish().unwrap();
     let human = render_atoms_human(&ir);
     assert!(
@@ -1232,20 +1308,24 @@ fn a_ref_named_with_equals_cannot_forge_a_machine_key() {
         "brygge-decode-git",
     ));
     let blob = b.add_blob(b"x".to_vec());
-    let a1 = b.add_atom(AtomDraft {
-        parents: vec![],
-        ops: vec![stated_add("a", blob)],
-        rename_hints: vec![],
-        metadata: MetadataClaims::default(),
-        source: src(brygge_ir::SourceKind::Git, b"c1"),
-        status: EpistemicStatus::Stated,
-    });
+    let a1 = b
+        .add_atom(AtomDraft {
+            parents: vec![],
+            ops: vec![stated_add("a", blob)],
+            copies: vec![],
+            metadata: MetadataClaims::default(),
+            source: src(brygge_ir::SourceKind::Git, b"c1"),
+            status: EpistemicStatus::Stated,
+        })
+        .unwrap();
     b.add_ref(RefRecord {
         name: "a=b".into(),
         kind: RefKind::Branch,
         target: a1,
         status: EpistemicStatus::Stated,
         source: None,
+
+        annotation: None,
     })
     .unwrap();
     let ir = b.finish().unwrap();
@@ -1444,6 +1524,153 @@ fn decode_svn_from_a_live_repository_via_svnadmin() {
     let _ = std::fs::remove_dir_all(&repo);
 }
 
+#[test]
+fn cr_07_6_verifying_a_dumpfile_decode_against_a_live_repository_is_not_checked() {
+    // CR-07.6: the artifact records which form (dumpfile vs live `svnadmin dump`) it was decoded from.
+    // Comparing against the *other* form is not a meaningful check — `verify` must report `not-checked`
+    // (never a claimed mismatch) and exit 1, per the three-valued verdict (review 003 R-5).
+    if !svnadmin_available() {
+        eprintln!("skipping: svnadmin not on PATH");
+        return;
+    }
+    let dump = write_temp_dump(&svn_dump_with_branch());
+    let out = tmp_ir_path("svn-form-mismatch");
+    let code = run_decode(SourceKind::Svn, &dump, &out, false, true, Format::Machine);
+    assert!(
+        code == exit::CLEAN || code == exit::RECORDED_LOSS,
+        "unexpected exit {code}"
+    );
+    assert!(out.exists());
+
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let repo = std::env::temp_dir().join(format!(
+        "brygge-cli-svn-form-mismatch-{}-{n}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&repo);
+    assert!(
+        PCommand::new("svnadmin")
+            .arg("create")
+            .arg(&repo)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    );
+    use std::io::Write as _;
+    let mut child = PCommand::new("svnadmin")
+        .arg("load")
+        .arg(&repo)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn svnadmin load");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(&svn_dump_with_branch())
+        .unwrap();
+    assert!(child.wait().map(|s| s.success()).unwrap_or(false));
+
+    // The artifact was decoded from a dumpfile (`source_form=dumpfile`); verifying it against the live
+    // repository *directory* is a different form — `not-checked`, not a mismatch, exit 1/`incomplete`.
+    assert_eq!(
+        run_verify(&out, Some(&repo), Format::Machine),
+        exit::FAILURE,
+        "a cross-form comparison must be incomplete, never pass or fail"
+    );
+
+    // Review 010 R-3.3: assert the exact verdict and reason directly, not just the exit code (which any
+    // runtime error would also give).
+    let ir = read_ir(&out).unwrap().ir;
+    let against = run_against_source(&ir, &repo);
+    assert_eq!(against.machine_label(), "not-checked");
+    assert_eq!(
+        against.detail(),
+        Some("the artifact was made from a dumpfile; verify against the same form")
+    );
+    let verdict = Verdict::from(true, &against);
+    assert_eq!(verdict.machine_label(), "incomplete");
+
+    let _ = std::fs::remove_file(&dump);
+    let _ = std::fs::remove_file(&out);
+    let _ = std::fs::remove_dir_all(&repo);
+}
+
+#[test]
+fn cr_07_6_r1_an_svnadmin_version_difference_alone_does_not_fail_verification() {
+    // Review 010 R-1: `svnadmin`'s own version is a fact about the tool, not the history, so an upgrade
+    // between two decodes must never by itself make `verify --against-source` report a mismatch. Exercises
+    // the comparison helpers directly on hand-built IRs — no real `svnadmin` binary needed.
+    let dump = write_temp_dump(&svn_dump_with_branch());
+    let out = tmp_ir_path("svn-version-note");
+    let code = run_decode(SourceKind::Svn, &dump, &out, false, true, Format::Machine);
+    assert!(
+        code == exit::CLEAN || code == exit::RECORDED_LOSS,
+        "unexpected exit {code}"
+    );
+    let mut ir1 = read_ir(&out).unwrap().ir;
+    ir1.provenance
+        .params
+        .insert("svnadmin_version".to_string(), "1.14.1".to_string());
+
+    // Same version: no note, and alignment is a no-op.
+    assert_eq!(svn_version_note(&ir1, &ir1), None);
+    assert_eq!(align_svnadmin_version(&ir1, ir1.clone()), ir1);
+
+    // Different version, otherwise identical: a note, and alignment makes them equal (`Corresponds`).
+    let mut ir2 = ir1.clone();
+    ir2.provenance
+        .params
+        .insert("svnadmin_version".to_string(), "1.14.2".to_string());
+    assert_eq!(
+        svn_version_note(&ir1, &ir2),
+        Some("1.14.1 vs 1.14.2".to_string())
+    );
+    let aligned = align_svnadmin_version(&ir1, ir2.clone());
+    assert_eq!(
+        ir1, aligned,
+        "aligning the version param must make an otherwise-identical IR equal"
+    );
+
+    // A real difference alongside the version difference must still be caught after alignment.
+    let mut ir3 = ir2.clone();
+    ir3.provenance.brygge_version = "9.9.9-different".to_string();
+    let aligned3 = align_svnadmin_version(&ir1, ir3);
+    assert_ne!(
+        ir1, aligned3,
+        "a genuine content difference must survive version alignment"
+    );
+
+    let _ = std::fs::remove_file(&dump);
+    let _ = std::fs::remove_file(&out);
+}
+
+#[test]
+fn a_version_note_on_success_is_its_own_key_never_a_failure_detail() {
+    // Review 010 F-4: "corresponds" plus a `verify.detail.N` could be read as a problem. The
+    // informational svnadmin-version note is `verify.note.N`, and no `verify.detail` line appears.
+    let checks: Vec<(&'static str, CheckOutcome)> = vec![("integrity", CheckOutcome::Pass)];
+    let against = AgainstSourceOutcome::Corresponds(Some("1.14.1 vs 1.14.2".to_string()));
+    let verdict = Verdict::from(true, &against);
+    let lines = verify_machine_lines(&checks, true, &against, &verdict);
+    assert!(lines.contains(&"verify.against_source=corresponds".to_string()));
+    assert!(lines.contains(&"verify.note.0=1.14.1%20vs%201.14.2".to_string()));
+    assert!(lines.contains(&"verify.result=pass".to_string()));
+    assert!(
+        !lines.iter().any(|l| l.starts_with("verify.detail")),
+        "a note is not a failure detail: {lines:?}"
+    );
+
+    // A failure still uses `verify.detail`, and carries no `note`.
+    let against = AgainstSourceOutcome::DoesNotCorrespond("atom count differs".to_string());
+    let verdict = Verdict::from(true, &against);
+    let lines = verify_machine_lines(&checks, true, &against, &verdict);
+    assert!(lines.iter().any(|l| l.starts_with("verify.detail.0=")));
+    assert!(!lines.iter().any(|l| l.starts_with("verify.note")));
+}
+
 // ---- CVS (RFC 007) --------------------------------------------------------------------------------
 
 /// A single-revision (`1.1`) RCS `,v` with full text.
@@ -1573,6 +1800,79 @@ fn decode_cvs_partial_under_floor_imports_and_exits_convention_violation() {
     assert!(
         out.exists(),
         "the import still writes (confident changesets imported)"
+    );
+}
+
+#[test]
+fn decode_cvs_cr01_branch_revision_exits_recorded_loss() {
+    // CVS corrections handoff §1/§4.1 (review 008 R-7): the §1 reproduction fixture, exercised through
+    // the CLI end to end — a trunk 1.1 -> 1.2 -> 1.3 history with a branch revision 1.2.2.1 excludes the
+    // branch revision and exits 10 (recorded loss), never silently landing it in the main line.
+    let repo = cvs_repo();
+    let content = b"head\t1.3;\naccess;\nsymbols;\nlocks; strict;\n\n\n\
+1.3\ndate\t2024.01.03.00.00.00;\tauthor alice;\tstate Exp;\nbranches;\nnext\t1.2;\n\n\
+1.2\ndate\t2024.01.02.00.00.00;\tauthor alice;\tstate Exp;\nbranches\n\t1.2.2.1;\nnext\t1.1;\n\n\
+1.2.2.1\ndate\t2024.01.02.12.00.00;\tauthor alice;\tstate Exp;\nbranches;\nnext\t;\n\n\
+1.1\ndate\t2024.01.01.00.00.00;\tauthor alice;\tstate Exp;\nbranches;\nnext\t;\n\n\n\
+desc\n@@\n\n\n\
+1.3\nlog\n@trunk r3@\ntext\n@line1\nline2\nline3\n@\n\n\n\
+1.2\nlog\n@trunk r2@\ntext\n@d3 1\n@\n\n\n\
+1.2.2.1\nlog\n@branch commit@\ntext\n@d1 2\na2 1\nBRANCH CONTENT\n@\n\n\n\
+1.1\nlog\n@trunk r1@\ntext\n@d2 1\n@\n";
+    write_vfile(&repo, "f.c", content);
+    let out = repo.dir.join("out.ir");
+    let code = run_decode(
+        SourceKind::Cvs,
+        repo.path(),
+        &out,
+        false,
+        false,
+        Format::Machine,
+    );
+    assert_eq!(code, exit::RECORDED_LOSS);
+    assert!(out.exists());
+}
+
+#[test]
+fn verify_cvs_derivations_requires_confidence_rule_as_well_as_date_rule() {
+    // CVS corrections handoff §2.2 (review 008 R-8): `confidence_rule` is required for
+    // `ReconstructedChangeset` alongside `date_rule` — a confidence without the rule that produced it
+    // cannot be reviewed. Every other required param is present; only `confidence_rule` is missing.
+    let mut b = IrBuilder::new(blank_provenance(
+        brygge_ir::SourceKind::Cvs,
+        "brygge-decode-cvs",
+    ));
+    let blob = b.add_blob(b"x".to_vec());
+    let mut params = BTreeMap::new();
+    params.insert("window_secs".to_string(), "180".to_string());
+    params.insert("cluster_keys".to_string(), "author,log".to_string());
+    params.insert("date_rule".to_string(), "latest-per-file".to_string());
+    let derivation = Derivation {
+        kind: DerivationKind::ReconstructedChangeset,
+        by: "brygge-decode-cvs".into(),
+        decoder_version: "0.1.0".into(),
+        params,
+        confidence: Some(90),
+    };
+    let _ = b
+        .add_atom(AtomDraft {
+            parents: vec![],
+            ops: vec![stated_add("a", blob)],
+            copies: vec![],
+            metadata: MetadataClaims::default(),
+            source: src(brygge_ir::SourceKind::Cvs, b"a@1.1"),
+            status: EpistemicStatus::Derived(derivation),
+        })
+        .unwrap();
+    let ir = b.finish().unwrap();
+    assert_eq!(verify_bytes(&brygge_ir::to_bytes(&ir)), exit::VERIFY_FAILED);
+    // Review 008 F-5: exit 50 alone would also come from any other failure — the check's own detail must
+    // name the missing param.
+    let outcome = check_derivations(&ir);
+    assert!(outcome.is_fail());
+    assert_eq!(
+        outcome.detail(),
+        Some("a ReconstructedChangeset derivation is missing required param 'confidence_rule'")
     );
 }
 

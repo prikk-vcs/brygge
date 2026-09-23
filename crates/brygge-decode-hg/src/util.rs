@@ -31,3 +31,19 @@ pub(crate) fn parse_hex20(s: &str) -> Result<[u8; 20], Error> {
     }
     Ok(out)
 }
+
+/// Render bytes for an error/refusal message losslessly: printable ASCII as-is, everything else as
+/// `\xNN` — never a lossy UTF-8 conversion of untrusted data (review 009 R-2/R-4 parity with the other
+/// decoders' non-UTF-8 path handling).
+pub(crate) fn escape_bytes(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(bytes.len());
+    for &b in bytes {
+        if b.is_ascii_graphic() || b == b' ' {
+            out.push(b as char);
+        } else {
+            let _ = write!(out, "\\x{b:02x}");
+        }
+    }
+    out
+}

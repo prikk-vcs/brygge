@@ -31,6 +31,7 @@ fn an_over_limit_dumpfile_is_refused_without_being_read() {
     let limits = Limits {
         max_dump_bytes: 1024,
         max_stderr_bytes: 1024,
+        max_svnadmin_version_bytes: 4096,
     };
     let start = Instant::now();
     let result = Source::DumpFile(path.clone()).load_with(&limits);
@@ -104,6 +105,7 @@ fn an_over_limit_svnadmin_dump_is_refused() {
     let limits = Limits {
         max_dump_bytes: 128,
         max_stderr_bytes: 1024,
+        max_svnadmin_version_bytes: 4096,
     };
     let result = Source::LocalRepo(repo.clone()).load_with(&limits);
     let _ = std::fs::remove_dir_all(&repo);
@@ -131,10 +133,11 @@ fn a_child_writing_a_lot_of_stderr_does_not_deadlock() {
     let limits = Limits {
         max_dump_bytes: 4096,
         max_stderr_bytes: 4096,
+        max_svnadmin_version_bytes: 4096,
     };
 
     let start = Instant::now();
-    let result = run_and_capture(cmd, "stress test", &limits);
+    let result = run_and_capture(cmd, "stress test", "the dumpstream", &limits);
     let elapsed = start.elapsed();
 
     assert!(
@@ -146,6 +149,37 @@ fn a_child_writing_a_lot_of_stderr_does_not_deadlock() {
         matches!(result, Err(crate::Error::ResourceLimit { .. })),
         "expected a resource-limit refusal, got {result:?}"
     );
+}
+
+#[test]
+fn an_over_limit_svnadmin_version_output_is_named_as_such_not_as_the_dumpstream() {
+    // Review 010 F-3: the refusal names what overflowed.
+    let mut cmd = Command::new("sh");
+    cmd.arg("-c").arg("yes v 2>/dev/null | head -c 100000");
+    let limits = Limits {
+        max_dump_bytes: 64,
+        max_stderr_bytes: 64,
+        max_svnadmin_version_bytes: 64,
+    };
+    let result = run_and_capture(cmd, "version", "the svnadmin --version output", &limits);
+    match result {
+        Err(crate::Error::ResourceLimit { what, .. }) => {
+            assert_eq!(what, "the svnadmin --version output");
+        }
+        other => panic!("expected a resource-limit refusal, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_version_line_with_nothing_printable_neutralizes_to_empty() {
+    // Review 010 F-2: an empty neutralized version is `Error::Open`, never `""`.
+    assert!(matches!(
+        version_from_output(b"\x01\x02\xff\t\n"),
+        Err(crate::Error::Open(_))
+    ));
+    assert_eq!(version_from_output(b"1.14.5\nmore\n").unwrap(), "1.14.5");
+    assert_eq!(neutralize_version(b"\x01\x02\xff\t"), "");
+    assert_eq!(neutralize_version(b"1.14.5\x1b[2J"), "1.14.5[2J");
 }
 
 #[test]
@@ -164,9 +198,10 @@ fn a_large_stderr_with_valid_stdout_under_the_cap_succeeds() {
     let limits = Limits {
         max_dump_bytes: 4096,
         max_stderr_bytes: 4096,
+        max_svnadmin_version_bytes: 4096,
     };
 
-    let result = run_and_capture(cmd, "large stderr test", &limits);
+    let result = run_and_capture(cmd, "large stderr test", "the dumpstream", &limits);
     assert_eq!(
         result.unwrap(),
         b"ok",

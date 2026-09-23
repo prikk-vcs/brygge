@@ -72,6 +72,9 @@ pub struct Entry {
     pub flags: u16,
     /// The revision this one is a delta against; `== rev` means a full snapshot.
     pub base_rev: i32,
+    /// The changeset revision that introduced this revision (used to resolve a copy source's true
+    /// changeset when neither parent carries it directly — RFC 005 corrections handoff §2).
+    pub link_rev: i32,
     /// First parent revision, or [`NULL_REV`].
     pub p1: i32,
     /// Second parent revision, or [`NULL_REV`].
@@ -162,6 +165,7 @@ impl Revlog {
         let comp_len = u32_be(buf, at + 8)? as usize;
         let uncomp_len = u32_be(buf, at + 12)? as usize;
         let base_rev = u32_be(buf, at + 16)? as i32;
+        let link_rev = u32_be(buf, at + 20)? as i32;
         let p1 = u32_be(buf, at + 24)? as i32;
         let p2 = u32_be(buf, at + 28)? as i32;
         let node_slice = buf
@@ -171,6 +175,7 @@ impl Revlog {
         Ok(Entry {
             flags,
             base_rev,
+            link_rev,
             p1,
             p2,
             node,

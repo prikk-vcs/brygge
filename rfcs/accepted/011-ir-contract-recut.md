@@ -194,6 +194,12 @@ the path to be present. Git and hg never emit it.
   for annotated tags (RFC 004 OQ-B's deferred slot).
 - **Effect:** the matching drop records disappear, and imports that were "recorded loss" only because of
   annotated tags become clean.
+- **Git conventions** *(recorded after review 011)*:
+  - `extras` and `signatures` are each in header order. Their **interleaving** with each other (e.g.
+    `mergetag` before `gpgsig`) is not recorded. A consumer cannot rebuild the commit object's bytes from
+    the IR; the preserved object id is what identifies it.
+  - An annotated tag's `message` and `gpgsig` are split as gix splits them. The newline between a signed
+    message and its signature block belongs to neither.
 
 ### D-10 — Every public item has a stated meaning, and the derivation registry is contractual
 
@@ -202,7 +208,8 @@ the path to be present. Git and hg never emit it.
 - Each `DerivationKind` documents the params it **requires**, and `verify` enforces them. This is part of
   the contract:
   - `InferredRename`: `rename_algorithm`, `rename_threshold`;
-  - `ReconstructedChangeset`: `window_secs`, `cluster_keys`, `date_rule`;
+  - `ReconstructedChangeset`: `window_secs`, `cluster_keys`, `date_rule`, `confidence_rule` (the last
+    added after review 008: a confidence without its rule cannot be reviewed);
   - `ReconstructedBranch`: `layout` or `source`.
 - `confidence` is `0..=100`; out-of-range values are rejected on decode.
 
