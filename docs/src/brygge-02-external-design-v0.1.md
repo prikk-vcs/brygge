@@ -71,7 +71,7 @@ The command surface makes the **decode/encode separation** visible and the **hon
 
 **Revised in v0.3 (2026-09-23, owner ruling D-7).** The surface is three verbs with one noun per concept, and nothing is silently ignored.
 
-**Vocabulary** (used identically in the CLI, reports, README and this document): *source* (the repository or dumpfile read), *artifact* (the IR file brygge writes), *stated*, *derived*, *dropped*, *refused*. Imported authorship is **Unverifiable**: it cannot be checked, which is different from "not yet checked".
+**Vocabulary** (used identically in the CLI, reports, README and this document): *source* (the repository or dumpfile read), *artifact* (the IR file brygge writes), *stated*, *derived*, *dropped* (not carried, and recorded), *flagged* (a convention or confidence problem recorded in an artifact that was produced; RFC 011 D-8), *refused* (the whole import declined, so no artifact is written). Imported authorship is **Unverifiable**: it cannot be checked, which is different from "not yet checked".
 
 - **CL-01 — `brygge decode <source-kind> <source> --out <artifact> [source options]`**
   - Reads a source into an IR artifact. `<source-kind>` ∈ {`git`,`hg`,`svn`,`cvs`} today, each with its own honestly-scoped support (SRC-*).

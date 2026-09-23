@@ -1,9 +1,8 @@
 # RFC 011 — IR contract re-cut before the first release
 
-**Status.** **Proposed (2026-09-23).** Drafted by the architect under owner ruling **D-1 (a)** (2026-09-23):
-"re-cut the IR contract once, before the first release". One point is the owner's to rule on
-acceptance: **OQ-A**, the released contract label. Everything else is architect-settled design within
-that ruling, open to the owner's review.
+**Status.** **Accepted (2026-09-23)** by the owner, under owner ruling **D-1 (a)**. **OQ-A is ruled:** the
+released contract label is **`0.2.0`** under D-3's `0.y` rule (the recommendation, accepted with the RFC).
+The implementation handoff is `../handoffs/011-ir-contract-recut/brygge-ir-recut-handoff-v1.md`.
 **Tracks.** ROADMAP release 0.1.0 ("honest decode"). It supersedes parts of RFC 001 (D-3), RFC 002 (D-3)
 and RFC 003 (D-1, D-3, D-4, D-6, D-7), recorded under *Consequences and supersessions*. It realizes intake-review corrections CR-09, CR-03
 (text), CR-04 (field semantics) and CR-06 (carrying).
@@ -205,10 +204,10 @@ the path to be present. Git and hg never emit it.
   - `ReconstructedBranch`: `layout` or `source`.
 - `confidence` is `0..=100`; out-of-range values are rejected on decode.
 
-## Open question (the owner's, at acceptance)
+## Open question — resolved
 
-- **OQ-A — The released contract label.** `0.2.0` under the 0.y rule of D-3 (**recommended**), or `1.0.0`
-  with a bump to the major on every break.
+- **OQ-A — The released contract label — RULED 2026-09-23: `0.2.0`** under the 0.y rule of D-3 (recommended over the
+  alternative: `1.0.0` with a bump to the major on every break).
 
 The critical-bit mechanism (D-1) is **not** open: the owner approved it as part of ruling D-1 (a) on
 2026-09-23.

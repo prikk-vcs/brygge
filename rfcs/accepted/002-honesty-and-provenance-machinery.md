@@ -6,6 +6,9 @@ IR *model* (`Stated`/`Derived` on every assertion, renames as literal ops + a ma
 model properties into guaranteed, non-suppressible, comparable, and recoverable *behaviour*: the
 derivation and loss taxonomies, the fidelity-report contract, provenance completeness, and the
 non-suppressibility rule.
+**Superseded in part by RFC 011 (accepted 2026-09-23):** D-3's report sections lose `refused` (a refusal
+produces no artifact) and gain `flagged` (typed convention/confidence flags). D-1/D-2's taxonomies stand.
+See `011-ir-contract-recut.md`.
 **Tracks.** ROADMAP Phase A0; requirements §4 (`HO-1…HO-5`), §3 (`PR-3…PR-9`), §5 (`VF-3/VF-4`), §10
 (`IR-4/IR-5`); external design §2.3 (`FS-01…06`), §2.4 (`PX-01…03`), `CT-04`, `CL-07`; prikk RFC 113
 §3.1. Track A — not prikk-gated (the prikk-specific provenance *object* is RFC 008/UD-1; this RFC fixes

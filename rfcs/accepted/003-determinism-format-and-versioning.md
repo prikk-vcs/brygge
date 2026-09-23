@@ -13,6 +13,14 @@ change** — an hg import round-trips under the same contract, using only fields
 optional fields / new versioned enum variants only), a pre-freeze `0.x` artifact stays readable, and a
 breaking change would be a deliberate contract `2.0` shipped with a converter. No format bytes changed at
 the freeze — 1.0.0 is byte-identical to the 0.1.0 it declares stable.
+**Superseded in part by RFC 011 (accepted 2026-09-23):**
+- D-1 (the positional codec) → tagged records with a critical bit and a strict canonical form;
+- D-3/D-6 (a digest recomputed from the model) → a digest over the stored bytes, with the version gate first;
+- D-4's non-identity registry → empty (`import_time` removed);
+- **D-7's freeze at 1.0.0 (2026-09-08) is recorded as a pre-release freeze.** It was superseded before any
+  release, and the released contract is `0.2.0` under RFC 011 D-3.
+
+See `011-ir-contract-recut.md`. The text below is kept as the record.
 **Tracks.** ROADMAP Phase A0; requirements §5 (`VF-1`), §6 (`ID-4`), §10 (`IX-07`); external design
 §2.2 (`IX-01/IX-07`), `OP-01`; threat model `C-3b`, `INV-6`. Track A — not prikk-gated.
 **Touches.** `brygge-ir`'s `artifact` module (codec, container, manifest, digest) and the determinism

@@ -38,7 +38,7 @@ Numbering is brygge's own. **Track A** (decode → IR) depends on nothing in pri
 | **006** | **Subversion decoder** — branch reconstruction by convention (derived), mergeinfo discipline | A3 | decode: none · floor contents: OQ-3 |
 | **007** | **CVS decoder** — changeset reconstruction, lossy-but-labelled verdict (SRC-C3) | A4 | decode: none · floor contents: OQ-3 |
 | **008** | **prikk encoder** — reserved; conforms to prikk's import foundations once they exist (ROADMAP Track B1) | B1 | prikk theme 17 |
-| **011** | **IR contract re-cut** — tagged records with a critical bit, a strict canonical form, typed flags, copies with their source point, text as bytes, carried extras (owner ruling D-1) | 0.1.0 | owner: OQ-A (the contract label) |
+| **011** | **IR contract re-cut** — tagged records with a critical bit, a strict canonical form, typed flags, copies with their source point, text as bytes, carried extras (owner ruling D-1) | 0.1.0 | accepted; OQ-A ruled (`0.2.0`) |
 
 The list will grow (a second-target encoder RFC to prove PU-3; further sources under "etc."). Each RFC
 is written by the architect and reviewed/approved per `GOVERNANCE.md`.
@@ -53,10 +53,10 @@ freeze held across every source **with no contract change** — Git and hg were 
 (convention-derived refs) and CVS (a `Derived` changeset *atom*, the deepest stress) were post-freeze and
 fit **additive-only, needing nothing added**. The contract is `1.0.0`, additive-only within major 1.
 
-- **Proposed:**
-  - [RFC 011 — IR contract re-cut before the first release](proposed/011-ir-contract-recut.md) — opened
-    2026-09-23 under owner ruling D-1 (a); awaiting the owner's acceptance and ruling on OQ-A.
 - **Accepted:**
+  - [RFC 011 — IR contract re-cut before the first release](accepted/011-ir-contract-recut.md) — accepted
+    2026-09-23 (owner ruling D-1 (a); OQ-A ruled: contract `0.2.0`). Supersedes parts of RFC 001/002/003.
+    Handoff: `handoffs/011-ir-contract-recut/`.
   - [RFC 006 — Subversion decoder](accepted/006-subversion-decoder.md) — accepted 2026-09-08 (M3);
     **increments 1–2 built and green** (`brygge-decode-svn` + CLI wiring, zero new crate dependencies). The gradient's third
     source and the IR's **derived-side** stress test: SVN revisions are

@@ -6,6 +6,9 @@ Defines *what the IR is*: its logical model, how epistemic status and provenance
 holds evidence-for-identity rather than identity, and the shape of its durable artifact.
 Handoff:
 [`../handoffs/001-ir-foundations/ir-foundations-handoff-v1.md`](../handoffs/001-ir-foundations/ir-foundations-handoff-v1.md).
+**Superseded in part by RFC 011 (accepted 2026-09-23):** D-3's `RenameHint` is replaced by `CopyRecord`
+(with the copy's source atom). The principle stands: literal ops plus a marked record, never collapsed. D-1
+gains the typed `flags` list. See `011-ir-contract-recut.md`.
 **Tracks.** ROADMAP Phase A0 (foundations); requirements §10 (`IR-1…IR-6`), external design §2.2
 (`IX-01…07`); prikk RFC 113 §3.1 and §4.2 (the architect's IR rulings). Track A — depends on nothing in
 prikk.
