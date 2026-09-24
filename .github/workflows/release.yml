@@ -346,15 +346,33 @@ jobs:
             printf '\n%s\n' "$NOTE" >> "$RUNNER_TEMP/notes.md"
           fi
           cat "$RUNNER_TEMP/notes.md"
-      - name: Create the release
+      # `gh release create` marks a new release "Latest" by default, so a release of an older tag (0.1.0 after
+      # 0.1.1) would point users at the older version. Latest only when this is higher than every release on
+      # GitHub. A failure of the tool fails the job: never a guess. The answer reaches the next step through a
+      # step output.
+      - name: Is this the latest release?
+        id: latest
         working-directory: source
         run: |
           set -euo pipefail
+          latest=$(../release-tools/tools/release-latest.sh "$TAG")
+          echo "latest=$latest" >> "$GITHUB_OUTPUT"
+          echo "marked Latest: $latest"
+      - name: Create the release
+        working-directory: source
+        env:
+          LATEST: ${{ steps.latest.outputs.latest }}
+        run: |
+          set -euo pipefail
+          if [ "$LATEST" != true ] && [ "$LATEST" != false ]; then
+            echo "::error::the latest-release decision is neither true nor false"
+            exit 1
+          fi
           files=()
           if [ "$BINARIES" = true ]; then
             files=(../dist/*.tar.gz ../dist/*.tar.gz.sha256 ../dist/*.zip ../dist/*.zip.sha256)
           fi
-          gh release create "$TAG" --verify-tag --title "$TAG" --notes-file "$RUNNER_TEMP/notes.md" "${files[@]}"
+          gh release create "$TAG" --verify-tag --latest="$LATEST" --title "$TAG" --notes-file "$RUNNER_TEMP/notes.md" "${files[@]}"
 
   # ---- 7. outcome: the run is green only when the release was made ------------------------------------
   # A skipped job is not a failure, so without this a run in which nothing was released could end green. This

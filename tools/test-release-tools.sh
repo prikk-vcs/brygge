@@ -360,6 +360,58 @@ absent broken >/dev/null 2>&1 || rc=$?
 [ "$rc" -eq 2 ] || die "check-release-absent: a gh failure should exit 2, got $rc"
 pass "check-release-absent: a gh failure is 'unknown' (exit 2), never 'absent'"
 
+# ---- tools/release-latest.sh: a fake `gh release list` ---------------------------------------------------
+mkdir -p "$scratch/fakebin-list"
+cat >"$scratch/fakebin-list/gh" <<'GH'
+#!/usr/bin/env bash
+# a fake `gh release list --limit N --json tagName`: FAKE_TAGS is a JSON list of tag names, or FAKE_GH_FAIL fails
+if [ -n "${FAKE_GH_FAIL:-}" ]; then
+    echo "HTTP 502: bad gateway" >&2
+    exit 1
+fi
+if [ -n "${FAKE_GH_RAW:-}" ]; then
+    printf '%s\n' "$FAKE_GH_RAW"
+    exit 0
+fi
+jq -c '[.[] | {tagName: .}]' <<<"${FAKE_TAGS:-[]}"
+GH
+chmod +x "$scratch/fakebin-list/gh"
+latest() { # latest <asked> <json list of existing tags>
+    FAKE_TAGS=$2 PATH="$scratch/fakebin-list:$PATH" tools/release-latest.sh "$1"
+}
+is_latest() { # is_latest <what> <expected> <asked> <existing>
+    local got
+    got=$(latest "$3" "$4") || die "release-latest: $1: the tool failed"
+    [ "$got" = "$2" ] || die "release-latest: $1: expected $2, got $got"
+    pass "release-latest: $1 -> $2"
+}
+is_latest "no releases yet" true 0.1.0 '[]'
+is_latest "0.1.1 exists, asking for 0.1.0 (an older tag never becomes Latest)" false 0.1.0 '["0.1.1"]'
+is_latest "0.1.0 and 0.1.1 exist, asking for 0.1.2" true 0.1.2 '["0.1.0","0.1.1"]'
+is_latest "0.1.9 exists, asking for 0.1.10 (numeric, not lexical)" true 0.1.10 '["0.1.9"]'
+is_latest "0.1.10 exists, asking for 0.1.9" false 0.1.9 '["0.1.10"]'
+is_latest "a higher major beats a higher minor" false 1.0.0 '["2.0.0","0.9.9"]'
+is_latest "a non-version tag is ignored" true 0.1.2 '["0.1.1","nightly","v9.9.9","latest"]'
+is_latest "a non-version tag alone: the first real release" true 0.1.0 '["nightly"]'
+is_latest "the same tag already released is not 'higher'" false 0.1.1 '["0.1.0","0.1.1"]'
+rc=0
+FAKE_GH_FAIL=1 PATH="$scratch/fakebin-list:$PATH" tools/release-latest.sh 0.1.2 >"$scratch/out" 2>&1 || rc=$?
+[ "$rc" -eq 2 ] || die "release-latest: a gh failure should exit 2, got $rc"
+grep -q "could not list the releases" "$scratch/out" || die "release-latest: the gh failure was not explained"
+pass "release-latest: a gh failure is exit 2 with a message, never a guess"
+rc=0
+FAKE_GH_RAW='not json' PATH="$scratch/fakebin-list:$PATH" tools/release-latest.sh 0.1.2 >"$scratch/out" 2>&1 || rc=$?
+[ "$rc" -eq 2 ] || die "release-latest: an unreadable answer should exit 2, got $rc"
+pass "release-latest: an answer that is not a JSON list is exit 2"
+rc=0
+FAKE_TAGS=$(jq -cn '[range(0;1000) | "0.0.\(.)"]') PATH="$scratch/fakebin-list:$PATH" tools/release-latest.sh 9.9.9 >"$scratch/out" 2>&1 || rc=$?
+[ "$rc" -eq 2 ] || die "release-latest: a listing as long as the limit should exit 2, got $rc"
+pass "release-latest: a listing that may be cut off is exit 2"
+rc=0
+tools/release-latest.sh 0.1 >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 2 ] || die "release-latest: a non-version argument should exit 2, got $rc"
+pass "release-latest: a non-version argument is a usage error"
+
 # ---- tools/check-published.sh -------------------------------------------------------------------------
 if git rev-parse --verify --quiet refs/tags/0.1.0 >/dev/null; then
     expect_ok "check-published: the published 0.1.0 crates are byte-identical to the tag" \

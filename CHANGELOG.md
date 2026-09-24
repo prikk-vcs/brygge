@@ -8,6 +8,15 @@ Every handoff adds its own entry in its own commit.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The release workflow no longer reports success without releasing.** A dispatch with the binaries off skipped
+  the check of what was published and the GitHub release, and the run still ended green; those jobs now run,
+  and a final job fails any run in which the release was not made.
+- **A GitHub release is marked "Latest" only when it is the highest version.** Releasing an older tag (0.1.0
+  after 0.1.1) had made it "Latest"; `tools/release-latest.sh` now decides, comparing versions as numbers, and
+  the workflow passes its answer to `gh release create --latest`.
+
 ### Changed
 
 - **A release no longer waits for a manual approval in GitHub.** The owner's go-ahead, given before the

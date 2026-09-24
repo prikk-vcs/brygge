@@ -63,6 +63,8 @@ published, its tag is never moved or deleted (`GOVERNANCE.md`).
 - *Actions → Release → Run workflow* with the same `tag`. It is safe: crates already published are
   skipped.
 - It stops without changing anything if the GitHub release already exists.
+- A release of an older tag is never marked "Latest": only a version higher than every release already on
+  GitHub is (`tools/release-latest.sh`).
 - The inputs `binaries: false` and `note` are for releases whose binaries cannot or should not be built;
   0.1.0 is the only such release so far.
 
