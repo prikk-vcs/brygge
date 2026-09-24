@@ -346,3 +346,197 @@ pub fn cvs_revs(dir: &Path, n: u64) -> Stats {
         bytes,
     }
 }
+
+// ---- CVS: branches and a nested branch (RFC 013 C-2) ---------------------------------------------------
+
+/// The shape of `cvs-branches`: the branch `BR` is cut from trunk revision `bp` and has `b` revisions; the
+/// branch `NEST` is cut from `BR`'s revision `mid` and has `c` revisions.
+struct BranchShape {
+    bp: u64,
+    b: u64,
+    mid: u64,
+    c: u64,
+}
+
+impl BranchShape {
+    fn of(n: u64) -> Self {
+        let bp = (n / 2).max(1);
+        let b = (n / 4).max(1);
+        Self {
+            bp,
+            b,
+            mid: (b / 2).max(1),
+            c: (n / 8).max(1),
+        }
+    }
+}
+
+/// `text` with three lines rewritten to carry `tag`, and the ed-style delta that turns `text` into the result
+/// (each rewritten line is a replace, as in the trunk's deltas).
+fn branch_edit(text: &[String], file: u64, j: u64, tag: &str) -> (Vec<String>, String) {
+    let mut out = text.to_vec();
+    let mut delta = String::new();
+    let l = CVS_LINES as u64;
+    let mut at = vec![
+        ((j * 11 + 3) % l) as usize,
+        ((j * 17 + 5) % l) as usize,
+        ((j * 31 + 7) % l) as usize,
+    ];
+    at.sort_unstable();
+    at.dedup();
+    for line in at {
+        out[line] = format!("line {line} of file {file} {tag} {j}\n");
+        delta.push_str(&format!("d{} 1\na{} 1\n{}", line + 1, line + 1, out[line]));
+    }
+    (out, delta)
+}
+
+/// One file of `cvs-branches`: `n` trunk revisions, the branch `BR` off `1.bp` and `NEST` off `BR`'s `mid`-th
+/// revision. Every revision's date is an hour apart from every other across all files (trunk, then `BR`, then
+/// `NEST`), so no two revisions cluster. Returns the file, the total bytes of all its revision texts, and of its
+/// trunk revisions alone.
+fn cvs_branch_file(i: u64, n: u64) -> (Vec<u8>, u64, u64) {
+    let shape = BranchShape::of(n);
+    let (bp, b, mid, c) = (shape.bp, shape.b, shape.mid, shape.c);
+    let mut model = FileModel::new(i);
+    let mut trunk_bytes = model.text().len() as u64;
+    let mut edits: Vec<Vec<(usize, u64)>> = vec![Vec::new(), Vec::new()];
+    // The trunk's text at `bp` (the branch point); for `bp == 1` it is the first revision's.
+    let mut bp_text = String::from_utf8(model.text()).expect("ascii");
+    for _ in 2..=n {
+        edits.push(model.advance());
+        trunk_bytes += model.text().len() as u64;
+        if model.rev == bp {
+            bp_text = String::from_utf8(model.text()).expect("ascii");
+        }
+    }
+    let head = model.text();
+    let mut all_bytes = trunk_bytes;
+
+    // BR: forward deltas from the trunk's revision `bp`; NEST from BR's revision `mid`.
+    let lines_of =
+        |t: &str| -> Vec<String> { t.split_inclusive('\n').map(str::to_string).collect() };
+    let mut br_deltas: Vec<String> = Vec::new();
+    let mut nest_deltas: Vec<String> = Vec::new();
+    let mut cur = lines_of(&bp_text);
+    let mut mid_text = cur.clone();
+    for j in 1..=b {
+        let (next, delta) = branch_edit(&cur, i, j, "BR");
+        all_bytes += next.concat().len() as u64;
+        cur = next;
+        br_deltas.push(delta);
+        if j == mid {
+            mid_text = cur.clone();
+        }
+    }
+    let mut cur = mid_text;
+    for j in 1..=c {
+        let (next, delta) = branch_edit(&cur, i, j, "NEST");
+        all_bytes += next.concat().len() as u64;
+        cur = next;
+        nest_deltas.push(delta);
+    }
+
+    let bnum = |j: u64| format!("1.{bp}.2.{j}");
+    let nnum = |j: u64| format!("1.{bp}.2.{mid}.2.{j}");
+    let mut s = String::new();
+    s.push_str(&format!(
+        "head\t1.{n};\naccess;\nsymbols\n\tBR:1.{bp}.0.2\n\tNEST:1.{bp}.2.{mid}.0.2;\nlocks; strict;\n\n\n"
+    ));
+    for k in (1..=n).rev() {
+        let next = if k > 1 {
+            format!("1.{}", k - 1)
+        } else {
+            String::new()
+        };
+        let branches = if k == bp {
+            format!("branches\n\t{};\n", bnum(1))
+        } else {
+            "branches;\n".to_string()
+        };
+        s.push_str(&format!(
+            "1.{k}\ndate\t{};\tauthor a;\tstate Exp;\n{branches}next\t{next};\n\n",
+            cvs_date(i, k)
+        ));
+    }
+    for j in 1..=b {
+        let next = if j < b { bnum(j + 1) } else { String::new() };
+        let branches = if j == mid {
+            format!("branches\n\t{};\n", nnum(1))
+        } else {
+            "branches;\n".to_string()
+        };
+        s.push_str(&format!(
+            "{}\ndate\t{};\tauthor a;\tstate Exp;\n{branches}next\t{next};\n\n",
+            bnum(j),
+            cvs_date(i, n + j)
+        ));
+    }
+    for j in 1..=c {
+        let next = if j < c { nnum(j + 1) } else { String::new() };
+        s.push_str(&format!(
+            "{}\ndate\t{};\tauthor a;\tstate Exp;\nbranches;\nnext\t{next};\n\n",
+            nnum(j),
+            cvs_date(i, n + b + j)
+        ));
+    }
+    s.push_str("\ndesc\n@@\n\n\n");
+    s.push_str(&format!(
+        "1.{n}\nlog\n@file{i} rev {n}@\ntext\n@{}@\n",
+        String::from_utf8(head).expect("ascii")
+    ));
+    for k in (1..n).rev() {
+        let mut delta = String::new();
+        for &(l, prev_rev) in &edits[usize::try_from(k + 1).expect("k fits")] {
+            let line1 = l + 1;
+            delta.push_str(&format!("d{line1} 1\na{line1} 1\n"));
+            delta.push_str(&format!("line {l} of file {i} rev {prev_rev}\n"));
+        }
+        s.push_str(&format!(
+            "\n1.{k}\nlog\n@file{i} rev {k}@\ntext\n@{delta}@\n"
+        ));
+    }
+    for (j, delta) in br_deltas.iter().enumerate() {
+        s.push_str(&format!(
+            "\n{}\nlog\n@file{i} BR {}@\ntext\n@{delta}@\n",
+            bnum(j as u64 + 1),
+            j + 1
+        ));
+    }
+    for (j, delta) in nest_deltas.iter().enumerate() {
+        s.push_str(&format!(
+            "\n{}\nlog\n@file{i} NEST {}@\ntext\n@{delta}@\n",
+            nnum(j as u64 + 1),
+            j + 1
+        ));
+    }
+    (s.into_bytes(), all_bytes, trunk_bytes)
+}
+
+/// `cvs-branches <n>`: 20 `,v` files, each with `n` trunk revisions, a branch `BR` of `n/4` revisions off the
+/// middle of the trunk, and a nested branch `NEST` of `n/8` revisions off `BR`'s middle. Returns the IR
+/// statistics with `--reconstruct-refs` (every revision is one atom; the parents are exact and every branch's
+/// tree is its parent's, so there are no branch-point atoms) and without it (the trunk alone).
+pub fn cvs_branches(dir: &Path, n: u64) -> (Stats, Stats) {
+    let shape = BranchShape::of(n);
+    let (mut all, mut trunk) = (0u64, 0u64);
+    for i in 0..CVS_FILES {
+        let (v, a, t) = cvs_branch_file(i, n);
+        all += a;
+        trunk += t;
+        std::fs::write(dir.join(format!("f{i}.c,v")), v).expect("write ,v");
+    }
+    let per = |k: u64| usize::try_from(CVS_FILES * k).expect("fits");
+    (
+        Stats {
+            atoms: per(n + shape.b + shape.c),
+            blobs: per(n + shape.b + shape.c),
+            bytes: all,
+        },
+        Stats {
+            atoms: per(n),
+            blobs: per(n),
+            bytes: trunk,
+        },
+    )
+}

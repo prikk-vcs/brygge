@@ -38,6 +38,16 @@ are imported only with `--reconstruct-refs`, and only the ones that have a name.
 - **No merges are inferred.** CVS records none (a merge is a plain commit on the target), and brygge does not
   guess them from the content: a branch's atoms have one parent.
 - **Tags on a branch revision** resolve to the branch changeset that contains that revision.
+- **A branch cut from a branch revision** (a branch of a branch; `cvs tag -b` from a working copy that is on
+  another branch) is a line hanging from **that branch**: its parent is the changeset of the parent branch that
+  holds the branch-point revision, chosen by the same earliest-covering rule, and the artifact records the
+  parent line (`parent_line`). A branch is imported after its parent line.
+- **A mixed working copy** (`cvs tag -b` from a working copy where some files are on one branch and some on
+  another, or on the trunk) gives one symbol whose branch points lie on several lines. The parent line is the
+  one holding **most** of them (ties go to the main line, then to the lower symbol name). The files whose
+  branch point lies elsewhere are on the branch, at their branch-point content, but they do not say where the
+  branch was cut, so the parent is **approximate** and flagged like any other approximate cut. The branch-point
+  atom sets their content, so the branch's tree is still what `cvs checkout -r <branch>` gives.
 
 ## What it does not carry
 
@@ -46,14 +56,13 @@ are imported only with `--reconstruct-refs`, and only the ones that have a name.
   never silently.
 - **Unnamed branches**: revisions on a branch whose symbol was deleted have no name to identify the branch
   across files. They are dropped and recorded (`CVS branch revisions on unnamed branches not imported (…)`).
-- **Branches cut from a branch revision** (a branch of a branch, or a branch cut from a vendor revision after the
-  vendor branch was cleared): not imported yet. A symbol is imported only when it is cut from the **main line
-  in every file that has it**; if it is cut from a branch revision in even one file (a mixed working copy), the
-  whole symbol is not imported, and all its revisions are counted in one record (`CVS branches cut from a
-  branch revision (N branches, M revisions)`). A branch that leaves such a branch's *parent* is still imported.
+- **Branches whose parent line is not imported**: a branch cut from a branch with no symbol in its file (an
+  unnamed branch, whose own revisions are dropped as above), from a vendor branch that is no longer the default,
+  or from a branch that is itself not imported. There is no parent to hang it from, so it is not imported and is
+  recorded (`CVS branches whose parent line is not imported (N branches, M revisions)`), never guessed.
 - **Vendor branches**: while the vendor branch is the file's default branch, its revisions are the main line,
-  as for `cvs checkout`, and a branch cut from one of them (`cvs import`, then `cvs tag -b`) is a main-line
-  branch like any other. After a file's vendor branch is cleared, later vendor-import revisions are recorded
+  as for `cvs checkout`, and a branch cut from one of them (`cvs import`, then `cvs tag -b`) hangs from the main
+  line like any other. After a file's vendor branch is cleared, later vendor-import revisions are recorded
   (`CVS vendor-branch revisions after the vendor branch was cleared (… revisions)`). A vendor branch's own
   symbol (e.g. `VENDOR:1.1.1`) is a literal odd-length number, not a "magic" one, and is not reconstructed as
   a branch.

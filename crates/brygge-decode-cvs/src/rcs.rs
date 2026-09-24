@@ -114,8 +114,17 @@ impl RcsFile {
     /// The trunk is walked once from `head` down the `next` chain, applying each reverse delta once, and each
     /// wanted trunk revision's content is taken as the walk passes it; the walk stops at the lowest trunk
     /// revision anything needs. A wanted branch revision starts from its branch point's content, captured
-    /// during that same walk, and follows the branch's forward deltas once. The result for each revision is
-    /// exactly what `content_of` returns for it; the cost is linear in the revisions applied, not quadratic.
+    /// while its own line was walked, and follows the branch's forward deltas once.
+    ///
+    /// **Nested branches** (RFC 013 §6): a branch point that is itself a branch revision (`1.2.4.3` for the
+    /// branch `1.2.4.3.2`, or a `cvs import`'s `1.1.1.1`) is a revision the parent branch's walk must pass and
+    /// capture. Every needed non-trunk revision (wanted, or a branch point of something needed) puts its
+    /// branch on the list of walks, and its own branch point on the list of revisions needed, so the walks
+    /// are found by closure. They run in nesting order (the shorter branch numbers first), so a branch point
+    /// is always captured before the walk that starts from it. Each line is still walked **once**, so the cost
+    /// stays linear in the revisions applied.
+    ///
+    /// The result for each wanted revision is exactly what `content_of` returns for it.
     ///
     /// # Errors
     /// [`Error::Read`] if a wanted revision, its branch point, or a link of its chain is missing or
@@ -127,21 +136,28 @@ impl RcsFile {
     ) -> Result<BTreeMap<RevNum, Vec<u8>>, Error> {
         let mut out: BTreeMap<RevNum, Vec<u8>> = BTreeMap::new();
 
-        // Branch revisions grouped by (branch point, branch id): each group is one forward walk.
-        let mut groups: BTreeMap<(RevNum, RevNum), BTreeSet<&RevNum>> = BTreeMap::new();
-        // The trunk revisions the pass must reach: the wanted trunk revisions, and every branch point.
+        // Each branch to walk, by its own number, with the revisions to take from it (the wanted ones and the
+        // branch points of deeper walks).
+        let mut groups: BTreeMap<RevNum, BTreeSet<RevNum>> = BTreeMap::new();
+        // The trunk revisions the pass must reach: the wanted trunk revisions, and every trunk branch point.
         let mut pending: BTreeSet<RevNum> = BTreeSet::new();
+        // Every revision (trunk or branch) whose content must also be kept, as some branch starts from it.
         let mut branch_points: BTreeSet<RevNum> = BTreeSet::new();
-        for num in wanted {
+        let mut work: Vec<RevNum> = wanted.iter().cloned().collect();
+        let mut seen: BTreeSet<RevNum> = BTreeSet::new();
+        while let Some(num) = work.pop() {
+            if !seen.insert(num.clone()) {
+                continue;
+            }
             if num.is_trunk() {
-                pending.insert(num.clone());
+                pending.insert(num);
             } else {
                 let n = num.0.len();
                 let bp = RevNum(num.0.get(..n.saturating_sub(2)).unwrap_or(&[]).to_vec());
                 let branch = RevNum(num.0.get(..n.saturating_sub(1)).unwrap_or(&[]).to_vec());
-                pending.insert(bp.clone());
+                groups.entry(branch).or_default().insert(num);
                 branch_points.insert(bp.clone());
-                groups.entry((bp, branch)).or_default().insert(num);
+                work.push(bp);
             }
         }
 
@@ -186,14 +202,20 @@ impl RcsFile {
             }
         }
 
-        // Each branch: from its branch point's content, along the branch's forward deltas.
-        for ((bp, branch), targets) in &groups {
+        // Each branch, shallowest first: from its branch point's content, along the branch's forward deltas.
+        let mut order: Vec<&RevNum> = groups.keys().collect();
+        order.sort_by(|a, b| a.0.len().cmp(&b.0.len()).then_with(|| a.cmp(b)));
+        for branch in order {
+            let Some(targets) = groups.get(branch) else {
+                continue;
+            };
             let n = branch.0.len() + 1;
-            let mut lines = at_branch_point.get(bp).cloned().ok_or_else(|| {
+            let bp = RevNum(branch.0.get(..branch.0.len() - 1).unwrap_or(&[]).to_vec());
+            let mut lines = at_branch_point.get(&bp).cloned().ok_or_else(|| {
                 Error::Read(format!("branch point {} not reconstructed", bp.to_dotted()))
             })?;
             let mut cur = self
-                .rev(bp)?
+                .rev(&bp)?
                 .branches
                 .iter()
                 .find(|b| b.0.len() >= n - 1 && b.0.get(..n - 1) == Some(&branch.0[..]))
@@ -209,7 +231,12 @@ impl RcsFile {
             for _ in 0..MAX_CHAIN {
                 lines = apply_diff(&lines, &self.rev(&cur)?.text)?;
                 if targets.contains(&cur) {
-                    out.insert(cur.clone(), join_lines(&lines));
+                    if wanted.contains(&cur) {
+                        out.insert(cur.clone(), join_lines(&lines));
+                    }
+                    if branch_points.contains(&cur) {
+                        at_branch_point.insert(cur.clone(), lines.clone());
+                    }
                     left -= 1;
                     if left == 0 {
                         break;
@@ -219,12 +246,13 @@ impl RcsFile {
                     Some(x) => cur = x.clone(),
                     None => {
                         return Err(Error::Read(format!(
-                            "branch revision {} not reachable",
-                            targets
-                                .iter()
-                                .find(|t| !out.contains_key(**t))
-                                .map_or_else(String::new, |t| t.to_dotted())
-                        )));
+                                "branch revision {} not reachable",
+                                targets
+                                    .iter()
+                                    .find(|t| !at_branch_point.contains_key(*t)
+                                        && !out.contains_key(*t))
+                                    .map_or_else(String::new, |t| t.to_dotted())
+                            )));
                     }
                 }
             }

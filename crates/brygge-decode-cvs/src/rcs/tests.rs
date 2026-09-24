@@ -477,3 +477,239 @@ fn a_revision_that_is_not_reachable_is_an_error_not_a_silent_omission() {
         );
     }
 }
+
+// ---- RFC 013 §6: nested branches in the one pass ---------------------------------------------------------
+
+/// One branch of a generated file: cut from revision `point` (trunk or a branch revision), numbered `no`
+/// (`point.no.1` ...), with `len` revisions.
+struct BranchSpec {
+    point: &'static str,
+    no: u32,
+    len: usize,
+}
+
+/// A `,v` with `n` trunk revisions and any number of branches, nested as far as the specs say (a spec may
+/// name a branch revision of an earlier spec as its `point`). Returns the file and the intended text of every
+/// revision.
+fn tree_file(n: usize, specs: &[BranchSpec]) -> (Vec<u8>, Vec<(String, Vec<u8>)>) {
+    use std::collections::BTreeMap;
+    let mut text: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut prev = base_lines();
+    text.insert("1.1".to_string(), prev.clone());
+    for k in 2..=n {
+        prev = edited(&prev, &[k * 3, k * 5 + 1], &format!("r{k}"));
+        text.insert(format!("1.{k}"), prev.clone());
+    }
+    // (revision, its predecessor on its own line, whether the predecessor is the branch point)
+    let mut branch_revs: Vec<(String, String)> = Vec::new();
+    for spec in specs {
+        let mut from = text[spec.point].clone();
+        let mut from_name = spec.point.to_string();
+        for j in 1..=spec.len {
+            let name = format!("{}.{}.{j}", spec.point, spec.no);
+            let next = edited(
+                &from,
+                &[j * 7 + spec.no as usize],
+                &format!("{}b{j}", spec.no),
+            );
+            text.insert(name.clone(), next.clone());
+            branch_revs.push((name.clone(), from_name.clone()));
+            from = next;
+            from_name = name;
+        }
+    }
+    let first_of = |point: &str| -> Vec<String> {
+        specs
+            .iter()
+            .filter(|b| b.point == point && b.len > 0)
+            .map(|b| format!("{point}.{}.1", b.no))
+            .collect()
+    };
+    let admin = |name: &str, next: Option<String>| {
+        let branches = first_of(name);
+        let brs = if branches.is_empty() {
+            "branches;\n".to_string()
+        } else {
+            format!("branches\n\t{};\n", branches.join("\n\t"))
+        };
+        format!(
+            "{name}\ndate\t2024.01.01.00.00.00;\tauthor a;\tstate Exp;\n{brs}next\t{};\n\n",
+            next.unwrap_or_default()
+        )
+    };
+    let mut s = format!("head\t1.{n};\naccess;\nsymbols;\nlocks; strict;\n\n\n");
+    for k in (1..=n).rev() {
+        s.push_str(&admin(
+            &format!("1.{k}"),
+            (k > 1).then(|| format!("1.{}", k - 1)),
+        ));
+    }
+    for spec in specs {
+        for j in 1..=spec.len {
+            let name = format!("{}.{}.{j}", spec.point, spec.no);
+            let next = (j < spec.len).then(|| format!("{}.{}.{}", spec.point, spec.no, j + 1));
+            s.push_str(&admin(&name, next));
+        }
+    }
+    s.push_str("\ndesc\n@@\n\n\n");
+    s.push_str(&format!(
+        "1.{n}\nlog\n@r{n}@\ntext\n@{}@\n",
+        text[&format!("1.{n}")].concat()
+    ));
+    for k in (1..n).rev() {
+        s.push_str(&format!(
+            "\n1.{k}\nlog\n@r{k}@\ntext\n@{}@\n",
+            delta(&text[&format!("1.{}", k + 1)], &text[&format!("1.{k}")])
+        ));
+    }
+    for (name, from) in &branch_revs {
+        s.push_str(&format!(
+            "\n{name}\nlog\n@b@\ntext\n@{}@\n",
+            delta(&text[from], &text[name])
+        ));
+    }
+    let want = text.into_iter().map(|(k, v)| (k, joined(&v))).collect();
+    (s.into_bytes(), want)
+}
+
+fn every_pass_equals_content_of(n: usize, specs: &[BranchSpec]) {
+    let (v, want) = tree_file(n, specs);
+    let f = parse_rcs(&v).unwrap();
+    let all: std::collections::BTreeSet<RevNum> = want.iter().map(|(r, _)| num(r)).collect();
+    let many = f.contents_of_many(&all).unwrap();
+    assert_eq!(many.len(), all.len());
+    for (rev, intended) in &want {
+        let n = num(rev);
+        assert_eq!(
+            many[&n],
+            f.content_of(&n).unwrap(),
+            "{rev}: the pass equals content_of"
+        );
+        assert_eq!(
+            &many[&n], intended,
+            "{rev}: and both equal the generator's text"
+        );
+    }
+}
+
+/// Handoff test 12: nested branches, two and three levels deep, siblings, and a branch cut from the first
+/// revision of a branch: the one pass equals `content_of` for every revision.
+#[test]
+fn one_pass_equals_content_of_for_nested_branches() {
+    every_pass_equals_content_of(
+        12,
+        &[
+            BranchSpec {
+                point: "1.5",
+                no: 2,
+                len: 4,
+            },
+            BranchSpec {
+                point: "1.5",
+                no: 4,
+                len: 2,
+            },
+            BranchSpec {
+                point: "1.5.2.2",
+                no: 2,
+                len: 3,
+            },
+            BranchSpec {
+                point: "1.5.2.2.2.3",
+                no: 2,
+                len: 2,
+            },
+            BranchSpec {
+                point: "1.5.2.1",
+                no: 2,
+                len: 2,
+            },
+            BranchSpec {
+                point: "1.9",
+                no: 2,
+                len: 1,
+            },
+            BranchSpec {
+                point: "1.1",
+                no: 2,
+                len: 2,
+            },
+        ],
+    );
+}
+
+/// The shape a `cvs import` then `cvs tag -b` leaves: the vendor branch `1.1.1` off `1.1`, and a branch cut
+/// from the vendor revision `1.1.1.1` (`1.1.1.1.2.1`).
+#[test]
+fn one_pass_equals_content_of_for_a_branch_cut_from_a_vendor_revision() {
+    every_pass_equals_content_of(
+        3,
+        &[
+            BranchSpec {
+                point: "1.1",
+                no: 1,
+                len: 2,
+            },
+            BranchSpec {
+                point: "1.1.1.1",
+                no: 2,
+                len: 3,
+            },
+            BranchSpec {
+                point: "1.2",
+                no: 2,
+                len: 1,
+            },
+        ],
+    );
+}
+
+/// Asking only for a deep revision still walks every line above it, once, and returns just what was asked.
+#[test]
+fn a_deep_revision_alone_pulls_in_its_branch_points_and_returns_only_itself() {
+    let specs = [
+        BranchSpec {
+            point: "1.4",
+            no: 2,
+            len: 3,
+        },
+        BranchSpec {
+            point: "1.4.2.3",
+            no: 2,
+            len: 2,
+        },
+        BranchSpec {
+            point: "1.4.2.3.2.2",
+            no: 2,
+            len: 2,
+        },
+    ];
+    let (v, want) = tree_file(8, &specs);
+    let f = parse_rcs(&v).unwrap();
+    let asked = std::collections::BTreeSet::from([num("1.4.2.3.2.2.2.2")]);
+    let many = f.contents_of_many(&asked).unwrap();
+    assert_eq!(many.len(), 1);
+    let (_, intended) = want.iter().find(|(r, _)| r == "1.4.2.3.2.2.2.2").unwrap();
+    assert_eq!(&many[&num("1.4.2.3.2.2.2.2")], intended);
+}
+
+#[test]
+fn a_nested_branch_point_that_does_not_exist_is_an_error_not_a_silent_omission() {
+    let (v, _) = tree_file(
+        4,
+        &[BranchSpec {
+            point: "1.2",
+            no: 2,
+            len: 2,
+        }],
+    );
+    let f = parse_rcs(&v).unwrap();
+    for missing in ["1.2.2.9.2.1", "1.2.4.1.2.1"] {
+        let asked = std::collections::BTreeSet::from([num(missing)]);
+        assert!(f.contents_of_many(&asked).is_err(), "{missing}");
+        assert!(
+            f.content_of(&num(missing)).is_err(),
+            "{missing}: content_of agrees"
+        );
+    }
+}

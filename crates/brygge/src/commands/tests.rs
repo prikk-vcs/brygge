@@ -1863,6 +1863,82 @@ fn a_cvs_repository_with_a_branch_revision_verifies_its_own_artifact() {
     );
 }
 
+/// A `,v` with a branch `BR` (`1.2.0.2`, revisions `1.2.2.1` and `1.2.2.2`), a branch `NEST` cut from the
+/// branch revision `1.2.2.1` (`1.2.2.1.0.2`, one revision) when `nest_on_branch`, or from the trunk (`1.2.0.4`)
+/// otherwise. `p` prefixes every text.
+fn cvs_with_a_nested_branch(p: &str, nest_on_branch: bool) -> Vec<u8> {
+    let (sym, brs, nest_admin) = if nest_on_branch {
+        ("NEST:1.2.2.1.0.2", "branches\n\t1.2.2.1.2.1;\n", true)
+    } else {
+        ("NEST:1.2.0.4", "branches;\n", false)
+    };
+    let mut s = format!(
+        "head\t1.2;\naccess;\nsymbols\n\tBR:1.2.0.2\n\t{sym};\nlocks; strict;\n\n\n\
+1.2\ndate\t2024.01.02.00.00.00;\tauthor alice;\tstate Exp;\nbranches\n\t1.2.2.1;\nnext\t1.1;\n\n\
+1.1\ndate\t2024.01.01.00.00.00;\tauthor alice;\tstate Exp;\nbranches;\nnext\t;\n\n\
+1.2.2.1\ndate\t2024.02.01.00.00.00;\tauthor alice;\tstate Exp;\n{brs}next\t1.2.2.2;\n\n\
+1.2.2.2\ndate\t2024.02.03.00.00.00;\tauthor alice;\tstate Exp;\nbranches;\nnext\t;\n\n"
+    );
+    if nest_admin {
+        s.push_str("1.2.2.1.2.1\ndate\t2024.03.01.00.00.00;\tauthor alice;\tstate Exp;\nbranches;\nnext\t;\n\n");
+    }
+    s.push_str(&format!(
+        "\ndesc\n@@\n\n\
+1.2\nlog\n@edit@\ntext\n@{p}2\n@\n\n\
+1.1\nlog\n@start@\ntext\n@d1 1\na1 1\n{p}1\n@\n\n\
+1.2.2.1\nlog\n@br one@\ntext\n@d1 1\na1 1\n{p}b1\n@\n\n\
+1.2.2.2\nlog\n@br two@\ntext\n@d1 1\na1 1\n{p}b2\n@\n"
+    ));
+    if nest_admin {
+        s.push_str(&format!(
+            "\n1.2.2.1.2.1\nlog\n@nest@\ntext\n@d1 1\na1 1\n{p}n1\n@\n"
+        ));
+    }
+    s.into_bytes()
+}
+
+/// Handoff §7 determinism, for test 10: a nested branch and a mixed-working-copy symbol decode twice to the
+/// same bytes, and `verify --against-source` answers that the artifact reproduces.
+#[test]
+fn decode_cvs_nested_and_mixed_branches_reproduce_and_verify_against_source() {
+    let repo = cvs_repo();
+    write_vfile(&repo, "a.c", &cvs_with_a_nested_branch("a", true));
+    write_vfile(&repo, "b.c", &cvs_with_a_nested_branch("b", true));
+    write_vfile(&repo, "c.c", &cvs_with_a_nested_branch("c", false));
+    let one = repo.dir.join("one.ir");
+    let two = repo.dir.join("two.ir");
+    for out in [&one, &two] {
+        let code = run_decode(
+            SourceKind::Cvs,
+            repo.path(),
+            out,
+            false,
+            true,
+            Format::Machine,
+        );
+        assert_eq!(
+            code,
+            exit::CONVENTION_VIOLATION,
+            "the mixed symbol is an approximate branch point (exit 30)"
+        );
+    }
+    assert_eq!(
+        std::fs::read(&one).unwrap(),
+        std::fs::read(&two).unwrap(),
+        "two decodes are identical"
+    );
+    let ir = brygge_ir::from_bytes(&std::fs::read(&one).unwrap())
+        .unwrap()
+        .ir;
+    assert!(ir.refs.iter().any(|r| r.name == "NEST"));
+    assert_eq!(run_verify(&one, None, Format::Machine), exit::CLEAN);
+    assert_eq!(
+        run_verify(&one, Some(repo.path()), Format::Human),
+        exit::CLEAN,
+        "the branch reconstruction reproduces from its repository (VF-1)"
+    );
+}
+
 #[test]
 fn decode_cvs_whole_import_under_floor_is_refused() {
     let repo = cvs_repo();

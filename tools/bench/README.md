@@ -42,6 +42,8 @@ The 0.2.0 scenarios (RFC 010 OQ-A; each one a target of a batch B increment):
 | `git-content <n>` | 3 commits; `n` files of 8 KiB | the IR floor for Git: peak should track content, not history |
 | `cvs-revs <n>` | 20 `,v` files, each with `n` trunk revisions (each rewrites 3 of 200 lines) | increment 3: the O(revisions²) per-file reconstruction |
 | `svn-dump <n>` | an SVN dump of `n` revisions over 300 files of 2 KiB, each revision rewriting one | increment 2: the whole parsed `Dump` held beside the IR |
+| `cvs-branches <n>` | the `cvs-revs` files plus a branch `BR` of `n/4` revisions cut from the middle of the trunk, and a nested branch `NEST` of `n/8` revisions cut from `BR`'s middle; decoded with `--reconstruct-refs` | RFC 013 C-2: branch history and the one-pass reconstruction of nested branches |
+| `cvs-branches-plain <n>` | the same files, decoded without the flag (the trunk alone) | the same corpus with the branches not imported: what the flag adds |
 
 Every one is synthetic and deterministic (the same `n` gives byte-identical corpora), and a **self-check** runs
 after each decode: the IR's atoms, blobs and content bytes must equal what the generator computed, and for
@@ -253,3 +255,32 @@ the rest is reading and parsing the `,v` files and finishing the IR.
 repositories x {plain, `--reconstruct-refs`}), all identical: the crate's fixtures and malformed files, three repositories built to
 stress the overlap (a few (author, log) pairs with bursts of near-equal dates, changesets with identical dates, and widely spread
 dates: their confidences range over 0 to 100), and the `cvs` and `cvs-revs` corpora up to 5,000 revisions per file.
+
+## Result — RFC 013 C-2 (CVS branch history, nested branches)
+
+`cvs-branches` and `cvs-branches-plain`, 20 files, `n` trunk revisions each, one `BR` of `n/4` and one nested `NEST` of `n/8`
+revisions per file. Every revision is dated an hour from every other, so it is one atom (no clustering), the parents are exact
+and every branch's tree is its parent's, so there is no branch-point atom: **atoms = 20 (n + n/4 + n/8)**, and the self-check
+compares the atoms, blobs and content bytes with the generator's. Release build, one machine, one decode per process.
+
+| scenario | revisions per file | peak | time | atoms | time per atom |
+|---|---:|---:|---:|---:|---:|
+| `cvs-branches-plain` | 200 | 89 MiB | 92 ms | 4,000 | 23 us |
+| `cvs-branches` | 200 | 120 MiB | 132 ms | 5,500 | 24 us |
+| `cvs-branches-plain` | 1,000 | 442 MiB | 517 ms | 20,000 | 26 us |
+| `cvs-branches` | 1,000 | 595 MiB | 640 ms | 27,500 | 23 us |
+| `cvs-branches-plain` | 5,000 | 2,236 MiB | 3.0 s | 100,000 | 30 us |
+| `cvs-branches` | 5,000 | 3,030 MiB | 3.4 s | 137,500 | 25 us |
+| `cvs-branches-plain` | 10,000 | 4,484 MiB | 6.0 s | 200,000 | 30 us |
+| `cvs-branches` | 10,000 | 6,090 MiB | 8.8 s | 275,000 | 32 us |
+
+**Near-linear**: 5x the revisions cost 5.6x (plain) and 4.8x (with branches) in time from 200 to 1,000, then 5.9x and 5.3x from
+1,000 to 5,000; the time per atom stays between 23 and 32 microseconds, the same as the trunk alone (the peak is the IR's content,
+as in `cvs-revs`). The nested branch adds no quadratic term: `contents_of_many` walks every line once (a branch point on a branch is
+captured during the parent branch's walk), where a per-revision `content_of` would walk the whole chain for each.
+
+**No regression without the flag, and none for single-level branches with it.** Against the C-1 build (`7665c0d`), the same
+corpora: `cvs-revs` and `cvs-branches-plain` (trunk alone), 0.09 to 6 s, are the same as before within the run-to-run noise (about
+10 %; three interleaved pairs of `cvs-revs 10,000`: 5.4 s now against 5.9 to 6.1 s before), and the CLI's artifact, stdout and exit code are **byte-identical** on the `cvs` and `cvs-revs` corpora, on `cvs-branches` without the flag,
+and on the `cvs-branches` files with the `NEST` symbol removed (single-level branches, with the flag). Only `cvs-branches` with the
+flag differs, by design: C-1 counts `NEST` as not imported (5,000 atoms at 200), C-2 imports it (5,500).

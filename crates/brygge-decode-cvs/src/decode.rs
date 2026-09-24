@@ -55,38 +55,49 @@ pub fn decode(source: &Source, opts: &Options) -> Result<Ir, Error> {
     };
     let mut builder = IrBuilder::new(provenance);
 
-    // With `--reconstruct-refs`, the branches cut from the main line are imported (RFC 013 D-3, OQ-1): find
-    // them by symbol name. Without it, the main line only, exactly as before.
+    // With `--reconstruct-refs`, the named branches are imported (RFC 013 D-3, §6): find them by symbol name,
+    // and decide which are imported, on which parent line, and in what order. Without it, the main line only,
+    // exactly as before.
     let discovered = if opts.reconstruct_refs {
         branches::discover(&files)
     } else {
-        branches::Discovered::default()
+        BTreeMap::new()
     };
-    // Per file, the imported branches (by their number in that file) and their names. A file whose symbol
-    // names a branch point that does not exist leaves the branch, counted (never a refusal).
+    let mut stats = BranchStats::default();
+    // A file whose symbol names a branch point that does not exist leaves the branch, counted (never a refusal).
+    let mut present: BTreeMap<String, Vec<branches::OnBranch>> = BTreeMap::new();
+    for (name, ons) in &discovered {
+        for on in ons {
+            if on.state == branches::PointState::Missing {
+                stats.missing_point_files += 1;
+            } else {
+                present.entry(name.clone()).or_default().push(on.clone());
+            }
+        }
+    }
+    let resolution = branches::resolve(&present);
+    stats.blocked = resolution.blocked.clone();
+    // Per file, the imported branches (by their number in that file) and their names.
     let mut importable: HashMap<usize, BTreeMap<RevNum, String>> = HashMap::new();
     let mut branch_files_on: BTreeMap<String, Vec<branches::OnBranch>> = BTreeMap::new();
-    let mut stats = BranchStats {
-        off_line: discovered.off_line.clone(),
-        ..BranchStats::default()
-    };
-    for (name, ons) in &discovered.main {
-        for on in ons {
-            let present = files
-                .get(on.file)
-                .is_some_and(|f| f.rcs.revisions.contains_key(&on.point));
-            if present {
-                importable
+    // Per file, the live branch-point revisions its imported branches start from.
+    let mut points_of: HashMap<usize, BTreeSet<RevNum>> = HashMap::new();
+    for name in &resolution.order {
+        for on in present.get(name).into_iter().flatten() {
+            importable
+                .entry(on.file)
+                .or_default()
+                .insert(on.branch_id.clone(), name.clone());
+            if on.state == branches::PointState::Live {
+                points_of
                     .entry(on.file)
                     .or_default()
-                    .insert(on.branch_id.clone(), name.clone());
-                branch_files_on
-                    .entry(name.clone())
-                    .or_default()
-                    .push(on.clone());
-            } else {
-                stats.missing_point_files += 1;
+                    .insert(on.point.clone());
             }
+            branch_files_on
+                .entry(name.clone())
+                .or_default()
+                .push(on.clone());
         }
     }
 
@@ -94,6 +105,8 @@ pub fn decode(source: &Source, opts: &Options) -> Result<Ir, Error> {
     // `dead` deletions), and, with `--reconstruct-refs`, every revision of each imported branch.
     let mut filerevs: Vec<FileRev> = Vec::new();
     let mut branch_revs: BTreeMap<String, Vec<FileRev>> = BTreeMap::new();
+    // (file, branch-point revision) -> the blob of that revision's content, for a branch's tree at its cut.
+    let mut point_blob: HashMap<(usize, RevNum), BlobId> = HashMap::new();
     // A `cvs import`'s skipped branch point, per file, with the vendor revision that stands in for it.
     let mut skipped_points: HashMap<usize, (RevNum, RevNum)> = HashMap::new();
     let has_expand = files.iter().any(|f| f.rcs.expand.is_some());
@@ -113,8 +126,17 @@ pub fn decode(source: &Source, opts: &Options) -> Result<Ir, Error> {
             })
             .map(|(num, _)| num.clone())
             .collect();
-        // RFC 010 increment 3: every content this file needs, in one pass over its delta chains.
-        let mut contents = FileContents::new(f, vendor_branch.as_ref(), &branch_wanted);
+        // RFC 010 increment 3: every content this file needs, in one pass over its delta chains. That
+        // includes the branch points its imported branches start from (a trunk revision, or a revision of
+        // another line): the branch's tree at the cut is made of them.
+        let points = points_of.get(&fi);
+        let mut wanted_here = branch_wanted.clone();
+        wanted_here.extend(points.into_iter().flatten().cloned());
+        let mut contents = FileContents::new(f, vendor_branch.as_ref(), &wanted_here);
+        for point in points.into_iter().flatten() {
+            let blob = builder.add_blob(contents.peek(&f.rcs, point)?);
+            point_blob.insert((fi, point.clone()), blob);
+        }
         let skip_branch_point = vendor_import_branch_point(f, &contents)?;
         if let (Some(bp), Some(vb)) = (&skip_branch_point, &vendor_branch) {
             if let Some(first) = mainline::vendor_branch_first_revision(&f.rcs, vb) {
@@ -178,28 +200,37 @@ pub fn decode(source: &Source, opts: &Options) -> Result<Ir, Error> {
         });
     }
 
-    // Each branch: its changesets (clustered within the branch only) and where it is cut from the main line.
+    // Each imported branch: its changesets (clustered within the branch only), the tree it starts from, and
+    // where it is cut from its parent line (the main line, or another branch).
     let plans = plan_branches(
         &files,
         &changesets,
+        &resolution,
         &branch_files_on,
+        &point_blob,
         branch_revs,
         &skipped_points,
         opts,
     );
-    let snapshot_at: BTreeSet<usize> = plans
-        .iter()
-        .filter_map(|p| match p.parent {
-            branches::Parent::Changeset { index, .. } => Some(index),
-            branches::Parent::Root => None,
-        })
-        .collect();
+    // The changesets after which some child branch is cut: those trees are kept as the line is built.
+    let mut snapshot_at: HashMap<branches::LineRef, BTreeSet<usize>> = HashMap::new();
+    for p in &plans {
+        if let branches::Parent::Changeset { index, .. } = p.parent {
+            snapshot_at
+                .entry(p.parent_line.clone())
+                .or_default()
+                .insert(index);
+        }
+    }
 
     let mut tree: BTreeMap<String, BlobId> = BTreeMap::new();
-    let mut snapshots: HashMap<usize, BTreeMap<String, BlobId>> = HashMap::new();
-    // (path, rev-dotted) -> blob, for a branch's tree at its cut (the branch-point revisions' content).
-    let mut blob_of: HashMap<(String, String), BlobId> = HashMap::new();
+    // Per line: its changesets' atoms, in order, and the trees after the ones a child branch is cut from.
+    let mut line_atoms: HashMap<branches::LineRef, Vec<AtomId>> = HashMap::new();
+    let mut line_snapshots: HashMap<branches::LineRef, HashMap<usize, BTreeMap<String, BlobId>>> =
+        HashMap::new();
+    let no_snapshots = BTreeSet::new();
     let mut main_atoms: Vec<AtomId> = Vec::with_capacity(changesets.len());
+    let mut main_snapshots: HashMap<usize, BTreeMap<String, BlobId>> = HashMap::new();
     let mut prev_atom: Option<AtomId> = None;
     // (path, rev-dotted) -> (atom, changeset date), for symbol resolution.
     let mut rev_to_atom: HashMap<(String, String), (AtomId, i64)> = HashMap::new();
@@ -207,14 +238,12 @@ pub fn decode(source: &Source, opts: &Options) -> Result<Ir, Error> {
     // Tracked separately from `Loss`: no changeset is dropped for being low-confidence — it is imported
     // and flagged (RFC 011 D-8). One fact, one place.
     let mut low_confidence: usize = 0;
+    let main_wanted = snapshot_at
+        .get(&branches::LineRef::Main)
+        .unwrap_or(&no_snapshots);
 
     for (k, cs) in changesets.iter().enumerate() {
-        let (ops, blobs) = ops_for(&cs.revs, &mut tree, &mut builder);
-        for (fr, blob) in cs.revs.iter().zip(blobs) {
-            if let Some(blob) = blob {
-                blob_of.insert((fr.path.clone(), fr.rev.to_dotted()), blob);
-            }
-        }
+        let ops = ops_for(&cs.revs, &mut tree, &mut builder);
         let atom_id = builder
             .add_atom(AtomDraft {
                 parents: prev_atom.into_iter().collect(),
@@ -233,8 +262,8 @@ pub fn decode(source: &Source, opts: &Options) -> Result<Ir, Error> {
             .map_err(Error::Ir)?;
         prev_atom = Some(atom_id);
         main_atoms.push(atom_id);
-        if snapshot_at.contains(&k) {
-            snapshots.insert(k, tree.clone());
+        if main_wanted.contains(&k) {
+            main_snapshots.insert(k, tree.clone());
         }
 
         for fr in &cs.revs {
@@ -244,19 +273,26 @@ pub fn decode(source: &Source, opts: &Options) -> Result<Ir, Error> {
             low_confidence += 1;
         }
     }
+    line_atoms.insert(branches::LineRef::Main, main_atoms);
+    line_snapshots.insert(branches::LineRef::Main, main_snapshots);
 
-    // The branches, in name order, each cut from an already-built main-line changeset.
+    // The branches, in dependency order: each is cut from an already-built line.
     let mut imported_branches: BTreeMap<String, AtomId> = BTreeMap::new();
     let mut approximate = 0usize;
     for plan in &plans {
         let parent_atom = match plan.parent {
-            branches::Parent::Changeset { index, .. } => main_atoms.get(index).copied(),
+            branches::Parent::Changeset { index, .. } => line_atoms
+                .get(&plan.parent_line)
+                .and_then(|atoms| atoms.get(index))
+                .copied(),
             branches::Parent::Root => None,
         };
         let parent_tree = match plan.parent {
-            branches::Parent::Changeset { index, .. } => {
-                snapshots.get(&index).cloned().unwrap_or_default()
-            }
+            branches::Parent::Changeset { index, .. } => line_snapshots
+                .get(&plan.parent_line)
+                .and_then(|snaps| snaps.get(&index))
+                .cloned()
+                .unwrap_or_default(),
             branches::Parent::Root => BTreeMap::new(),
         };
         if matches!(
@@ -265,18 +301,22 @@ pub fn decode(source: &Source, opts: &Options) -> Result<Ir, Error> {
         ) {
             approximate += 1;
         }
-        let last = build_branch(
+        let own = branches::LineRef::Named(plan.name.clone());
+        let wanted = snapshot_at.get(&own).unwrap_or(&no_snapshots);
+        let built = build_branch(
             plan,
             parent_atom,
             &parent_tree,
-            &blob_of,
+            wanted,
             &mut builder,
             &repo_id,
             opts,
             &mut rev_to_atom,
             &mut low_confidence,
         )?;
-        match last {
+        line_atoms.insert(own.clone(), built.atoms);
+        line_snapshots.insert(own, built.snapshots);
+        match built.last {
             Some(atom) => {
                 imported_branches.insert(plan.name.clone(), atom);
             }
@@ -302,8 +342,8 @@ pub fn decode(source: &Source, opts: &Options) -> Result<Ir, Error> {
             ),
             reason: if opts.reconstruct_refs {
                 "the symbol is a vendor branch (a literal branch number, imported as the main line while \
-                 it is the default and not reconstructed as a line of its own), a branch cut from a \
-                 branch revision (counted in its own record), or names a branch with no file and no \
+                 it is the default and not reconstructed as a line of its own), a branch whose parent \
+                 line is not imported (counted in its own record), or names a branch with no file and no \
                  revision to import"
                     .to_string()
             } else {
@@ -372,10 +412,10 @@ struct BranchStats {
     named: BTreeSet<String>,
     /// Revisions on a branch with no symbol in their file (RFC 013 OQ-2).
     unnamed_revisions: usize,
-    /// Symbol names cut from a branch revision in at least one file (review 036 F-2): not imported.
-    off_line: BTreeSet<String>,
+    /// Symbol names whose parent line is not imported (an unnamed line, or one itself dropped): not imported.
+    blocked: BTreeSet<String>,
     /// Revisions on those symbols' branches, in every file.
-    off_line_revisions: usize,
+    blocked_revisions: usize,
     /// Revisions on a vendor branch (a literal branch number) that are not on the main line.
     vendor_revisions: usize,
     /// Files whose branch symbol names a branch-point revision that does not exist.
@@ -402,9 +442,9 @@ impl BranchStats {
             return;
         }
         match symbol {
-            Some(mainline::BranchSymbol::Magic(n)) if self.off_line.contains(n) => {
-                // a symbol cut from a branch revision in some file: none of its revisions is imported
-                self.off_line_revisions += 1;
+            Some(mainline::BranchSymbol::Magic(n)) if self.blocked.contains(n) => {
+                // a symbol whose parent line is not imported: none of its revisions is imported
+                self.blocked_revisions += 1;
             }
             Some(mainline::BranchSymbol::Magic(_)) => {
                 // cut from the main line, but the branch point does not exist: the file left the branch
@@ -438,14 +478,16 @@ impl BranchStats {
                 "a branch with no symbol has no name to identify it across files; keep the source repository",
             ));
         }
-        if !self.off_line.is_empty() {
+        if !self.blocked.is_empty() {
             out.push(rec(
                 format!(
-                    "CVS branches cut from a branch revision ({} branches, {} revisions)",
-                    self.off_line.len(),
-                    self.off_line_revisions
+                    "CVS branches whose parent line is not imported ({} branches, {} revisions)",
+                    self.blocked.len(),
+                    self.blocked_revisions
                 ),
-                "a branch cut from a branch revision is not imported in this build; keep the source repository",
+                "the branch is cut from a line that is not imported (a branch with no symbol, a vendor \
+                 branch that is no longer the default, or a branch that is itself not imported), so it \
+                 has no parent to hang from; keep the source repository",
             ));
         }
         if self.vendor_revisions > 0 {
@@ -567,6 +609,15 @@ impl FileContents {
         Ok(rcs.content_of(a)? == rcs.content_of(b)?)
     }
 
+    /// The content of `num`, copied (a branch point's content is needed by the branches cut from it, and again
+    /// by the main line when it is one of its revisions).
+    fn peek(&self, rcs: &RcsFile, num: &RevNum) -> Result<Vec<u8>, Error> {
+        if let Some(c) = self.many.as_ref().and_then(|m| m.get(num)) {
+            return Ok(c.clone());
+        }
+        rcs.content_of(num)
+    }
+
     /// The content of `num`, handed over (each is asked for once).
     fn take(&mut self, rcs: &RcsFile, num: &RevNum) -> Result<Vec<u8>, Error> {
         if let Some(c) = self.many.as_mut().and_then(|m| m.remove(num)) {
@@ -603,15 +654,13 @@ fn check_no_later_trunk_after_vendor_branch(f: &scan::CvsFile) -> Result<(), Err
     Ok(())
 }
 
-/// Determine a changeset's path operations against the line's running tree, and update the tree. Also returns
-/// each revision's blob (`None` for a deletion), in the same order as `revs`.
+/// Determine a changeset's path operations against the line's running tree, and update the tree.
 fn ops_for(
     revs: &[FileRev],
     tree: &mut BTreeMap<String, BlobId>,
     builder: &mut IrBuilder,
-) -> (Vec<PathOp>, Vec<Option<BlobId>>) {
+) -> Vec<PathOp> {
     let mut ops = Vec::new();
-    let mut blobs = Vec::with_capacity(revs.len());
     for fr in revs {
         if fr.is_dead() {
             if tree.remove(&fr.path).is_some() {
@@ -621,7 +670,6 @@ fn ops_for(
                 });
             }
             // A dead revision for a path that was never live is a no-op (created-then-deleted off-mainline).
-            blobs.push(None);
         } else {
             let blob = builder.add_blob(fr.content.clone());
             if tree.insert(fr.path.clone(), blob).is_none() {
@@ -639,10 +687,9 @@ fn ops_for(
                     status: EpistemicStatus::Stated,
                 });
             }
-            blobs.push(Some(blob));
         }
     }
-    (ops, blobs)
+    ops
 }
 
 fn metadata_of(cs: &Changeset) -> MetadataClaims {
@@ -827,76 +874,71 @@ fn add_refs(
     Ok(stats)
 }
 
-/// One imported branch: its changesets (clustered within the branch only), where it is cut from the main line,
-/// and the files at their branch points there.
+/// One imported branch: its changesets (clustered within the branch only), the line it is cut from and where
+/// on that line, and the tree it starts from.
 struct BranchPlan {
     name: String,
     changesets: Vec<Changeset>,
+    /// The line this branch is cut from: the main line, or another imported branch.
+    parent_line: branches::LineRef,
     parent: branches::Parent,
-    /// The `(path, revision)` of each covered file at its branch point (the revision whose content the branch
-    /// starts from; for a `cvs import`'s skipped branch point, the vendor revision standing in for it).
-    covered: Vec<(String, RevNum)>,
+    /// The branch's tree at the cut: every file on the branch that has a live branch point, at that revision's
+    /// content, **whatever line the file's branch point is on**.
+    cut_tree: BTreeMap<String, BlobId>,
 }
 
-/// Plan every imported branch, in name order (RFC 013 D-3): cluster its revisions, and choose its parent on the
-/// main line by the rule **earliest-covering-changeset** from each covered file's run of main-line changesets
-/// during which the file is exactly at its branch-point revision.
+/// A parent line's changesets, indexed for the rule **earliest-covering-changeset**: where each of its
+/// revisions landed, and each file's revisions on the line in order.
+struct LineIndex<'a> {
+    cs_of: HashMap<(&'a str, &'a RevNum), usize>,
+    per_file: HashMap<&'a str, Vec<(&'a RevNum, usize)>>,
+    len: usize,
+}
+
+impl<'a> LineIndex<'a> {
+    fn new(changesets: &'a [Changeset]) -> Self {
+        let mut cs_of: HashMap<(&str, &RevNum), usize> = HashMap::new();
+        let mut per_file: HashMap<&str, Vec<(&RevNum, usize)>> = HashMap::new();
+        for (k, cs) in changesets.iter().enumerate() {
+            for fr in &cs.revs {
+                cs_of.insert((fr.path.as_str(), &fr.rev), k);
+                per_file
+                    .entry(fr.path.as_str())
+                    .or_default()
+                    .push((&fr.rev, k));
+            }
+        }
+        for revs in per_file.values_mut() {
+            revs.sort();
+        }
+        Self {
+            cs_of,
+            per_file,
+            len: changesets.len(),
+        }
+    }
+}
+
+/// Plan every imported branch, in dependency order (RFC 013 D-3, §6): cluster its revisions, and choose its
+/// parent on its parent line by the rule **earliest-covering-changeset** from each covered file's run of that
+/// line's changesets during which the file is exactly at its branch-point revision.
+///
+/// A file whose branch point is on a *different* line than the parent line is on the branch (its tree at the
+/// cut has it) but does not constrain the parent: the parent is then approximate.
+#[allow(clippy::too_many_arguments)]
 fn plan_branches(
     files: &[scan::CvsFile],
     main: &[Changeset],
+    resolution: &branches::Resolution,
     on_branch: &BTreeMap<String, Vec<branches::OnBranch>>,
+    point_blob: &HashMap<(usize, RevNum), BlobId>,
     mut branch_revs: BTreeMap<String, Vec<FileRev>>,
     skipped_points: &HashMap<usize, (RevNum, RevNum)>,
     opts: &Options,
 ) -> Vec<BranchPlan> {
-    // Where each main-line revision landed, and each file's main-line revisions in order.
-    let mut cs_of: HashMap<(&str, &RevNum), usize> = HashMap::new();
-    let mut per_file: HashMap<&str, Vec<(&RevNum, usize)>> = HashMap::new();
-    for (k, cs) in main.iter().enumerate() {
-        for fr in &cs.revs {
-            cs_of.insert((fr.path.as_str(), &fr.rev), k);
-            per_file
-                .entry(fr.path.as_str())
-                .or_default()
-                .push((&fr.rev, k));
-        }
-    }
-    for revs in per_file.values_mut() {
-        revs.sort();
-    }
-
-    let mut plans = Vec::new();
-    for (name, ons) in on_branch {
-        let mut runs: Vec<(usize, usize)> = Vec::new();
-        let mut covered: Vec<(String, RevNum)> = Vec::new();
-        for on in ons {
-            let Some(f) = files.get(on.file) else {
-                continue;
-            };
-            let Some(point) = f.rcs.revisions.get(&on.point) else {
-                continue;
-            };
-            if point.state == "dead" {
-                // The file was added on the branch (a dead `1.1` on the trunk): it does not constrain the
-                // parent, and its branch revisions add it.
-                continue;
-            }
-            // A `cvs import`'s branch point is skipped as an op; the vendor revision stands in for it.
-            let anchor = match skipped_points.get(&on.file) {
-                Some((bp, first)) if *bp == on.point => first.clone(),
-                _ => on.point.clone(),
-            };
-            let Some(&in_idx) = cs_of.get(&(f.path.as_str(), &anchor)) else {
-                continue;
-            };
-            let out_idx = per_file
-                .get(f.path.as_str())
-                .and_then(|revs| revs.iter().find(|(r, _)| **r > anchor))
-                .map_or(main.len(), |(_, k)| *k)
-                .max(in_idx + 1);
-            runs.push((in_idx, out_idx));
-            covered.push((f.path.clone(), anchor));
-        }
+    // Cluster every imported branch first: a branch cut from another needs that one's changesets.
+    let mut clustered: BTreeMap<&str, Vec<Changeset>> = BTreeMap::new();
+    for name in &resolution.order {
         let mut revs = branch_revs.remove(name).unwrap_or_default();
         revs.sort_by(|a, b| a.path.cmp(&b.path).then_with(|| a.rev.cmp(&b.rev)));
         let changesets = if revs.is_empty() {
@@ -904,56 +946,143 @@ fn plan_branches(
         } else {
             cluster::reconstruct(revs, opts.window_secs)
         };
-        plans.push(BranchPlan {
-            name: name.clone(),
-            changesets,
-            parent: branches::choose_parent(&runs, main.len()),
-            covered,
-        });
+        clustered.insert(name.as_str(), changesets);
     }
-    plans
+    // The parent choices (which borrow the changesets), then the plans (which take them).
+    let mut chosen: Vec<(
+        String,
+        branches::LineRef,
+        branches::Parent,
+        BTreeMap<String, BlobId>,
+    )> = Vec::new();
+    let mut indexes: HashMap<branches::LineRef, LineIndex<'_>> = HashMap::new();
+    for name in &resolution.order {
+        let parent_line = resolution
+            .parent
+            .get(name)
+            .cloned()
+            .unwrap_or(branches::LineRef::Main);
+        let index = indexes
+            .entry(parent_line.clone())
+            .or_insert_with(|| match &parent_line {
+                branches::LineRef::Named(p) => {
+                    LineIndex::new(clustered.get(p.as_str()).map_or(&[][..], Vec::as_slice))
+                }
+                _ => LineIndex::new(main),
+            });
+        let mut runs: Vec<(usize, usize)> = Vec::new();
+        let mut cut_tree: BTreeMap<String, BlobId> = BTreeMap::new();
+        let mut live_files = 0usize;
+        for on in on_branch.get(name).into_iter().flatten() {
+            let Some(f) = files.get(on.file) else {
+                continue;
+            };
+            if on.state != branches::PointState::Live {
+                // The file was added on the branch (a dead `1.1` on the trunk): it does not constrain the
+                // parent, and its branch revisions add it.
+                continue;
+            }
+            live_files += 1;
+            if let Some(blob) = point_blob.get(&(on.file, on.point.clone())) {
+                cut_tree.insert(f.path.clone(), *blob);
+            }
+            if on.line != parent_line {
+                continue; // on the branch, but its branch point is on another line
+            }
+            // A `cvs import`'s branch point is skipped as an op; the vendor revision stands in for it.
+            let anchor = match skipped_points.get(&on.file) {
+                Some((bp, first)) if *bp == on.point => first.clone(),
+                _ => on.point.clone(),
+            };
+            let Some(&in_idx) = index.cs_of.get(&(f.path.as_str(), &anchor)) else {
+                continue;
+            };
+            let out_idx = index
+                .per_file
+                .get(f.path.as_str())
+                .and_then(|revs| revs.iter().find(|(r, _)| **r > anchor))
+                .map_or(index.len, |(_, k)| *k)
+                .max(in_idx + 1);
+            runs.push((in_idx, out_idx));
+        }
+        let mut parent = branches::choose_parent(&runs, index.len);
+        if let branches::Parent::Changeset { index: i, .. } = parent {
+            if runs.len() < live_files {
+                // a live file whose branch point is on another line (or not on this one) is not covered
+                parent = branches::Parent::Changeset {
+                    index: i,
+                    exact: false,
+                };
+            }
+        }
+        chosen.push((name.clone(), parent_line, parent, cut_tree));
+    }
+    drop(indexes);
+    chosen
+        .into_iter()
+        .map(|(name, parent_line, parent, cut_tree)| BranchPlan {
+            changesets: clustered.remove(name.as_str()).unwrap_or_default(),
+            name,
+            parent_line,
+            parent,
+            cut_tree,
+        })
+        .collect()
+}
+
+/// A branch, built: the atoms of its changesets (in order), the trees after the ones a child is cut from, and
+/// its last atom.
+struct BuiltLine {
+    last: Option<AtomId>,
+    atoms: Vec<AtomId>,
+    snapshots: HashMap<usize, BTreeMap<String, BlobId>>,
 }
 
 /// Build one branch's atoms: an optional **branch-point atom** that makes the parent's tree into the branch's
 /// tree at the cut (exactly the files on the branch, each at its branch-point content), then the branch's
-/// changesets chained in cluster order. Returns the branch's last atom, or `None` when it has nothing to
+/// changesets chained in cluster order. `last` is the branch's last atom, or `None` when it has nothing to
 /// import (no parent, no branch-point atom and no changeset).
 #[allow(clippy::too_many_arguments)]
 fn build_branch(
     plan: &BranchPlan,
     parent_atom: Option<AtomId>,
     parent_tree: &BTreeMap<String, BlobId>,
-    blob_of: &HashMap<(String, String), BlobId>,
+    snapshot_at: &BTreeSet<usize>,
     builder: &mut IrBuilder,
     repo_id: &[u8],
     opts: &Options,
     rev_to_atom: &mut HashMap<(String, String), (AtomId, i64)>,
     low_confidence: &mut usize,
-) -> Result<Option<AtomId>, Error> {
+) -> Result<BuiltLine, Error> {
     let rule = "earliest-covering-changeset".to_string();
     let exactness = match plan.parent {
         branches::Parent::Changeset { exact: true, .. } => "exact",
         branches::Parent::Changeset { exact: false, .. } => "approximate",
         branches::Parent::Root => "unconstrained",
     };
+    let parent_line = match &plan.parent_line {
+        branches::LineRef::Named(p) => Some(p.clone()),
+        _ => None,
+    };
     let point_params = |extra: &mut Vec<(&str, String)>| {
         extra.push(("line", plan.name.clone()));
+        if let Some(p) = &parent_line {
+            extra.push(("parent_line", p.clone()));
+        }
         extra.push(("branch_point_rule", rule.clone()));
         extra.push(("branch_point", exactness.to_string()));
     };
 
-    // The branch's tree at the cut: its covered files at their branch-point content.
-    let mut branch_tree: BTreeMap<String, BlobId> = BTreeMap::new();
-    for (path, anchor) in &plan.covered {
-        if let Some(blob) = blob_of.get(&(path.clone(), anchor.to_dotted())) {
-            branch_tree.insert(path.clone(), *blob);
-        }
-    }
+    // The branch's tree at the cut: its files at their branch-point content.
+    let mut branch_tree = plan.cut_tree.clone();
 
     let derived = |kind_params: &[(&str, &str)]| {
         let mut params = BTreeMap::new();
         params.insert("source".to_string(), "cvs-symbol".to_string());
         params.insert("line".to_string(), plan.name.clone());
+        if let Some(p) = &parent_line {
+            params.insert("parent_line".to_string(), p.clone());
+        }
         for (k, v) in kind_params {
             params.insert((*k).to_string(), (*v).to_string());
         }
@@ -1021,8 +1150,10 @@ fn build_branch(
     }
 
     // The branch's own changesets, each applying its `Stated` ops to the branch's own tree.
+    let mut atoms = Vec::with_capacity(plan.changesets.len());
+    let mut snapshots = HashMap::new();
     for (i, cs) in plan.changesets.iter().enumerate() {
-        let (ops, _) = ops_for(&cs.revs, &mut branch_tree, builder);
+        let ops = ops_for(&cs.revs, &mut branch_tree, builder);
         let mut extra: Vec<(&str, String)> = Vec::new();
         if i == 0 && !carried_point {
             point_params(&mut extra);
@@ -1046,6 +1177,10 @@ fn build_branch(
             })
             .map_err(Error::Ir)?;
         last = Some(atom);
+        atoms.push(atom);
+        if snapshot_at.contains(&i) {
+            snapshots.insert(i, branch_tree.clone());
+        }
         for fr in &cs.revs {
             rev_to_atom.insert((fr.path.clone(), fr.rev.to_dotted()), (atom, cs.date));
         }
@@ -1053,7 +1188,11 @@ fn build_branch(
             *low_confidence += 1;
         }
     }
-    Ok(last)
+    Ok(BuiltLine {
+        last,
+        atoms,
+        snapshots,
+    })
 }
 
 /// Accumulated loss categories (RFC 007 D-6), rendered into the loss boundary at the end.

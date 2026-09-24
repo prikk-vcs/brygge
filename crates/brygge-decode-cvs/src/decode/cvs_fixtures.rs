@@ -490,3 +490,121 @@ fn a_branch_cut_from_a_cvs_import_matches_cvs_export() {
         "deterministic"
     );
 }
+
+/// Handoff test 10: a branch cut from a branch revision (`cvs tag -b NEST` from a working copy on `BR`) is a
+/// line hanging from `BR`; every tree equals `cvs export -r <branch>`, and `BR` itself is unaffected.
+#[test]
+fn a_nested_branch_matches_cvs_export() {
+    if !cvs_available() {
+        eprintln!("skipping: cvs not on PATH");
+        return;
+    }
+    let c = Cvs::new();
+    c.write("a.c", "a1\n");
+    c.write("b.c", "b1\n");
+    c.add(&["a.c", "b.c"]);
+    c.commit("start");
+    c.run(&c.work(), &["tag", "-b", "BR"]);
+    c.run(&c.work(), &["update", "-r", "BR"]);
+    c.write("a.c", "a on BR one\n");
+    c.write("b.c", "b on BR one\n");
+    c.commit("BR one");
+    // NEST is cut from the working copy's revisions (both on BR): a branch of a branch.
+    c.run(&c.work(), &["tag", "-b", "NEST"]);
+    c.write("a.c", "a on BR two\n");
+    c.commit("BR two");
+    c.run(&c.work(), &["update", "-r", "NEST"]);
+    c.write("a.c", "a on NEST\n");
+    c.commit("NEST one");
+    let nest = c.export("NEST");
+    let br = c.export("BR");
+    assert_eq!(nest["a.c"], "a on NEST");
+    assert_eq!(nest["b.c"], "b on BR one");
+    assert_eq!(br["a.c"], "a on BR two");
+
+    let ir = c.decode();
+    assert_eq!(tree_at(&ir, ref_atom(&ir, "NEST")), nest);
+    assert_eq!(tree_at(&ir, ref_atom(&ir, "BR")), br);
+    assert!(
+        !ir.loss
+            .dropped
+            .iter()
+            .any(|d| d.what.contains("parent line")),
+        "{:?}",
+        ir.loss.dropped
+    );
+    let again = c.decode();
+    assert_eq!(
+        brygge_ir::to_bytes(&ir),
+        brygge_ir::to_bytes(&again),
+        "deterministic"
+    );
+}
+
+/// Handoff test 10, the mixed working copy: `cvs tag -b NEST` from a working copy where one file is on `BR`
+/// and another is still on the trunk gives a symbol cut from two lines. The tree still equals `cvs export`.
+#[test]
+fn a_branch_cut_from_a_mixed_working_copy_matches_cvs_export() {
+    if !cvs_available() {
+        eprintln!("skipping: cvs not on PATH");
+        return;
+    }
+    let c = Cvs::new();
+    c.write("a.c", "a1\n");
+    c.write("b.c", "b1\n");
+    c.add(&["a.c", "b.c"]);
+    c.commit("start");
+    c.run(&c.work(), &["tag", "-b", "BR"]);
+    c.run(&c.work(), &["update", "-r", "BR"]);
+    c.write("a.c", "a on BR\n");
+    c.commit("BR one");
+    // a.c is at 1.1.2.1 (on BR), b.c at 1.1 (the trunk): NEST is cut from both.
+    c.run(&c.work(), &["tag", "-b", "NEST"]);
+    c.run(&c.work(), &["update", "-r", "NEST"]);
+    c.write("a.c", "a on NEST\n");
+    c.commit("NEST one");
+    let nest = c.export("NEST");
+    assert_eq!(nest["a.c"], "a on NEST");
+    assert_eq!(nest["b.c"], "b1");
+
+    let ir = c.decode();
+    assert_eq!(tree_at(&ir, ref_atom(&ir, "NEST")), nest);
+    let again = c.decode();
+    assert_eq!(
+        brygge_ir::to_bytes(&ir),
+        brygge_ir::to_bytes(&again),
+        "deterministic"
+    );
+}
+
+/// Handoff test 11: a tag on a branch revision resolves to the branch changeset that holds it.
+#[test]
+fn a_tag_on_a_branch_revision_resolves_to_the_branch_changeset() {
+    if !cvs_available() {
+        eprintln!("skipping: cvs not on PATH");
+        return;
+    }
+    let c = Cvs::new();
+    c.write("a.c", "a1\n");
+    c.add(&["a.c"]);
+    c.commit("start");
+    c.run(&c.work(), &["tag", "-b", "BR"]);
+    c.run(&c.work(), &["update", "-r", "BR"]);
+    c.write("a.c", "a on BR one\n");
+    c.commit("BR one");
+    c.run(&c.work(), &["tag", "REL_1"]);
+    c.write("a.c", "a on BR two\n");
+    c.commit("BR two");
+    let released = c.export("REL_1");
+    assert_eq!(released["a.c"], "a on BR one");
+
+    let ir = c.decode();
+    assert_eq!(tree_at(&ir, ref_atom(&ir, "REL_1")), released);
+    assert!(
+        !ir.loss.dropped.iter().any(|d| d
+            .what
+            .starts_with("CVS tags on branch revisions not reconstructed")),
+        "{:?}",
+        ir.loss.dropped
+    );
+}

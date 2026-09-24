@@ -26,6 +26,9 @@
 //!   git-content <n>  — three commits and n sizeable files (the IR floor for Git: peak should track content).
 //!   cvs-revs <n>     — 20 `,v` files each with n trunk revisions (increment 3: the O(revisions²) per-file
 //!                      reconstruction); also checks every revision's content against the generator's text.
+//!   cvs-branches <n> — the `cvs-revs` files plus a branch of n/4 revisions and a nested branch of n/8 (RFC 013
+//!                      C-2), decoded with `--reconstruct-refs`; `cvs-branches-plain` decodes the same files
+//!                      without it (the trunk alone). Both check the IR statistics against the generator's.
 //!   svn-dump <n>     — a content-heavy SVN dump of n revisions over 300 files (increment 2: the parsed dump held
 //!                      beside the IR).
 
@@ -54,6 +57,8 @@ const SCENARIOS: &[(&str, &[u64])] = &[
     ("git-content", &[1_000, 5_000]),
     ("cvs-revs", &[200, 1_000, 5_000]),
     ("svn-dump", &[1_000, 5_000, 20_000]),
+    ("cvs-branches", &[200, 1_000, 5_000]),
+    ("cvs-branches-plain", &[200, 1_000, 5_000]),
 ];
 
 fn main() {
@@ -80,7 +85,7 @@ fn main() {
             };
             let (kind, path) = match &corpus.source {
                 Source::Svn(p) => ("svn", p),
-                Source::Cvs(p) => ("cvs", p),
+                Source::Cvs(p) | Source::CvsRefs(p) => ("cvs", p),
                 Source::Git(p) => ("git", p),
             };
             println!("{kind} {}", path.display());
@@ -151,6 +156,8 @@ struct Corpus {
 enum Source {
     Svn(PathBuf),
     Cvs(PathBuf),
+    /// CVS, decoded with `--reconstruct-refs` (the branches).
+    CvsRefs(PathBuf),
     Git(PathBuf),
 }
 
@@ -234,6 +241,16 @@ fn prepare(scenario: &str, n: u64, dir: &Path) -> Option<Corpus> {
             source: Source::Cvs(dir.to_path_buf()),
             cvs_content_check: true,
         },
+        "cvs-branches" => Corpus {
+            expected: Some(corpus::cvs_branches(dir, n).0),
+            source: Source::CvsRefs(dir.to_path_buf()),
+            cvs_content_check: false,
+        },
+        "cvs-branches-plain" => Corpus {
+            expected: Some(corpus::cvs_branches(dir, n).1),
+            source: Source::Cvs(dir.to_path_buf()),
+            cvs_content_check: false,
+        },
         "svn-dump" => {
             let path = dir.join("in.dump");
             let expected = corpus::svn_dump(&path, n);
@@ -262,6 +279,14 @@ fn decode(source: &Source) -> Ir {
         }
         Source::Cvs(dir) => {
             brygge_decode_cvs::decode(&CvsSource::LocalRepo(dir.clone()), &CvsOpts::default())
+                .expect("cvs decode")
+        }
+        Source::CvsRefs(dir) => {
+            let opts = CvsOpts {
+                reconstruct_refs: true,
+                ..CvsOpts::default()
+            };
+            brygge_decode_cvs::decode(&CvsSource::LocalRepo(dir.clone()), &opts)
                 .expect("cvs decode")
         }
         Source::Git(dir) => {

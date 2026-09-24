@@ -16,8 +16,12 @@ Every handoff adds its own entry in its own commit.
   different moments the parent is approximate and flagged (`ConventionViolation`, exit `30`). A branch of
   only some files gets a `branch-point:<name>` atom (`Derived(ReconstructedBranch)`) so that its tree equals
   `cvs checkout -r <branch>`, and a branch cut from a `cvs import` (a vendor revision that is still the default)
-  is a main-line branch too. No merges are inferred. A symbol cut from a branch revision in any file, and vendor
-  revisions after the vendor branch was cleared, are counted as drops, not imported yet.
+  is a main-line branch too. **A branch cut from a branch revision hangs from that branch** (a nested branch), and a
+  symbol cut from several lines (a mixed working copy) takes the line holding most of its branch points as its
+  parent, approximate and flagged. No merges are inferred. A branch whose parent line is not imported (an unnamed
+  branch, a vendor branch that is no longer the default) and vendor revisions after the vendor branch was cleared
+  are counted as drops, not imported. Reconstructing a nested branch stays linear: each line is walked once.
+  `tools/bench` gains `cvs-branches` and `cvs-branches-plain`.
 - **Mercurial: paths stored under hashed `dh/` names (very long paths) are read, not refused** (0.3.0, RFC 013 D-1).
   The store path encoding is now Mercurial's own `_hybridencode`, complete, and each filelog's index and data
   files are opened by their own encoded names (a hashed name embeds the SHA-1 of its own path).

@@ -68,3 +68,98 @@ fn a_run_that_reaches_the_end_of_the_line_counts_up_to_the_last_changeset() {
         }
     );
 }
+
+// ---- the parent line and the import order (RFC 013 §6) ------------------------------------------------
+
+use std::collections::BTreeMap;
+
+use super::{LineRef, OnBranch, PointState, majority_line, resolve};
+use crate::rcs::RevNum;
+
+fn on(file: usize, line: LineRef, state: PointState) -> OnBranch {
+    OnBranch {
+        file,
+        branch_id: RevNum(vec![1, 2, 2]),
+        point: RevNum(vec![1, 2]),
+        line,
+        state,
+    }
+}
+
+fn named(n: &str) -> LineRef {
+    LineRef::Named(n.to_string())
+}
+
+fn live(file: usize, line: LineRef) -> OnBranch {
+    on(file, line, PointState::Live)
+}
+
+#[test]
+fn the_majority_line_wins_ties_go_to_the_main_line_then_the_lower_name() {
+    let pick = |v: &[OnBranch]| majority_line(&v.iter().collect::<Vec<_>>());
+    assert_eq!(
+        pick(&[
+            live(0, named("B")),
+            live(1, named("B")),
+            live(2, LineRef::Main)
+        ]),
+        Some(named("B"))
+    );
+    assert_eq!(
+        pick(&[live(0, named("B")), live(1, LineRef::Main)]),
+        Some(LineRef::Main)
+    );
+    assert_eq!(
+        pick(&[live(0, named("B")), live(1, named("A"))]),
+        Some(named("A"))
+    );
+    // a dead branch point does not vote, and a line that cannot be a parent never wins
+    assert_eq!(
+        pick(&[on(0, LineRef::Main, PointState::Dead), live(1, named("B"))]),
+        Some(named("B"))
+    );
+    assert_eq!(
+        pick(&[
+            live(0, LineRef::Unknown),
+            live(1, LineRef::Unknown),
+            live(2, named("Z"))
+        ]),
+        Some(named("Z"))
+    );
+    assert_eq!(pick(&[live(0, LineRef::Unknown)]), None);
+    assert_eq!(pick(&[]), None);
+}
+
+fn entries(v: &[(&str, Vec<OnBranch>)]) -> BTreeMap<String, Vec<OnBranch>> {
+    v.iter()
+        .map(|(n, e)| ((*n).to_string(), e.clone()))
+        .collect()
+}
+
+#[test]
+fn branches_are_imported_after_their_parent_line_by_name_and_the_rest_are_blocked() {
+    let r = resolve(&entries(&[
+        ("A", vec![live(0, named("Z"))]), // hangs from Z, which sorts later
+        ("Z", vec![live(0, LineRef::Main)]),
+        ("M", vec![live(0, named("A"))]),       // hangs from A
+        ("U", vec![live(0, LineRef::Unknown)]), // on an unnamed line
+        ("X", vec![live(0, named("Y"))]),       // a cycle: X on Y, Y on X
+        ("Y", vec![live(0, named("X"))]),
+        ("S", vec![live(0, named("S"))]),    // on itself
+        ("G", vec![live(0, named("Nope"))]), // on a branch that does not exist
+        ("D", vec![on(0, LineRef::Unknown, PointState::Dead)]), // only added on the branch
+    ]));
+    assert_eq!(
+        r.order,
+        ["D", "Z", "A", "M"],
+        "parents first, by name within a wave"
+    );
+    assert_eq!(r.parent["A"], named("Z"));
+    assert_eq!(r.parent["M"], named("A"));
+    assert_eq!(r.parent["Z"], LineRef::Main);
+    assert_eq!(r.parent["D"], LineRef::Main, "no file constrains it");
+    assert_eq!(
+        r.blocked.iter().map(String::as_str).collect::<Vec<_>>(),
+        ["G", "S", "U", "X", "Y"]
+    );
+}

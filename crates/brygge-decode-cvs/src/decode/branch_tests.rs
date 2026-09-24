@@ -809,11 +809,10 @@ fn a_branch_cut_from_a_vendor_revision_is_a_main_line_branch() {
     assert_eq!(ir.atoms[tip].parents, vec![ir.atoms[import].id]);
     assert_eq!(tree_at(&ir, import), tree(&[("f.c", "vendor")]));
     assert!(
-        !ir.loss.dropped.iter().any(|d| {
-            d.what.starts_with("CVS branch revisions whose parent line")
-                || d.what
-                    .starts_with("CVS branches cut from a branch revision")
-        }),
+        !ir.loss
+            .dropped
+            .iter()
+            .any(|d| d.what.starts_with("CVS branches whose parent line")),
         "{:?}",
         ir.loss.dropped
     );
@@ -850,16 +849,17 @@ fn a_symbol_cut_from_a_vendor_revision_in_one_file_and_a_trunk_revision_in_anoth
     let tip = ref_target(&ir, "BR");
     assert_eq!(tree_at(&ir, tip), tree(&[("a.c", "abr"), ("b.c", "bbr")]));
     assert!(
-        !ir.loss.dropped.iter().any(|d| d
-            .what
-            .starts_with("CVS branches cut from a branch revision")),
+        !ir.loss
+            .dropped
+            .iter()
+            .any(|d| d.what.starts_with("CVS branches whose parent line")),
         "{:?}",
         ir.loss.dropped
     );
 }
 
-/// Once the vendor branch is no longer the default, a revision on it is not on the main line: a symbol cut
-/// from it is cut from a branch revision, and is counted, not imported.
+/// Once the vendor branch is no longer the default, a revision on it is on no imported line: a symbol cut from
+/// it has no parent line to hang from, and is counted, not imported.
 #[test]
 fn a_branch_cut_from_a_vendor_revision_after_the_vendor_branch_was_cleared_is_counted() {
     let r = Repo::new();
@@ -875,21 +875,166 @@ fn a_branch_cut_from_a_vendor_revision_after_the_vendor_branch_was_cleared_is_co
         .iter()
         .find(|d| {
             d.what
-                .starts_with("CVS branches cut from a branch revision")
+                .starts_with("CVS branches whose parent line is not imported")
         })
         .expect("counted");
     assert_eq!(
         d.what,
-        "CVS branches cut from a branch revision (1 branches, 1 revisions)"
+        "CVS branches whose parent line is not imported (1 branches, 1 revisions)"
     );
 }
 
-/// Review 036 F-2: a symbol that is cut from the main line in one file and from a branch revision in another
-/// (a mixed working copy) is **not imported at all** in this step, and every one of its revisions is counted
-/// in one record. Its tree would otherwise lack the second file while claiming to be exact. Another symbol on
-/// the first file's own branch is unaffected.
+/// A file with a branch `BR` (`1.2.0.2`, revisions `1.2.2.1` and `1.2.2.2`) and, when `deep`, a branch cut from
+/// the branch revision `1.2.2.1` (`1.2.2.1.0.2`, one revision `1.2.2.1.2.1`). `p` prefixes every text, so two
+/// files differ. `symbols` is the body of the symbols table.
+fn nested_v(p: &str, symbols: &str, deep: bool) -> Vec<u8> {
+    let nest_admin = if deep { "1.2.2.1.2.1" } else { "" };
+    let brs = if deep {
+        format!("branches\n\t{nest_admin};\n")
+    } else {
+        "branches;\n".to_string()
+    };
+    let mut s = format!(
+        "head\t1.2;\naccess;\nsymbols\n\t{symbols};\nlocks; strict;\n\n\n\
+1.2\ndate\t2024.01.02.00.00.00;\tauthor alice;\tstate Exp;\nbranches\n\t1.2.2.1;\nnext\t1.1;\n\n\
+1.1\ndate\t2024.01.01.00.00.00;\tauthor alice;\tstate Exp;\nbranches;\nnext\t;\n\n\
+1.2.2.1\ndate\t2024.02.01.00.00.00;\tauthor alice;\tstate Exp;\n{brs}next\t1.2.2.2;\n\n\
+1.2.2.2\ndate\t2024.02.03.00.00.00;\tauthor alice;\tstate Exp;\nbranches;\nnext\t;\n\n"
+    );
+    if deep {
+        s.push_str(
+            "1.2.2.1.2.1\ndate\t2024.03.01.00.00.00;\tauthor alice;\tstate Exp;\nbranches;\nnext\t;\n\n",
+        );
+    }
+    s.push_str(&format!(
+        "\ndesc\n@@\n\n\
+1.2\nlog\n@edit@\ntext\n@{p}2\n@\n\n\
+1.1\nlog\n@start@\ntext\n@d1 1\na1 1\n{p}1\n@\n\n\
+1.2.2.1\nlog\n@br one@\ntext\n@d1 1\na1 1\n{p}b1\n@\n\n\
+1.2.2.2\nlog\n@br two@\ntext\n@d1 1\na1 1\n{p}b2\n@\n"
+    ));
+    if deep {
+        s.push_str(&format!(
+            "\n1.2.2.1.2.1\nlog\n@nest@\ntext\n@d1 1\na1 1\n{p}n1\n@\n"
+        ));
+    }
+    s.into_bytes()
+}
+
+/// Handoff test 10: a branch cut from a branch revision has that branch as its parent line, and hangs from the
+/// branch changeset that holds the branch-point revision (not from the branch's tip).
 #[test]
-fn a_symbol_cut_from_more_than_one_line_is_not_imported_and_is_counted() {
+fn a_nested_branch_hangs_from_the_branch_changeset_of_its_branch_point() {
+    let r = Repo::new();
+    r.write(
+        "a.c",
+        &nested_v("a", "BR:1.2.0.2\n\tNEST:1.2.2.1.0.2", true),
+    );
+    let ir = decode_repo(&r, &with_refs());
+
+    let br1 = atom_index(&ir, "a.c@1.2.2.1").expect("BR's first changeset");
+    let br2 = atom_index(&ir, "a.c@1.2.2.2").expect("BR's second changeset");
+    let nest = ref_target(&ir, "NEST");
+    assert_eq!(
+        ir.atoms[nest].parents,
+        vec![ir.atoms[br1].id],
+        "parent: the branch point's changeset"
+    );
+    assert_eq!(tree_at(&ir, nest), tree(&[("a.c", "an1")]));
+    assert_eq!(tree_at(&ir, ref_target(&ir, "BR")), tree(&[("a.c", "ab2")]));
+    assert_eq!(ir.atoms[br2].parents, vec![ir.atoms[br1].id]);
+    assert!(
+        atom_index(&ir, "branch-point:NEST").is_none(),
+        "the parent's tree is the branch's tree at the cut"
+    );
+    let params = params_of(&ir, nest);
+    assert_eq!(params["line"], "NEST");
+    assert_eq!(params["parent_line"], "BR");
+    assert_eq!(params["branch_point"], "exact");
+    assert!(ir.flags.is_empty(), "{:?}", ir.flags);
+    assert!(
+        ir.loss
+            .dropped
+            .iter()
+            .all(|d| !d.what.contains("parent line"))
+    );
+}
+
+/// A branch cut from a branch that has no symbol in its file has no parent line to hang from: dropped and
+/// counted, never guessed. The unnamed parent branch's own revisions are dropped as before.
+#[test]
+fn a_branch_cut_from_an_unnamed_branch_is_dropped_and_counted() {
+    let r = Repo::new();
+    r.write("a.c", &nested_v("a", "NEST:1.2.2.1.0.2", true));
+    let ir = decode_repo(&r, &with_refs());
+    assert!(!ir.refs.iter().any(|r| r.name == "NEST"));
+    let d = ir
+        .loss
+        .dropped
+        .iter()
+        .find(|d| {
+            d.what
+                .starts_with("CVS branches whose parent line is not imported")
+        })
+        .expect("counted");
+    assert_eq!(
+        d.what,
+        "CVS branches whose parent line is not imported (1 branches, 1 revisions)"
+    );
+    assert!(
+        ir.loss
+            .dropped
+            .iter()
+            .any(|d| d.what == "CVS branch revisions on unnamed branches not imported (2)"),
+        "the unnamed branch's own two revisions: {:?}",
+        ir.loss.dropped
+    );
+}
+
+/// Handoff test 10, the mixed working copy: a symbol whose branch points lie on two lines. The line holding
+/// most of them is the parent; the files whose branch point lies elsewhere are on the branch (its tree at the
+/// cut has them at their branch-point content), but do not constrain the parent, so it is approximate and a
+/// branch-point atom sets their content.
+#[test]
+fn a_symbol_cut_from_two_lines_takes_the_majority_line_as_parent_and_is_approximate() {
+    let r = Repo::new();
+    // a.c and b.c: NEST is cut from the branch revision 1.2.2.1 of BR. c.c: NEST is cut from trunk 1.2.
+    r.write(
+        "a.c",
+        &nested_v("a", "BR:1.2.0.2\n\tNEST:1.2.2.1.0.2", true),
+    );
+    r.write(
+        "b.c",
+        &nested_v("b", "BR:1.2.0.2\n\tNEST:1.2.2.1.0.2", true),
+    );
+    r.write("c.c", &nested_v("c", "BR:1.2.0.2\n\tNEST:1.2.0.4", false));
+    let ir = decode_repo(&r, &with_refs());
+
+    let nest = ref_target(&ir, "NEST");
+    // a.c and b.c's nested revision is the branch's one changeset; c.c has no revision on NEST, so it is at
+    // its branch point (1.2, "c2") in the branch's tree.
+    assert_eq!(
+        tree_at(&ir, nest),
+        tree(&[("a.c", "an1"), ("b.c", "bn1"), ("c.c", "c2")])
+    );
+    let point =
+        atom_index(&ir, "branch-point:NEST").expect("c.c's content is set by a branch-point atom");
+    let params = params_of(&ir, point);
+    assert_eq!(params["branch_point"], "approximate");
+    assert_eq!(params["parent_line"], "BR");
+    assert!(
+        ir.flags
+            .iter()
+            .any(|f| f.what == "CVS branch point spans reconstructed changesets" && f.count == 1),
+        "{:?}",
+        ir.flags
+    );
+}
+
+/// The tie goes to the main line: a symbol cut from the trunk in one file and from a branch revision in
+/// another. Another symbol on the second file's own branch is unaffected.
+#[test]
+fn a_tie_between_lines_goes_to_the_main_line() {
     let r = Repo::new();
     // a.c: BR is a branch of the trunk (1.2.0.2, revision 1.2.2.1).
     r.write(
@@ -922,71 +1067,56 @@ desc\n@@\n\n\
     r.write("b.c", b);
     let ir = decode_repo(&r, &with_refs());
 
+    // BR: parent line Main (a.c: trunk; b.c: OTHER, a tie), approximate; b.c's tree at the cut is its branch
+    // point on OTHER ("bo"), then its nested revision.
+    assert_eq!(
+        tree_at(&ir, ref_target(&ir, "BR")),
+        tree(&[("a.c", "abr"), ("b.c", "bn")])
+    );
+    let point =
+        atom_index(&ir, "branch-point:BR").expect("b.c's content is set by a branch-point atom");
+    let params = params_of(&ir, point);
+    assert_eq!(params["branch_point"], "approximate");
     assert!(
-        !ir.refs.iter().any(|r| r.name == "BR"),
-        "BR is not imported, in either file"
+        !params.contains_key("parent_line"),
+        "the parent line is the main line"
+    );
+    // OTHER is b.c's own branch, cut from the trunk.
+    assert_eq!(
+        tree_at(&ir, ref_target(&ir, "OTHER")),
+        tree(&[("b.c", "bo")])
     );
     assert!(
-        ir.refs.iter().any(|r| r.name == "OTHER"),
-        "the other symbol on b.c's own branch is imported"
-    );
-    // a.c's branch revision 1.2.2.1 (a "BR" revision) is not on the OTHER branch.
-    let other = ref_target(&ir, "OTHER");
-    assert_eq!(
-        tree_at(&ir, other).get("b.c").map(String::as_str),
-        Some("bo")
-    );
-    assert!(!tree_at(&ir, other).contains_key("a.c"));
-    let d = ir
-        .loss
-        .dropped
-        .iter()
-        .find(|d| {
-            d.what
-                .starts_with("CVS branches cut from a branch revision")
-        })
-        .expect("counted");
-    assert_eq!(
-        d.what, "CVS branches cut from a branch revision (1 branches, 2 revisions)",
-        "a.c's 1.2.2.1 and b.c's 1.2.2.1.2.1"
-    );
-    assert_eq!(
-        d.reason,
-        "a branch cut from a branch revision is not imported in this build; keep the source repository"
+        ir.loss
+            .dropped
+            .iter()
+            .all(|d| !d.what.contains("parent line"))
     );
 }
 
-/// `classify` (review 036 F-1): by the line of the branch point, not by the symbol's length.
+/// `magic_branch`: the form of the symbol's number decides whether it names a branch; where the branch is
+/// cut from is decided by the line of its branch point (`line_of`), tested through the decodes above.
 #[test]
-fn classify_is_by_the_line_of_the_branch_point() {
-    use crate::branches::{Cut, classify};
+fn magic_branch_reads_the_number_not_the_line() {
+    use crate::branches::{MagicBranch, magic_branch};
     use crate::rcs::RevNum;
     let rn = |s: &str| RevNum(s.split('.').map(|c| c.parse().unwrap()).collect());
-    let vendor = rn("1.1.1");
-    let main = |b: &str, p: &str| {
-        Some(Cut::MainLine(crate::branches::OnBranchPoint {
+    let m = |b: &str, p: &str| {
+        Some(MagicBranch {
             branch_id: rn(b),
             point: rn(p),
-        }))
+        })
     };
-    assert_eq!(classify(&rn("1.2.0.4"), None), main("1.2.4", "1.2"));
+    assert_eq!(magic_branch(&rn("1.2.0.4")), m("1.2.4", "1.2"));
+    assert_eq!(magic_branch(&rn("1.1.1.1.0.2")), m("1.1.1.1.2", "1.1.1.1"));
+    assert_eq!(magic_branch(&rn("1.2.2.1.0.2")), m("1.2.2.1.2", "1.2.2.1"));
     assert_eq!(
-        classify(&rn("1.1.1.1.0.2"), Some(&vendor)),
-        main("1.1.1.1.2", "1.1.1.1")
+        magic_branch(&rn("1.2.4.3.2.1.0.6")),
+        m("1.2.4.3.2.1.6", "1.2.4.3.2.1")
     );
-    assert_eq!(classify(&rn("1.1.1.1.0.2"), None), Some(Cut::OffLine));
-    // a vendor revision that is not directly on the default vendor branch is off the line
-    assert_eq!(
-        classify(&rn("1.1.2.1.0.2"), Some(&vendor)),
-        Some(Cut::OffLine)
-    );
-    // a branch of a branch
-    assert_eq!(
-        classify(&rn("1.2.2.1.0.2"), Some(&vendor)),
-        Some(Cut::OffLine)
-    );
-    // tags and literal (vendor) branch numbers are not magic
-    assert_eq!(classify(&rn("1.2"), None), None);
-    assert_eq!(classify(&rn("1.1.1"), Some(&vendor)), None);
-    assert_eq!(classify(&rn("1.2.3.4"), None), None);
+    // tags, literal (vendor) branch numbers, and other odd lengths are not magic
+    assert_eq!(magic_branch(&rn("1.2")), None);
+    assert_eq!(magic_branch(&rn("1.1.1")), None);
+    assert_eq!(magic_branch(&rn("1.2.3.4")), None);
+    assert_eq!(magic_branch(&rn("1.0.2")), None);
 }
