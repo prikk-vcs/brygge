@@ -1467,3 +1467,269 @@ fn a_bookmark_naming_an_unknown_changeset_is_counted_not_skipped() {
     );
     assert!(ir.refs.iter().all(|rf| rf.name != "ghost"));
 }
+
+// ---- RFC 013 D-1: Mercurial's store path encoding, complete ------------------------------------------------
+
+impl Repo {
+    /// `hg init` with extra `--config` settings (for a repository without `dotencode`).
+    fn new_with(config: &[&str]) -> Self {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir =
+            std::env::temp_dir().join(format!("brygge-hgdec-{}-{nanos}-{n}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let r = Self { dir };
+        let mut args: Vec<&str> = vec!["init"];
+        for c in config {
+            args.push("--config");
+            args.push(c);
+        }
+        args.push(r.dir.to_str().unwrap());
+        r.run(&args);
+        r
+    }
+
+    /// `hg cat -r <node> <path>`.
+    fn cat(&self, node: &str, path: &str) -> Vec<u8> {
+        let out = Command::new("hg")
+            .env("HGRCPATH", "/dev/null")
+            .arg("--cwd")
+            .arg(&self.dir)
+            .args(["cat", "-r", node, "--", path])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "hg cat {path}");
+        out.stdout
+    }
+
+    /// The nodes (hex) `hg log` lists for `path`.
+    fn log_nodes(&self, path: &str) -> Vec<String> {
+        let out = Command::new("hg")
+            .env("HGRCPATH", "/dev/null")
+            .arg("--cwd")
+            .arg(&self.dir)
+            .args(["log", "--template", "{node}\n", "--", path])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "hg log {path}");
+        let mut v: Vec<String> = String::from_utf8(out.stdout)
+            .unwrap()
+            .lines()
+            .map(str::to_string)
+            .collect();
+        v.sort();
+        v
+    }
+}
+
+/// Every path in the IR's atoms, with the nodes (hex) of the atoms that add or modify it and the content each
+/// carried.
+fn history_of(ir: &brygge_ir::Ir, path: &str) -> Vec<(String, Vec<u8>)> {
+    use brygge_ir::model::PathOp;
+    let mut out = Vec::new();
+    for atom in &ir.atoms {
+        for op in &atom.ops {
+            if let PathOp::Add { path: p, blob, .. } | PathOp::Modify { path: p, blob, .. } = op {
+                if p == path {
+                    out.push((
+                        crate::util::hex(&atom.source.atom_id),
+                        ir.content.get(blob).unwrap().to_vec(),
+                    ));
+                }
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// A large, poorly compressible body so that a revlog outgrows Mercurial's inline threshold (128 KiB).
+fn big(seed: u8, n: usize) -> String {
+    let mut x = 0x9E37_79B9_u32 ^ u32::from(seed);
+    let mut s = String::with_capacity(n);
+    while s.len() < n {
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        s.push(char::from(b'a' + (x % 26) as u8));
+        if s.len() % 61 == 0 {
+            s.push('\n');
+        }
+    }
+    s
+}
+
+/// The paths of the end-to-end tests: each is a file the old encoding got wrong or refused.
+const ENCODING_PATHS: &[&str] = &[
+    "aux",
+    "con.txt",
+    "com1",
+    "dir.i/f.txt",
+    "x.d/y.txt",
+    "z.hg/w.txt",
+    "Upper/Case_Under.TXT",
+    "short.txt",
+];
+
+fn long_paths() -> Vec<String> {
+    vec![
+        // many directories: the hashed name keeps the first 68 bytes of directory prefixes
+        format!("{}long_file_name_at_the_end.txt", "director/".repeat(14)),
+        // a very long single basename
+        format!("{}.txt", "b".repeat(180)),
+        // uppercase, underscore and non-ASCII in a long path
+        format!("Mixed_Dir/{}/é{}.TXT", "Cámel".repeat(10), "Z".repeat(80)),
+    ]
+}
+
+fn assert_decodes_like_hg(r: &Repo, ir: &brygge_ir::Ir, path: &str) {
+    let want = r.log_nodes(path);
+    assert!(!want.is_empty(), "hg log has history for {path}");
+    let got = history_of(ir, path);
+    assert_eq!(
+        got.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>(),
+        want,
+        "history of {path}"
+    );
+    for (node, content) in got {
+        assert_eq!(content, r.cat(&node, path), "{path} at {node}");
+    }
+}
+
+/// A repository with paths of every kind the old encoding got wrong or refused, one of them non-inline (its
+/// filelog has a `.d`), decodes, and each file's content and history match `hg cat` and `hg log`.
+fn end_to_end(dotencode: bool) {
+    if !hg_available() {
+        eprintln!("skipping: hg not on PATH");
+        return;
+    }
+    let config = if dotencode {
+        Vec::new()
+    } else {
+        vec!["format.dotencode=false"]
+    };
+    let r = Repo::new_with(&config);
+    let longs = long_paths();
+    // c0: every path with a small body; the first long path with a body over the inline threshold.
+    for p in ENCODING_PATHS {
+        r.write(p, &format!("body of {p}\n"));
+    }
+    r.write(".hidden", "dot\n");
+    r.write(" lead/space.txt", "space\n");
+    for (i, p) in longs.iter().enumerate() {
+        let body = if i == 0 {
+            big(1, 200 * 1024)
+        } else {
+            format!("long {i}\n")
+        };
+        r.write(p, &body);
+    }
+    r.commit("1136239445", "c0");
+    // c1: change everything, the big one in its middle, so it has history in a non-inline revlog.
+    for p in ENCODING_PATHS {
+        r.write(p, &format!("second body of {p}\n"));
+    }
+    r.write(".hidden", "dot2\n");
+    r.write(" lead/space.txt", "space2\n");
+    r.write(&longs[0], &big(2, 200 * 1024));
+    r.write(&longs[1], "long 1 again\n");
+    r.write(&longs[2], "long 2 again\n");
+    r.commit("1136239446", "c1");
+
+    let ir = decode(r.path(), &Options::default()).unwrap();
+    assert_eq!(ir.atoms.len(), 2);
+    let mut all: Vec<String> = ENCODING_PATHS.iter().map(|p| (*p).to_string()).collect();
+    all.extend(longs.iter().cloned());
+    all.push(".hidden".to_string());
+    all.push(" lead/space.txt".to_string());
+    for p in &all {
+        assert_decodes_like_hg(&r, &ir, p);
+    }
+
+    // The big long-path file really is a split revlog with a hashed `.d` name of its own.
+    let names = crate::fncache::store_paths(&longs[0], dotencode).unwrap();
+    assert!(names.index.starts_with("dh/") && names.data.starts_with("dh/"));
+    let store = r.path().join(".hg").join("store");
+    assert!(store.join(&names.index).exists(), "{}", names.index);
+    assert!(
+        store.join(&names.data).exists(),
+        "the hashed .d file {} exists (the revlog is not inline)",
+        names.data
+    );
+}
+
+#[test]
+fn hashed_and_reserved_paths_decode_like_hg_with_dotencode() {
+    end_to_end(true);
+}
+
+#[test]
+fn hashed_and_reserved_paths_decode_like_hg_without_dotencode() {
+    end_to_end(false);
+}
+
+#[test]
+fn a_missing_hashed_index_or_data_file_is_a_read_error_naming_the_path() {
+    if !hg_available() {
+        eprintln!("skipping: hg not on PATH");
+        return;
+    }
+    let long = long_paths().remove(0);
+    let build = || {
+        let r = Repo::new();
+        r.write(&long, &big(3, 200 * 1024));
+        r.commit("1136239445", "c0");
+        r.write(&long, &big(4, 200 * 1024));
+        r.commit("1136239446", "c1");
+        r
+    };
+    let store_of = |r: &Repo| r.path().join(".hg").join("store");
+    let names = crate::fncache::store_paths(&long, true).unwrap();
+
+    // The index removed.
+    let r = build();
+    std::fs::remove_file(store_of(&r).join(&names.index)).unwrap();
+    match decode(r.path(), &Options::default()) {
+        Err(crate::Error::Read(m)) => {
+            assert!(m.contains("filelog for") && m.contains(&names.index), "{m}");
+        }
+        other => panic!("expected a Read error, got {other:?}"),
+    }
+
+    // The data file removed (the revlog is not inline, so it is required): never silently skipped.
+    let r = build();
+    std::fs::remove_file(store_of(&r).join(&names.data)).unwrap();
+    match decode(r.path(), &Options::default()) {
+        Err(crate::Error::Read(m)) => {
+            assert!(m.contains("data file") && m.contains(&names.data), "{m}");
+        }
+        other => panic!("expected a Read error, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_store_without_fncache_is_refused_by_name() {
+    if !hg_available() {
+        eprintln!("skipping: hg not on PATH");
+        return;
+    }
+    let r = Repo::new();
+    r.write("a.txt", "a\n");
+    r.commit("1136239445", "c0");
+    // A repository as Mercurial before 1.1 wrote it: `store`, but no `fncache` (or `dotencode`).
+    // (Under `share-safe` the store requirements live in `.hg/store/requires`, which is read too: rewrite both.)
+    std::fs::write(r.path().join(".hg").join("requires"), "revlogv1\nstore\n").unwrap();
+    let store_requires = r.path().join(".hg").join("store").join("requires");
+    if store_requires.exists() {
+        std::fs::write(store_requires, "").unwrap();
+    }
+    match decode(r.path(), &Options::default()) {
+        Err(crate::Error::UnsupportedFormat { requirement, .. }) => {
+            assert_eq!(requirement, "store-without-fncache");
+        }
+        other => panic!("expected a store-without-fncache refusal, got {other:?}"),
+    }
+}

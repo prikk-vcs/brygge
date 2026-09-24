@@ -8,6 +8,24 @@ Every handoff adds its own entry in its own commit.
 
 ## [Unreleased]
 
+### Added
+
+- **Mercurial: paths stored under hashed `dh/` names (very long paths) are read, not refused** (0.3.0, RFC 013 D-1).
+  The store path encoding is now Mercurial's own `_hybridencode`, complete, and each filelog's index and data
+  files are opened by their own encoded names (a hashed name embeds the SHA-1 of its own path).
+
+### Fixed
+
+- **Mercurial: paths with a Windows-reserved component (`aux`, `con`, `com1`, ...), a directory named `*.i`, `*.d`
+  or `*.hg`, or a directory ending in `.` or a space are read.** They failed before, because the encoding was
+  incomplete. A `fncache` repository without `dotencode` is read with the right encoding, too.
+
+### Changed
+
+- **Mercurial: a `store` repository without `fncache` (before Mercurial 1.1, 2008) is refused by name**
+  (`store-without-fncache`, exit 20), where it was assumed to have one. A non-inline revlog whose data file is absent
+  while its index needs data is a read error naming the file.
+
 ## [0.2.0] — 2026-09-24
 
 **Scale: long Git and CVS histories no longer cost memory or time out of proportion to their size.**

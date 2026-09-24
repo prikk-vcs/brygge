@@ -14,16 +14,48 @@ fn a_typical_modern_zlib_repo_passes() {
 }
 
 #[test]
-fn empty_and_blank_lines_are_ignored() {
-    assert!(check("").is_ok());
-    assert!(check("\n\nrevlogv1\n\nstore\n\n").is_ok());
+fn blank_lines_are_ignored() {
+    assert!(check("\n\nrevlogv1\n\nstore\nfncache\n\n").is_ok());
 }
 
 #[test]
 fn zstd_compression_is_supported() {
     // Modern hg defaults to zstd; the reader reads it (ruzstd), so the gate must accept it.
-    let body = "revlogv1\nstore\nrevlog-compression-zstd\ngeneraldelta\n";
+    let body = "revlogv1\nstore\nfncache\nrevlog-compression-zstd\ngeneraldelta\n";
     assert!(check(body).is_ok());
+}
+
+// ---- RFC 013 D-1: the store encoding is read from the requirements -----------------------------------------
+
+#[test]
+fn dotencode_is_read_from_the_requirements() {
+    let with = check("dotencode\nfncache\nrevlogv1\nstore\n").unwrap();
+    assert!(with.dotencode);
+    // `fncache` without `dotencode`: the leading dot/space rule does not apply.
+    let without = check("fncache\nrevlogv1\nstore\n").unwrap();
+    assert!(!without.dotencode);
+}
+
+#[test]
+fn a_store_without_fncache_is_refused_by_name() {
+    // Mercurial before 1.1 (2008): a different file-name encoding, which this reader does not implement.
+    for body in [
+        "revlogv1\nstore\n",
+        "revlogv1\nstore\ndotencode\n",
+        "",
+        "revlogv1\n",
+    ] {
+        match check(body) {
+            Err(Error::UnsupportedFormat {
+                requirement,
+                reason,
+            }) => {
+                assert_eq!(requirement, "store-without-fncache", "{body:?}");
+                assert!(reason.contains("before 1.1"), "{reason}");
+            }
+            other => panic!("expected a store-without-fncache refusal for {body:?}, got {other:?}"),
+        }
+    }
 }
 
 #[test]

@@ -36,7 +36,7 @@ const DECODER: &str = "brygge-decode-hg";
 /// [`Error::Ir`] on an IR invariant violation.
 pub fn decode(path: &Path, opts: &Options) -> Result<Ir, Error> {
     let (root, store) = locate(path)?;
-    check_requirements(&root, &store)?;
+    let encoding = check_requirements(&root, &store)?;
 
     let changelog = Revlog::open(&store.join("00changelog.i"))?;
     let manifest_log = Revlog::open(&store.join("00manifest.i"))?;
@@ -104,6 +104,10 @@ pub fn decode(path: &Path, opts: &Options) -> Result<Ir, Error> {
     }
 
     let mut filelogs: HashMap<String, Revlog> = HashMap::new();
+    let filelog_store = FilelogStore {
+        dir: &store,
+        dotencode: encoding.dotencode,
+    };
     let mut node_to_atom: HashMap<[u8; 20], AtomId> = HashMap::new();
     let mut branch_of: HashMap<usize, String> = HashMap::new();
     let mut unresolved_copies = 0usize;
@@ -151,7 +155,7 @@ pub fn decode(path: &Path, opts: &Options) -> Result<Ir, Error> {
         let parents = parent_atoms(&changelog, crev, &node_to_atom)?;
 
         let (ops, copies, unresolved, on_existing) = diff_manifests(
-            &store,
+            &filelog_store,
             &mut filelogs,
             &mut builder,
             &parent_manifest,
@@ -284,7 +288,7 @@ fn read_requires_file(path: &Path) -> Result<String, Error> {
 }
 
 /// Read and check `.hg/requires` (and `.hg/store/requires` under share-safe) — the format-safety gate.
-fn check_requirements(root: &Path, store: &Path) -> Result<(), Error> {
+fn check_requirements(root: &Path, store: &Path) -> Result<requires::StoreEncoding, Error> {
     let mut body = read_requires_file(&root.join(".hg").join("requires"))?;
     let store_body = read_requires_file(&store.join("requires"))?;
     if !store_body.is_empty() {
@@ -319,7 +323,7 @@ pub(crate) fn manifest_of(
 /// and is counted separately.
 #[allow(clippy::too_many_arguments)]
 fn diff_manifests(
-    store: &Path,
+    store: &FilelogStore<'_>,
     filelogs: &mut HashMap<String, Revlog>,
     builder: &mut IrBuilder,
     parent: &BTreeMap<String, manifest::Entry>,
@@ -426,14 +430,29 @@ fn place_copy(
     }
 }
 
+/// Where the filelogs are, and how their file names are encoded (`.hg/requires`, RFC 013 D-1).
+struct FilelogStore<'a> {
+    /// `.hg/store`.
+    dir: &'a Path,
+    /// `dotencode` from the repository's requirements.
+    dotencode: bool,
+}
+
 fn open_filelog<'a>(
-    store: &Path,
+    store: &FilelogStore<'_>,
     filelogs: &'a mut HashMap<String, Revlog>,
     path: &str,
 ) -> Result<&'a Revlog, Error> {
     if !filelogs.contains_key(path) {
-        let sp = fncache::store_path(path)?;
-        let rl = Revlog::open(&store.join(sp))?;
+        // A hashed name embeds the SHA-1 of its own path, so the index and the data file are named
+        // separately; neither is derived from the other.
+        let names = fncache::store_paths(path, store.dotencode)?;
+        let index = store.dir.join(&names.index);
+        let data = store.dir.join(&names.data);
+        // Only a real `NotFound` from the read itself says "not found" (no separate `stat`).
+        let index_missing = format!("filelog for {path} not found at {}", names.index);
+        let data_missing = format!("the data file of the filelog for {path} ({})", names.data);
+        let rl = Revlog::open_with_data(&index, &data, Some(&index_missing), &data_missing)?;
         filelogs.insert(path.to_string(), rl);
     }
     filelogs
@@ -443,7 +462,7 @@ fn open_filelog<'a>(
 
 /// Read a file revision's content and copy source, caching open filelogs by path.
 fn read_file(
-    store: &Path,
+    store: &FilelogStore<'_>,
     filelogs: &mut HashMap<String, Revlog>,
     path: &str,
     filenode: &[u8; 20],

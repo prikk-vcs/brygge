@@ -649,3 +649,78 @@ fn an_ordinary_input_passes_through_the_same_helper_and_a_wrong_node_does_not() 
     );
     assert!(matches!(&err, crate::Error::Read(m) if *m == expected));
 }
+
+// ---- RFC 013 D-1: an absent file is an error only when the revlog needs it -----------------------------------
+
+#[test]
+fn an_absent_data_file_is_a_read_error_when_the_index_stores_data() {
+    let dir = unique_dir("absent-d-needed");
+    let index = write_single_rev_revlog(&dir, "f", b"u hello", 6);
+    std::fs::remove_file(dir.join("f.d")).unwrap();
+    match Revlog::open_with_data(&index, &dir.join("f.d"), None, "the data file of f") {
+        Err(crate::Error::Read(m)) => {
+            assert!(m.contains("the data file of f not found at"), "{m}");
+            assert!(m.contains("f.d"), "names the file: {m}");
+        }
+        other => panic!("expected a Read error, got {:?}", other.map(|_| ())),
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn an_absent_data_file_is_nothing_to_read_when_every_entry_is_empty() {
+    let dir = unique_dir("absent-d-empty");
+    // one revision whose stored chunk is empty (comp_len 0): the index says everything there is to say.
+    let index = write_single_rev_revlog(&dir, "f", b"", 0);
+    std::fs::remove_file(dir.join("f.d")).unwrap();
+    let rl = Revlog::open_with_data(&index, &dir.join("f.d"), None, "the data file").unwrap();
+    assert_eq!(rl.len(), 1, "the revlog reads as its index says");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn only_a_real_not_found_of_the_index_says_not_found() {
+    let dir = unique_dir("absent-i");
+    let missing = dir.join("nope.i");
+    match Revlog::open_with_data(
+        &missing,
+        &dir.join("nope.d"),
+        Some("filelog for x not found at y"),
+        "d",
+    ) {
+        Err(crate::Error::Read(m)) => assert_eq!(m, "filelog for x not found at y"),
+        other => panic!(
+            "expected the not-found message, got {:?}",
+            other.map(|_| ())
+        ),
+    }
+    // Any other I/O error keeps its own text: an unreadable index is not reported as "not found".
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let unreadable = dir.join("locked.i");
+        std::fs::write(&unreadable, [0u8; 64]).unwrap();
+        std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read(&unreadable).is_err() {
+            match Revlog::open_with_data(
+                &unreadable,
+                &dir.join("locked.d"),
+                Some("filelog for x not found at y"),
+                "d",
+            ) {
+                Err(crate::Error::Read(m)) => {
+                    assert!(
+                        !m.contains("not found at y"),
+                        "a permission error is not 'not found': {m}"
+                    );
+                    assert!(m.contains("locked.i"), "{m}");
+                }
+                other => panic!("expected a Read error, got {:?}", other.map(|_| ())),
+            }
+        } else {
+            eprintln!("skipping the permission half: this user can read a mode-000 file (root)");
+        }
+        std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

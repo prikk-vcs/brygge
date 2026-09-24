@@ -81,6 +81,9 @@ untouched).
 These also exit `20`:
 - **A format this build does not read:** a `.hg/requires` entry such as `revlogv2`, `treemanifest`, a
   narrow clone, or anything unrecognized; or an obsstore other than version 1.
+- **A store without `fncache`** (Mercurial before 1.1, from 2008), whose file names are encoded differently
+  (`store-without-fncache`). Clone it with a current Mercurial (`hg clone --pull <old> <new>` writes a
+  current store), then decode the clone.
 - **A size ceiling:** a revision over 1 GiB once decompressed, or an obsstore or a small metadata file
   (`phaseroots`, `bookmarks`, `localtags`) over 64 MiB.
 

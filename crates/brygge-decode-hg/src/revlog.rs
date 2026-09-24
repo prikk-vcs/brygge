@@ -131,8 +131,38 @@ impl Revlog {
     /// [`Error::Read`] on I/O failure or a malformed/unsupported index (only revlogv1 is read; the
     /// format-safety gate refuses other formats before this is reached).
     pub fn open(index_path: &Path) -> Result<Self, Error> {
-        let index_buf = std::fs::read(index_path)
-            .map_err(|e| read_err(format!("{}: {e}", index_path.display())))?;
+        let data_path = index_path.with_extension("d");
+        Self::open_with_data(index_path, &data_path, None, "the data file")
+    }
+
+    /// Like [`Revlog::open`], with the data file named explicitly. A **hashed** filelog name embeds the SHA-1
+    /// of its own path, so its `.i` and `.d` names differ in more than the extension and one cannot be derived
+    /// from the other (RFC 013 D-1).
+    ///
+    /// A file the revlog needs is never silently skipped:
+    /// - an absent index is a `Read` error with the message `index_missing` when given (only a real
+    ///   `NotFound` says so; any other I/O error keeps its own text);
+    /// - an absent `.d` is a `Read` error saying `data_missing`, **when some index entry stores a non-empty
+    ///   chunk** (it needs data). A non-inline revlog whose revisions are all empty has nothing to read and
+    ///   reads as exactly what its index says.
+    ///
+    /// # Errors
+    /// As [`Revlog::open`]; also [`Error::Read`] as above.
+    pub fn open_with_data(
+        index_path: &Path,
+        data_path: &Path,
+        index_missing: Option<&str>,
+        data_missing: &str,
+    ) -> Result<Self, Error> {
+        let index_buf = match std::fs::read(index_path) {
+            Ok(b) => b,
+            Err(e) => {
+                return Err(match index_missing {
+                    Some(msg) if e.kind() == std::io::ErrorKind::NotFound => read_err(msg),
+                    _ => read_err(format!("{}: {e}", index_path.display())),
+                });
+            }
+        };
         if index_buf.is_empty() {
             return Ok(Self {
                 entries: Vec::new(),
@@ -150,21 +180,27 @@ impl Revlog {
         }
         let inline = version & FLAG_INLINE != 0;
 
-        let data_buf = if inline {
-            Vec::new()
-        } else {
-            let data_path = index_path.with_extension("d");
-            match std::fs::read(&data_path) {
-                Ok(b) => b,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-                Err(e) => return Err(read_err(format!("{}: {e}", data_path.display()))),
-            }
-        };
-
         let entries = if inline {
             Self::parse_inline(&index_buf)?
         } else {
             Self::parse_split(&index_buf)?
+        };
+        let data_buf = if inline {
+            Vec::new()
+        } else {
+            match std::fs::read(data_path) {
+                Ok(b) => b,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    if entries.iter().any(|en| en.comp_len > 0) {
+                        return Err(read_err(format!(
+                            "{data_missing} not found at {} (the revlog is not inline, and its index stores data)",
+                            data_path.display()
+                        )));
+                    }
+                    Vec::new()
+                }
+                Err(e) => return Err(read_err(format!("{}: {e}", data_path.display()))),
+            }
         };
         Ok(Self {
             entries,

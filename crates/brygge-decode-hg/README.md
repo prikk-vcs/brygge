@@ -40,7 +40,11 @@ a [`brygge_ir::Ir`].
   is taken from a published root) is read, so every such node is verified.
 - **The format-safety gate (`requires`):** a repository whose `.hg/requires` names a format this build
   does not implement — `revlogv2`, `treemanifest`, `narrowhg`, or anything unrecognized — is **refused,
-  never guessed**, before a single revlog byte is parsed.
+  never guessed**, before a single revlog byte is parsed. It also reads `dotencode` from there.
+- **The store path encoding** is Mercurial's own `_hybridencode`, complete: reserved names (`aux`, `con`,
+  `com1`, ...), directories named `*.i`, `*.d` or `*.hg`, trailing dots and spaces, and the hashed `dh/` names
+  of very long paths. A filelog's index and data files are named separately, since a hashed name embeds the
+  SHA-1 of its own path.
 
 The only crate that reads hg (RFC 009 D-1); `brygge_ir` and `verify --internal` link none of it. It parses
 an untrusted store, so every parser is bounds-checked and panic-free. See
@@ -65,8 +69,9 @@ identifiers are also recorded in every artifact's provenance as `params["floor"]
 | `external-storage-revision` | a revision flagged as externally stored, which holds a pointer rather than the text its node hashes | convert the externally stored files to ordinary files in a copy of the repository |
 | `unknown-revision-flag` | a revision carrying a flag bit Mercurial itself does not define | none; Mercurial refuses such a revision too |
 
-Two related refusals are format errors rather than floor features, also exit 20: a `.hg/requires` entry this
-build does not implement (`revlogv2`, `treemanifest`, `narrowhg`, or anything unrecognized), and a
+Three related refusals are format errors rather than floor features, also exit 20: a `.hg/requires` entry this
+build does not implement (`revlogv2`, `treemanifest`, `narrowhg`, or anything unrecognized), a store without
+`fncache` (Mercurial before 1.1, whose file names are encoded differently: `store-without-fncache`), and a
 `.hg/store/obsstore` in a format other than version 1.
 
 ## Ceilings

@@ -11,15 +11,15 @@ use crate::{Error, floor};
 /// is refused (either as a floor feature or as an unreadable format).
 const SUPPORTED: &[&str] = &[
     "revlogv1",                // the format this reader implements
-    "store",                   // objects under .hg/store (assumed; the only layout read)
-    "fncache",                 // filelog path encoding — handled by the reader
-    "dotencode",               // additional path encoding — handled by the reader
-    "generaldelta",            // delta base is an arbitrary prior rev — handled
-    "sparserevlog",            // affects delta-chain selection only; reading is unchanged
+    "store",                   // objects under .hg/store (the only layout read)
+    "fncache",      // filelog path encoding; required: a store without it is refused below
+    "dotencode",    // leading `.`/space path encoding; read from here (RFC 013 D-1)
+    "generaldelta", // delta base is an arbitrary prior rev — handled
+    "sparserevlog", // affects delta-chain selection only; reading is unchanged
     "revlog-compression-zlib", // explicit zlib (also the default when unstated)
     "revlog-compression-zstd", // zstd chunks — read via the pure-Rust ruzstd decoder
-    "persistent-nodemap",      // an auxiliary index file; the revlog is read without it
-    "share-safe",              // requires may live in .hg/store/requires; handled by the reader
+    "persistent-nodemap", // an auxiliary index file; the revlog is read without it
+    "share-safe",   // requires may live in .hg/store/requires; handled by the reader
 ];
 
 /// Requirements that are a **floor refusal** (`FA-3`, RFC 005 D-4): the feature is understood but
@@ -29,19 +29,33 @@ const FLOOR: &[(&str, &str)] = &[
     (floor::LFS, "git-lfs-style large-file storage"),
 ];
 
-/// Check a `.hg/requires` body. Returns `Ok(())` only if every requirement is in [`SUPPORTED`].
+/// How this repository's filelog file names are encoded (RFC 013 D-1), read from its requirements.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StoreEncoding {
+    /// `dotencode`: a leading `.` or space in a path component is encoded (`~2e` / `~20`). Every repository
+    /// since Mercurial 1.7 has it; a `fncache` repository without it does not.
+    pub dotencode: bool,
+}
+
+/// Check a `.hg/requires` body. Returns the store encoding only if every requirement is in [`SUPPORTED`] and
+/// the store is an `fncache` store.
 ///
 /// # Errors
 /// [`Error::FloorRefusal`] for a known-but-out-of-scope feature ([`FLOOR`]); [`Error::UnsupportedFormat`]
 /// for a format this reader does not implement (zstd/revlogv2/treemanifest/narrow) or any unknown
-/// requirement — refused rather than misread.
-pub fn check(requires_body: &str) -> Result<(), Error> {
+/// requirement, and for a store **without `fncache`** (Mercurial before 1.1, 2008, whose file names are
+/// encoded differently) — refused rather than misread.
+pub fn check(requires_body: &str) -> Result<StoreEncoding, Error> {
+    let mut fncache = false;
+    let mut dotencode = false;
     for line in requires_body.lines() {
         let req = line.trim();
         if req.is_empty() {
             continue;
         }
         if SUPPORTED.contains(&req) {
+            fncache |= req == "fncache";
+            dotencode |= req == "dotencode";
             continue;
         }
         if let Some((_, label)) = FLOOR.iter().find(|(k, _)| *k == req) {
@@ -68,7 +82,17 @@ pub fn check(requires_body: &str) -> Result<(), Error> {
             reason: reason.to_string(),
         });
     }
-    Ok(())
+    if !fncache {
+        return Err(Error::UnsupportedFormat {
+            requirement: "store-without-fncache".to_string(),
+            reason: "a store without `fncache` (Mercurial before 1.1) encodes its file names differently \
+                     from every later one, which this reader does not implement; refused rather than \
+                     misread. Convert a copy with a current Mercurial (`hg clone --pull` writes a current store), \
+                     then decode the copy"
+                .to_string(),
+        });
+    }
+    Ok(StoreEncoding { dotencode })
 }
 
 #[cfg(test)]
