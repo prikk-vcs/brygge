@@ -17,6 +17,17 @@ Handoffs: `rfcs/handoffs/013-source-reach/`.
     `.`/space, and D-1 completes it. Today such paths fail safely (`Read`); they will be read;
   - a `store` repository without `fncache` (before Mercurial 1.1) is refused by name.
 - **OQ-5 added (pending the owner):** MD5 for SVN checksums.
+- **D-3 made precise** (2026-09-24, while writing the C handoff):
+  - **the parent is the *earliest* covering changeset, not the latest.** Every covered file's branch point is
+    present there. A later changeset that only adds a file the branch does not carry is evidence the cut
+    preceded it. "Latest" could also place a parent after the branch's first commit. The param is
+    `branch_point_rule = earliest-covering-changeset`;
+  - **a branch's tree is what `cvs checkout -r B` gives:** only the files tagged on it, at their branch
+    points. Where the parent's tree differs (an approximate point, a subdirectory branch, files `B` does not
+    carry), a **branch-point atom** of `Derived(ReconstructedBranch)` ops reconciles it. This is cvs2git's
+    semantics too;
+  - **nested branches:** the parent line is the line of the branch-point revisions.
+- **OQ-6 added (pending the owner):** vendor branches after clearing.
 
 ## Summary
 
@@ -103,6 +114,8 @@ has `ReconstructedChangeset`, `ReconstructedBranch`, atom parents and derivation
   atoms with the same rule as the main line: `(author, log)`, the window, one revision per path, per-file
   order, and `span-overlap-v1` confidence, **within that branch only**.
 - **The branch point** is brygge's judgment, and it is marked as such:
+  - *(Amended 2026-09-24: the **earliest** covering changeset, on the line of the branch points, with
+    `branch_point_rule = earliest-covering-changeset`; see Status. The original text follows.)*
   - the first changeset of a branch has as its parent the **latest main-line changeset at which every file
     on the branch is exactly at its branch-point revision**. That is, the file's branch-point revision is
     in the tree there, and the file's next trunk revision is not yet;
@@ -155,6 +168,16 @@ has `ReconstructedChangeset`, `ReconstructedBranch`, atom parents and derivation
   - **Alternative A:** an in-crate MD5 (~100 lines, checked against RFC 1321's vectors). No dependency,
     but hash code of our own to maintain.
   - **Alternative B:** SHA-1 only. `svnrdump` dumps go unverified.
+
+- **OQ-6 — Vendor branches once cleared** (added 2026-09-24).
+  - **The problem:** a literal vendor symbol's revisions are main-line in files where it is still the default,
+    and branch revisions where it was cleared. The vendor-import skip also removes its branch point from the
+    spine. "Once cleared, an ordinary branch" does not say which line owns them.
+  - **Recommended:** in 0.3.0, vendor branches are not reconstructed as lines. Their non-main-line
+    revisions stay dropped, with their own exact record, and are revisited when a real repository needs
+    it.
+  - **Alternative:** reconstruct them as lines, importing the default-branch files' vendor revisions a
+    second time on that line. That needs its own coverage special cases.
 
 ## Order and proof
 
