@@ -1,8 +1,9 @@
 //! Resolving the SVN source into dumpstream bytes (RFC 006 D-1, Tier D).
 //!
 //! Two forms: a **dumpfile** the operator supplies (no subprocess), or a **local repository** brygge
-//! dumps with a read-only `svnadmin dump` (a fixed argument vector, no shell, no network). A **remote /
-//! URL source is refused** (INV-3): brygge never dumps over the network, and `svnrdump` is out of scope.
+//! dumps with a read-only `svnadmin dump` (a fixed argument vector, no shell, no network), always as a
+//! fulltext dump. A **remote / URL source is refused** (INV-3): brygge never dumps over the network and never
+//! runs `svnrdump`; a dump you made with `svnrdump dump <url>` (a delta dump, RFC 013 D-2) is read as a dumpfile.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -18,6 +19,11 @@ pub(crate) struct Limits {
     /// The maximum dumpstream size brygge will hold in memory (RFC 006 security review, T-8).
     /// Correctness first; streaming a larger dump is OQ-F (deferred). Refused, not truncated, above this.
     pub(crate) max_dump_bytes: usize,
+    /// The maximum size of **one node's text**, fulltext or (what a delta reconstructs to), as Git's
+    /// `max_blob_bytes` and Mercurial's `max_revision_bytes` are (RFC 013 D-2). The sum of every delta's
+    /// reconstructed target is further ceilinged by `max_dump_bytes`: a delta dump never expands past what
+    /// brygge would accept as a fulltext dump, so a small dump cannot amplify into unbounded memory (T-8).
+    pub(crate) max_node_text_bytes: usize,
     /// The maximum `svnadmin dump` stderr brygge holds, so a chatty or hostile subprocess writing
     /// endless stderr cannot exhaust the host either (CR-10). Only ever used for an error message.
     pub(crate) max_stderr_bytes: usize,
@@ -30,6 +36,7 @@ impl Default for Limits {
     fn default() -> Self {
         Self {
             max_dump_bytes: 8 * 1024 * 1024 * 1024,
+            max_node_text_bytes: 1024 * 1024 * 1024,
             max_stderr_bytes: 64 * 1024,
             max_svnadmin_version_bytes: 4096,
         }
@@ -87,6 +94,7 @@ pub(crate) fn svnadmin_version() -> Result<String, Error> {
     let bound = Limits::default().max_svnadmin_version_bytes;
     let limits = Limits {
         max_dump_bytes: bound,
+        max_node_text_bytes: bound,
         max_stderr_bytes: bound,
         max_svnadmin_version_bytes: bound,
     };
@@ -150,8 +158,9 @@ fn dump_local_repo(path: &Path, limits: &Limits) -> Result<Vec<u8>, Error> {
     if shown.contains("://") {
         return Err(Error::FloorRefusal {
             feature: floor::REMOTE_SOURCE.to_string(),
-            reason: "brygge dumps only a local repository; a URL/remote source is refused, and \
-                     `svnrdump` (network) is out of scope"
+            reason: "brygge dumps only a local repository; a URL/remote source is refused, and it \
+                     never runs `svnrdump` or touches the network. Run `svnrdump dump <url> > repo.dump` \
+                     yourself and give brygge the dumpfile"
                 .to_string(),
         });
     }

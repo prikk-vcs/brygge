@@ -12,8 +12,10 @@ brygge's **Subversion source decoder** (RFC 006, milestone M3). Reads an SVN his
   `CopyRecord`, with the correct source revision resolved as `from_atom`); symlinks and exec bits; an
   **opt-in, `Derived`** branch/tag layer reconstructed by layout convention (off by default).
 - **What it refuses (the floor, see the table below):** `svn:externals`, URL/remote sources, unknown
-  dump-format versions, and **delta-format dumps** (svndiff — deferred; re-dump without `--deltas`). A
-  convention-violating layout is **imported and flagged** (the CLI exits 30), not refused.
+  dump-format versions, and svndiff versions 1 and 2 (compressed; see below). **Delta dumps are read**
+  (`svnadmin dump --deltas`, and every `svnrdump dump`: svndiff version 0 and property deltas), and every
+  checksum a dump states is checked against the text rebuilt from it (a consistency check, not
+  authenticity). A convention-violating layout is **imported and flagged** (the CLI exits 30), not refused.
 - **What it drops-with-record:** `svn:mergeinfo` (advisory, never a merge parent), `svn:eol-style` /
   `svn:keywords` (the stored normal-form bytes are carried), custom properties, empty directories.
 
@@ -33,7 +35,10 @@ identifiers are also recorded in every artifact's provenance as `params["floor"]
 | `remote-source` | a URL or other remote source | make a local copy of the repository (or `svnadmin dump` it yourself) and give brygge that |
 
 Two related refusals are not floor features but dump-format errors, also exit 20: an **unknown dump-format
-version**, and a **delta-format dump** (`svnadmin dump --deltas`; re-dump without `--deltas`).
+version**, and a dump whose text deltas are **svndiff version 1 (zlib) or 2 (lz4)** (re-dump with `svnadmin dump`,
+fulltext or `--deltas`, or with `svnrdump`, which write version 0). A delta dump made by `svnadmin dump --deltas
+--incremental` cannot be decoded alone: a delta whose base is not in the dump is a read error (exit 1) naming the
+path.
 
 **Non-UTF-8 paths are a read error, not a floor refusal.** A dumpstream's paths are UTF-8 by the format's
 own definition, so a path that is not is a *malformed dump*, not a property of your repository's shape (Git

@@ -22,16 +22,86 @@ use brygge_ir::builder::IrBuilder;
 use brygge_ir::model::{AtomId, CopyRecord, PathOp};
 use brygge_ir::status::EpistemicStatus;
 
-use crate::dumpstream::{NodeAction, NodeKind, NodeRecord};
-use crate::{Error, props};
+use crate::dumpstream::{
+    Checksums, NodeAction, NodeKind, NodeRecord, PropBlock, PropChange, TextBody,
+};
+use crate::source::Limits;
+use crate::{Error, checksum, props, svndiff};
 
-/// A file in the tree: its content address and IR mode.
+/// A file in the tree: its content address, and its two mode properties.
+///
+/// The two mode properties are kept **separately**, not only as the derived `mode`: a file can carry both
+/// `svn:executable` and `svn:special`, and a property delta that removes `svn:special` must leave it
+/// executable. `mode` is the derived IR mode ([`props::mode_of`]) and is what the diff compares.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileEntry {
-    /// Content address in the IR store.
+    /// Content address in the IR store. For an `svn:special` file this is the bare link target, not SVN's
+    /// text (`link <target>`); [`svn_text`] gives SVN's text.
     pub blob: BlobId,
-    /// IR file mode (regular / executable / symlink).
+    /// IR file mode (regular / executable / symlink), derived from the two flags.
     pub mode: u32,
+    /// `svn:executable` is set.
+    pub exec: bool,
+    /// `svn:special` is set (the file is a symlink).
+    pub special: bool,
+}
+
+/// The resource accounting for one decode: the ceilings, and how much the deltas have reconstructed so far
+/// (RFC 013 D-2, T-8). A delta dump never expands past what brygge would accept as a fulltext dump.
+pub struct Budget<'a> {
+    /// The ceilings.
+    pub limits: &'a Limits,
+    /// The bytes every delta's reconstructed target has taken so far.
+    pub reconstructed: usize,
+}
+
+impl<'a> Budget<'a> {
+    /// A budget with nothing spent.
+    #[must_use]
+    pub fn new(limits: &'a Limits) -> Self {
+        Self {
+            limits,
+            reconstructed: 0,
+        }
+    }
+}
+
+/// SVN's text for an entry: what the dump's checksums and deltas are about. The IR blob of an `svn:special`
+/// file is the bare target, and SVN's text is `link ` followed by it (`props::symlink_target` strips exactly
+/// that prefix), so this is exactly reversible. **The one place** an entry's SVN text is made: every delta
+/// base and every checksum uses it.
+///
+/// # Errors
+/// [`Error::Read`] if the blob is not in the builder (a decoder bug, not bad input).
+pub fn svn_text(entry: &FileEntry, builder: &IrBuilder) -> Result<Vec<u8>, Error> {
+    let blob = builder
+        .blob(&entry.blob)
+        .ok_or_else(|| Error::Read("a tracked file's content is missing (internal)".to_string()))?;
+    if entry.special {
+        let mut text = Vec::with_capacity(blob.len().saturating_add(5));
+        text.extend_from_slice(b"link ");
+        text.extend_from_slice(blob);
+        Ok(text)
+    } else {
+        Ok(blob.to_vec())
+    }
+}
+
+/// The IR blob for SVN text under a flag: an `svn:special` file's blob is the text without `link `, and a text
+/// without it is refused, never guessed (CR-07.1).
+fn blob_for(
+    svn_text: Vec<u8>,
+    special: bool,
+    path: &str,
+    builder: &mut IrBuilder,
+) -> Result<BlobId, Error> {
+    let content = if special {
+        props::symlink_target(&svn_text)
+            .ok_or_else(|| Error::Read(format!("svn:special file without a link target: {path}")))?
+    } else {
+        svn_text
+    };
+    Ok(builder.add_blob(content))
 }
 
 /// The repository tree at a point: repo-relative file path → file. `BTreeMap` for deterministic order.
@@ -65,6 +135,7 @@ pub fn apply_revision(
     kept: &HashMap<u64, Tree>,
     revnum_to_atom: &HashMap<u64, AtomId>,
     builder: &mut IrBuilder,
+    budget: &mut Budget<'_>,
 ) -> Result<Applied, Error> {
     // Pass 1 (before any mutation): which paths this revision replaced (CR-07.2), and which directories
     // it added (CR-07.4) — both need the tree's *before* state, and the replaced set also needs the
@@ -96,9 +167,20 @@ pub fn apply_revision(
     let mut prop_loss = props::PropLoss::default();
 
     for node in nodes {
-        if let Some(p) = &node.props {
-            props::check_externals(&node.path, p)?;
-            let l = props::classify_loss(p);
+        if let Some(block) = &node.props {
+            // The entries the block sets (the whole set for a full block): what is refused and classified.
+            let set: props::Owned = match block {
+                PropBlock::Full(p) => p.clone(),
+                PropBlock::Delta(changes) => changes
+                    .iter()
+                    .filter_map(|c| match c {
+                        PropChange::Set(k, v) => Some((k.clone(), v.clone())),
+                        PropChange::Delete(_) => None,
+                    })
+                    .collect(),
+            };
+            props::check_externals(&node.path, &set)?;
+            let l = props::classify_loss(&set);
             prop_loss.mergeinfo |= l.mergeinfo;
             prop_loss.workflow |= l.workflow;
             prop_loss.custom |= l.custom;
@@ -114,7 +196,15 @@ pub fn apply_revision(
                         apply_dir(&mut tree, &mut copies, kept, revnum_to_atom, node)?;
                     }
                     Some(NodeKind::File) => {
-                        apply_file(&mut tree, &mut copies, kept, revnum_to_atom, builder, node)?;
+                        apply_file(
+                            &mut tree,
+                            &mut copies,
+                            kept,
+                            revnum_to_atom,
+                            builder,
+                            budget,
+                            node,
+                        )?;
                     }
                     None => {
                         // A kindless change on an existing file is a property-only change; on a
@@ -126,6 +216,7 @@ pub fn apply_revision(
                                 kept,
                                 revnum_to_atom,
                                 builder,
+                                budget,
                                 node,
                             )?;
                         }
@@ -171,52 +262,164 @@ fn collect_subtree_paths(tree: &Tree, dir: &str, out: &mut HashSet<String>) {
     }
 }
 
-/// Apply a file add/change/replace: resolve its mode (own property block → copy source → existing entry,
-/// CR-07.1), then its content — stripping the `link ` prefix whenever the *resolved* mode is a symlink,
-/// regardless of whether this node carried its own property block (a retarget with no property block
-/// inherits `svn:special` implicitly, and must still be unwrapped).
+/// Verify one stated checksum against the text it names. A consistency check, not authenticity (the dump is
+/// untrusted and states any checksum it likes); it is also the end-to-end check of our own delta application.
+fn verify_sum(
+    path: &str,
+    header: &str,
+    stated: Option<&str>,
+    text: &[u8],
+    hash: fn(&[u8]) -> Result<String, Error>,
+) -> Result<(), Error> {
+    let Some(want) = stated else {
+        return Ok(());
+    };
+    if !hash(text)?.eq_ignore_ascii_case(want.trim()) {
+        return Err(Error::Read(format!(
+            "{path}: {header} mismatch; the dump or its base is not what it states"
+        )));
+    }
+    Ok(())
+}
+
+/// Apply a file add/change/replace.
+///
+/// The **base** of a text or property delta (RFC 013 D-2): the copy source at its revision for a node with
+/// `Node-copyfrom-*`, the path's current entry for a `change`, and empty text with no properties for an `add`
+/// or `replace` without a copy source. The two mode flags come from the node's own property block (a full
+/// block: its set; a delta: the base's flags changed by its entries), else the copy source's, else the
+/// existing entry's (CR-07.1). The content is SVN's text under the resolved flag: the fulltext, or the
+/// reconstruction of a delta against the base's SVN text, then checked against every checksum the node
+/// states; a node with no text keeps its base's content, **recomputed** when a property change flips
+/// `svn:special` (`RR-svn-special-toggle`): becoming special takes the link target out of `link <target>`,
+/// ceasing to be special makes the target the whole text.
 fn apply_file(
     tree: &mut Tree,
     copies: &mut Vec<CopyRecord>,
     kept: &HashMap<u64, Tree>,
     revnum_to_atom: &HashMap<u64, AtomId>,
     builder: &mut IrBuilder,
+    budget: &mut Budget<'_>,
     node: NodeRecord,
 ) -> Result<(), Error> {
-    let np = node.props.as_deref().unwrap_or_default();
-    let has_props = node.props.is_some();
-
     let source = match &node.copyfrom {
         Some((crev, cpath)) => Some(lookup_file(kept, *crev, cpath)?),
         None => None,
     };
-
-    let mode = if has_props {
-        props::file_mode(np)
-    } else if let Some(src) = &source {
-        src.mode
-    } else if let Some(existing) = tree.get(&node.path) {
-        existing.mode
-    } else {
-        props::MODE_REGULAR
+    let existing = tree.get(&node.path).cloned();
+    // What content and flags a node with no text and no block of its own inherits (CR-07.1).
+    let inherited = source.as_ref().or(existing.as_ref());
+    // The base a delta applies to.
+    let delta_base = match (&source, node.action) {
+        (Some(src), _) => Some(src),
+        (None, NodeAction::Change) => existing.as_ref(),
+        (None, _) => None,
     };
 
-    let blob = if let Some(text) = node.text {
-        let content = if mode == props::MODE_SYMLINK {
-            props::symlink_target(&text).ok_or_else(|| {
-                Error::Read(format!(
-                    "svn:special file without a link target: {}",
-                    node.path
-                ))
-            })?
+    let base_flags = delta_base.map_or((false, false), |b| (b.exec, b.special));
+    let (exec, special) = match &node.props {
+        Some(PropBlock::Full(np)) => (
+            props::has(np, props::SVN_EXECUTABLE),
+            props::has(np, props::SVN_SPECIAL),
+        ),
+        Some(PropBlock::Delta(changes)) => {
+            let (mut exec, mut special) = base_flags;
+            for change in changes {
+                match change {
+                    PropChange::Set(k, _) if k == props::SVN_EXECUTABLE => exec = true,
+                    PropChange::Set(k, _) if k == props::SVN_SPECIAL => special = true,
+                    PropChange::Delete(k) if k == props::SVN_EXECUTABLE => exec = false,
+                    PropChange::Delete(k) if k == props::SVN_SPECIAL => special = false,
+                    _ => {}
+                }
+            }
+            (exec, special)
+        }
+        None => inherited.map_or((false, false), |e| (e.exec, e.special)),
+    };
+    let mode = props::mode_of(exec, special);
+
+    // The node's SVN text, if it carries any; each stated checksum checked on the way.
+    let svn_text_of_node: Option<Vec<u8>> = match node.text {
+        Some(TextBody::Full(text)) => Some(text),
+        Some(TextBody::Delta(delta)) => {
+            let base_text = match delta_base {
+                Some(b) => svn_text(b, builder)?,
+                None if node.action == NodeAction::Change => {
+                    return Err(Error::Read(format!(
+                        "{}: delta against a base not present in this dump; an incremental or partial \
+                         delta dump cannot be decoded alone",
+                        node.path
+                    )));
+                }
+                None => Vec::new(),
+            };
+            verify_base(&node.path, &node.checksums, &base_text)?;
+            let remaining = budget
+                .limits
+                .max_dump_bytes
+                .saturating_sub(budget.reconstructed);
+            let allowed = budget.limits.max_node_text_bytes.min(remaining);
+            let target = svndiff::apply(&delta, &base_text, allowed).map_err(|e| match e {
+                svndiff::DiffError::UnsupportedVersion(v) => Error::UnsupportedFormat {
+                    what: format!("svndiff version {v}"),
+                    reason: format!("{}: this build reads svndiff version 0", node.path),
+                },
+                svndiff::DiffError::Malformed(m) => {
+                    Error::Read(format!("{}: text delta: {m}", node.path))
+                }
+                svndiff::DiffError::TooLarge { .. } => {
+                    if budget.limits.max_node_text_bytes <= remaining {
+                        Error::ResourceLimit {
+                            what: format!("the text of '{}'", node.path),
+                            ceiling: format!("{} bytes", budget.limits.max_node_text_bytes),
+                        }
+                    } else {
+                        Error::ResourceLimit {
+                            what: "the text every delta reconstructs, in total".to_string(),
+                            ceiling: format!("{} bytes", budget.limits.max_dump_bytes),
+                        }
+                    }
+                }
+            })?;
+            budget.reconstructed = budget.reconstructed.saturating_add(target.len());
+            Some(target)
+        }
+        None => None,
+    };
+    if let Some(text) = &svn_text_of_node {
+        verify_content(&node.path, &node.checksums, text)?;
+    }
+    if let (Some(src), Some(_)) = (&source, &svn_text_of_node) {
+        // A copy with text states its source's checksum too (`svnadmin`; `svnrdump` writes none).
+        let src_text = svn_text(src, builder)?;
+        verify_sum(
+            &node.path,
+            "Text-copy-source-md5",
+            node.checksums.copy_md5.as_deref(),
+            &src_text,
+            checksum::md5_hex,
+        )?;
+        verify_sum(
+            &node.path,
+            "Text-copy-source-sha1",
+            node.checksums.copy_sha1.as_deref(),
+            &src_text,
+            checksum::sha1_hex,
+        )?;
+    }
+
+    let blob = if let Some(text) = svn_text_of_node {
+        blob_for(text, special, &node.path, builder)?
+    } else if let Some(base) = inherited {
+        if base.special == special {
+            base.blob
         } else {
-            text
-        };
-        builder.add_blob(content)
-    } else if let Some(src) = &source {
-        src.blob
-    } else if let Some(existing) = tree.get(&node.path) {
-        existing.blob
+            // A property change flipped `svn:special` on a node with no text: SVN's text is unchanged and
+            // the IR blob follows the new flag.
+            let text = svn_text(base, builder)?;
+            blob_for(text, special, &node.path, builder)?
+        }
     } else {
         return Err(Error::Read(format!(
             "file '{}' has no content and no copy source",
@@ -232,8 +435,52 @@ fn apply_file(
             status: EpistemicStatus::Stated,
         });
     }
-    tree.insert(node.path, FileEntry { blob, mode });
+    tree.insert(
+        node.path,
+        FileEntry {
+            blob,
+            mode,
+            exec,
+            special,
+        },
+    );
     Ok(())
+}
+
+/// `Text-delta-base-md5` / `-sha1` against the base's SVN text.
+fn verify_base(path: &str, sums: &Checksums, base: &[u8]) -> Result<(), Error> {
+    verify_sum(
+        path,
+        "Text-delta-base-md5",
+        sums.base_md5.as_deref(),
+        base,
+        checksum::md5_hex,
+    )?;
+    verify_sum(
+        path,
+        "Text-delta-base-sha1",
+        sums.base_sha1.as_deref(),
+        base,
+        checksum::sha1_hex,
+    )
+}
+
+/// `Text-content-md5` / `-sha1` against the resulting SVN text (fulltext nodes included).
+fn verify_content(path: &str, sums: &Checksums, text: &[u8]) -> Result<(), Error> {
+    verify_sum(
+        path,
+        "Text-content-md5",
+        sums.content_md5.as_deref(),
+        text,
+        checksum::md5_hex,
+    )?;
+    verify_sum(
+        path,
+        "Text-content-sha1",
+        sums.content_sha1.as_deref(),
+        text,
+        checksum::sha1_hex,
+    )
 }
 
 /// Apply a directory add/change/replace: expand a copy from its historical snapshot. A directory

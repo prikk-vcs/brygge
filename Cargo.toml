@@ -39,6 +39,11 @@ ruzstd = "0.7"
 # `brygge-decode-hg`, not a new crate (architect decision under RFC 009, release-prep handoff §1).
 # Default features (`oid`, `std`) are off: `oid` would add the `const-oid` crate to the lock file.
 sha1-checked = { version = "0.10.0", default-features = false }
+# The Subversion decoder's dump-checksum verification (RFC 013 D-2, OQ-5 ruled 2026-09-25): `svnrdump` writes
+# MD5 only (no SHA-1), so verifying every node's checksum, and so our own delta application, needs MD5.
+# RustCrypto, the family of `sha1` and `digest` (0.10, already in the lock file). A consistency check only, not
+# authenticity: the dump is untrusted and states whatever checksum it likes. No default features (`std` off).
+md-5 = { version = "0.10", default-features = false }
 
 # MSRV note (0.1.0 release preparation, part 2): `Cargo.lock` holds the transitive `human_format` (through
 # `gix-features` -> `prodash`) at 1.1.0. Release 1.2.1 uses let-chains, does not declare a `rust-version`,

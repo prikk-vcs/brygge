@@ -66,6 +66,14 @@ impl IrBuilder {
         self.content.insert(bytes)
     }
 
+    /// The bytes of a blob already given to [`add_blob`](Self::add_blob), if any: a read accessor over the
+    /// content store the builder holds, for a decoder whose next change is a delta against content it has
+    /// already added (Subversion's svndiff). It lets the decoder keep no second copy of file contents.
+    #[must_use]
+    pub fn blob(&self, id: &BlobId) -> Option<&[u8]> {
+        self.content.get(id)
+    }
+
     /// Add an atom, canonicalizing its operations and copies and computing its id.
     ///
     /// # Errors

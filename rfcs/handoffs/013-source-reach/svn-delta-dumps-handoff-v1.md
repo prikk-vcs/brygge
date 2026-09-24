@@ -1,6 +1,6 @@
 # Handoff — RFC 013 D-2: SVN delta dumps (svndiff version 0)
 
-**Governing:** RFC 013 D-2 (accepted 2026-09-24), with **OQ-5** (MD5, see §4). **Crates:**
+**Governing:** RFC 013 D-2 (accepted 2026-09-24), with **OQ-5** (MD5: `md-5`, ruled 2026-09-25; §4). **Crates:**
 `brygge-decode-svn`, plus one additive accessor in `brygge-ir` (§5). **Batch S** of 0.3.0, independent of
 batch H. One review request.
 
@@ -111,13 +111,12 @@ repository must give **byte-identical artifacts**.
   covers every node, and why MD5 matters (it is `svnrdump`'s only checksum).
 - **SHA-1:** `sha1-checked`, already a workspace dependency (a new edge for this crate only). A detected
   collision is `Read`.
-- **MD5: RFC 013 OQ-5** (added 2026-09-24, pending the owner's ruling).
+- **MD5: RFC 013 OQ-5, ruled by the owner on 2026-09-25: `md-5`.**
   - **Recommended:** `md-5` 0.10 (RustCrypto, the family of the `sha1` and `digest` crates already in the
     lockfile).
   - Confirm with `cargo tree -i md-5` that it adds **one** crate, and that `cargo deny check` passes (the
     license is MIT OR Apache-2.0).
   - Pin it in `[workspace.dependencies]` as the others are.
-  - If the owner rules otherwise, the architect amends this section before you start it.
 - MD5 and SHA-1 here are **consistency** checks, not authenticity. The dump is untrusted and can state
   any checksum it likes. Say so in the code comment and the guide. Do not call it a security control.
 
@@ -204,6 +203,6 @@ repository must give **byte-identical artifacts**.
 
 ## 9. Review request
 
-`.git-exclude/review-request/029-svn-delta-dumps.md`. Include the parser's bounds list, mapped to the
+`.git-exclude/review-request/029-svn-delta-dumps.md`. Commit this handoff's own update and `rfcs/accepted/013-source-reach.md` (OQ-5 ruled) with the batch. Include the parser's bounds list, mapped to the
 tests; the `cargo tree` and `cargo deny` output for `md-5`; and the three-form `cmp` results. After
 approval, commit and push, and append CI.

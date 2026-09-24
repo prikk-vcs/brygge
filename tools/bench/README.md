@@ -42,6 +42,8 @@ The 0.2.0 scenarios (RFC 010 OQ-A; each one a target of a batch B increment):
 | `git-content <n>` | 3 commits; `n` files of 8 KiB | the IR floor for Git: peak should track content, not history |
 | `cvs-revs <n>` | 20 `,v` files, each with `n` trunk revisions (each rewrites 3 of 200 lines) | increment 3: the O(revisions²) per-file reconstruction |
 | `svn-dump <n>` | an SVN dump of `n` revisions over 300 files of 2 KiB, each revision rewriting one | increment 2: the whole parsed `Dump` held beside the IR |
+| `svn-deltas <n>` | the `svn-dump` corpus loaded into a repository and dumped with `svnadmin dump --deltas` (needs `svnadmin`) | RFC 013 D-2: reading svndiff; the IR must equal the fulltext corpus's |
+| `svn-checked <n>` | the same, dumped as fulltext by `svnadmin dump`, so every text's MD5 and SHA-1 are stated | RFC 013 D-2: the cost of checking every checksum |
 | `cvs-branches <n>` | the `cvs-revs` files plus a branch `BR` of `n/4` revisions cut from the middle of the trunk, and a nested branch `NEST` of `n/8` revisions cut from `BR`'s middle; decoded with `--reconstruct-refs` | RFC 013 C-2: branch history and the one-pass reconstruction of nested branches |
 | `cvs-branches-plain <n>` | the same files, decoded without the flag (the trunk alone) | the same corpus with the branches not imported: what the flag adds |
 
@@ -284,3 +286,30 @@ corpora: `cvs-revs` and `cvs-branches-plain` (trunk alone), 0.09 to 6 s, are the
 10 %; three interleaved pairs of `cvs-revs 10,000`: 5.4 s now against 5.9 to 6.1 s before), and the CLI's artifact, stdout and exit code are **byte-identical** on the `cvs` and `cvs-revs` corpora, on `cvs-branches` without the flag,
 and on the `cvs-branches` files with the `NEST` symbol removed (single-level branches, with the flag). Only `cvs-branches` with the
 flag differs, by design: C-1 counts `NEST` as not imported (5,000 atoms at 200), C-2 imports it (5,500).
+
+## Result — RFC 013 D-2 (Subversion delta dumps, and checksums checked)
+
+`svn-checked` and `svn-deltas` are the `svn-dump` corpus (n revisions over 300 files of 2 KiB, one rewritten each) made
+into a real `svnadmin` dump, which states every text's MD5 and SHA-1 (the older scenarios' hand-generated dumps state none,
+so they cannot show the cost of checking). Release build, one machine, one decode per process. **Before** is the
+decoder at `c854692` (which reads fulltext only and checks nothing); **after** is this change. The IR is identical in every
+row (the self-check compares atoms, blobs and content bytes with the generator's).
+
+| scenario | revisions | peak before | peak after | time before | time after | atoms | content |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `svn-checked` (fulltext, checksums stated) | 1,000 | 14.3 MiB | 12.0 MiB | 59-120 ms | 66 ms | 1,003 | 2.5 MiB |
+| `svn-checked` | 5,000 | 51.6 MiB | 41.1 MiB | 262-276 ms | 320-327 ms | 5,003 | 10.4 MiB |
+| `svn-checked` | 20,000 | 186.7 MiB | 140.1 MiB | 1.04 s | 1.24-1.25 s | 20,003 | 39.6 MiB |
+| `svn-checked` | 50,000 | 453.7 MiB | 339.8 MiB | 2.8-4.0 s | 3.4-4.3 s | 50,003 | 98.2 MiB |
+| `svn-deltas` (`--deltas`) | 1,000 | n/a (refused) | 12.0 MiB | n/a | 93 ms | 1,003 | 2.5 MiB |
+| `svn-deltas` | 5,000 | n/a | 40.4 MiB | n/a | 369 ms | 5,003 | 10.4 MiB |
+| `svn-deltas` | 20,000 | n/a | 139.5 MiB | n/a | 1.54 s | 20,003 | 39.6 MiB |
+| `svn-deltas` | 50,000 | n/a | 337.7 MiB | n/a | 3.2 s | 50,003 | 98.2 MiB |
+
+- **Checking every checksum costs about 20 % of the time** at 20,000 revisions (1.04 s to 1.24 s: MD5 and SHA-1 over 41.5 MB of
+  text; it is linear in the content), and the delta form about 25 % on top of the fulltext (1.54 s).
+- **The peak is lower**, by about a quarter: the raw dump is dropped as soon as it is parsed, where it used to be held for the
+  whole decode.
+- The older scenarios (`svn-dump`, `svn-revs`, `svn-content`; their dumps state no checksum) are unchanged within the run-to-run
+  noise (`svn-dump 20,000`: 1.25-1.55 s before, 1.34-1.44 s after; `svn-revs 20,000`: 4.3-4.4 s before, 3.9-5.2 s after); their
+  peak is 5-25 % lower for the same reason.

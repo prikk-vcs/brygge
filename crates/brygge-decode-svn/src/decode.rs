@@ -12,7 +12,7 @@ use brygge_ir::model::{
 use brygge_ir::status::{Derivation, DerivationKind, EpistemicStatus};
 
 use crate::layout::{self, Root};
-use crate::source::svnadmin_version;
+use crate::source::{Limits, svnadmin_version};
 use crate::tree::{self, Tree};
 use crate::{DECODER, Error, Options, Source, decoder_version, dumpstream, floor, props};
 
@@ -23,8 +23,17 @@ use crate::{DECODER, Error, Options, Source, decoder_version, dumpstream, floor,
 /// [`Error::FloorRefusal`] for a refused format or feature; [`Error::Read`] on a malformed dumpstream;
 /// [`Error::Ir`] on an IR invariant violation.
 pub fn decode(source: &Source, opts: &Options) -> Result<Ir, Error> {
-    let bytes = source.load()?;
-    let dump = dumpstream::parse_dump(&bytes)?;
+    decode_with(source, opts, &Limits::default())
+}
+
+/// [`decode`] with explicit resource ceilings (RFC 010 D-4): tests use small ones instead of needing
+/// gigabytes.
+pub(crate) fn decode_with(source: &Source, opts: &Options, limits: &Limits) -> Result<Ir, Error> {
+    let bytes = source.load_with(limits)?;
+    let dump = dumpstream::parse_dump_with(&bytes, limits)?;
+    // The dump is parsed; nothing below reads the raw bytes again (the parsed dump holds its own copies).
+    drop(bytes);
+    let mut budget = tree::Budget::new(limits);
 
     let repo_id = dump
         .uuid
@@ -103,8 +112,14 @@ pub fn decode(source: &Source, opts: &Options) -> Result<Ir, Error> {
             Vec::new()
         };
 
-        let applied =
-            tree::apply_revision(&prev_tree, rev.nodes, &kept, &revnum_to_atom, &mut builder)?;
+        let applied = tree::apply_revision(
+            &prev_tree,
+            rev.nodes,
+            &kept,
+            &revnum_to_atom,
+            &mut builder,
+            &mut budget,
+        )?;
 
         loss.mergeinfo |= applied.prop_loss.mergeinfo;
         loss.workflow |= applied.prop_loss.workflow;
@@ -366,5 +381,7 @@ impl Loss {
     }
 }
 
+#[cfg(test)]
+mod delta_tests;
 #[cfg(test)]
 mod tests;

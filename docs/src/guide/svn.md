@@ -2,8 +2,8 @@
 
 brygge reads Subversion history from one of two forms. It picks the form from what you give it:
 
-- **A dumpfile** (a file): the output of `svnadmin dump` that you made yourself. This is the preferred
-  form. A dumpfile is the canonical, deterministic input: decoding the same dumpfile always gives
+- **A dumpfile** (a file): the output of `svnadmin dump` (with or without `--deltas`) or of `svnrdump dump`
+  that you made yourself. This is the preferred form. A dumpfile is the canonical, deterministic input: decoding the same dumpfile always gives
   byte-identical output, and no external tool runs.
 - **A live repository directory**: brygge runs a read-only `svnadmin dump <repo> --quiet` itself, with no
   shell and no network. This needs `svnadmin` on your `PATH`, and brygge records its version
@@ -14,9 +14,36 @@ Either way, provenance records which form was used (`source_form`: `dumpfile` or
 
 ```
 svnadmin dump /path/to/repo > repo.dump          # once, on the machine that has the repository
+svnrdump dump https://host/repo > repo.dump      # or, for a repository you can only reach over the network
 brygge decode svn repo.dump --out repo.ir        # the preferred form
 brygge decode svn /path/to/repo --out repo.ir    # or let brygge run svnadmin dump
 ```
+
+## Dump forms
+
+brygge reads all three dumps of one repository, and **gives the same artifact for each**, byte for byte:
+
+- `svnadmin dump`: fulltext;
+- `svnadmin dump --deltas`: text and properties as deltas against each node's previous state;
+- `svnrdump dump <url>`: deltas as well, and no SHA-1 checksums, only MD5.
+
+**Deltas are read.** A text delta is svndiff (version 0), applied to the node's base: the copy source for a node
+that is copied, the path's current content for a change, and nothing for a new file. A property delta sets and
+removes properties against the base's. brygge never runs `svnrdump` and never touches the network: run it
+yourself and give brygge the file (this is the remedy for a URL source, below).
+
+- **Checksums are checked.** Every checksum a dump states (`Text-content-md5`/`-sha1`, `Text-delta-base-*`,
+  `Text-copy-source-*`) is checked against the text brygge rebuilt, on every node, fulltext nodes included; a
+  mismatch is a read error naming the path and the header. This is a **consistency** check (it also checks
+  brygge's own delta application), **not authenticity**: a dump is untrusted and can state any checksum it
+  likes. Verify who made a dump by other means.
+- **svndiff versions 1 (zlib) and 2 (lz4) are refused by name.** Re-dump with `svnadmin dump` (fulltext or
+  `--deltas`) or with `svnrdump`, which write version 0.
+- **An incremental delta dump cannot be decoded alone.** `svnadmin dump --deltas --incremental -r N:M` writes
+  deltas against revisions that are not in the dump; brygge stops with a read error naming the path, and never
+  guesses the base. Dump the whole history.
+- **One node's text is at most 1 GiB**, and the text all deltas reconstruct is bounded by the dump ceiling (8 GiB):
+  a small delta dump cannot expand without limit. Over either is refused (`ResourceLimit`).
 
 ## What brygge carries
 
@@ -32,6 +59,9 @@ brygge decode svn /path/to/repo --out repo.ir    # or let brygge run svnadmin du
   - `svn:special` makes it a symlink, whose content is the bare link target (the `link ` prefix Subversion
     stores is removed). A symlink whose content does not start with `link ` is a malformed dump and is
     rejected, not guessed.
+  - The two are tracked separately, so a file can have both, and removing `svn:special` from it leaves it
+    executable. Setting or clearing `svn:special` without changing the text follows the new flag (the content
+    gains or loses the `link ` prefix).
 - **Claims:**
   - `svn:author` is the author's name, with no email (Subversion records none);
   - `svn:log` is the message;
@@ -89,10 +119,13 @@ A refusal exits `20` and says why; nothing is written.
 | Refused | What you can do |
 |---|---|
 | `svn-externals`: any node with an `svn:externals` property, which reaches into other repositories | in a **copy** of the repository, remove the property, or export the referenced content into the tree; then dump the copy again |
-| `remote-source`: a URL instead of a local repository | make a local copy (for example with `svnrdump dump <url> > repo.dump`, run yourself), and give brygge the dumpfile |
-| a **delta dump** (`svnadmin dump --deltas`) | dump again without `--deltas` |
+| `remote-source`: a URL instead of a local repository | make a local copy with `svnrdump dump <url> > repo.dump`, run yourself, and give brygge the dumpfile |
+| a dump whose text deltas are **svndiff version 1 or 2** (compressed) | dump again with `svnadmin dump` (fulltext or `--deltas`) or with `svnrdump` |
 | a dump format version other than 1–3 | dump with a current `svnadmin` |
-| a dump over 8 GiB | refused before it is read into memory; larger dumps are planned for a later release |
+| a dump over 8 GiB, or one node's text over 1 GiB | refused before it is read into memory (or allocated); larger dumps are planned for a later release |
+
+An **incremental delta dump** (a delta against a revision the dump does not hold) is a read error, not a
+refusal of a feature: exit `1`, naming the path (see "Dump forms").
 
 **A non-UTF-8 path is a malformed dump**, not a repository shape. A dumpstream's paths are UTF-8 by the
 format's own definition. brygge stops with a read error (exit `1`), showing the offending bytes as `\xNN`.

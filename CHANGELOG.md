@@ -10,6 +10,14 @@ Every handoff adds its own entry in its own commit.
 
 ### Added
 
+- **Subversion delta dumps** (0.3.0, RFC 013 D-2). `svnadmin dump --deltas` and every `svnrdump dump` are read
+  (svndiff version 0, and property deltas that delete properties), so the `remote-source` remedy
+  (`svnrdump dump <url> > repo.dump`) now works. The fulltext dump, the `--deltas` dump and the `svnrdump` dump of
+  one repository give **byte-identical artifacts**. svndiff versions 1 (zlib) and 2 (lz4) are refused by name; an
+  incremental delta dump (a delta whose base is not in the dump) is a read error naming the path. brygge itself
+  still never runs `svnrdump` and never touches the network.
+- **`brygge-ir`: `IrBuilder::blob`**, a read accessor over the blobs already added, so a decoder whose next
+  change is a delta against content it has added keeps no second copy. No contract change.
 - **CVS branch history, with `--reconstruct-refs`** (0.3.0, RFC 013 D-3). Each named branch cut from the main
   line is a ref with its own changesets, clustered from that branch's revisions. Its parent is the earliest
   main-line changeset after which the most files were at their branch point; when the files were tagged at
@@ -28,6 +36,9 @@ Every handoff adds its own entry in its own commit.
 
 ### Fixed
 
+- **Subversion: setting or clearing `svn:special` without a text change** kept the file's old content, so the
+  `link ` prefix was neither taken off nor put back. The content now follows the flag, in fulltext and delta
+  dumps alike. Only a repository that hits it changes.
 - **Mercurial: a named branch with several heads gave an artifact that failed its own `verify` (exit 50).** It
   had one ref per head, and the contract allows one ref per `(name, kind)`. There is now **one ref per named
   branch, at Mercurial's branch tip** (`branchmap.branchtip`, what `hg update <branch>` checks out): the
@@ -51,6 +62,11 @@ Every handoff adds its own entry in its own commit.
 
 ### Changed
 
+- **Subversion: every checksum a dump states is verified**, on every node, fulltext nodes included
+  (`Text-content-md5`/`-sha1`, `Text-delta-base-*`, `Text-copy-source-*`): a mismatch is a read error naming the
+  path and the header. It is a consistency check, not authenticity. MD5 is `md-5` (RustCrypto, one new crate);
+  SHA-1 is `sha1-checked`, already in the lock file. **One SVN node's text is ceilinged at 1 GiB**, and the
+  text every delta reconstructs at the dump ceiling (8 GiB).
 - **Mercurial: the `branch` extra is carried, as stored** (Mercurial writes it only on changesets not on
   `default`), in stored order like every other extra. Every changeset's branch, and so every head of every
   branch, is derivable from the atoms. The atom ids of changesets on named branches change (v0).

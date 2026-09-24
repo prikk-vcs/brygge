@@ -35,13 +35,16 @@ fn a_malformed_date_yields_no_time_rather_than_a_wrong_one() {
 }
 
 #[test]
-fn file_mode_reflects_special_and_executable() {
-    assert_eq!(file_mode(&props(&[])), MODE_REGULAR);
-    assert_eq!(file_mode(&props(&[("svn:executable", "*")])), MODE_EXEC);
-    assert_eq!(file_mode(&props(&[("svn:special", "*")])), MODE_SYMLINK);
+fn mode_of_reflects_special_and_executable() {
+    assert_eq!(mode_of(false, false), MODE_REGULAR);
+    assert_eq!(mode_of(true, false), MODE_EXEC);
+    assert_eq!(mode_of(false, true), MODE_SYMLINK);
     // special wins over executable (a symlink is not an exec regular file).
+    assert_eq!(mode_of(true, true), MODE_SYMLINK);
+    // and the flags come from a property set by presence
+    let both = props(&[("svn:special", "*"), ("svn:executable", "*")]);
     assert_eq!(
-        file_mode(&props(&[("svn:special", "*"), ("svn:executable", "*")])),
+        mode_of(has(&both, SVN_EXECUTABLE), has(&both, SVN_SPECIAL)),
         MODE_SYMLINK
     );
 }

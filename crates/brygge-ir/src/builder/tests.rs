@@ -203,6 +203,17 @@ fn finish_prunes_a_blob_no_op_references() {
 }
 
 #[test]
+fn blob_reads_back_what_add_blob_stored_and_nothing_else() {
+    let mut b = IrBuilder::new(provenance());
+    let id = b.add_blob(b"stored".to_vec());
+    assert_eq!(b.blob(&id), Some(&b"stored"[..]));
+    assert_eq!(b.blob(&BlobId::of(b"never added")), None);
+    // Adding the same bytes again is the same blob (idempotent), and the accessor changes nothing.
+    assert_eq!(b.add_blob(b"stored".to_vec()), id);
+    assert_eq!(b.blob(&id), Some(&b"stored"[..]));
+}
+
+#[test]
 fn finish_sorts_flags_canonically() {
     let mut b = IrBuilder::new(provenance());
     b.add_flag(Flag {

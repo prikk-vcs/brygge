@@ -7,14 +7,65 @@
 //! is bounds-checked against the bytes actually present — a malformed or hostile dump is a typed refusal,
 //! never a panic or an over-allocation (RFC 006 security review, `brygge-03` T-2/T-8/INV-2).
 //!
-//! Supported: fulltext dump format versions 1–3. **Refused:** an unknown version, and any **delta** node
-//! (`Text-delta`/`Prop-delta: true` — svndiff is out of scope this increment, RFC 006 §4).
+//! Supported: dump format versions 1–3, **fulltext and delta** (RFC 013 D-2): `svnadmin dump`, `svnadmin dump
+//! --deltas` and `svnrdump dump`. A `Text-delta: true` body is svndiff and a `Prop-delta: true` block may delete
+//! properties; both are kept as the dump states them (a [`TextBody::Delta`], a [`PropBlock::Delta`]) and applied
+//! to the node's base by the tree, which is the one place that knows the base. **Refused:** an unknown format
+//! version, and svndiff version 1 or 2 (compressed; named, OQ-4).
 
-use crate::Error;
+use crate::source::Limits;
+use crate::{Error, svndiff};
 
 /// A property list in dump order (`svn:*` and custom). Keys are UTF-8; values are arbitrary bytes.
 pub type Props = Vec<(String, Vec<u8>)>;
 
+/// One entry of a property **delta**: a property set to a value, or removed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PropChange {
+    /// `K <len>` / `V <len>`: set the property.
+    Set(String, Vec<u8>),
+    /// `D <len>`: remove the property.
+    Delete(String),
+}
+
+/// A node's property block, as the dump states it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PropBlock {
+    /// A **full** block (no `Prop-delta`): the node's complete property set (a full replacement), possibly
+    /// empty (properties cleared).
+    Full(Props),
+    /// A **delta** block (`Prop-delta: true`): changes against the node's base properties, in order.
+    Delta(Vec<PropChange>),
+}
+
+/// A node's text, as the dump states it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TextBody {
+    /// The fulltext (`Text-delta` absent or not `true`).
+    Full(Vec<u8>),
+    /// svndiff version 0 (`Text-delta: true`), to be applied to the node's base text. Its header has been
+    /// checked; the windows have not been read.
+    Delta(Vec<u8>),
+}
+
+/// The checksum headers a node states (lowercase hex as written). Each is a **consistency** check the tree
+/// makes against the text it reconstructs, never authenticity: a dump is untrusted and states any checksum
+/// it likes. `svnadmin` writes MD5 and SHA-1, `svnrdump` MD5 only.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Checksums {
+    /// `Text-content-md5`: the resulting text.
+    pub content_md5: Option<String>,
+    /// `Text-content-sha1`.
+    pub content_sha1: Option<String>,
+    /// `Text-delta-base-md5`: the base a delta applies to (written when the base is non-empty).
+    pub base_md5: Option<String>,
+    /// `Text-delta-base-sha1`.
+    pub base_sha1: Option<String>,
+    /// `Text-copy-source-md5`: the copy source's text, on a copy with text.
+    pub copy_md5: Option<String>,
+    /// `Text-copy-source-sha1`.
+    pub copy_sha1: Option<String>,
+}
 /// A node's kind. Absent on a `delete`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NodeKind {
@@ -48,12 +99,14 @@ pub struct NodeRecord {
     pub action: NodeAction,
     /// The source of a copy, if any: `(copyfrom-rev, copyfrom-path)`. A source-stated copy (SRC-S3).
     pub copyfrom: Option<(u64, String)>,
-    /// The node's properties. `None` = the node carried **no** property block (properties unchanged from
-    /// before); `Some(_)` = a property block was present and is the node's **complete** property set (a
-    /// full replacement — SVN non-delta dump semantics), possibly empty (properties cleared).
-    pub props: Option<Props>,
-    /// The node's fulltext content, if it carried any.
-    pub text: Option<Vec<u8>>,
+    /// The node's property block. `None` = the node carried **no** property block (properties unchanged from
+    /// its base); `Some(Full(_))` = the node's **complete** property set (a full replacement), possibly empty
+    /// (properties cleared); `Some(Delta(_))` = changes against the base's properties (`Prop-delta: true`).
+    pub props: Option<PropBlock>,
+    /// The node's text, if it carried any: fulltext, or svndiff against the base.
+    pub text: Option<TextBody>,
+    /// The checksum headers the node stated.
+    pub checksums: Checksums,
 }
 
 /// One revision record and its nodes.
@@ -226,21 +279,34 @@ fn read_header_block(cur: &mut Cursor) -> Result<Vec<(String, String)>, Error> {
     Ok(out)
 }
 
-/// Read a record body per its `Content-length`, split into (properties, fulltext). The property result is
-/// `None` when the record carried no property block (`Prop-content-length` absent), distinct from an
-/// empty block (`Some(vec![])`).
+/// A record's body, split.
+struct Body {
+    props: Option<PropBlock>,
+    text: Option<TextBody>,
+}
+
+/// Read a record body per its `Content-length`, split into (properties, text). The property result is `None`
+/// when the record carried no property block (`Prop-content-length` absent), distinct from an empty block.
+/// `Prop-delta: true` makes the block a delta (and only then may it hold `D` entries); `Text-delta: true` makes
+/// the text an svndiff, whose header is checked here (so an unsupported version is refused before any tree is
+/// built). A fulltext over `limits.max_node_text_bytes` is `ResourceLimit`. `node_path` names a node in errors.
 fn read_body(
     cur: &mut Cursor,
     headers: &[(String, String)],
-) -> Result<(Option<Props>, Option<Vec<u8>>), Error> {
+    node_path: Option<&str>,
+    limits: &Limits,
+) -> Result<Body, Error> {
     let Some(content_len) = header_usize(headers, "Content-length")? else {
-        return Ok((None, None));
+        return Ok(Body {
+            props: None,
+            text: None,
+        });
     };
     let prop_len_opt = header_usize(headers, "Prop-content-length")?;
     let prop_len = prop_len_opt.unwrap_or(0);
     let text_len = header_usize(headers, "Text-content-length")?;
 
-    // Consistency: the content is exactly the property block plus the fulltext.
+    // Consistency: the content is exactly the property block plus the text.
     let expected = prop_len
         .checked_add(text_len.unwrap_or(0))
         .ok_or_else(|| Error::Read("length overflow".to_string()))?;
@@ -251,6 +317,17 @@ fn read_body(
             text_len.unwrap_or(0)
         )));
     }
+    let prop_delta = header_true(headers, "Prop-delta");
+    let text_delta = header_true(headers, "Text-delta");
+    let at = node_path.map_or_else(String::new, |p| format!("{p}: "));
+
+    // The ceiling on one node's text, before the bytes are copied out (a delta's own bytes are bounded by the
+    // dump; what it expands to is checked when it is applied).
+    if let Some(tl) = text_len {
+        if !text_delta && tl > limits.max_node_text_bytes {
+            return Err(over_limit("a node's text", limits.max_node_text_bytes));
+        }
+    }
 
     let body = cur.read_exact(content_len)?;
     let props = match prop_len_opt {
@@ -258,7 +335,7 @@ fn read_body(
             let block = body
                 .get(..prop_len)
                 .ok_or_else(|| Error::Read("property block exceeds body".to_string()))?;
-            Some(parse_props(block)?)
+            Some(parse_props(block, prop_delta)?)
         }
         None => None,
     };
@@ -267,17 +344,54 @@ fn read_body(
             let block = body
                 .get(prop_len..content_len)
                 .ok_or_else(|| Error::Read("text block exceeds body".to_string()))?;
-            Some(block.to_vec())
+            if text_delta {
+                check_svndiff_header(block, &at)?;
+                Some(TextBody::Delta(block.to_vec()))
+            } else {
+                Some(TextBody::Full(block.to_vec()))
+            }
         }
         None => None,
     };
-    Ok((props, text))
+    Ok(Body { props, text })
 }
 
-/// Parse a property block: repeated `K <len>\n<key>\nV <len>\n<value>\n`, terminated by `PROPS-END`.
-fn parse_props(block: &[u8]) -> Result<Props, Error> {
+/// Refuse svndiff version 1 or 2 by name, and anything that is not an svndiff header.
+fn check_svndiff_header(block: &[u8], at: &str) -> Result<(), Error> {
+    match svndiff::check_header(block) {
+        Ok(()) => Ok(()),
+        Err(svndiff::DiffError::UnsupportedVersion(v)) => {
+            let which = if v == 1 { "1 (zlib)" } else { "2 (lz4)" };
+            Err(Error::UnsupportedFormat {
+                what: format!("svndiff version {which}"),
+                reason: format!(
+                    "{at}this build reads uncompressed svndiff (version 0); re-dump with `svnadmin dump` \
+                     (fulltext or `--deltas`) or with `svnrdump`, which write version 0"
+                ),
+            })
+        }
+        Err(svndiff::DiffError::Malformed(m)) => Err(Error::Read(format!(
+            "{at}the text delta is not svndiff: {m}"
+        ))),
+        Err(svndiff::DiffError::TooLarge { .. }) => {
+            Err(Error::Read(format!("{at}the text delta is not svndiff")))
+        }
+    }
+}
+
+fn over_limit(what: &str, max_bytes: usize) -> Error {
+    Error::ResourceLimit {
+        what: what.to_string(),
+        ceiling: format!("{max_bytes} bytes"),
+    }
+}
+
+/// Parse a property block: repeated `K <len>\n<key>\nV <len>\n<value>\n` (and, in a **delta** block only,
+/// `D <len>\n<key>\n`), terminated by `PROPS-END`.
+fn parse_props(block: &[u8], delta: bool) -> Result<PropBlock, Error> {
     let mut cur = Cursor::new(block);
-    let mut out = Vec::new();
+    let mut full: Props = Vec::new();
+    let mut changes: Vec<PropChange> = Vec::new();
     loop {
         let line = cur
             .read_line()
@@ -309,31 +423,43 @@ fn parse_props(block: &[u8]) -> Result<Props, Error> {
             let key_str = std::str::from_utf8(key)
                 .map_err(|_| Error::Read("property key is not valid UTF-8".to_string()))?
                 .to_string();
-            out.push((key_str, value));
-        } else if s.starts_with("D ") {
-            // A property deletion appears only in a `Prop-delta` block, which we refuse (RFC 006 §4).
-            return Err(Error::UnsupportedFormat {
-                what: "property-delta record".to_string(),
-                reason: "delta dumps are out of scope this increment; re-dump without `--deltas`"
-                    .to_string(),
-            });
+            if delta {
+                changes.push(PropChange::Set(key_str, value));
+            } else {
+                full.push((key_str, value));
+            }
+        } else if let Some(rest) = s.strip_prefix("D ") {
+            // A property deletion appears only in a `Prop-delta` block.
+            if !delta {
+                return Err(Error::Read(
+                    "a property deletion (`D`) in a property block that is not a delta".to_string(),
+                ));
+            }
+            let klen = rest
+                .parse::<usize>()
+                .map_err(|_| Error::Read(format!("bad property key length: {rest}")))?;
+            let key = cur.read_exact(klen)?;
+            cur.consume_newline()?;
+            let key_str = std::str::from_utf8(key)
+                .map_err(|_| Error::Read("property key is not valid UTF-8".to_string()))?
+                .to_string();
+            changes.push(PropChange::Delete(key_str));
         } else {
             return Err(Error::Read(format!("malformed property control line: {s}")));
         }
     }
-    Ok(out)
+    Ok(if delta {
+        PropBlock::Delta(changes)
+    } else {
+        PropBlock::Full(full)
+    })
 }
 
-fn parse_node(cur: &mut Cursor, headers: &[(String, String)]) -> Result<NodeRecord, Error> {
-    // Delta nodes are refused before any body is read (RFC 006 §4).
-    if header_true(headers, "Text-delta") || header_true(headers, "Prop-delta") {
-        return Err(Error::UnsupportedFormat {
-            what: "delta dump".to_string(),
-            reason: "svndiff deltas are out of scope this increment; a fulltext `svnadmin dump` \
-                     (no `--deltas`) is required"
-                .to_string(),
-        });
-    }
+fn parse_node(
+    cur: &mut Cursor,
+    headers: &[(String, String)],
+    limits: &Limits,
+) -> Result<NodeRecord, Error> {
     let path = header_get(headers, "Node-path")
         .ok_or_else(|| Error::Read("node record without Node-path".to_string()))?
         .to_string();
@@ -367,7 +493,16 @@ fn parse_node(cur: &mut Cursor, headers: &[(String, String)]) -> Result<NodeReco
         }
         _ => None,
     };
-    let (props, text) = read_body(cur, headers)?;
+    let Body { props, text } = read_body(cur, headers, Some(&path), limits)?;
+    let hex = |key: &str| header_get(headers, key).map(str::to_string);
+    let checksums = Checksums {
+        content_md5: hex("Text-content-md5"),
+        content_sha1: hex("Text-content-sha1"),
+        base_md5: hex("Text-delta-base-md5"),
+        base_sha1: hex("Text-delta-base-sha1"),
+        copy_md5: hex("Text-copy-source-md5"),
+        copy_sha1: hex("Text-copy-source-sha1"),
+    };
     Ok(NodeRecord {
         path,
         kind,
@@ -375,15 +510,25 @@ fn parse_node(cur: &mut Cursor, headers: &[(String, String)]) -> Result<NodeReco
         copyfrom,
         props,
         text,
+        checksums,
     })
+}
+
+/// Parse a whole dumpstream into a [`Dump`], with the default ceilings.
+///
+/// # Errors
+/// As [`parse_dump_with`].
+#[cfg(test)]
+pub fn parse_dump(data: &[u8]) -> Result<Dump, Error> {
+    parse_dump_with(data, &Limits::default())
 }
 
 /// Parse a whole dumpstream into a [`Dump`].
 ///
 /// # Errors
-/// [`Error::Read`] on malformed framing; [`Error::UnsupportedFormat`] for an unknown format version or a
-/// delta dump.
-pub fn parse_dump(data: &[u8]) -> Result<Dump, Error> {
+/// [`Error::Read`] on malformed framing; [`Error::UnsupportedFormat`] for an unknown format version or an
+/// svndiff version 1 or 2; [`Error::ResourceLimit`] for a fulltext node over `limits.max_node_text_bytes`.
+pub fn parse_dump_with(data: &[u8], limits: &Limits) -> Result<Dump, Error> {
     let mut cur = Cursor::new(data);
     let mut format_version: Option<u32> = None;
     let mut uuid: Option<String> = None;
@@ -405,7 +550,7 @@ pub fn parse_dump(data: &[u8]) -> Result<Dump, Error> {
             if !(1..=3).contains(&ver) {
                 return Err(Error::UnsupportedFormat {
                     what: format!("dump format version {ver}"),
-                    reason: "this build reads fulltext dump format versions 1–3".to_string(),
+                    reason: "this build reads dump format versions 1–3".to_string(),
                 });
             }
             format_version = Some(ver);
@@ -419,16 +564,28 @@ pub fn parse_dump(data: &[u8]) -> Result<Dump, Error> {
             let number = n
                 .parse::<u64>()
                 .map_err(|_| Error::Read(format!("bad Revision-number: {n}")))?;
-            let (props, _text) = read_body(&mut cur, &headers)?;
+            let body = read_body(&mut cur, &headers, None, limits)?;
+            let props = match body.props {
+                Some(PropBlock::Full(p)) => p,
+                // A revision's properties are never a delta; one that says so is read as its entries set.
+                Some(PropBlock::Delta(ch)) => ch
+                    .into_iter()
+                    .filter_map(|c| match c {
+                        PropChange::Set(k, v) => Some((k, v)),
+                        PropChange::Delete(_) => None,
+                    })
+                    .collect(),
+                None => Vec::new(),
+            };
             revisions.push(RevisionRecord {
                 number,
-                props: props.unwrap_or_default(),
+                props,
                 nodes: Vec::new(),
             });
             continue;
         }
         if header_get(&headers, "Node-path").is_some() {
-            let node = parse_node(&mut cur, &headers)?;
+            let node = parse_node(&mut cur, &headers, limits)?;
             revisions
                 .last_mut()
                 .ok_or_else(|| {
@@ -439,7 +596,7 @@ pub fn parse_dump(data: &[u8]) -> Result<Dump, Error> {
             continue;
         }
         // An unrecognized record: consume any body it declares, then move on.
-        read_body(&mut cur, &headers)?;
+        read_body(&mut cur, &headers, None, limits)?;
     }
 
     // The version is validated (range-checked) as it's parsed above; its only remaining obligation is

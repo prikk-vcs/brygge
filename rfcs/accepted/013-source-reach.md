@@ -16,7 +16,7 @@ Handoffs: `rfcs/handoffs/013-source-reach/`.
   - brygge's **reversible** encoding also lacks `encodedir` and `_auxencode`'s reserved names and trailing
     `.`/space, and D-1 completes it. Today such paths fail safely (`Read`); they will be read;
   - a `store` repository without `fncache` (before Mercurial 1.1) is refused by name.
-- **OQ-5 added (pending the owner):** MD5 for SVN checksums.
+- **OQ-5 ruled (2026-09-25, owner): the `md-5` crate** (RustCrypto), as recommended.
 - **D-3 made precise** (2026-09-24, while writing the C handoff):
   - **the parent is the *earliest* covering changeset, not the latest.** Every covered file's branch point is
     present there. A later changeset that only adds a file the branch does not carry is evidence the cut

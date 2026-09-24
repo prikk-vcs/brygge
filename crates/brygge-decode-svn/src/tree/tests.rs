@@ -7,8 +7,9 @@ use std::collections::HashMap;
 use brygge_ir::builder::IrBuilder;
 use brygge_ir::model::{AtomId, ImportProvenance, PathOp, SourceIdentity, SourceKind};
 
-use super::{Tree, apply_revision};
-use crate::dumpstream::{NodeAction, NodeKind, NodeRecord};
+use super::{Budget, Tree, apply_revision};
+use crate::dumpstream::{Checksums, NodeAction, NodeKind, NodeRecord, PropBlock, TextBody};
+use crate::source::Limits;
 
 fn builder() -> IrBuilder {
     IrBuilder::new(ImportProvenance {
@@ -32,8 +33,9 @@ fn file_node(path: &str, action: NodeAction, text: Option<&[u8]>) -> NodeRecord 
         kind: Some(NodeKind::File),
         action,
         copyfrom: None,
-        props: Some(Vec::new()),
-        text: text.map(<[u8]>::to_vec),
+        props: Some(PropBlock::Full(Vec::new())),
+        text: text.map(|t| TextBody::Full(t.to_vec())),
+        checksums: Checksums::default(),
     }
 }
 
@@ -45,6 +47,7 @@ fn dir_copy(path: &str, from_rev: u64, from_path: &str) -> NodeRecord {
         copyfrom: Some((from_rev, from_path.to_string())),
         props: None,
         text: None,
+        checksums: Checksums::default(),
     }
 }
 
@@ -67,6 +70,7 @@ fn a_file_add_produces_an_add_op_and_populates_the_tree() {
         &kept,
         &HashMap::new(),
         &mut b,
+        &mut Budget::new(&Limits::default()),
     )
     .unwrap();
     assert!(applied.tree.contains_key("trunk/a.txt"));
@@ -87,6 +91,7 @@ fn a_directory_copy_expands_to_per_file_adds_with_stated_copy_records() {
         &HashMap::new(),
         &HashMap::new(),
         &mut b,
+        &mut Budget::new(&Limits::default()),
     )
     .unwrap();
     // r0 is referenced by r1's copyfrom, so it is retained (RFC 010 increment 1).
@@ -105,6 +110,7 @@ fn a_directory_copy_expands_to_per_file_adds_with_stated_copy_records() {
         &kept,
         &revnum_to_atom,
         &mut b,
+        &mut Budget::new(&Limits::default()),
     )
     .unwrap();
 
@@ -140,10 +146,12 @@ fn a_directory_copy_expands_to_per_file_adds_with_stated_copy_records() {
             copyfrom: None,
             props: None,
             text: None,
+            checksums: Checksums::default(),
         }],
         &kept,
         &revnum_to_atom,
         &mut b,
+        &mut Budget::new(&Limits::default()),
     )
     .unwrap();
     assert!(!r2.tree.contains_key("branches/x/a.txt"));
@@ -167,6 +175,7 @@ fn a_copy_from_an_older_revision_resolves_to_the_correct_from_atom() {
         &HashMap::new(),
         &HashMap::new(),
         &mut b,
+        &mut Budget::new(&Limits::default()),
     )
     .unwrap();
     let r0_atom = AtomId([9u8; 32]);
@@ -182,6 +191,7 @@ fn a_copy_from_an_older_revision_resolves_to_the_correct_from_atom() {
         &kept,
         &revnum_to_atom,
         &mut b,
+        &mut Budget::new(&Limits::default()),
     )
     .unwrap();
     revnum_to_atom.insert(1, AtomId([1u8; 32]));
@@ -191,6 +201,7 @@ fn a_copy_from_an_older_revision_resolves_to_the_correct_from_atom() {
         &kept,
         &revnum_to_atom,
         &mut b,
+        &mut Budget::new(&Limits::default()),
     )
     .unwrap();
     revnum_to_atom.insert(2, AtomId([2u8; 32]));
@@ -201,10 +212,19 @@ fn a_copy_from_an_older_revision_resolves_to_the_correct_from_atom() {
         kind: Some(NodeKind::File),
         action: NodeAction::Add,
         copyfrom: Some((0, "trunk/a.txt".to_string())),
-        props: Some(Vec::new()),
+        props: Some(PropBlock::Full(Vec::new())),
         text: None,
+        checksums: Checksums::default(),
     };
-    let r3 = apply_revision(&r2.tree, vec![copy_node], &kept, &revnum_to_atom, &mut b).unwrap();
+    let r3 = apply_revision(
+        &r2.tree,
+        vec![copy_node],
+        &kept,
+        &revnum_to_atom,
+        &mut b,
+        &mut Budget::new(&Limits::default()),
+    )
+    .unwrap();
 
     assert_eq!(r3.copies.len(), 1);
     assert_eq!(r3.copies[0].from_atom, r0_atom);

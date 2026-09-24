@@ -30,6 +30,7 @@ fn an_over_limit_dumpfile_is_refused_without_being_read() {
 
     let limits = Limits {
         max_dump_bytes: 1024,
+        max_node_text_bytes: 1024,
         max_stderr_bytes: 1024,
         max_svnadmin_version_bytes: 4096,
     };
@@ -104,6 +105,7 @@ fn an_over_limit_svnadmin_dump_is_refused() {
 
     let limits = Limits {
         max_dump_bytes: 128,
+        max_node_text_bytes: 1024,
         max_stderr_bytes: 1024,
         max_svnadmin_version_bytes: 4096,
     };
@@ -134,6 +136,7 @@ fn a_child_writing_a_lot_of_stderr_does_not_deadlock() {
     cmd.arg("-c").arg(script);
     let limits = Limits {
         max_dump_bytes: 4096,
+        max_node_text_bytes: 1024,
         max_stderr_bytes: 4096,
         max_svnadmin_version_bytes: 4096,
     };
@@ -162,6 +165,7 @@ fn an_over_limit_svnadmin_version_output_is_named_as_such_not_as_the_dumpstream(
     cmd.arg("-c").arg("yes v 2>/dev/null | head -c 100000");
     let limits = Limits {
         max_dump_bytes: 64,
+        max_node_text_bytes: 1024,
         max_stderr_bytes: 64,
         max_svnadmin_version_bytes: 64,
     };
@@ -203,6 +207,7 @@ fn a_large_stderr_with_valid_stdout_under_the_cap_succeeds() {
     cmd.arg("-c").arg(script);
     let limits = Limits {
         max_dump_bytes: 4096,
+        max_node_text_bytes: 1024,
         max_stderr_bytes: 4096,
         max_svnadmin_version_bytes: 4096,
     };

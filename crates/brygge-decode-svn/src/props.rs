@@ -7,6 +7,9 @@ use crate::Error;
 /// A borrowed property list (`&Props` and `&[..]` both coerce to this).
 type PropSlice = [(String, Vec<u8>)];
 
+/// An owned property list.
+pub type Owned = Vec<(String, Vec<u8>)>;
+
 /// `svn:executable` — the exec bit.
 pub const SVN_EXECUTABLE: &str = "svn:executable";
 /// `svn:special` — a symlink (content is `link <target>`).
@@ -57,12 +60,13 @@ pub fn has(props: &PropSlice, key: &str) -> bool {
     props.iter().any(|(k, _)| k == key)
 }
 
-/// The IR file mode implied by a node's (complete) property set.
+/// The IR file mode for the two mode properties: a symlink whenever `svn:special` is set (whatever else is),
+/// else executable when `svn:executable` is, else regular.
 #[must_use]
-pub fn file_mode(props: &PropSlice) -> u32 {
-    if has(props, SVN_SPECIAL) {
+pub fn mode_of(exec: bool, special: bool) -> u32 {
+    if special {
         MODE_SYMLINK
-    } else if has(props, SVN_EXECUTABLE) {
+    } else if exec {
         MODE_EXEC
     } else {
         MODE_REGULAR

@@ -29,6 +29,12 @@
 //!   cvs-branches <n> — the `cvs-revs` files plus a branch of n/4 revisions and a nested branch of n/8 (RFC 013
 //!                      C-2), decoded with `--reconstruct-refs`; `cvs-branches-plain` decodes the same files
 //!                      without it (the trunk alone). Both check the IR statistics against the generator's.
+//!   svn-deltas <n>   — the `svn-dump` corpus loaded into a repository and dumped again with `svnadmin dump
+//!                      --deltas` (RFC 013 D-2): the same IR from a delta dump (needs `svnadmin`); with
+//!                      `svn-dump` it shows what reading svndiff and checking every checksum costs.
+//!   svn-checked <n>  — the same, dumped as fulltext by `svnadmin dump`: the dump now states the MD5 and SHA-1 of
+//!                      every text, which the decoder checks (RFC 013 D-2). Against a decoder that did not check,
+//!                      it is the cost of hashing every node.
 //!   svn-dump <n>     — a content-heavy SVN dump of n revisions over 300 files (increment 2: the parsed dump held
 //!                      beside the IR).
 
@@ -57,6 +63,8 @@ const SCENARIOS: &[(&str, &[u64])] = &[
     ("git-content", &[1_000, 5_000]),
     ("cvs-revs", &[200, 1_000, 5_000]),
     ("svn-dump", &[1_000, 5_000, 20_000]),
+    ("svn-deltas", &[1_000, 5_000, 20_000]),
+    ("svn-checked", &[1_000, 5_000, 20_000]),
     ("cvs-branches", &[200, 1_000, 5_000]),
     ("cvs-branches-plain", &[200, 1_000, 5_000]),
 ];
@@ -241,6 +249,24 @@ fn prepare(scenario: &str, n: u64, dir: &Path) -> Option<Corpus> {
             source: Source::Cvs(dir.to_path_buf()),
             cvs_content_check: true,
         },
+        "svn-deltas" => {
+            let path = dir.join("in.dump");
+            let expected = svn_delta_dump(&path, n, dir, true);
+            Corpus {
+                source: Source::Svn(path),
+                expected: Some(expected),
+                cvs_content_check: false,
+            }
+        }
+        "svn-checked" => {
+            let path = dir.join("in.dump");
+            let expected = svn_delta_dump(&path, n, dir, false);
+            Corpus {
+                source: Source::Svn(path),
+                expected: Some(expected),
+                cvs_content_check: false,
+            }
+        }
         "cvs-branches" => Corpus {
             expected: Some(corpus::cvs_branches(dir, n).0),
             source: Source::CvsRefs(dir.to_path_buf()),
@@ -262,6 +288,44 @@ fn prepare(scenario: &str, n: u64, dir: &Path) -> Option<Corpus> {
         }
         _ => return None,
     })
+}
+
+/// The `svn-dump` corpus as a **real** `svnadmin` dump (which states every text's checksums): generated as a
+/// fulltext dump, loaded into a scratch repository with `svnadmin load`, and dumped again into `path`, with
+/// `--deltas` or as fulltext. Returns the IR statistics of the generator (either form must give the same IR).
+fn svn_delta_dump(path: &Path, n: u64, dir: &Path, deltas: bool) -> Stats {
+    let full = dir.join("full.dump");
+    let expected = corpus::svn_dump(&full, n);
+    let repo = dir.join("repo");
+    run_svnadmin(&["create", &repo.display().to_string()], None, None);
+    run_svnadmin(
+        &["load", "--quiet", &repo.display().to_string()],
+        Some(&full),
+        None,
+    );
+    let repo_arg = repo.display().to_string();
+    let mut dump_args = vec!["dump", "--quiet"];
+    if deltas {
+        dump_args.push("--deltas");
+    }
+    dump_args.push(&repo_arg);
+    run_svnadmin(&dump_args, None, Some(path));
+    let _ = std::fs::remove_file(&full);
+    let _ = std::fs::remove_dir_all(&repo);
+    expected
+}
+
+fn run_svnadmin(args: &[&str], stdin: Option<&Path>, stdout: Option<&Path>) {
+    let mut cmd = Command::new("svnadmin");
+    cmd.args(args);
+    if let Some(p) = stdin {
+        cmd.stdin(std::fs::File::open(p).expect("open the dump to load"));
+    }
+    if let Some(p) = stdout {
+        cmd.stdout(std::fs::File::create(p).expect("create the delta dump"));
+    }
+    let status = cmd.status().expect("run svnadmin (needed for svn-deltas)");
+    assert!(status.success(), "svnadmin {args:?} failed");
 }
 
 fn write_svn(dir: &Path, dump: Vec<u8>) -> Source {

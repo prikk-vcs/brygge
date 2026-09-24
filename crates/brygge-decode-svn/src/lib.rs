@@ -5,8 +5,9 @@
 //!
 //! This is the only crate that reads SVN (RFC 009 D-1); [`brygge_ir`] and `verify --internal` link none
 //! of it. There is **no linked SVN library**: the dumpstream is uncompressed plaintext parsed in pure
-//! Rust, and the one external touch is running `svnadmin dump` as a producer subprocess (skipped entirely
-//! when a dumpfile is supplied). It reads untrusted input, so every parser is bounds-checked and
+//! Rust (fulltext dumps, and delta dumps: `svnadmin dump --deltas` and `svnrdump dump`, svndiff version 0), and
+//! the one external touch is running `svnadmin dump` as a producer subprocess (skipped entirely when a dumpfile
+//! is supplied). brygge itself never runs `svnrdump` and never touches the network (INV-3). It reads untrusted input, so every parser is bounds-checked and
 //! panic-free (RFC 006 security review, `brygge-03` T-2/INV-2).
 //!
 //! Entry point: [`decode`]. Sources are described by [`Source`]. Behaviour is tuned by [`Options`]
@@ -18,6 +19,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+mod checksum;
 mod decode;
 mod dumpstream;
 mod floor;
@@ -25,6 +27,7 @@ mod layout;
 mod options;
 mod props;
 mod source;
+mod svndiff;
 mod tree;
 
 pub use decode::decode;
@@ -49,10 +52,10 @@ pub enum Error {
     Open(String),
     /// The dumpstream could not be read or decoded (malformed or truncated).
     Read(String),
-    /// The dumpstream declares a format version, or uses a form (e.g. deltas), this build does not
-    /// implement (RFC 006 §4). Refused rather than misread — the format-level safety gate.
+    /// The dumpstream declares a format version, or uses a form (svndiff version 1 or 2), this build does
+    /// not implement (RFC 006 §4, RFC 013 D-2). Refused rather than misread — the format-level safety gate.
     UnsupportedFormat {
-        /// What is not implemented (e.g. `"dump format version 5"`, `"delta dump"`).
+        /// What is not implemented (e.g. `"dump format version 5"`, `"svndiff version 1 (zlib)"`).
         what: String,
         /// Why it is refused rather than read.
         reason: String,
