@@ -12,7 +12,7 @@
 //! overlap other nearby clusters (D-8 flags the low-confidence ones). Every resulting atom is
 //! `Derived(ReconstructedChangeset)` (SRC-C1).
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::rcs::RevNum;
 
@@ -221,7 +221,7 @@ fn fix_per_file_order(mut clusters: Vec<Cluster>) -> (Vec<Cluster>, usize) {
 }
 
 fn finalize(clusters: Vec<Cluster>, window: i64) -> Vec<Changeset> {
-    let ranges: Vec<(i64, i64, BTreeSet<String>)> = clusters
+    let ranges: Vec<Range> = clusters
         .iter()
         .map(|c| {
             let earliest = c.revs.iter().map(|r| r.date).min().unwrap_or(0);
@@ -230,6 +230,8 @@ fn finalize(clusters: Vec<Cluster>, window: i64) -> Vec<Changeset> {
             (earliest, latest, paths)
         })
         .collect();
+
+    let overlaps = overlap_counts(&ranges, window);
 
     clusters
         .into_iter()
@@ -242,16 +244,7 @@ fn finalize(clusters: Vec<Cluster>, window: i64) -> Vec<Changeset> {
             let span = latest.saturating_sub(*earliest);
             let time_score = time_score_of(span, window);
 
-            let widened_lo = earliest.saturating_sub(window);
-            let widened_hi = latest.saturating_add(window);
-            let overlap = my_paths
-                .iter()
-                .filter(|p| {
-                    ranges.iter().enumerate().any(|(j, (e2, l2, paths2))| {
-                        j != i && *l2 >= widened_lo && *e2 <= widened_hi && paths2.contains(*p)
-                    })
-                })
-                .count();
+            let overlap = overlaps.get(i).copied().unwrap_or(0);
 
             let paths_n = my_paths.len().max(1);
             // Integer confidence, division last: floor(time_score * (paths - overlap/2) / paths).
@@ -270,6 +263,88 @@ fn finalize(clusters: Vec<Cluster>, window: i64) -> Vec<Changeset> {
                 confidence,
                 order_split: c.order_split,
             }
+        })
+        .collect()
+}
+
+/// One changeset's date range and the paths it touches.
+type Range = (i64, i64, BTreeSet<String>);
+
+/// For every changeset `i`, the number of its paths `p` for which **some other** changeset `j != i` touches
+/// `p` with `latest_j >= lo_i` and `earliest_j <= hi_i`, where `[lo_i, hi_i]` is `i`'s range widened by
+/// `window` (saturating; both bounds inclusive). That is the overlap of rule `span-overlap-v1`.
+///
+/// **Indexed per path** (RFC 010 increment 3b), so each answer is a binary search instead of a scan of every
+/// changeset: for each path, the changesets touching it are sorted by `earliest`, and each prefix keeps its
+/// two largest `latest` values (with their changesets, so that `i` itself can be excluded). "Is there a
+/// `j != i` with `earliest_j <= hi_i` and `latest_j >= lo_i`?" is then: take the prefix with `earliest <= hi_i`;
+/// the best `latest` in it other than `i`'s own is the largest, or the second largest if `i` holds the largest;
+/// compare it with `lo_i`. It answers exactly the predicate above, in O(touches x log) overall instead of
+/// O(changesets squared x paths); the result of every value is unchanged.
+fn overlap_counts(ranges: &[Range], window: i64) -> Vec<usize> {
+    /// One path's changesets in ascending `earliest`, and for each prefix the two largest `latest`.
+    struct PathIndex {
+        earliest: Vec<i64>,
+        top_two: Vec<[Option<(i64, usize)>; 2]>,
+    }
+
+    let mut touching: HashMap<&str, Vec<(i64, i64, usize)>> = HashMap::new();
+    for (j, (earliest, latest, paths)) in ranges.iter().enumerate() {
+        for p in paths {
+            touching
+                .entry(p.as_str())
+                .or_default()
+                .push((*earliest, *latest, j));
+        }
+    }
+    let index: HashMap<&str, PathIndex> = touching
+        .into_iter()
+        .map(|(path, mut entries)| {
+            entries.sort_unstable();
+            let mut earliest = Vec::with_capacity(entries.len());
+            let mut top_two = Vec::with_capacity(entries.len());
+            let mut best: [Option<(i64, usize)>; 2] = [None, None];
+            for (e, l, j) in entries {
+                earliest.push(e);
+                // Keep the two largest `latest` seen so far (each with its changeset).
+                match best {
+                    [Some((b0, _)), _] if l > b0 => best = [Some((l, j)), best[0]],
+                    [Some(_), Some((b1, _))] if l > b1 => best[1] = Some((l, j)),
+                    [Some(_), None] => best[1] = Some((l, j)),
+                    [None, _] => best[0] = Some((l, j)),
+                    _ => {}
+                }
+                top_two.push(best);
+            }
+            (path, PathIndex { earliest, top_two })
+        })
+        .collect();
+
+    ranges
+        .iter()
+        .enumerate()
+        .map(|(i, (earliest, latest, paths))| {
+            // Saturating throughout: an attacker-chosen date or window must never wrap (review 008 R-3).
+            let widened_lo = earliest.saturating_sub(window);
+            let widened_hi = latest.saturating_add(window);
+            paths
+                .iter()
+                .filter(|p| {
+                    let Some(ix) = index.get(p.as_str()) else {
+                        return false;
+                    };
+                    let prefix = ix.earliest.partition_point(|&e| e <= widened_hi);
+                    let Some(top) = prefix.checked_sub(1).and_then(|k| ix.top_two.get(k)) else {
+                        return false;
+                    };
+                    // The best `latest` among the prefix's changesets other than `i`.
+                    let other = match top {
+                        [Some((_, j0)), second] if *j0 == i => *second,
+                        [first, _] => *first,
+                    };
+                    other.is_some_and(|(l, _)| l >= widened_lo)
+                })
+                .count()
         })
         .collect()
 }

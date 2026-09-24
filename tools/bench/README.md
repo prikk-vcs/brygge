@@ -218,3 +218,38 @@ corpora.
 doubling). From reading the code, the likely cause is `finalize`, which scores each changeset by scanning every other changeset's range
 for each of its paths, O(changesets squared); I timed the whole function, not that step. It was hidden behind the
 reconstruction and is now the larger part. It is outside this increment (it is not reconstruction); see the review request.
+
+## 0.2.0 increment 3b: the CVS changeset overlap, indexed per path
+
+RFC 010 increment 3b: the confidence rule `span-overlap-v1` counts, for each changeset, its paths that another changeset
+touches within a window; `cluster::finalize` scanned every changeset's date range for each path (O(changesets squared x paths)).
+It is now answered from a per-path index (each path's changesets sorted by earliest date, with the two largest latest dates per
+prefix, so a binary search answers the same predicate). A/B, back to back: "before" is increment 3 (`f0550ed`), "after" is 3b.
+
+| scenario | revisions per file (20 files) | peak before | peak after | time before | time after | atoms | blobs | content |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| `cvs-revs` | 200 | 87.1 MiB | 88.0 MiB | 84 ms | 79 ms | 4,000 | 4,000 | 19.8 MiB |
+| `cvs-revs` | 1,000 | 434.7 MiB | 434.9 MiB | 0.55 s | 0.44 s | 20,000 | 20,000 | 102.0 MiB |
+| `cvs-revs` | 5,000 | 2,208.2 MiB | 2,210.2 MiB | 5.7 s | **2.4 s** | 100,000 | 100,000 | 528.3 MiB |
+
+The IR is identical (each row's atoms, blobs and content bytes match; the self-check, which compares every revision's text, passes).
+The peak is **not lower**: it is 0.04% to 1% higher (0.2 to 2 MB), the per-path index (about 56 bytes per changeset per path).
+
+**The clustering alone, from an instrumented run (not committed), by total revisions:**
+
+| revisions | before 3b | after 3b |
+|---:|---:|---:|
+| 10,000 | 53 ms | 29 ms |
+| 20,000 | 195 ms | 66 ms |
+| 40,000 | 948 ms | 187 ms |
+| 100,000 | 4,033 ms | **488 ms** (8.3x) |
+
+Growth is now about 2.3x to 2.8x per doubling (a sort and an index build: n log n, plus allocation), where it was 4x. **The
+whole decode now grows linearly to within the cost of a log:** 79 ms, 0.44 s, 2.4 s for 5x the revisions each time (5.6x, then
+5.4x), where it was 6.5x then 10x. At 100,000 revisions the phases are reconstruction 0.57 s, clustering 0.49 s, atoms 0.74 s;
+the rest is reading and parsing the `,v` files and finishing the IR.
+
+**The artifacts are byte-identical:** 40 comparisons of the CLI's artifact, stdout and exit code between the two builds (20
+repositories x {plain, `--reconstruct-refs`}), all identical: the crate's fixtures and malformed files, three repositories built to
+stress the overlap (a few (author, log) pairs with bursts of near-equal dates, changesets with identical dates, and widely spread
+dates: their confidences range over 0 to 100), and the `cvs` and `cvs-revs` corpora up to 5,000 revisions per file.

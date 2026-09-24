@@ -41,6 +41,10 @@ Every handoff adds its own entry in its own commit.
   a file in one pass down its delta chain, instead of walking from the head once per revision. 20 files of 5,000
   revisions each took 18 minutes and now take about 6 seconds, with 3% less memory. The output is unchanged, byte for
   byte, and a malformed file gets the same error as before.
+- **Faster changeset confidence for long CVS histories** (0.2.0, RFC 010 increment 3b). The overlap count behind each
+  changeset's confidence is answered from a per-path index instead of a scan of every changeset. At 100,000 revisions the
+  clustering takes 0.49 s instead of 4.0 s, and the whole decode of 20 files of 5,000 revisions takes about 2.4 s. Every
+  confidence is unchanged and the output is byte for byte the same.
 - **The CVS drop reason no longer names a version** (0.2.0 batch C). In a CVS artifact with branch revisions, the
   reason text of the dropped-branch records is now "brygge imports the CVS main line only; branch history is
   planned for a later release (0.3.0). Keep the source repository." (it began "brygge 0.1.0 imports ..."). Only
