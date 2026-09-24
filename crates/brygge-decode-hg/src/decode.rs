@@ -110,6 +110,8 @@ pub fn decode(path: &Path, opts: &Options) -> Result<Ir, Error> {
     };
     let mut node_to_atom: HashMap<[u8; 20], AtomId> = HashMap::new();
     let mut branch_of: HashMap<usize, String> = HashMap::new();
+    // Changesets that close their branch (a `close` extra): Mercurial's branch tip prefers an open head.
+    let mut closes_branch: HashSet<usize> = HashSet::new();
     let mut unresolved_copies = 0usize;
     let mut copy_on_existing_path = 0usize;
     let mut unrepresentable_offsets = 0usize;
@@ -120,6 +122,9 @@ pub fn decode(path: &Path, opts: &Options) -> Result<Ir, Error> {
         }
         let cs = changelog::parse(&changelog.revision(crev)?)?;
         branch_of.insert(crev, cs.branch.clone());
+        if closes_its_branch(&cs.extras) {
+            closes_branch.insert(crev);
+        }
         let this_manifest = manifest_of(&manifest_log, &manifest_node_to_rev, &cs.manifest_node)?;
 
         if this_manifest.contains_key(".hgsub") || this_manifest.contains_key(".hgsubstate") {
@@ -191,10 +196,10 @@ pub fn decode(path: &Path, opts: &Options) -> Result<Ir, Error> {
         };
 
         let mut extras: Vec<Extra> = Vec::with_capacity(cs.extras.len());
+        // Every extra is carried exactly as stored, in stored order, `branch` included: Mercurial writes it
+        // only on changesets not on `default`, so a changeset's named branch, and with it every head of
+        // every branch, is derivable from the atoms (the refs name only each branch's tip).
         for (k, v) in &cs.extras {
-            if k.as_slice() == b"branch" {
-                continue;
-            }
             let label = String::from_utf8(k.clone()).map_err(|_| Error::FloorRefusal {
                 feature: floor::NON_UTF8_EXTRA_KEY.to_string(),
                 reason: format!(
@@ -229,6 +234,7 @@ pub fn decode(path: &Path, opts: &Options) -> Result<Ir, Error> {
         &view.bookmarks,
         &changelog,
         &branch_of,
+        &closes_branch,
         &node_to_atom,
         &mut builder,
     )?;
@@ -749,13 +755,39 @@ fn trim_ascii_whitespace(bytes: &[u8]) -> &[u8] {
     bytes.get(start..end).unwrap_or(&[])
 }
 
-/// Add bookmarks (`Bookmark`) and named-branch heads (`NamedBranch`) as refs (RFC 005 D-4), over the
-/// **served** set only. Returns how many bookmarks named a changeset this build did not import (not
+/// Whether a changeset closes its branch: Mercurial decides by the **presence** of the `close` extra, whatever
+/// its value (`changelog.py` `branchinfo`: `b'close' in extra`; it writes `1`).
+fn closes_its_branch(extras: &[(Vec<u8>, Vec<u8>)]) -> bool {
+    extras.iter().any(|(k, _)| k.as_slice() == b"close")
+}
+
+/// The tip of every branch, from its heads in ascending revision order as `(revision, branch, open)`:
+/// what Mercurial resolves the name to (`branchmap.branchtip`, which is what `hg update <branch>` checks
+/// out): the tipmost (highest revision number in this repository) open head, or, when every head is closed,
+/// the tipmost head. A later head replaces the kept one unless it would replace an open head by a closed one.
+fn branch_tips<'a>(
+    heads: impl Iterator<Item = (usize, &'a str, bool)>,
+) -> BTreeMap<&'a str, usize> {
+    let mut tip_of: BTreeMap<&str, (usize, bool)> = BTreeMap::new();
+    for (crev, branch, open) in heads {
+        match tip_of.get(branch) {
+            Some(&(_, true)) if !open => {}
+            _ => {
+                tip_of.insert(branch, (crev, open));
+            }
+        }
+    }
+    tip_of.into_iter().map(|(b, (crev, _))| (b, crev)).collect()
+}
+
+/// Add bookmarks (`Bookmark`) and one ref per named branch (`NamedBranch`, at its branch tip) as refs
+/// (RFC 005 D-4), over the **served** set only. Returns how many bookmarks named a changeset this build did not import (not
 /// served, or unknown) — counted, never skipped silently (RFC 005 corrections handoff §3).
 fn add_refs(
     bookmarks: &[(String, [u8; 20])],
     changelog: &Revlog,
     branch_of: &HashMap<usize, String>,
+    closes_branch: &HashSet<usize>,
     node_to_atom: &HashMap<[u8; 20], AtomId>,
     builder: &mut IrBuilder,
 ) -> Result<usize, Error> {
@@ -799,16 +831,22 @@ fn add_refs(
             }
         }
     }
-    for crev in 0..n {
+    // One ref per branch, at what Mercurial itself resolves the name to (see `branch_tips`).
+    let heads = (0..n).filter_map(|crev| {
         if has_same_branch_child.get(crev).copied().unwrap_or(true) {
-            continue;
+            return None;
         }
-        let (Some(e), Some(branch)) = (changelog.entry(crev), branch_of.get(&crev)) else {
+        let branch = branch_of.get(&crev)?;
+        Some((crev, branch.as_str(), !closes_branch.contains(&crev)))
+    });
+    let tip_of = branch_tips(heads);
+    for (branch, crev) in tip_of {
+        let Some(e) = changelog.entry(crev) else {
             continue;
         };
         if let Some(target) = node_to_atom.get(&e.node) {
             builder.add_ref(RefRecord {
-                name: branch.clone(),
+                name: branch.to_string(),
                 kind: RefKind::NamedBranch,
                 target: *target,
                 status: EpistemicStatus::Stated,

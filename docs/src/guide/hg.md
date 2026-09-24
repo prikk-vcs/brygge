@@ -20,13 +20,22 @@ brygge decode hg <repository> --out <artifact>
 - **Renames and copies that Mercurial recorded** (`hg mv`, `hg cp`), as stated copies. Each copy names the
   changeset its source really came from: the first parent, the second parent in a merge, or an earlier
   changeset. A copy is never placed on a guess.
-- **Changeset extras** (every one except `branch`, which becomes the named branch), carried as labelled
-  bytes in their stored order.
-  - `close` with value `1` means the changeset closed its branch (`hg commit --close-branch`).
+- **Changeset extras** (every one, `branch` included), carried as labelled bytes in their stored order.
+  - `branch` names the changeset's named branch. Mercurial stores it only on changesets that are not on
+    `default`, and brygge carries it exactly where it is stored, so every changeset's branch is stated in
+    the artifact.
+  - a `close` extra (Mercurial writes `1`) means the changeset closed its branch (`hg commit
+    --close-branch`).
 - **Refs:**
   - every **bookmark** that names a published changeset;
-  - the **head of every named branch**, computed over the published changesets. A closed branch still
-    has a head, and its `close` extra says it was closed.
+  - **one ref per named branch, at Mercurial's branch tip** (`branchmap.branchtip`, which is what
+    `hg update <branch>` checks out): the tipmost open head of the branch among the published changesets,
+    or, when every head is closed, the tipmost head. A branch may have several heads; every one of them is
+    recoverable from the changesets' `branch` extras (a changeset of the branch with no published child on
+    it), and a closed head's `close` extra says it was closed.
+  - "Tipmost" is the highest revision number **in this repository**, as it is for `hg update`. Two clones
+    that pulled in a different order can therefore name different tips: that is Mercurial's own behaviour,
+    stated here and not hidden.
 - **Tags** travel as the `.hgtags` file in the history, as Mercurial stores them, not as refs.
 - **Verified identity.** Every revision brygge reads (changeset, manifest, file) is re-hashed the way
   Mercurial hashes it, and a store whose content does not match its node is refused. The repository's

@@ -38,8 +38,8 @@ pub struct Changeset {
     /// The named branch (`"default"` when unset), as UTF-8 text (an IR ref name).
     pub branch: String,
     /// Every changelog extra, key → value as raw bytes, unescaped, **in the order stored**,
-    /// **including** `branch` (the caller excludes it when carrying the rest as [`brygge_ir::Extra`]s —
-    /// RFC 005 corrections handoff §3). Keys are unique — a duplicate key is refused during parsing.
+    /// **including** `branch` (the caller carries all of them as [`brygge_ir::Extra`]s, exactly as stored —
+    /// review 037 R-1). Keys are unique — a duplicate key is refused during parsing.
     pub extras: Extras,
     /// The commit description/message, as the source's raw bytes.
     pub description: Vec<u8>,

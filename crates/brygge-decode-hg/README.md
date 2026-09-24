@@ -19,11 +19,12 @@ a [`brygge_ir::Ir`].
   inference (`brygge decode hg --infer-renames` is a usage error).
 - **What it carries:** a **`Stated`** changelog spine; **`Stated`** copies/renames, each with its **true**
   source atom resolved (RFC 011 D-6: p1, else p2, else the copy's own filelog linkrev, else a
-  first-parent ancestry walk — never placed on a guess); bookmarks and named-branch heads as refs, both
-  computed over the published set only. Every changelog extra except `branch` is carried as a labelled
-  `Extra` — notably `close`, whose value `1` means the changeset closed its branch (`hg commit
-  --close-branch`); a closed branch's head still says so in the object, even though it no longer heads a
-  live branch ref. Copy-source steps 3–4 (the linkrev and the ancestry walk) serve stores written by
+  first-parent ancestry walk — never placed on a guess); bookmarks and one ref per named branch (at
+  Mercurial's branch tip: the tipmost open head, else the tipmost head), both computed over the published
+  set only. Every changelog extra, `branch` included, is carried as a labelled
+  `Extra` — notably `close`, whose presence (Mercurial writes `1`) means the changeset closed its branch (`hg commit
+  --close-branch`); a closed head still says so in the object, and every head of a branch is recoverable
+  from the `branch` extras. Copy-source steps 3–4 (the linkrev and the ancestry walk) serve stores written by
   Mercurial < 3.3, or by other writers: since 3.3 (issue4476) `hg commit` records a copy only when its
   source is in p1's or p2's manifest, so current Mercurial always resolves at step 1 or 2. Steps 3–4 are
   covered by unit tests over an in-memory graph, not a live store.

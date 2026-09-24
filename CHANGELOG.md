@@ -16,12 +16,19 @@ Every handoff adds its own entry in its own commit.
 
 ### Fixed
 
+- **Mercurial: a named branch with several heads gave an artifact that failed its own `verify` (exit 50).** It
+  had one ref per head, and the contract allows one ref per `(name, kind)`. There is now **one ref per named
+  branch, at Mercurial's branch tip** (`branchmap.branchtip`, what `hg update <branch>` checks out): the
+  tipmost open head among the published changesets, or, when every head is closed, the tipmost head.
 - **Mercurial: paths with a Windows-reserved component (`aux`, `con`, `com1`, ...), a directory named `*.i`, `*.d`
   or `*.hg`, or a directory ending in `.` or a space are read.** They failed before, because the encoding was
   incomplete. A `fncache` repository without `dotencode` is read with the right encoding, too.
 
 ### Changed
 
+- **Mercurial: the `branch` extra is carried, as stored** (Mercurial writes it only on changesets not on
+  `default`), in stored order like every other extra. Every changeset's branch, and so every head of every
+  branch, is derivable from the atoms. The atom ids of changesets on named branches change (v0).
 - **Mercurial: a `store` repository without `fncache` (before Mercurial 1.1, 2008) is refused by name**
   (`store-without-fncache`, exit 20), where it was assumed to have one. A non-inline revlog whose data file is absent
   while its index needs data is a read error naming the file.

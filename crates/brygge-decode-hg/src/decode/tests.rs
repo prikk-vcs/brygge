@@ -543,8 +543,136 @@ fn a_closed_branch_carries_the_close_extra() {
         .find(|e| e.label == "close")
         .unwrap();
     assert_eq!(close.bytes, b"1");
-    // `branch` itself is never duplicated as an Extra (it has its own home).
-    assert!(!closer.source.extras.iter().any(|e| e.label == "branch"));
+    // `branch` is carried as stored, like every other extra (batch I, review 037 R-1): here it names the
+    // branch the changeset closed.
+    let branch = closer
+        .source
+        .extras
+        .iter()
+        .find(|e| e.label == "branch")
+        .expect("a changeset off `default` stores its branch");
+    assert_eq!(branch.bytes, b"feature");
+}
+
+/// `hg log -r <name>` resolves a branch name the way `hg update` does (`branchmap.branchtip`): the tipmost
+/// open head, or, with every head closed, the tipmost head.
+fn hg_resolve(r: &Repo, name: &str) -> String {
+    let out = Command::new("hg")
+        .env("HGRCPATH", "/dev/null")
+        .arg("--cwd")
+        .arg(r.path())
+        .arg("-R")
+        .arg(r.path())
+        .args(["log", "-r", name, "-T", "{node}"])
+        .output()
+        .expect("hg log");
+    assert!(out.status.success(), "hg log -r {name} failed: {out:?}");
+    String::from_utf8(out.stdout).unwrap()
+}
+
+/// Review 037 R-1: a named branch with several heads is **one** ref, at Mercurial's branch tip; the other
+/// heads keep their branch through the `branch` extra; and the artifact reads back (`verify`'s integrity).
+#[test]
+fn a_multi_head_named_branch_is_one_ref_at_mercurials_branch_tip_and_every_atom_carries_its_branch()
+{
+    if !hg_available() {
+        eprintln!("skipping: hg not on PATH");
+        return;
+    }
+    let r = Repo::new();
+    r.write("a.txt", "a\n");
+    r.commit("1", "c0"); // rev 0
+    // `default` with two open heads: revs 1 and 2 (rev 2 is the tip).
+    r.write("d1.txt", "1\n");
+    r.commit("2", "default head one");
+    r.run(&["update", "0"]);
+    r.write("d2.txt", "2\n");
+    r.commit("3", "default head two");
+    // `b`: an open head (rev 4) and a closed head (rev 6, above it): the open one is the branch tip.
+    r.run(&["update", "0"]);
+    r.run(&["branch", "b"]);
+    r.write("b1.txt", "1\n");
+    r.commit("4", "b open head");
+    r.run(&["update", "0"]);
+    r.run(&["branch", "-f", "b"]);
+    r.write("b2.txt", "2\n");
+    r.commit("5", "b other line");
+    r.run(&["commit", "--close-branch", "-d", "6 0", "-m", "close b"]);
+    // `c`: two lines, both closed, so the tip is the tipmost head.
+    for (i, file) in ["c1.txt", "c2.txt"].into_iter().enumerate() {
+        r.run(&["update", "0"]);
+        r.run(&["branch", "-f", "c"]);
+        r.write(file, "c\n");
+        r.commit(&format!("{}", 7 + 2 * i), "c line");
+        r.run(&[
+            "commit",
+            "--close-branch",
+            "-d",
+            &format!("{} 0", 8 + 2 * i),
+            "-m",
+            "close c",
+        ]);
+    }
+
+    let ir = decode(r.path(), &Options::default()).unwrap();
+
+    assert!(
+        ir.refs
+            .iter()
+            .all(|rf| rf.kind == brygge_ir::model::RefKind::NamedBranch),
+        "no bookmarks in this repository"
+    );
+    let mut refs: Vec<(&str, String)> = ir
+        .refs
+        .iter()
+        .map(|rf| {
+            let atom = ir.atoms.iter().find(|a| a.id == rf.target).unwrap();
+            (rf.name.as_str(), crate::util::hex(&atom.source.atom_id))
+        })
+        .collect();
+    refs.sort();
+    let names: Vec<_> = refs.iter().map(|(n, _)| *n).collect();
+    assert_eq!(names, ["b", "c", "default"], "one ref per branch");
+    for (name, node) in &refs {
+        assert_eq!(
+            *node,
+            hg_resolve(&r, name),
+            "the ref for {name} is Mercurial's branch tip"
+        );
+    }
+
+    // Every atom carries `branch` exactly as Mercurial stores it: on no `default` changeset, and with the
+    // right name elsewhere.
+    let out = Command::new("hg")
+        .env("HGRCPATH", "/dev/null")
+        .arg("--cwd")
+        .arg(r.path())
+        .arg("-R")
+        .arg(r.path())
+        .args(["log", "-T", "{node} {branch}\n"])
+        .output()
+        .expect("hg log");
+    assert!(out.status.success());
+    let mut checked = 0;
+    for line in String::from_utf8(out.stdout).unwrap().lines() {
+        let (node, branch) = line.split_once(' ').unwrap();
+        let atom = ir
+            .atoms
+            .iter()
+            .find(|a| crate::util::hex(&a.source.atom_id) == node)
+            .unwrap();
+        let carried = atom.source.extras.iter().find(|e| e.label == "branch");
+        if branch == "default" {
+            assert!(carried.is_none(), "{node}: default carries no branch extra");
+        } else {
+            assert_eq!(carried.unwrap().bytes, branch.as_bytes(), "{node}");
+        }
+        checked += 1;
+    }
+    assert_eq!(checked, ir.atoms.len(), "every changeset was checked");
+
+    // The artifact reads back: what `verify`'s `integrity` runs (it failed before, for two heads).
+    brygge_ir::from_bytes(&brygge_ir::to_bytes(&ir)).unwrap();
 }
 
 // ---- review 009 R-4/R-3/R-2 ------------------------------------------------------------------------
@@ -1732,4 +1860,53 @@ fn a_store_without_fncache_is_refused_by_name() {
         }
         other => panic!("expected a store-without-fncache refusal, got {other:?}"),
     }
+}
+
+// ---- the tip selection (review 037 re-review F-1) -------------------------------------------------
+
+fn extras(pairs: &[(&str, &str)]) -> Vec<(Vec<u8>, Vec<u8>)> {
+    pairs
+        .iter()
+        .map(|(k, v)| (k.as_bytes().to_vec(), v.as_bytes().to_vec()))
+        .collect()
+}
+
+/// Mercurial's `branchinfo` is `b'close' in extra`: the key alone closes, whatever the value.
+#[test]
+fn a_close_extra_closes_the_branch_whatever_its_value() {
+    assert!(super::closes_its_branch(&extras(&[("close", "1")])));
+    assert!(super::closes_its_branch(&extras(&[("close", "yes")])));
+    assert!(super::closes_its_branch(&extras(&[("close", "")])));
+    assert!(super::closes_its_branch(&extras(&[
+        ("branch", "b"),
+        ("close", "0")
+    ])));
+    assert!(!super::closes_its_branch(&extras(&[("branch", "b")])));
+    assert!(!super::closes_its_branch(&extras(&[("closed", "1")])));
+    assert!(!super::closes_its_branch(&[]));
+}
+
+#[test]
+fn the_branch_tip_is_the_tipmost_open_head_else_the_tipmost_head() {
+    use std::collections::BTreeMap;
+    // (revision, branch, open), ascending.
+    let tips = |heads: &[(usize, &'static str, bool)]| -> BTreeMap<&str, usize> {
+        super::branch_tips(heads.iter().copied())
+    };
+    // Two open heads: the higher one.
+    assert_eq!(
+        tips(&[(1, "default", true), (2, "default", true)])["default"],
+        2
+    );
+    // An open head below a closed one: the open one.
+    assert_eq!(tips(&[(4, "b", true), (6, "b", false)])["b"], 4);
+    // A closed head below an open one: the open one.
+    assert_eq!(tips(&[(4, "b", false), (6, "b", true)])["b"], 6);
+    // Every head closed: the tipmost.
+    assert_eq!(tips(&[(7, "c", false), (9, "c", false)])["c"], 9);
+    // Branches do not interact; a head whose `close` value is not `1` counts as closed, and so loses.
+    let close_yes = !super::closes_its_branch(&extras(&[("branch", "d"), ("close", "yes")]));
+    let open = !super::closes_its_branch(&extras(&[("branch", "d")]));
+    let t = tips(&[(3, "d", open), (5, "d", close_yes), (8, "e", true)]);
+    assert_eq!((t["d"], t["e"]), (3, 8));
 }
