@@ -2036,7 +2036,9 @@ fn a_normal_write_still_succeeds_and_leaves_no_temp_file() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-#[cfg(unix)]
+// macOS file systems (APFS, HFS+) refuse a file name that is not valid UTF-8 (`EILSEQ`), so the property cannot
+// be set up there: the name can never exist on that platform.
+#[cfg(all(unix, not(target_os = "macos")))]
 #[test]
 fn a_non_utf8_output_file_name_is_written_without_a_lossy_conversion() {
     use std::os::unix::ffi::OsStrExt;

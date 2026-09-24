@@ -58,7 +58,8 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - name: Test
-        run: cargo test --workspace --locked
+        # --no-fail-fast: one failing crate must not hide the failures of the crates after it.
+        run: cargo test --workspace --locked --no-fail-fast
 
   msrv:
     name: clippy · test (MSRV 1.85)
@@ -79,7 +80,8 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - name: Test
-        run: cargo test --workspace --locked
+        # --no-fail-fast: one failing crate must not hide the failures of the crates after it.
+        run: cargo test --workspace --locked --no-fail-fast
 
   supply-chain:
     name: cargo-deny · cargo-audit · ir-isolation

@@ -225,7 +225,7 @@ fn the_same_path_in_attic_and_live_is_refused() {
 }
 
 /// A `,v` file name that is not valid Unicode: raw bytes on Unix, an unpaired surrogate on Windows.
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "macos")))]
 fn non_unicode_name() -> std::ffi::OsString {
     use std::os::unix::ffi::OsStrExt as _;
     std::ffi::OsStr::from_bytes(b"bad_\xff_name,v").to_owned()
@@ -242,11 +242,15 @@ fn non_unicode_name() -> std::ffi::OsString {
 
 /// The escaped form of the offending byte(s) that the refusal must show: `0xFF` on Unix; on Windows the
 /// unpaired surrogate U+D800 is WTF-8 `ED A0 80`.
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "macos")))]
 const NON_UNICODE_ESCAPED: &str = "\\xFF";
 #[cfg(windows)]
 const NON_UNICODE_ESCAPED: &str = "\\xED\\xA0\\x80";
 
+// macOS file systems (APFS, HFS+) refuse a file name that is not valid UTF-8, so such a `,v` file cannot exist
+// there and there is nothing to create; the escaping itself is proved on every platform by
+// `an_unpaired_surrogate_in_wtf8_is_escaped_byte_by_byte` and the SVN/CVS escape tests.
+#[cfg(not(target_os = "macos"))]
 #[test]
 fn a_non_utf8_path_component_is_refused_and_shown_as_escaped_bytes() {
     let root = fresh_root("nonutf8");
