@@ -11,8 +11,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::content::{BlobId, ContentStore};
 use crate::model::{
-    AtomId, ChangeAtom, CopyRecord, Flag, FlagKind, ImportProvenance, Ir, LossBoundary, LossClass,
-    MetadataClaims, PathOp, RefRecord, SourceIdentity,
+    AtomId, ChangeAtom, CopyRecord, Flag, ImportProvenance, Ir, LossBoundary, MetadataClaims,
+    PathOp, RefRecord, SourceIdentity,
 };
 use crate::status::EpistemicStatus;
 use crate::{Error, Result};
@@ -139,24 +139,53 @@ impl IrBuilder {
     ///
     /// # Errors
     /// [`Error::Invariant`] if the atom graph contains a cycle (source histories are acyclic; a cycle
-    /// signals a decoder bug).
+    /// signals a decoder bug), or if two refs share `(name, kind variant)`, two drops share
+    /// `(class, what)`, or two flags share `(kind, what)` (the reader would refuse such an artifact).
     pub fn finish(self) -> Result<Ir> {
         let ordered = topo_order(&self.atoms)?;
 
+        // The canonical orders are on the variant numbers of the format (`ir-artifact-format.md` §6), the
+        // same numbers the reader checks. A key that repeats cannot be written: the reader would refuse it.
         let mut refs = self.refs;
-        refs.sort_by(|a, b| {
-            (&a.name, ref_kind_rank(&a.kind)).cmp(&(&b.name, ref_kind_rank(&b.kind)))
-        });
+        refs.sort_by(|a, b| (&a.name, a.kind.variant()).cmp(&(&b.name, b.kind.variant())));
+        if let Some((a, _)) = refs
+            .iter()
+            .zip(refs.iter().skip(1))
+            .find(|(a, b)| (&a.name, a.kind.variant()) == (&b.name, b.kind.variant()))
+        {
+            return Err(Error::Invariant(format!(
+                "two refs named {:?} of one kind",
+                a.name
+            )));
+        }
 
         let mut loss = self.loss;
-        loss.dropped.sort_by(|a, b| {
-            (loss_class_rank(a.class), &a.what).cmp(&(loss_class_rank(b.class), &b.what))
-        });
+        loss.dropped
+            .sort_by(|a, b| (a.class.variant(), &a.what).cmp(&(b.class.variant(), &b.what)));
+        if let Some((a, _)) = loss
+            .dropped
+            .iter()
+            .zip(loss.dropped.iter().skip(1))
+            .find(|(a, b)| (a.class.variant(), &a.what) == (b.class.variant(), &b.what))
+        {
+            return Err(Error::Invariant(format!(
+                "two drops of one class with the same `what`: {:?}",
+                a.what
+            )));
+        }
 
         let mut flags = self.flags;
-        flags.sort_by(|a, b| {
-            (flag_kind_rank(a.kind), &a.what).cmp(&(flag_kind_rank(b.kind), &b.what))
-        });
+        flags.sort_by(|a, b| (a.kind.variant(), &a.what).cmp(&(b.kind.variant(), &b.what)));
+        if let Some((a, _)) = flags
+            .iter()
+            .zip(flags.iter().skip(1))
+            .find(|(a, b)| (a.kind.variant(), &a.what) == (b.kind.variant(), &b.what))
+        {
+            return Err(Error::Invariant(format!(
+                "two flags of one kind with the same `what`: {:?}",
+                a.what
+            )));
+        }
 
         let referenced: BTreeSet<BlobId> = ordered
             .iter()
@@ -183,32 +212,6 @@ impl IrBuilder {
             flags,
             content,
         })
-    }
-}
-
-fn ref_kind_rank(k: &crate::model::RefKind) -> u8 {
-    use crate::model::RefKind;
-    match k {
-        RefKind::Branch => 0,
-        RefKind::Tag => 1,
-        RefKind::Bookmark => 2,
-        RefKind::NamedBranch => 3,
-        RefKind::Other(_) => 4,
-    }
-}
-
-fn loss_class_rank(c: LossClass) -> u8 {
-    match c {
-        LossClass::Representation => 0,
-        LossClass::AdvisoryUnreliable => 1,
-        LossClass::Other => 2,
-    }
-}
-
-fn flag_kind_rank(k: FlagKind) -> u8 {
-    match k {
-        FlagKind::ConventionViolation => 0,
-        FlagKind::BelowConfidenceFloor => 1,
     }
 }
 

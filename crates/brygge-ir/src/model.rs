@@ -1050,16 +1050,20 @@ impl ChangeAtom {
 }
 
 impl RefKind {
-    fn encode(&self) -> Vec<u8> {
-        let mut w = CanonWriter::new();
-        let variant = match self {
+    /// The variant number in the format's kind table: what the encoder writes, and the key the canonical
+    /// order of refs is defined on (`ir-artifact-format.md` §6). Never derived from a name.
+    pub(crate) fn variant(&self) -> u8 {
+        match self {
             Self::Branch => 0,
             Self::Tag => 1,
             Self::Bookmark => 2,
             Self::NamedBranch => 3,
             Self::Other(_) => 4,
-        };
-        w.uvarint(variant);
+        }
+    }
+    fn encode(&self) -> Vec<u8> {
+        let mut w = CanonWriter::new();
+        w.uvarint(u64::from(self.variant()));
         let mut rw = RecordWriter::new();
         if let Self::Other(label) = self {
             rw.field(1, true, label.as_bytes().to_vec());
@@ -1201,13 +1205,18 @@ impl RefRecord {
 }
 
 impl LossClass {
-    fn encode(&self) -> Vec<u8> {
-        let mut w = CanonWriter::new();
-        w.uvarint(match self {
+    /// The variant number in the format's class table: what the encoder writes, and the key the canonical
+    /// order of drops is defined on (`ir-artifact-format.md` §6). Never derived from a name.
+    pub(crate) fn variant(self) -> u8 {
+        match self {
             Self::Representation => 0,
             Self::AdvisoryUnreliable => 1,
             Self::Other => 2,
-        });
+        }
+    }
+    fn encode(&self) -> Vec<u8> {
+        let mut w = CanonWriter::new();
+        w.uvarint(u64::from(self.variant()));
         RecordWriter::new().finish_into(&mut w);
         w.into_bytes()
     }
@@ -1265,12 +1274,17 @@ impl DropRecord {
 }
 
 impl FlagKind {
-    fn encode(&self) -> Vec<u8> {
-        let mut w = CanonWriter::new();
-        w.uvarint(match self {
+    /// The variant number in the format's kind table: what the encoder writes, and the key the canonical
+    /// order of flags is defined on (`ir-artifact-format.md` §6). Never derived from a name.
+    pub(crate) fn variant(self) -> u8 {
+        match self {
             Self::ConventionViolation => 0,
             Self::BelowConfidenceFloor => 1,
-        });
+        }
+    }
+    fn encode(&self) -> Vec<u8> {
+        let mut w = CanonWriter::new();
+        w.uvarint(u64::from(self.variant()));
         RecordWriter::new().finish_into(&mut w);
         w.into_bytes()
     }
@@ -1471,29 +1485,29 @@ impl Ir {
             _ => Ok(false),
         })?;
         for (a, b) in refs.iter().zip(refs.iter().skip(1)) {
-            let ka = (&a.name, format!("{:?}", a.kind));
-            let kb = (&b.name, format!("{:?}", b.kind));
+            let ka = (&a.name, a.kind.variant());
+            let kb = (&b.name, b.kind.variant());
             if ka >= kb {
                 return Err(Error::NonCanonical(
-                    "Ir.refs are not strictly ascending by (name, kind)".to_string(),
+                    "Ir.refs are not strictly ascending by (name, kind variant)".to_string(),
                 ));
             }
         }
         for (a, b) in dropped.iter().zip(dropped.iter().skip(1)) {
-            let ka = (format!("{:?}", a.class), &a.what);
-            let kb = (format!("{:?}", b.class), &b.what);
+            let ka = (a.class.variant(), &a.what);
+            let kb = (b.class.variant(), &b.what);
             if ka >= kb {
                 return Err(Error::NonCanonical(
-                    "Ir.dropped is not strictly ascending by (class, what)".to_string(),
+                    "Ir.dropped is not strictly ascending by (class variant, what)".to_string(),
                 ));
             }
         }
         for (a, b) in flags.iter().zip(flags.iter().skip(1)) {
-            let ka = (format!("{:?}", a.kind), &a.what);
-            let kb = (format!("{:?}", b.kind), &b.what);
+            let ka = (a.kind.variant(), &a.what);
+            let kb = (b.kind.variant(), &b.what);
             if ka >= kb {
                 return Err(Error::NonCanonical(
-                    "Ir.flags are not strictly ascending by (kind, what)".to_string(),
+                    "Ir.flags are not strictly ascending by (kind variant, what)".to_string(),
                 ));
             }
         }

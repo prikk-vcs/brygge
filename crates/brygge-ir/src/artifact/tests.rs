@@ -8,7 +8,10 @@ use std::collections::BTreeMap;
 use super::*;
 use crate::builder::{AtomDraft, IrBuilder};
 use crate::canon::CanonReader;
-use crate::model::{ImportProvenance, MetadataClaims, PathOp, SourceIdentity, SourceKind};
+use crate::model::{
+    DropRecord, Flag, FlagKind, ImportProvenance, LossBoundary, LossClass, MetadataClaims, PathOp,
+    RefKind, RefRecord, SourceIdentity, SourceKind,
+};
 use crate::status::EpistemicStatus;
 
 fn provenance() -> ImportProvenance {
@@ -460,4 +463,278 @@ fn truncations_and_single_byte_mutations_never_panic() {
         mutated[i] ^= 0xff;
         let _ = from_bytes(&mutated); // must return Ok or Err, never panic
     }
+}
+
+// ---- canonical order of refs, drops and flags is on the variant numbers (batch I) ------------------
+
+const ALL_REF_KINDS: [fn() -> RefKind; 5] = [
+    || RefKind::Branch,
+    || RefKind::Tag,
+    || RefKind::Bookmark,
+    || RefKind::NamedBranch,
+    || RefKind::Other("phase".to_string()),
+];
+const ALL_LOSS_CLASSES: [LossClass; 3] = [
+    LossClass::Representation,
+    LossClass::AdvisoryUnreliable,
+    LossClass::Other,
+];
+const ALL_FLAG_KINDS: [FlagKind; 2] = [
+    FlagKind::ConventionViolation,
+    FlagKind::BelowConfidenceFloor,
+];
+
+fn ref_of(ir: &Ir, name: &str, kind: RefKind) -> RefRecord {
+    RefRecord {
+        name: name.into(),
+        kind,
+        target: ir.atoms[0].id,
+        status: EpistemicStatus::Stated,
+        source: None,
+        annotation: None,
+    }
+}
+
+fn drop_of(class: LossClass, what: &str) -> DropRecord {
+    DropRecord {
+        class,
+        what: what.into(),
+        reason: "r".into(),
+    }
+}
+
+fn flag_of(kind: FlagKind, what: &str) -> Flag {
+    Flag {
+        kind,
+        what: what.into(),
+        count: 1,
+        reason: "r".into(),
+    }
+}
+
+/// A builder over the shared two-atom fixture, so the atoms and blobs are the same as `build()`'s.
+fn builder_with_atoms() -> IrBuilder {
+    let ir = build();
+    let mut b = IrBuilder::new(ir.provenance.clone());
+    for atom in &ir.atoms {
+        for op in &atom.ops {
+            if let PathOp::Add { blob, .. } = op {
+                b.add_blob(ir.content.get(blob).unwrap().to_vec());
+            }
+        }
+        b.add_atom(AtomDraft {
+            parents: atom.parents.clone(),
+            ops: atom.ops.clone(),
+            copies: atom.copies.clone(),
+            metadata: atom.metadata.clone(),
+            source: atom.source.clone(),
+            status: atom.status.clone(),
+        })
+        .unwrap();
+    }
+    b
+}
+
+#[test]
+fn every_pair_of_ref_kinds_roundtrips_in_both_insertion_orders() {
+    let target = build().atoms[0].id;
+    for a in ALL_REF_KINDS {
+        for b in ALL_REF_KINDS {
+            if a() == b() {
+                continue;
+            }
+            let mut builder = builder_with_atoms();
+            for kind in [a(), b()] {
+                builder
+                    .add_ref(RefRecord {
+                        name: "x".into(),
+                        kind,
+                        target,
+                        status: EpistemicStatus::Stated,
+                        source: None,
+                        annotation: None,
+                    })
+                    .unwrap();
+            }
+            let ir = builder.finish().unwrap();
+            let read = from_bytes(&to_bytes(&ir)).unwrap_or_else(|e| panic!("{a:?}/{b:?}: {e}"));
+            assert_eq!(read.ir.refs, ir.refs);
+            let variants: Vec<u8> = ir.refs.iter().map(|r| r.kind.variant()).collect();
+            assert!(variants.windows(2).all(|w| w[0] < w[1]), "{variants:?}");
+        }
+    }
+}
+
+#[test]
+fn every_pair_of_loss_classes_roundtrips_in_both_insertion_orders() {
+    for a in ALL_LOSS_CLASSES {
+        for b in ALL_LOSS_CLASSES {
+            if a == b {
+                continue;
+            }
+            let mut builder = builder_with_atoms();
+            builder.set_loss(LossBoundary {
+                dropped: vec![drop_of(a, "same"), drop_of(b, "same")],
+            });
+            let ir = builder.finish().unwrap();
+            let read = from_bytes(&to_bytes(&ir)).unwrap_or_else(|e| panic!("{a:?}/{b:?}: {e}"));
+            assert_eq!(read.ir.loss, ir.loss);
+            assert!(ir.loss.dropped[0].class.variant() < ir.loss.dropped[1].class.variant());
+        }
+    }
+}
+
+#[test]
+fn every_pair_of_flag_kinds_roundtrips_in_both_insertion_orders() {
+    for a in ALL_FLAG_KINDS {
+        for b in ALL_FLAG_KINDS {
+            if a == b {
+                continue;
+            }
+            let mut builder = builder_with_atoms();
+            builder.add_flag(flag_of(a, "same"));
+            builder.add_flag(flag_of(b, "same"));
+            let ir = builder.finish().unwrap();
+            let read = from_bytes(&to_bytes(&ir)).unwrap_or_else(|e| panic!("{a:?}/{b:?}: {e}"));
+            assert_eq!(read.ir.flags, ir.flags);
+            assert!(ir.flags[0].kind.variant() < ir.flags[1].kind.variant());
+        }
+    }
+}
+
+/// The three keys are `(name, variant)`, `(class variant, what)` and `(kind variant, what)`: within one
+/// variant the name (or `what`) decides, and a different name sorts by bytes, not by the variant.
+#[test]
+fn names_order_before_variants_for_refs_and_variants_before_whats_for_drops_and_flags() {
+    let mut builder = builder_with_atoms();
+    let target = build().atoms[0].id;
+    for (name, kind) in [
+        ("b", RefKind::Branch),
+        ("a", RefKind::NamedBranch),
+        ("a", RefKind::Tag),
+    ] {
+        builder
+            .add_ref(RefRecord {
+                name: name.into(),
+                kind,
+                target,
+                status: EpistemicStatus::Stated,
+                source: None,
+                annotation: None,
+            })
+            .unwrap();
+    }
+    builder.set_loss(LossBoundary {
+        dropped: vec![
+            drop_of(LossClass::Other, "a"),
+            drop_of(LossClass::Representation, "z"),
+        ],
+    });
+    builder.add_flag(flag_of(FlagKind::BelowConfidenceFloor, "a"));
+    builder.add_flag(flag_of(FlagKind::ConventionViolation, "z"));
+    let ir = builder.finish().unwrap();
+    from_bytes(&to_bytes(&ir)).unwrap();
+    let refs: Vec<_> = ir
+        .refs
+        .iter()
+        .map(|r| (r.name.as_str(), r.kind.variant()))
+        .collect();
+    assert_eq!(refs, [("a", 1), ("a", 3), ("b", 0)]);
+    assert_eq!(ir.loss.dropped[0].what, "z");
+    assert_eq!(ir.flags[0].what, "z");
+}
+
+fn assert_non_canonical(ir: &Ir, what: &str) {
+    match from_bytes(&to_bytes(ir)) {
+        Err(Error::NonCanonical(m)) => assert!(m.contains(what), "{m}"),
+        other => panic!("expected NonCanonical ({what}), got {other:?}"),
+    }
+}
+
+#[test]
+fn a_hand_built_stream_with_a_pair_in_the_wrong_variant_order_is_non_canonical() {
+    for a in ALL_REF_KINDS {
+        for b in ALL_REF_KINDS {
+            if a().variant() <= b().variant() {
+                continue;
+            }
+            let mut ir = build();
+            ir.refs = vec![ref_of(&ir, "x", a()), ref_of(&ir, "x", b())];
+            assert_non_canonical(&ir, "Ir.refs");
+        }
+    }
+    for a in ALL_LOSS_CLASSES {
+        for b in ALL_LOSS_CLASSES {
+            if a.variant() <= b.variant() {
+                continue;
+            }
+            let mut ir = build();
+            ir.loss.dropped = vec![drop_of(a, "same"), drop_of(b, "same")];
+            assert_non_canonical(&ir, "Ir.dropped");
+        }
+    }
+    for a in ALL_FLAG_KINDS {
+        for b in ALL_FLAG_KINDS {
+            if a.variant() <= b.variant() {
+                continue;
+            }
+            let mut ir = build();
+            ir.flags = vec![flag_of(a, "same"), flag_of(b, "same")];
+            assert_non_canonical(&ir, "Ir.flags");
+        }
+    }
+}
+
+#[test]
+fn a_hand_built_stream_with_a_duplicate_key_is_non_canonical() {
+    let mut ir = build();
+    ir.refs = vec![
+        ref_of(&ir, "x", RefKind::Other("one".into())),
+        ref_of(&ir, "x", RefKind::Other("two".into())),
+    ];
+    assert_non_canonical(&ir, "Ir.refs");
+    let mut ir = build();
+    ir.loss.dropped = vec![
+        drop_of(LossClass::Other, "w"),
+        drop_of(LossClass::Other, "w"),
+    ];
+    assert_non_canonical(&ir, "Ir.dropped");
+    let mut ir = build();
+    ir.flags = vec![
+        flag_of(FlagKind::ConventionViolation, "w"),
+        flag_of(FlagKind::ConventionViolation, "w"),
+    ];
+    assert_non_canonical(&ir, "Ir.flags");
+}
+
+#[test]
+fn the_builder_refuses_a_duplicate_key_instead_of_writing_an_unreadable_artifact() {
+    let target = build().atoms[0].id;
+    let mut b = builder_with_atoms();
+    for label in ["one", "two"] {
+        b.add_ref(RefRecord {
+            name: "x".into(),
+            kind: RefKind::Other(label.into()),
+            target,
+            status: EpistemicStatus::Stated,
+            source: None,
+            annotation: None,
+        })
+        .unwrap();
+    }
+    assert!(matches!(b.finish(), Err(Error::Invariant(_))));
+
+    let mut b = builder_with_atoms();
+    b.set_loss(LossBoundary {
+        dropped: vec![
+            drop_of(LossClass::Other, "w"),
+            drop_of(LossClass::Other, "w"),
+        ],
+    });
+    assert!(matches!(b.finish(), Err(Error::Invariant(_))));
+
+    let mut b = builder_with_atoms();
+    b.add_flag(flag_of(FlagKind::BelowConfidenceFloor, "w"));
+    b.add_flag(flag_of(FlagKind::BelowConfidenceFloor, "w"));
+    assert!(matches!(b.finish(), Err(Error::Invariant(_))));
 }

@@ -280,20 +280,24 @@ fn a_genuine_internal_failure_dominates_the_exit_even_when_against_source_is_als
             status: EpistemicStatus::Stated,
         })
         .unwrap();
-    // A duplicate ref is a genuine `structure` failure, but the artifact still decodes (integrity
-    // passes), so `ir_opt` is `Some` and against-source is actually attempted.
-    for _ in 0..2 {
-        b.add_ref(RefRecord {
-            name: "main".into(),
-            kind: RefKind::Branch,
-            target: a1,
+    // A `Modify` of a path that was never added is a genuine `replay` failure, but the artifact still
+    // decodes (integrity passes), so `ir_opt` is `Some` and against-source is actually attempted. (A
+    // duplicate ref used to serve here; the builder and the reader now both refuse one, so it never
+    // reaches `verify`.)
+    b.add_atom(AtomDraft {
+        parents: vec![a1],
+        ops: vec![PathOp::Modify {
+            path: "never-added".into(),
+            blob,
+            mode: 0o100_644,
             status: EpistemicStatus::Stated,
-            source: None,
-
-            annotation: None,
-        })
-        .unwrap();
-    }
+        }],
+        copies: vec![],
+        metadata: MetadataClaims::default(),
+        source: src(brygge_ir::SourceKind::Git, b"c2"),
+        status: EpistemicStatus::Stated,
+    })
+    .unwrap();
     let ir = b.finish().unwrap();
     let path = tmp_ir_path("notchecked-plus-fail");
     std::fs::write(&path, brygge_ir::to_bytes(&ir)).unwrap();
@@ -847,7 +851,7 @@ fn verify_structure_fails_on_a_dangling_parent() {
 }
 
 #[test]
-fn verify_structure_fails_on_a_duplicate_ref() {
+fn verify_fails_on_a_duplicate_ref_in_a_hand_built_artifact() {
     let mut b = IrBuilder::new(blank_provenance(
         brygge_ir::SourceKind::Git,
         "brygge-decode-git",
@@ -863,6 +867,8 @@ fn verify_structure_fails_on_a_duplicate_ref() {
             status: EpistemicStatus::Stated,
         })
         .unwrap();
+    // The builder refuses a repeated `(name, kind)` (`finish` is an `Invariant`), so the duplicate is made
+    // by hand on the finished `Ir`; the reader then refuses the bytes (`integrity`).
     b.add_ref(RefRecord {
         name: "main".into(),
         kind: RefKind::Branch,
@@ -874,7 +880,7 @@ fn verify_structure_fails_on_a_duplicate_ref() {
     })
     .unwrap();
     b.add_ref(RefRecord {
-        name: "main".into(),
+        name: "other".into(),
         kind: RefKind::Branch,
         target: a1,
         status: EpistemicStatus::Stated,
@@ -883,7 +889,9 @@ fn verify_structure_fails_on_a_duplicate_ref() {
         annotation: None,
     })
     .unwrap();
-    let ir = b.finish().unwrap();
+    let mut ir = b.finish().unwrap();
+    let dup = ir.refs[0].clone();
+    ir.refs.push(dup);
     assert_eq!(verify_bytes(&brygge_ir::to_bytes(&ir)), exit::VERIFY_FAILED);
 }
 
@@ -1735,6 +1743,58 @@ fn decode_cvs_reconstructs_derived_changesets_and_reproduces() {
         run_verify(&out, Some(repo.path()), Format::Human),
         exit::CLEAN,
         "the CVS reconstruction reproduces from its repository (VF-1)"
+    );
+}
+
+/// A `,v` with `1.1`, `1.2` on the trunk, the branch symbol `BR:1.2.0.2`, and one branch revision `1.2.2.1`.
+fn cvs_with_one_branch_revision() -> Vec<u8> {
+    "head\t1.2;\naccess;\nsymbols\n\tBR:1.2.0.2;\nlocks; strict;\n\n\n\
+1.2\ndate\t2024.01.02.00.00.00;\tauthor alice;\tstate Exp;\nbranches\n\t1.2.2.1;\nnext\t1.1;\n\n\
+1.1\ndate\t2024.01.01.00.00.00;\tauthor alice;\tstate Exp;\nbranches;\nnext\t;\n\n\
+1.2.2.1\ndate\t2024.01.03.00.00.00;\tauthor alice;\tstate Exp;\nbranches;\nnext\t;\n\n\n\
+desc\n@@\n\n\
+1.2\nlog\n@two@\ntext\n@two\n@\n\n\
+1.1\nlog\n@one@\ntext\n@d1 1\na1 1\none\n@\n\n\
+1.2.2.1\nlog\n@on the branch@\ntext\n@d1 1\na1 1\nbr\n@\n"
+        .as_bytes()
+        .to_vec()
+}
+
+/// Batch I: a CVS repository with a branch revision records drops of two classes (`Representation` and
+/// `Other`). The artifact used to fail its own `verify` `integrity` (exit 50), because the reader ordered
+/// drops by the Debug name of the class, not by the specified variant number (`Other` sorts first by name).
+#[test]
+fn a_cvs_repository_with_a_branch_revision_verifies_its_own_artifact() {
+    let repo = cvs_repo();
+    write_vfile(&repo, "a.txt", &cvs_with_one_branch_revision());
+    let out = repo.dir.join("out.ir");
+
+    let code = run_decode(
+        SourceKind::Cvs,
+        repo.path(),
+        &out,
+        false,
+        false,
+        Format::Machine,
+    );
+    assert!(
+        code == exit::CLEAN || code == exit::RECORDED_LOSS,
+        "unexpected exit {code}"
+    );
+    let ir = brygge_ir::from_bytes(&std::fs::read(&out).unwrap())
+        .unwrap()
+        .ir;
+    assert!(
+        ir.loss
+            .dropped
+            .iter()
+            .any(|d| d.class == brygge_ir::model::LossClass::Other),
+        "the branch revision is recorded as a drop"
+    );
+    let code = run_verify(&out, None, Format::Machine);
+    assert!(
+        code == exit::CLEAN || code == exit::RECORDED_LOSS,
+        "verify must not fail integrity (exit 50): got {code}"
     );
 }
 

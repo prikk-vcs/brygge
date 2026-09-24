@@ -20,6 +20,11 @@ Every handoff adds its own entry in its own commit.
   had one ref per head, and the contract allows one ref per `(name, kind)`. There is now **one ref per named
   branch, at Mercurial's branch tip** (`branchmap.branchtip`, what `hg update <branch>` checks out): the
   tipmost open head among the published changesets, or, when every head is closed, the tipmost head.
+- **An artifact containing both kinds of flag, or drops of different classes (for example any CVS repository with
+  branch revisions), failed its own `verify` integrity check (exit 50)**, because the reader compared names
+  instead of the specified variant order. The reader now follows the specification (`ir-artifact-format.md` §6).
+  Artifacts already written by any version are valid and now verify. The byte format and the contract version
+  (0.2.0) are unchanged.
 - **Mercurial: paths with a Windows-reserved component (`aux`, `con`, `com1`, ...), a directory named `*.i`, `*.d`
   or `*.hg`, or a directory ending in `.` or a space are read.** They failed before, because the encoding was
   incomplete. A `fncache` repository without `dotencode` is read with the right encoding, too.
