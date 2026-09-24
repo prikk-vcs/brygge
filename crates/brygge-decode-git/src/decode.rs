@@ -220,7 +220,8 @@ pub(crate) fn decode_with(path: &Path, opts: &Options, limits: &Limits) -> Resul
 
     let mut builder = IrBuilder::new(provenance);
     let mut sha_to_atom: HashMap<ObjectId, AtomId> = HashMap::new();
-    let mut snap_cache: HashMap<ObjectId, Snapshot> = HashMap::new();
+    // RFC 010 increment 5: know each root tree's uses up front, so a snapshot is dropped after its last one.
+    let mut snap_cache = SnapshotCache::new(count_snapshot_uses(&repo, &order, &parents));
     let mut time_counts = ParseCounts::default();
 
     for id in &order {
@@ -232,12 +233,14 @@ pub(crate) fn decode_with(path: &Path, opts: &Options, limits: &Limits) -> Resul
         let child_snap = snapshot(&repo, child_tree, *id, limits, &mut snap_cache)?;
 
         let ps = parents.get(id).cloned().unwrap_or_default();
+        let mut base_tree: Option<ObjectId> = None;
         let base_snap = match ps.first() {
             Some(p0) => {
                 let p_commit = find_verified_object(&repo, *p0)?
                     .try_into_commit()
                     .map_err(read_err)?;
                 let p_tree = p_commit.tree_id().map_err(read_err)?.detach();
+                base_tree = Some(p_tree);
                 snapshot(&repo, p_tree, *p0, limits, &mut snap_cache)?
             }
             None => Snapshot::new(),
@@ -256,6 +259,11 @@ pub(crate) fn decode_with(path: &Path, opts: &Options, limits: &Limits) -> Resul
             &mut builder,
             parent_atoms.first().copied(),
         )?;
+        // This commit's uses of its two snapshots are done: drop each whose last use this was.
+        snap_cache.release(child_tree);
+        if let Some(t) = base_tree {
+            snap_cache.release(t);
+        }
         let (metadata, counts) = build_metadata(&commit)?;
         time_counts.unparseable_times += counts.unparseable_times;
         time_counts.unparseable_offsets += counts.unparseable_offsets;
@@ -705,22 +713,110 @@ fn parent_first_order(
     Ok(order)
 }
 
-/// Build the full path→(oid,mode) snapshot of a tree, caching by tree id. A gitlink (submodule) entry
-/// is a floor refusal (RFC 004 D-4).
+/// The snapshots of the root trees the decode still needs, each kept **only while a commit still to be
+/// processed will use it** (RFC 010 increment 5).
+///
+/// A commit's diff uses two snapshots: its own tree's and its **first** parent's tree's, nothing else reads
+/// the cache. Commits are processed parent-first, so the number of uses of each root tree is known before the
+/// loop starts ([`count_snapshot_uses`]); each use [`release`](Self::release)s the tree, and a snapshot is
+/// dropped when its last use is done. Identical trees share one entry and one count (the key is the tree id),
+/// so a tree that a later commit reverts to stays cached until that commit has been processed. The cache then
+/// holds the frontier of the parent-first order, not one snapshot per commit.
+///
+/// It only ever changes what is *kept*: a snapshot that is needed but not cached is rebuilt by the same walk,
+/// so the output cannot depend on the bookkeeping.
+struct SnapshotCache {
+    snaps: HashMap<ObjectId, Snapshot>,
+    /// The uses still to come of each tree. A tree without an entry (its use could not be counted) is never
+    /// evicted.
+    remaining: HashMap<ObjectId, usize>,
+}
+
+impl SnapshotCache {
+    fn new(uses: HashMap<ObjectId, usize>) -> Self {
+        Self {
+            snaps: HashMap::new(),
+            remaining: uses,
+        }
+    }
+
+    /// The snapshot of `tree_id`, from the cache or built by `build` (and then cached).
+    fn get_or_build(
+        &mut self,
+        tree_id: ObjectId,
+        build: impl FnOnce() -> Result<Snapshot, Error>,
+    ) -> Result<Snapshot, Error> {
+        if let Some(s) = self.snaps.get(&tree_id) {
+            return Ok(s.clone());
+        }
+        let out = build()?;
+        self.snaps.insert(tree_id, out.clone());
+        Ok(out)
+    }
+
+    /// One use of `tree_id` is done: evict its snapshot when no use remains.
+    fn release(&mut self, tree_id: ObjectId) {
+        if let Some(n) = self.remaining.get_mut(&tree_id) {
+            *n = n.saturating_sub(1);
+            if *n == 0 {
+                self.remaining.remove(&tree_id);
+                self.snaps.remove(&tree_id);
+            }
+        }
+    }
+
+    /// How many snapshots are held now.
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.snaps.len()
+    }
+}
+
+/// Count, for every root tree, how many times the decode loop will ask for its snapshot: once per commit for
+/// the commit's own tree, and once more for its **first** parent's tree when it has one (`decode`'s loop is
+/// the only reader). Reads each commit once; a commit that cannot be read is not counted (its trees stay
+/// cached, and the loop reports the failure at that commit exactly as before, so error order is unchanged).
+fn count_snapshot_uses(
+    repo: &gix::Repository,
+    order: &[ObjectId],
+    parents: &BTreeMap<ObjectId, Vec<ObjectId>>,
+) -> HashMap<ObjectId, usize> {
+    let mut tree_of: HashMap<ObjectId, ObjectId> = HashMap::with_capacity(order.len());
+    let mut uses: HashMap<ObjectId, usize> = HashMap::new();
+    for id in order {
+        let Some(tree) = find_verified_object(repo, *id)
+            .ok()
+            .and_then(|o| o.try_into_commit().ok())
+            .and_then(|c| c.tree_id().ok())
+            .map(gix::Id::detach)
+        else {
+            continue;
+        };
+        tree_of.insert(*id, tree);
+        *uses.entry(tree).or_insert(0) += 1;
+        if let Some(p0) = parents.get(id).and_then(|ps| ps.first()) {
+            if let Some(pt) = tree_of.get(p0) {
+                *uses.entry(*pt).or_insert(0) += 1;
+            }
+        }
+    }
+    uses
+}
+
+/// Build the full path→(oid,mode) snapshot of a tree, caching it while it is still needed. A gitlink
+/// (submodule) entry is a floor refusal (RFC 004 D-4).
 fn snapshot(
     repo: &gix::Repository,
     tree_id: ObjectId,
     commit_id: ObjectId,
     limits: &Limits,
-    cache: &mut HashMap<ObjectId, Snapshot>,
+    cache: &mut SnapshotCache,
 ) -> Result<Snapshot, Error> {
-    if let Some(s) = cache.get(&tree_id) {
-        return Ok(s.clone());
-    }
-    let mut out = Snapshot::new();
-    walk_tree(repo, tree_id, commit_id, limits, &mut out)?;
-    cache.insert(tree_id, out.clone());
-    Ok(out)
+    cache.get_or_build(tree_id, || {
+        let mut out = Snapshot::new();
+        walk_tree(repo, tree_id, commit_id, limits, &mut out)?;
+        Ok(out)
+    })
 }
 
 /// Walk a tree into a flat path→(oid,mode) snapshot, **iteratively** (RFC 010 CR-10): an explicit stack,

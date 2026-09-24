@@ -33,6 +33,10 @@ Every handoff adds its own entry in its own commit.
 
 ### Changed
 
+- **Less memory for long Git histories** (0.2.0, RFC 010 increment 5). The Git decoder no longer keeps a snapshot of
+  every commit's tree: it drops each once the last commit that needs it has been processed. Decoding 20,000 commits
+  over a 500-file tree used 1.16 GiB and now uses about 99 MiB (12 times less); the peak per commit fell from about 59
+  KiB to about 5 KiB. The output is unchanged, byte for byte.
 - **The CVS drop reason no longer names a version** (0.2.0 batch C). In a CVS artifact with branch revisions, the
   reason text of the dropped-branch records is now "brygge imports the CVS main line only; branch history is
   planned for a later release (0.3.0). Keep the source repository." (it began "brygge 0.1.0 imports ..."). Only

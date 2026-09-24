@@ -2320,3 +2320,193 @@ fn no_drop_or_flag_text_carries_an_internal_reference() {
     let ir = decode(empty.path(), &crate::Options::default()).unwrap();
     assert_no_internal_references(&ir, "an empty repository");
 }
+
+// ---- RFC 010 increment 5: the snapshot retention bound -----------------------------------------------------
+
+fn tree(n: u8) -> ObjectId {
+    let mut bytes = [0u8; 20];
+    bytes[0] = n;
+    ObjectId::from_bytes_or_panic(&bytes)
+}
+
+fn snap_with(path: &str) -> Snapshot {
+    let mut s = Snapshot::new();
+    s.insert(path.to_string(), (tree(200), 0o100_644));
+    s
+}
+
+#[test]
+fn a_snapshot_is_dropped_after_its_last_use_and_not_before() {
+    let mut cache = SnapshotCache::new(HashMap::from([(tree(1), 2)]));
+    let mut builds = 0;
+    for _ in 0..2 {
+        cache
+            .get_or_build(tree(1), || {
+                builds += 1;
+                Ok(snap_with("a"))
+            })
+            .unwrap();
+    }
+    assert_eq!(builds, 1, "the second use is served from the cache");
+    assert_eq!(cache.len(), 1);
+    cache.release(tree(1));
+    assert_eq!(cache.len(), 1, "one use is still to come");
+    cache.release(tree(1));
+    assert_eq!(cache.len(), 0, "the last use is done");
+}
+
+#[test]
+fn a_tree_that_a_later_commit_reverts_to_stays_cached_until_that_commit() {
+    // Trees A (used by commits 1 and 3 and as the base of 2 and 4), B (commit 2 and the base of 3).
+    let (a, b) = (tree(1), tree(2));
+    let mut cache = SnapshotCache::new(HashMap::from([(a, 4), (b, 2)]));
+    let mut builds = 0;
+    let mut get = |cache: &mut SnapshotCache, t: ObjectId| {
+        cache
+            .get_or_build(t, || {
+                builds += 1;
+                Ok(snap_with("a"))
+            })
+            .unwrap();
+    };
+    // commit 1: own A. commit 2: own B, base A. commit 3: own A, base B. commit 4: own A, base A.
+    get(&mut cache, a);
+    cache.release(a);
+    get(&mut cache, b);
+    get(&mut cache, a);
+    cache.release(b);
+    cache.release(a);
+    assert_eq!(
+        cache.len(),
+        2,
+        "A is used again by commits 3 and 4, B by commit 3"
+    );
+    get(&mut cache, a);
+    get(&mut cache, b);
+    cache.release(a);
+    cache.release(b);
+    assert_eq!(
+        cache.len(),
+        1,
+        "B is finished, A is used once more (commit 4)"
+    );
+    get(&mut cache, a);
+    get(&mut cache, a);
+    cache.release(a);
+    cache.release(a);
+    assert_eq!(cache.len(), 0);
+    assert_eq!(
+        builds, 2,
+        "each tree was built exactly once: nothing was evicted early"
+    );
+}
+
+#[test]
+fn a_linear_history_holds_at_most_two_snapshots_however_long() {
+    // Commit i has tree i and first parent i-1: each tree is used by commit i and by commit i+1.
+    let n = 1_000u16;
+    let id = |i: u16| {
+        let mut bytes = [0u8; 20];
+        bytes[..2].copy_from_slice(&i.to_be_bytes());
+        ObjectId::from_bytes_or_panic(&bytes)
+    };
+    let mut uses = HashMap::new();
+    for i in 0..n {
+        *uses.entry(id(i)).or_insert(0) += 1;
+        if i > 0 {
+            *uses.entry(id(i - 1)).or_insert(0) += 1;
+        }
+    }
+    let mut cache = SnapshotCache::new(uses);
+    let mut most = 0;
+    for i in 0..n {
+        cache.get_or_build(id(i), || Ok(snap_with("a"))).unwrap();
+        if i > 0 {
+            cache
+                .get_or_build(id(i - 1), || Ok(snap_with("a")))
+                .unwrap();
+        }
+        most = most.max(cache.len());
+        cache.release(id(i));
+        if i > 0 {
+            cache.release(id(i - 1));
+        }
+    }
+    assert!(most <= 2, "held {most} snapshots at once over {n} commits");
+    assert_eq!(cache.len(), 0);
+}
+
+#[test]
+fn a_tree_without_a_counted_use_is_never_evicted() {
+    // A commit that could not be read is not counted; its trees must stay (the loop reports the failure).
+    let mut cache = SnapshotCache::new(HashMap::new());
+    cache.get_or_build(tree(1), || Ok(snap_with("a"))).unwrap();
+    cache.release(tree(1));
+    assert_eq!(cache.len(), 1);
+}
+
+/// c1 and c3 have the very same root tree (c3 reverts c2), and the snapshot of that tree is needed again by
+/// c3's own diff and by c4's base after c2 was processed. The diffs must be exactly the revert.
+#[test]
+fn a_revert_back_to_an_older_tree_is_diffed_correctly() {
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let r = TempRepo::new();
+    r.write("f.txt", "one\n");
+    r.commit_all("c1");
+    r.write("f.txt", "two\n");
+    r.commit_all("c2");
+    r.write("f.txt", "one\n"); // back to c1's tree
+    r.commit_all("c3 revert");
+    r.write("g.txt", "later\n");
+    r.commit_all("c4");
+    // An empty commit: its tree equals its parent's (two uses of one tree by one commit).
+    r.git(&[
+        "-c",
+        "commit.gpgsign=false",
+        "commit",
+        "-q",
+        "--allow-empty",
+        "-m",
+        "c5 empty",
+    ]);
+
+    let ir = decode(r.path(), &Options::default()).unwrap();
+    assert_eq!(ir.atoms.len(), 5);
+    let content = |op: &PathOp| match op {
+        PathOp::Add { blob, .. } | PathOp::Modify { blob, .. } => {
+            ir.content.get(blob).map(<[u8]>::to_vec)
+        }
+        _ => None,
+    };
+    let ops: Vec<(String, Vec<u8>)> = ir
+        .atoms
+        .iter()
+        .flat_map(|a| a.ops.iter())
+        .map(|op| match op {
+            PathOp::Add { path, .. } | PathOp::Modify { path, .. } => {
+                (path.clone(), content(op).expect("content"))
+            }
+            other => panic!("unexpected op {other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        ops,
+        vec![
+            ("f.txt".to_string(), b"one\n".to_vec()),
+            ("f.txt".to_string(), b"two\n".to_vec()),
+            ("f.txt".to_string(), b"one\n".to_vec()), // c3: the revert, a Modify back to c1's content
+            ("g.txt".to_string(), b"later\n".to_vec()),
+        ],
+        "c1 add, c2 modify, c3 revert, c4 add; the empty c5 has no ops"
+    );
+    assert!(
+        ir.atoms[4].ops.is_empty(),
+        "an empty commit is an atom with no ops"
+    );
+    // Decoding twice gives identical bytes (the bookkeeping cannot change the output).
+    let again = decode(r.path(), &Options::default()).unwrap();
+    assert_eq!(brygge_ir::to_bytes(&ir), brygge_ir::to_bytes(&again));
+}

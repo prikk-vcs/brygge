@@ -24,7 +24,11 @@ for before/after comparison on one machine, not a precise heap figure.
 ```sh
 cargo run -p brygge-bench --release            # the full matrix, as a table
 cargo run -p brygge-bench --release -- run svn-revs 5000   # one scenario (machine line)
+cargo run -p brygge-bench --release -- corpus git-commits 5000 /some/dir   # write a corpus and stop
 ```
+
+`corpus` writes a scenario's input and prints its kind and path (`git /some/dir`), so the same input can be decoded by
+two builds of the `brygge` CLI and the artifacts compared byte for byte, which is how a byte-identical change is checked.
 
 Scenarios: `svn-revs <n>` (a large fixed tree, one branch copy at r1, then ~n single-file edits — content
 is bounded, so peak should track *scratch*), `svn-content <n>` (few revisions, n sizeable files — peak
@@ -157,3 +161,29 @@ it, which is why it matters at the largest dumps.
 (`svn-content` writes one identical 256-byte body many times, so it has a single blob; it is kept as it was.) Their
 numbers are from this run's methodology (decode only, peak reset), which can differ slightly from the increment-1
 table above; that table is unchanged.
+
+## 0.2.0 increment 5: the Git snapshot retention bound
+
+RFC 010 increment 5: `brygge-decode-git` keeps a snapshot of a root tree only until the last commit that will use it
+(its own tree, or its first parent's) has been processed. A/B, **the two builds back to back on the same machine and the
+same corpora**: "before" is `72f42a2` (the Git decoder is unchanged since 0.1.1), "after" is the increment.
+
+| scenario | scale | peak before | peak after | time before | time after | atoms | blobs | content |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| `git-commits` | 1,000 | 61.8 MiB | 8.4 MiB (7.3x lower) | 168 ms | 152 ms | 1,001 | 1,500 | 20 KiB |
+| `git-commits` | 5,000 | 293.5 MiB | 27.0 MiB (10.9x) | 848 ms | 751 ms | 5,001 | 5,500 | 86 KiB |
+| `git-commits` | 20,000 | 1,159 MiB | 98.8 MiB (**11.7x**) | 3.6 s | 3.1 s | 20,001 | 20,500 | 341 KiB |
+| `git-content` | 1,000 | 27.1 MiB | 26.8 MiB | 40 ms | 40 ms | 3 | 1,101 | 8.6 MiB |
+| `git-content` | 5,000 | 121.4 MiB | 119.3 MiB | 201 ms | 199 ms | 3 | 5,501 | 43.0 MiB |
+
+**The IR is identical** (atoms, blobs and content bytes match in every row, and the self-checks pass); **the artifacts are byte
+for byte identical**: 9 repositories x {plain, `--infer-renames`} = 18 comparisons of the CLI's artifact, stdout and exit code
+between the two builds, all identical. The nine: five history shapes (branches and a merge with a stash and a tag; a tree
+reverted to an earlier one, twice, with an empty commit; an octopus merge with a second root; criss-cross merges; renames and a
+copy), a 61-commit wide tree, and the bench's `git-commits` 5,000 and 20,000 and `git-content` 1,000 corpora.
+
+**What the result says.** The growth per commit fell from **~59 KiB to ~5 KiB**: the O(commits x tree) snapshot term is gone.
+The peak is still not flat: it now tracks the IR, at ~5 KiB per atom at 20,000 commits, which is what `svn-revs` (the same
+shape, an SVN history over a 500-file tree) reaches after increment 1 (87 MiB at 20,000 revisions in the baseline; 99 MiB here,
+the difference being Git's own maps of commits and refs). `git-content` does not rise (it is 1% lower). Time is not worse: 9%
+to 14% lower on the large runs, on a machine that was busy (load 10 to 30), so treat the times as indicative.

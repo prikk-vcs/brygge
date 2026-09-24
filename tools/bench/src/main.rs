@@ -9,6 +9,7 @@
 //! Usage:
 //!   brygge-bench                      # run the full matrix and print a table
 //!   brygge-bench run <scenario> <n>   # run one scenario at scale n; print a machine line (used internally)
+//!   brygge-bench corpus <scenario> <n> <dir>  # write a scenario's corpus into <dir> and stop (for A/B with the CLI)
 //!
 //! Scenarios:
 //!   svn-revs <n>     — an SVN dump of ~n revisions with tiny per-revision content and one branch copy at
@@ -62,6 +63,27 @@ fn main() {
             let scenario = args.get(2).map(String::as_str).unwrap_or("");
             let n: u64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(0);
             run_one(scenario, n);
+        }
+        Some("corpus") => {
+            // Write a scenario's corpus and stop (no decode): so the same input can be decoded by two builds
+            // of the `brygge` CLI and the artifacts compared byte for byte (the A/B of a byte-identical change).
+            let scenario = args.get(2).map(String::as_str).unwrap_or("");
+            let n: u64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(0);
+            let Some(dir) = args.get(4).map(PathBuf::from) else {
+                eprintln!("usage: brygge-bench corpus <scenario> <n> <dir>");
+                std::process::exit(2);
+            };
+            std::fs::create_dir_all(&dir).expect("create the corpus directory");
+            let Some(corpus) = prepare(scenario, n, &dir) else {
+                eprintln!("unknown scenario: {scenario}");
+                std::process::exit(2);
+            };
+            let (kind, path) = match &corpus.source {
+                Source::Svn(p) => ("svn", p),
+                Source::Cvs(p) => ("cvs", p),
+                Source::Git(p) => ("git", p),
+            };
+            println!("{kind} {}", path.display());
         }
         _ => run_matrix(),
     }
