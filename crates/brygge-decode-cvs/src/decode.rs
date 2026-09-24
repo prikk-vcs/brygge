@@ -17,7 +17,7 @@ use brygge_ir::status::{Derivation, DerivationKind, EpistemicStatus};
 
 use crate::cluster::{self, Changeset, FileRev};
 use crate::mainline;
-use crate::rcs::RevNum;
+use crate::rcs::{RcsFile, RevNum};
 use crate::{DECODER, Error, Options, Source, decoder_version, floor, scan, symbols};
 
 /// The IR mode for a CVS file (CVS/RCS carries no Unix exec bit; binary `-kb` is content, not mode).
@@ -62,7 +62,9 @@ pub fn decode(source: &Source, opts: &Options) -> Result<Ir, Error> {
     for f in &files {
         check_no_later_trunk_after_vendor_branch(f)?;
         let vendor_branch = f.rcs.branch.clone();
-        let skip_branch_point = vendor_import_branch_point(f)?;
+        // RFC 010 increment 3: every main-line content this file needs, in one pass over its delta chains.
+        let mut contents = FileContents::new(f, vendor_branch.as_ref());
+        let skip_branch_point = vendor_import_branch_point(f, &contents)?;
         for (num, rev) in &f.rcs.revisions {
             if Some(num) == skip_branch_point.as_ref() {
                 // cvs import's branch-point revision, identical to the vendor branch's first revision
@@ -74,7 +76,7 @@ pub fn decode(source: &Source, opts: &Options) -> Result<Ir, Error> {
                 let content = if dead {
                     Vec::new()
                 } else {
-                    f.rcs.content_of(num)?
+                    contents.take(&f.rcs, num)?
                 };
                 filerevs.push(FileRev {
                     path: f.path.clone(),
@@ -235,7 +237,10 @@ impl BranchStats {
 /// content identical to its branch-point revision and the same date — the shape `cvs import` produces —
 /// the branch-point revision contributes no separate op, avoiding a spurious no-op `Modify`. Returns the
 /// branch-point revision to skip, if the exception applies.
-fn vendor_import_branch_point(f: &scan::CvsFile) -> Result<Option<RevNum>, Error> {
+fn vendor_import_branch_point(
+    f: &scan::CvsFile,
+    contents: &FileContents,
+) -> Result<Option<RevNum>, Error> {
     let Some(vb) = &f.rcs.branch else {
         return Ok(None);
     };
@@ -250,10 +255,68 @@ fn vendor_import_branch_point(f: &scan::CvsFile) -> Result<Option<RevNum>, Error
     if bp_rev.date != first_rev.date {
         return Ok(None);
     }
-    if f.rcs.content_of(&bp)? != f.rcs.content_of(&first)? {
+    if !contents.same(&f.rcs, &bp, &first)? {
         return Ok(None);
     }
     Ok(Some(bp))
+}
+
+/// The reconstructed content of one file's main-line revisions, from **one pass** over its delta chains
+/// ([`RcsFile::contents_of_many`], RFC 010 increment 3) instead of one walk from `head` per revision.
+///
+/// Holds exactly the revisions the loop in [`decode`] will ask for (the non-dead main-line ones), plus, for a
+/// `cvs import`, the branch point and the vendor branch's first revision that [`vendor_import_branch_point`]
+/// compares. **If the pass fails for any reason** (a malformed `,v`: an unreachable revision, a bad delta, a
+/// chain too long), nothing is held and every request falls back to per-revision reconstruction, so the
+/// error a malformed file gets is exactly the one it always got, from the same revision.
+struct FileContents {
+    many: Option<BTreeMap<RevNum, Vec<u8>>>,
+}
+
+impl FileContents {
+    fn new(f: &scan::CvsFile, vendor_branch: Option<&RevNum>) -> Self {
+        let mut wanted: BTreeSet<RevNum> = f
+            .rcs
+            .revisions
+            .iter()
+            .filter(|(num, rev)| rev.state != "dead" && mainline::is_main_line(num, vendor_branch))
+            .map(|(num, _)| num.clone())
+            .collect();
+        if let Some(vb) = vendor_branch {
+            if let Some(first) = mainline::vendor_branch_first_revision(&f.rcs, vb) {
+                let bp = mainline::branch_point(vb);
+                if let (Some(bp_rev), Some(first_rev)) =
+                    (f.rcs.revisions.get(&bp), f.rcs.revisions.get(&first))
+                {
+                    if bp_rev.date == first_rev.date {
+                        wanted.insert(bp);
+                        wanted.insert(first);
+                    }
+                }
+            }
+        }
+        Self {
+            many: f.rcs.contents_of_many(&wanted).ok(),
+        }
+    }
+
+    /// Whether two revisions have the same content (a `cvs import`'s branch point and first vendor revision).
+    fn same(&self, rcs: &RcsFile, a: &RevNum, b: &RevNum) -> Result<bool, Error> {
+        if let Some(m) = &self.many {
+            if let (Some(x), Some(y)) = (m.get(a), m.get(b)) {
+                return Ok(x == y);
+            }
+        }
+        Ok(rcs.content_of(a)? == rcs.content_of(b)?)
+    }
+
+    /// The content of `num`, handed over (each is asked for once).
+    fn take(&mut self, rcs: &RcsFile, num: &RevNum) -> Result<Vec<u8>, Error> {
+        if let Some(c) = self.many.as_mut().and_then(|m| m.remove(num)) {
+            return Ok(c);
+        }
+        rcs.content_of(num)
+    }
 }
 
 /// Refuse (never guess) a file whose default branch is set but which also has trunk revisions after

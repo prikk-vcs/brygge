@@ -171,15 +171,13 @@ contract change is a deliberate, owner-approved event, never a silent one.
 Nothing here is required for 0.1.0 to be correct; all of it is planned scope or gated work, recorded so
 the team inherits the reasoning, not just the TODO. `ROADMAP.md` is authoritative for scheduling.
 
-**0.2.0 — Scale** (RFC 010, measurement-gated; the baseline is in `tools/bench/README.md`):
-1. **RFC 010 increment 5, the Git snapshot retention bound.** The baseline measured a 1.16 GiB peak for
-   341 KiB of content at 20,000 commits: O(commits × tree).
-2. **RFC 010 increment 3, CVS trunk reconstruction in one pass.** The baseline measured quadratic *time*
-   (920 s at 5,000 revisions per file) at a constant ~4.5× content peak.
-3. **Increment 4, a streaming artifact writer,** only if measured necessary (RFC 010 D-3).
-4. **Deferred by measurement: increment 2** (the SVN dumpstream iterator). The baseline puts SVN at a
-   constant ~4.6× content against the ~3× floor: the smallest gain, for the largest change. Revisit if a
-   real import needs it.
+**0.2.0 — Scale** (RFC 010, measurement-gated; the baseline and every A/B are in `tools/bench/README.md`):
+1. **Done:** increment 5, the Git snapshot retention bound (11.7× lower peak at 20,000 commits).
+2. **Done:** increment 3, CVS trunk reconstruction in one pass (197× faster at 5,000 revisions per file).
+3. **Increment 3b,** the CVS clustering overlap count in near-linear time. Increment 3 revealed it.
+4. **Deferred by measurement:** increment 2 (the SVN dumpstream iterator) and increment 4 (a streaming
+   writer). After 5 and 3, every peak is a constant multiple of content (Git ~2.8×, CVS ~4.2×, SVN
+   ~4.6×). Revisit when a real import is memory-bound.
 
 **0.3.0 — Source reach:**
 6. **CVS branch-aware import,** which lifts 0.1.0's main-line-only limit.

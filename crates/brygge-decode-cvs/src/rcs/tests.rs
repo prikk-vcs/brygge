@@ -301,3 +301,179 @@ desc\n@@\n\n\n\
 1.1\nlog\n@x@\ntext\n@x@\n";
     assert_eq!(parse_rcs(vfile).unwrap().branch, RevNum::parse("1.1.1"));
 }
+
+// ---- RFC 010 increment 3: every revision's content in one pass ---------------------------------------------
+
+const LINES: usize = 12;
+
+fn base_lines() -> Vec<String> {
+    (0..LINES).map(|l| format!("line {l} base\n")).collect()
+}
+
+/// `text` with the lines at `at` (mod LINES) rewritten to carry `tag`.
+fn edited(text: &[String], at: &[usize], tag: &str) -> Vec<String> {
+    let mut out = text.to_vec();
+    for &a in at {
+        let l = a % LINES;
+        out[l] = format!("line {l} {tag}\n");
+    }
+    out
+}
+
+/// The ed-style RCS diff that turns `from` into `to` (same number of lines: one replace per changed line).
+fn delta(from: &[String], to: &[String]) -> String {
+    let mut d = String::new();
+    for (i, (a, b)) in from.iter().zip(to).enumerate() {
+        if a != b {
+            d.push_str(&format!("d{} 1\na{} 1\n{b}", i + 1, i + 1));
+        }
+    }
+    d
+}
+
+fn joined(lines: &[String]) -> Vec<u8> {
+    lines.concat().into_bytes()
+}
+
+/// A `,v` with `n` trunk revisions (1.n is full text, older ones reverse deltas) and a branch of `blen`
+/// revisions off 1.`bp` (`1.bp.2.1` ...: forward deltas). Returns the file and the intended text of every
+/// revision.
+fn long_trunk_with_a_branch(n: usize, bp: usize, blen: usize) -> (Vec<u8>, Vec<(String, Vec<u8>)>) {
+    let mut trunk: Vec<Vec<String>> = vec![Vec::new(), base_lines()]; // 1-based
+    for k in 2..=n {
+        let prev = trunk[k - 1].clone();
+        trunk.push(edited(&prev, &[k * 3, k * 5 + 1], &format!("r{k}")));
+    }
+    let mut branch: Vec<Vec<String>> = Vec::new();
+    let mut prev = trunk[bp].clone();
+    for j in 1..=blen {
+        let next = edited(&prev, &[j * 7], &format!("b{j}"));
+        branch.push(next.clone());
+        prev = next;
+    }
+    let bnum = |j: usize| format!("1.{bp}.2.{j}");
+
+    let mut s = format!("head\t1.{n};\naccess;\nsymbols;\nlocks; strict;\n\n\n");
+    for k in (1..=n).rev() {
+        let next = if k > 1 {
+            format!("1.{}", k - 1)
+        } else {
+            String::new()
+        };
+        let branches = if k == bp && blen > 0 {
+            format!("branches\n\t{};\n", bnum(1))
+        } else {
+            "branches;\n".to_string()
+        };
+        s.push_str(&format!(
+            "1.{k}\ndate\t2024.01.{:02}.00.00.00;\tauthor a;\tstate Exp;\n{branches}next\t{next};\n\n",
+            k.min(28)
+        ));
+        if k == bp {
+            for j in 1..=blen {
+                let next = if j < blen { bnum(j + 1) } else { String::new() };
+                s.push_str(&format!(
+                    "{}\ndate\t2024.02.{:02}.00.00.00;\tauthor a;\tstate Exp;\nbranches;\nnext\t{next};\n\n",
+                    bnum(j),
+                    j.min(28)
+                ));
+            }
+        }
+    }
+    s.push_str("\ndesc\n@@\n\n\n");
+    s.push_str(&format!(
+        "1.{n}\nlog\n@r{n}@\ntext\n@{}@\n",
+        trunk[n].concat()
+    ));
+    for k in (1..n).rev() {
+        s.push_str(&format!(
+            "\n1.{k}\nlog\n@r{k}@\ntext\n@{}@\n",
+            delta(&trunk[k + 1], &trunk[k])
+        ));
+        if k == bp {
+            let mut from = trunk[bp].clone();
+            for j in 1..=blen {
+                s.push_str(&format!(
+                    "\n{}\nlog\n@b{j}@\ntext\n@{}@\n",
+                    bnum(j),
+                    delta(&from, &branch[j - 1])
+                ));
+                from = branch[j - 1].clone();
+            }
+        }
+    }
+    let mut want: Vec<(String, Vec<u8>)> = (1..=n)
+        .map(|k| (format!("1.{k}"), joined(&trunk[k])))
+        .collect();
+    want.extend((1..=blen).map(|j| (bnum(j), joined(&branch[j - 1]))));
+    (s.into_bytes(), want)
+}
+
+fn num(s: &str) -> RevNum {
+    RevNum(s.split('.').map(|c| c.parse().unwrap()).collect())
+}
+
+#[test]
+fn one_pass_contents_equal_per_revision_contents_for_every_revision() {
+    let (v, want) = long_trunk_with_a_branch(40, 12, 5);
+    let f = parse_rcs(&v).unwrap();
+    let all: std::collections::BTreeSet<RevNum> = want.iter().map(|(r, _)| num(r)).collect();
+    assert_eq!(all.len(), 45, "40 trunk revisions and 5 branch revisions");
+
+    let many = f.contents_of_many(&all).unwrap();
+    assert_eq!(many.len(), all.len());
+    for (rev, intended) in &want {
+        let n = num(rev);
+        assert_eq!(
+            many[&n],
+            f.content_of(&n).unwrap(),
+            "{rev}: the pass equals content_of"
+        );
+        assert_eq!(
+            &many[&n], intended,
+            "{rev}: and both equal the generator's text"
+        );
+    }
+}
+
+#[test]
+fn one_pass_yields_only_what_is_asked_for_and_stops_early() {
+    let (v, want) = long_trunk_with_a_branch(40, 12, 5);
+    let f = parse_rcs(&v).unwrap();
+    // A few trunk revisions, one of them the head, and the branch's last revision (needs 1.12 too).
+    let asked: std::collections::BTreeSet<RevNum> = ["1.40", "1.31", "1.13", "1.12.2.5"]
+        .iter()
+        .map(|r| num(r))
+        .collect();
+    let many = f.contents_of_many(&asked).unwrap();
+    assert_eq!(
+        many.len(),
+        4,
+        "exactly the revisions asked for, not the branch point they pass"
+    );
+    for (rev, intended) in want.iter().filter(|(r, _)| asked.contains(&num(r))) {
+        assert_eq!(&many[&num(rev)], intended, "{rev}");
+    }
+    assert!(
+        f.contents_of_many(&std::collections::BTreeSet::new())
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn a_revision_that_is_not_reachable_is_an_error_not_a_silent_omission() {
+    let (v, _) = long_trunk_with_a_branch(6, 3, 2);
+    let f = parse_rcs(&v).unwrap();
+    for missing in ["1.9", "1.3.2.9", "1.5.2.1"] {
+        let asked = std::collections::BTreeSet::from([num("1.6"), num(missing)]);
+        assert!(
+            f.contents_of_many(&asked).is_err(),
+            "{missing} is not in this file"
+        );
+        assert!(
+            f.content_of(&num(missing)).is_err(),
+            "and content_of agrees"
+        );
+    }
+}

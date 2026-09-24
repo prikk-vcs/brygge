@@ -145,7 +145,22 @@ building. Ranked by how far each exceeds O(IR):
   - **SVN, increment 2:** a constant ~4.6× content against the ~3× floor. It is the smallest measured gain
     for the largest change (a dumpstream parser rewrite). **Deferred** under this RFC's own rule (build
     what measurement justifies), until a real import needs it.
-- **Decide increment 4 on the numbers** (D-3). If the peak after 2, 3 and 5 is ~2×IR, and that is the
+- **Results of batch B** *(2026-09-24, reviews 029 and 030)*:
+  - **increment 5:** `git-commits` at 20k drops from 1,159 to 99 MiB, and the peak now tracks the IR
+    (~5 KiB per atom);
+  - **increment 3:** `cvs-revs` at 5k per file drops from 1,098 s to 5.6 s, with the peak 3–5% lower;
+  - both byte-identical.
+- **Increment 3b** *(added from review 030)*: increment 3 revealed a second quadratic cost, the
+  clustering's overlap count in `cluster.rs` `finalize` (O(changesets² × paths), 4.0 s of the 5.6 s at 100k
+  revisions). The fix indexes each path's changeset ranges, so the same predicate is answered in ~O(n log
+  n). The `span-overlap-v1` values are unchanged: byte-identical, and property-tested against the old
+  function.
+- **Decision on increment 4** *(2026-09-24, architect, D-3)*: **not in 0.2.0; deferred until a real import
+  is memory-bound.** After increments 5 and 3, every scenario's peak is a **constant** multiple of its
+  content: Git ~2.8×, CVS ~4.2×, SVN ~4.6×. No history-driven term remains. A streaming writer could
+  trim only that constant, at the cost of reworking `brygge-ir`'s write path. The same reasoning deferred
+  increment 2.
+- **Decide increment 4 on the numbers** (D-3). *(Decided above.)* If the peak after 2, 3 and 5 is ~2×IR, and that is the
   binding term on the largest scenario, it is scheduled; otherwise it is recorded as not needed.
 
 ## Consequences

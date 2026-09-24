@@ -7,7 +7,7 @@
 //! branch revisions store **forward** diffs — so any revision's content is reconstructed by walking the
 //! delta path from `head`. Bounds-checked and panic-free on malformed input (untrusted, T-2/INV-2).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::scan::escape_invalid_utf8;
 use crate::{Error, floor};
@@ -106,6 +106,135 @@ impl RcsFile {
             lines = apply_diff(&lines, diff)?;
         }
         Ok(join_lines(&lines))
+    }
+
+    /// Reconstruct the content of **every** revision in `wanted` in one pass (RFC 010 increment 3), where
+    /// [`content_of`](Self::content_of) would walk the delta chain from `head` once per revision.
+    ///
+    /// The trunk is walked once from `head` down the `next` chain, applying each reverse delta once, and each
+    /// wanted trunk revision's content is taken as the walk passes it; the walk stops at the lowest trunk
+    /// revision anything needs. A wanted branch revision starts from its branch point's content, captured
+    /// during that same walk, and follows the branch's forward deltas once. The result for each revision is
+    /// exactly what `content_of` returns for it; the cost is linear in the revisions applied, not quadratic.
+    ///
+    /// # Errors
+    /// [`Error::Read`] if a wanted revision, its branch point, or a link of its chain is missing or
+    /// malformed. A caller that must report the *same* error as per-revision reconstruction would (a
+    /// malformed `,v`) falls back to [`content_of`](Self::content_of) on any error from here.
+    pub fn contents_of_many(
+        &self,
+        wanted: &BTreeSet<RevNum>,
+    ) -> Result<BTreeMap<RevNum, Vec<u8>>, Error> {
+        let mut out: BTreeMap<RevNum, Vec<u8>> = BTreeMap::new();
+
+        // Branch revisions grouped by (branch point, branch id): each group is one forward walk.
+        let mut groups: BTreeMap<(RevNum, RevNum), BTreeSet<&RevNum>> = BTreeMap::new();
+        // The trunk revisions the pass must reach: the wanted trunk revisions, and every branch point.
+        let mut pending: BTreeSet<RevNum> = BTreeSet::new();
+        let mut branch_points: BTreeSet<RevNum> = BTreeSet::new();
+        for num in wanted {
+            if num.is_trunk() {
+                pending.insert(num.clone());
+            } else {
+                let n = num.0.len();
+                let bp = RevNum(num.0.get(..n.saturating_sub(2)).unwrap_or(&[]).to_vec());
+                let branch = RevNum(num.0.get(..n.saturating_sub(1)).unwrap_or(&[]).to_vec());
+                pending.insert(bp.clone());
+                branch_points.insert(bp.clone());
+                groups.entry((bp, branch)).or_default().insert(num);
+            }
+        }
+
+        // The trunk pass: from `head` once, applying each reverse delta once. A stop is handled the first
+        // time the walk reaches it (`pending.remove`), so a `next` cycle in a hostile file cannot end the
+        // walk early: it runs into the chain bound instead.
+        let mut at_branch_point: BTreeMap<RevNum, Vec<Vec<u8>>> = BTreeMap::new();
+        if !pending.is_empty() {
+            let mut cur = self.head.clone();
+            let mut lines = split_lines(&self.rev(&cur)?.text);
+            let mut steps = 0usize;
+            loop {
+                if pending.remove(&cur) {
+                    if wanted.contains(&cur) {
+                        out.insert(cur.clone(), join_lines(&lines));
+                    }
+                    if branch_points.contains(&cur) {
+                        at_branch_point.insert(cur.clone(), lines.clone());
+                    }
+                    if pending.is_empty() {
+                        break;
+                    }
+                }
+                steps += 1;
+                if steps > MAX_CHAIN {
+                    return Err(Error::Read(
+                        "delta chain too long (malformed ,v)".to_string(),
+                    ));
+                }
+                let Some(next) = self.rev(&cur)?.next.clone() else {
+                    return Err(Error::Read(format!(
+                        "trunk revision {} not reachable from head {}",
+                        pending
+                            .iter()
+                            .next()
+                            .map_or_else(String::new, RevNum::to_dotted),
+                        self.head.to_dotted()
+                    )));
+                };
+                lines = apply_diff(&lines, &self.rev(&next)?.text)?;
+                cur = next;
+            }
+        }
+
+        // Each branch: from its branch point's content, along the branch's forward deltas.
+        for ((bp, branch), targets) in &groups {
+            let n = branch.0.len() + 1;
+            let mut lines = at_branch_point.get(bp).cloned().ok_or_else(|| {
+                Error::Read(format!("branch point {} not reconstructed", bp.to_dotted()))
+            })?;
+            let mut cur = self
+                .rev(bp)?
+                .branches
+                .iter()
+                .find(|b| b.0.len() >= n - 1 && b.0.get(..n - 1) == Some(&branch.0[..]))
+                .cloned()
+                .ok_or_else(|| {
+                    Error::Read(format!(
+                        "branch {} not found at branch point {}",
+                        branch.to_dotted(),
+                        bp.to_dotted()
+                    ))
+                })?;
+            let mut left = targets.len();
+            for _ in 0..MAX_CHAIN {
+                lines = apply_diff(&lines, &self.rev(&cur)?.text)?;
+                if targets.contains(&cur) {
+                    out.insert(cur.clone(), join_lines(&lines));
+                    left -= 1;
+                    if left == 0 {
+                        break;
+                    }
+                }
+                match &self.rev(&cur)?.next {
+                    Some(x) => cur = x.clone(),
+                    None => {
+                        return Err(Error::Read(format!(
+                            "branch revision {} not reachable",
+                            targets
+                                .iter()
+                                .find(|t| !out.contains_key(**t))
+                                .map_or_else(String::new, |t| t.to_dotted())
+                        )));
+                    }
+                }
+            }
+            if left != 0 {
+                return Err(Error::Read(
+                    "branch chain too long (malformed ,v)".to_string(),
+                ));
+            }
+        }
+        Ok(out)
     }
 
     fn rev(&self, num: &RevNum) -> Result<&Revision, Error> {
@@ -214,7 +343,8 @@ fn split_lines(bytes: &[u8]) -> Vec<Vec<u8>> {
 }
 
 fn join_lines(lines: &[Vec<u8>]) -> Vec<u8> {
-    let mut out = Vec::new();
+    // Exactly sized: every reconstructed revision is kept, so growth slack would be held for the whole decode.
+    let mut out = Vec::with_capacity(lines.iter().map(Vec::len).sum());
     for l in lines {
         out.extend_from_slice(l);
     }

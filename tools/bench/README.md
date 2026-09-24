@@ -187,3 +187,34 @@ The peak is still not flat: it now tracks the IR, at ~5 KiB per atom at 20,000 c
 shape, an SVN history over a 500-file tree) reaches after increment 1 (87 MiB at 20,000 revisions in the baseline; 99 MiB here,
 the difference being Git's own maps of commits and refs). `git-content` does not rise (it is 1% lower). Time is not worse: 9%
 to 14% lower on the large runs, on a machine that was busy (load 10 to 30), so treat the times as indicative.
+
+## 0.2.0 increment 3: CVS trunk reconstruction in one pass
+
+RFC 010 increment 3: `brygge-decode-cvs` reconstructs every main-line revision of a file in **one pass** down its delta
+chain (`RcsFile::contents_of_many`), where it walked from `head` once per revision. A/B, back to back, same corpora; "before"
+is `72f42a2`, "after" is the increment. One more change rides with it: a reconstructed revision's bytes are allocated at their
+exact size (growth slack was being kept for the whole decode).
+
+| scenario | revisions per file (20 files) | peak before | peak after | time before | time after | atoms | blobs | content |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| `cvs-revs` | 200 | 91.4 MiB | 87.1 MiB | 1.4 s | **84 ms** (17x) | 4,000 | 4,000 | 19.8 MiB |
+| `cvs-revs` | 1,000 | 455.8 MiB | 435.8 MiB | 35.8 s | **0.55 s** (66x) | 20,000 | 20,000 | 102.0 MiB |
+| `cvs-revs` | 5,000 | 2,284 MiB | 2,211 MiB | 1,098 s (18 min) | **5.6 s** (197x) | 100,000 | 100,000 | 528.3 MiB |
+
+(The "before" at 5,000 took 920 s in the baseline above and 1,098 s in this A/B: the machine was busier now, load 20 to 30. The
+"after" numbers were taken at load 14 to 16.) **The peak is not higher at any scale: it is 3% to 5% lower** (the exact-size
+allocation).
+
+**The IR is identical and so are the artifacts:** 30 comparisons of the CLI's artifact, stdout and exit code between the two
+builds (15 repositories x {plain, `--reconstruct-refs`}), all identical. The fifteen: the existing test fixtures (a
+`cvs import`, a cleared vendor branch, an order split, a branch revision, a vendor import with no trunk), a dead middle
+revision, a dead head, all of them together in one repository, **three malformed files** (an unreachable revision, an unknown
+diff command, a bad diff count: the same error text and exit code from both builds), and the bench's `cvs` and `cvs-revs`
+corpora.
+
+**Time: from quadratic to nearly linear, with a second cost now visible.** The reconstruction itself is linear (0.6 s of the
+5.6 s at 5,000 revisions per file, from an instrumented run that is not committed). What remains grows faster than linearly:
+**`cluster::reconstruct` takes 4.0 s at 100,000 revisions** (53 ms at 10,000, 195 ms at 20,000, 948 ms at 40,000: about 4x per
+doubling). From reading the code, the likely cause is `finalize`, which scores each changeset by scanning every other changeset's range
+for each of its paths, O(changesets squared); I timed the whole function, not that step. It was hidden behind the
+reconstruction and is now the larger part. It is outside this increment (it is not reconstruction); see the review request.
