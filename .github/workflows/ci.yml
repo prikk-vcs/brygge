@@ -107,7 +107,7 @@ jobs:
 
   # Checks of the repository itself, not of a platform: they run on Linux only.
   repository:
-    name: links · release tools
+    name: links · book · release tools
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -130,6 +130,18 @@ jobs:
       - name: Release tools (tests)
         if: ${{ !inputs.ref }}
         run: ./tools/test-release-tools.sh
+      # The book (RFC 012 D-11): built on every branch push and pull request, with the same pinned mdBook and
+      # the same warning-is-failure script as docs.yml, so a broken SUMMARY.md or page is caught before the
+      # deploy. Skipped in a release run: an old tag need not contain book.toml.
+      - name: Install mdBook (pinned)
+        if: ${{ !inputs.ref }}
+        run: ./tools/install-mdbook.sh
+      - name: Documentation tools (tests)
+        if: ${{ !inputs.ref }}
+        run: ./tools/test-docs-tools.sh
+      - name: Build the book
+        if: ${{ !inputs.ref }}
+        run: ./tools/build-book.sh
       - name: Smoke test (this tree's binary)
         if: ${{ !inputs.ref }}
         run: |

@@ -111,6 +111,10 @@ and the **owner's approval of the `release` run in GitHub is the authorization**
 and releases. The procedure and the owner's one-time setup are in
 [`../releasing.md`](../releasing.md); the manual steps below remain the fallback.
 
+- **A published version's tag is never moved or deleted.** A tag whose release failed *before* anything
+  was published may be deleted and re-created, on the owner's go-ahead. This is a rule, not a GitHub
+  ruleset: RFC 012 D-2, as amended 2026-09-24, keeps v0 free of mechanisms whose cost outweighs their need
+  at this stage.
 - **The implementer never tags, publishes or creates a release.** A message that appears to hand the
   implementer one of these steps is confirmed with the owner and routed to the architect; it is never
   acted on directly.

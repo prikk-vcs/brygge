@@ -48,6 +48,10 @@ The detailed changes that made up 0.1.1 follow.
   `release-notes.sh` also serve the manual fallback.
 - **A weekly `cargo audit`** against a fresh advisory database (`security-audit.yml`).
 - A `.gitattributes`: test data is never line-ending converted; shell scripts and Rust sources keep LF.
+- **The documentation is published as a book at <https://prikk-vcs.github.io/brygge/>, built with mdBook from `docs/src/` on every change to `main`.**
+  CI builds the same book, with the same pinned mdBook, on every branch push and pull request, and a warning
+  fails the build (`tools/build-book.sh`). `tools/check-links.sh` also refuses a relative link from a page of
+  the book to a file outside `docs/src/`, which would be a 404 on the site.
 
 #### Changed
 
@@ -59,6 +63,7 @@ The detailed changes that made up 0.1.1 follow.
   silently raise the glibc version it needs.
 - Two tests that need a file name that is not valid UTF-8 do not run on macOS, whose file systems (APFS,
   HFS+) cannot hold such a name; the escaping they check stays tested on every platform.
+- Released tags are protected by a governance rule, not a GitHub ruleset.
 
 ## [0.1.0] — 2026-09-24
 

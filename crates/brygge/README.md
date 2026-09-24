@@ -56,6 +56,7 @@ no one. Every piece of text from a repository is escaped before it reaches your 
 
 ## Documentation
 
+- The documentation site: <https://prikk-vcs.github.io/brygge/>
 - User guides, one per source: <https://github.com/prikk-vcs/brygge/tree/main/docs/src/guide>
 - Machine-readable output: <https://github.com/prikk-vcs/brygge/blob/main/docs/src/reference/machine-output.md>
 - The IR artifact format: <https://github.com/prikk-vcs/brygge/blob/main/docs/src/reference/ir-artifact-format.md>

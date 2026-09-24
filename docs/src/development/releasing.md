@@ -8,6 +8,9 @@ by [`GOVERNANCE.md`](handoffs/GOVERNANCE.md) ("Cutting a release"):
 
 ## One-time setup (the owner; needs repository-admin and crates.io-owner rights)
 
+*(Released tags are protected by a governance rule rather than a GitHub ruleset: RFC 012 D-2, amended
+2026-09-24.)*
+
 Do these once, before the first automated release. Each is reversible in the same settings page.
 
 1. **Create the `release` environment.** GitHub → the repository → *Settings → Environments → New
@@ -20,14 +23,7 @@ Do these once, before the first automated release. Each is reversible in the sam
      the security design: a dispatch runs the release tools of the commit it was dispatched from, and this
      rule means that commit can only be `main` or a release tag.
    - Add no secrets. The workflow needs none.
-2. **Protect released tags.** *Settings → Rules → Rulesets → New ruleset → New tag ruleset*, named
-   `release tags`, with enforcement *Active*.
-   - **Target tags:** include the pattern `*.*.*`.
-   - **Rules:** tick **Restrict updates** and **Restrict deletions**. Leave *Restrict creations* **off**;
-     creating the tag is how a release starts.
-   - Leave *Bypass list* empty.
-   - This rule makes a released tag immutable. It does not touch branches, other tags, pushes or CI.
-3. **Trust the workflow on crates.io.** For each of the six crates (`brygge-ir`, `brygge-decode-cvs`,
+2. **Trust the workflow on crates.io.** For each of the six crates (`brygge-ir`, `brygge-decode-cvs`,
    `brygge-decode-git`, `brygge-decode-hg`, `brygge-decode-svn`, `brygge`): crates.io → the crate →
    *Settings → Trusted Publishing → Add* → GitHub, with:
    - repository owner `prikk-vcs`;
@@ -37,11 +33,11 @@ Do these once, before the first automated release. Each is reversible in the sam
 
    With this in place, the workflow gets a crates.io token that lasts minutes, and no crates.io token is
    stored anywhere.
-4. **Optional, recommended when convenient:** give the AI agents working on brygge a GitHub token
+3. **Optional, recommended when convenient:** give the AI agents working on brygge a GitHub token
    **without** the *Actions* and *Deployments* write permissions (a fine-grained personal access token).
    GitHub then itself prevents an agent from approving a `release` run. Without it, that rule rests on
    `GOVERNANCE.md` alone.
-5. **Account safety:** two-factor authentication on the GitHub and crates.io accounts that hold these
+4. **Account safety:** two-factor authentication on the GitHub and crates.io accounts that hold these
    rights.
 
 ## Cutting a release
@@ -63,6 +59,11 @@ Do these once, before the first automated release. Each is reversible in the sam
    - checks the published crates are byte-identical to the tag;
    - creates the GitHub release, with the binaries, their checksums and their provenance attestations.
 6. **The architect** checks the run, verifies the release page, and records the release.
+
+**A failed attempt.** If the run fails *before* `publish to crates.io` (the tag was wrong, a gate
+failed), nothing was published. The architect may then delete the tag and re-create it on the fixed
+commit, with the owner's go-ahead (`git push --delete origin X.Y.Z`). Once any crate of a version is
+published, its tag is never moved or deleted (`GOVERNANCE.md`).
 
 **Re-running.**
 - *Actions → Release → Run workflow* with the same `tag`. It is safe: crates already published are

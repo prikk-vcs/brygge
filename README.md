@@ -114,6 +114,8 @@ not apply to). The machine output is specified in
 
 ## Going deeper
 
+- **The documentation site:** <https://prikk-vcs.github.io/brygge/>, the same pages as `docs/src/`, built as a
+  searchable book.
 - **Design set:** `docs/src/brygge-01-requirements-spec` (what brygge must do), `-02-external-design` (its
   surface), `-03-threat-model` (what it defends and how). brygge parses untrusted input; the threat model
   is a first-class deliverable.

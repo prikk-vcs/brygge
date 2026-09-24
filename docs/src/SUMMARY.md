@@ -1,5 +1,7 @@
 # Summary
 
+[Introduction](introduction.md)
+
 # User guides
 
 - [Importing a Git repository](guide/git.md)

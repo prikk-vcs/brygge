@@ -3,6 +3,8 @@
 **Status.** **Accepted (2026-09-24)** by the owner. OQ-1 and OQ-4 were accepted as recommended; OQ-2
 was accepted with the condition "do not damage v0 productivity" (D-2); OQ-3 was answered by the owner:
 include Windows and macOS (D-9, D-10). Handoff: `rfcs/handoffs/012-release-automation/`.
+**Amended 2026-09-24 (owner ruling):** the tag ruleset of D-2 is dropped for v0, and released-tag
+immutability becomes a governance rule; D-11 (publishing the book on GitHub Pages) is added.
 
 ## Summary
 
@@ -56,17 +58,21 @@ include Windows and macOS (D-9, D-10). Handoff: `rfcs/handoffs/012-release-autom
   the recorded authorization of the cut and its scope.
 - The architect pushes the tag (`GOVERNANCE.md`); the owner approves the run; nobody else can make a
   publication happen.
-- **Tag protection, sized for v0 productivity** (the owner's condition on OQ-2). **One** repository
-  ruleset, on tags matching `*.*.*` only:
-  - **Restricted:** updating (moving) and deleting a version tag. A released tag is immutable.
-  - **Allowed:** creating a version tag, for the repository admins. That is how a cut starts.
-  - **Deliberately not added:** no branch protection on `main`, no required pull requests or reviews,
-    and no required status checks gating pushes. Day-to-day pushes, other tags and CI are untouched.
-    Nothing in this RFC slows a normal commit.
-  - The approval gate applies only to runs that publish, which are releases only.
+- **Released tags: a governance rule, not a mechanism** *(amended 2026-09-24, owner ruling: "rules
+  should meet the needs")*.
+  - The ruleset first proposed here is **dropped for v0.** With one maintainer, and crates.io versions
+    that cannot change anyway, a moved tag could only put git out of step with crates.io, and each
+    published crate records its commit in `.cargo_vcs_info.json` regardless.
+  - The ruleset's real cost falls exactly when a release attempt fails *before* publishing: the tag must
+    be deleted and re-created, and a ruleset blocks that.
+  - **The rule** (`GOVERNANCE.md`): once a version is published, its tag is never moved or deleted. A tag
+    whose release failed before anything was published may be deleted and re-created, on the owner's
+    go-ahead.
+  - A ruleset can be reconsidered when the project gains other maintainers.
+- **No branch protection, required reviews or required status checks** are added either. Day-to-day
+  pushes, other tags and CI are untouched; the approval gate applies only to runs that publish.
 - **An honest limit.** The architect and the implementer act through the owner's own git and `gh`
   credentials, so GitHub cannot tell them apart from the owner.
-  - The ruleset protects released tags against anyone, but it cannot stop an agent from *creating* a tag.
   - An agent holding the owner's `gh` token could technically approve a pending deployment.
   - The boundary therefore rests on `GOVERNANCE.md` and the agents' standing instructions: **no agent
     ever approves a `release` run.** Optionally, and recommended when convenient, agents can be given a
@@ -140,6 +146,30 @@ include Windows and macOS (D-9, D-10). Handoff: `rfcs/handoffs/012-release-autom
 - The manual procedure stays documented as the **fallback** (the workflow is unavailable, or crates.io's
   trusted publishing is down), still executed by the architect, with the owner's per-step confirmation.
 
+### D-11 — The book on GitHub Pages *(added 2026-09-24, at the owner's request)*
+
+- **What is published:** `docs/src/` (the mdbook of `SUMMARY.md`: the user guides, the references, the
+  design set, the development documents) is built and published at
+  `https://prikk-vcs.github.io/brygge/`. The owner has enabled Pages with GitHub Actions as its source.
+- **`docs/book.toml`** (title `brygge`, `src = "src"`, `site-url = "/brygge/"`, the repository URL for
+  the header link). The build output `docs/book/` is gitignored.
+- **`docs.yml`** runs on a push to `main` that touches `docs/**` or the workflow itself, and on
+  `workflow_dispatch`. It has two jobs:
+  - `build`, with `contents: read`: installs mdBook at an **exact** version with `--locked`, builds the
+    book, and uploads it with `actions/upload-pages-artifact`;
+  - `deploy`, in the `github-pages` environment: runs `actions/deploy-pages`.
+  - The workflow's top level is `contents: read`; `pages: write` and `id-token: write` are granted on
+    `deploy` only. A `pages` concurrency group lets a newer deploy supersede an older one.
+  - Actions use major tags, as in `ci.yml`. No release credential is involved.
+- **The book cannot break unnoticed:**
+  - `ci.yml`'s `repository` job builds the book on every branch push and pull request, so the deploy is
+    never the first build;
+  - `tools/check-links.sh` also fails on a relative link in `docs/src/` whose target lies outside
+    `docs/src/`, because it would resolve in the repository but 404 on the site. Such links must be
+    absolute GitHub URLs. There are none today.
+- **Scope:** no mdBook preprocessors or plugins (none are needed), and no landing page. The book's first
+  page is its introduction.
+
 ### D-9 — CI proves every supported platform
 
 - **The test matrix:**
@@ -189,7 +219,7 @@ OQ-3 answered by the owner: include Windows and macOS (D-9, D-10); OQ-4 accepted
     environment secret. It works, but it is a long-lived secret that can leak.
 - **OQ-2 — The approval gate.**
   - **Recommended:** the `release` environment with you as the required reviewer (D-2), plus a tag
-    ruleset.
+    ruleset. *(The ruleset part was later dropped; see D-2's 2026-09-24 amendment.)*
   - **Alternative:** no environment; the tag push alone publishes. That is simpler, but the tag becomes
     the only authorization, and pushing it is not your act.
 - **OQ-3 — Prebuilt binaries in GitHub releases.** **Owner: why exclude Windows and macOS?** They
@@ -218,12 +248,12 @@ OQ-3 answered by the owner: include Windows and macOS (D-9, D-10); OQ-4 accepted
     commit, only on owner approval, with short-lived credentials and pinned actions, and verifies the
     published result.
   - It also gains a residual: *a compromised GitHub account of the owner or architect*. That is mitigated
-    by the approval gate, the tag ruleset and two-factor authentication, which the owner is asked to
-    confirm.
+    by the approval gate and two-factor authentication, which the owner is asked to confirm.
 - **Owner setup, once:**
   - create the `release` environment with yourself as reviewer;
-  - add the tag ruleset;
   - configure the six crates' trusted publisher on crates.io.
+
+  *(The tag ruleset was dropped by the 2026-09-24 amendment.)*
 
   The architect writes a step-by-step checklist.
 - **The 0.2.0 maintenance items ride along:** `actions/checkout` off Node.js 20, and the Ubuntu 26 runner

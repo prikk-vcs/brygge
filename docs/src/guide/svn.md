@@ -104,7 +104,8 @@ also decodes the source again and compares the two:
 
 - **Give the same form the artifact was made from.** An artifact made from a dumpfile is checked against
   a dumpfile, and one made from a repository against a repository. Otherwise the comparison is
-  `not-checked` ("the artifact was made from a <form>; verify against the same form"), the verdict is
+  `not-checked` (`the artifact was made from a <form>; verify against the same form`, where `<form>`
+  is `dumpfile` or `svnadmin-dump`), the verdict is
   `incomplete`, and the exit is `1`.
 - **A different `svnadmin` version is noted, not failed.** If the history is identical, verify passes and
   says `svnadmin versions differ (<a> vs <b>); the history is identical`. If the history differs, the

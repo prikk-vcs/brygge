@@ -1,0 +1,12 @@
+[book]
+title = "brygge"
+authors = ["nabbisen"]
+language = "en"
+src = "src"
+
+[output.html]
+# The site is served under /brygge/ (https://prikk-vcs.github.io/brygge/).
+site-url = "/brygge/"
+git-repository-url = "https://github.com/prikk-vcs/brygge"
+# No edit-url-template: edits go through the project's process, not the web editor.
+# The search is on (the default). No preprocessors and no plugins.
