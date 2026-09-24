@@ -8,6 +8,21 @@ Every handoff adds its own entry in its own commit.
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-09-24
+
+**Scale: long Git and CVS histories no longer cost memory or time out of proportion to their size.**
+For a Git history of 20,000 commits over a 500-file tree, brygge now uses about 12 times less memory (the
+saving grows with the tree's size). A CVS decode of 20 files of 5,000 revisions each, which took 15 to 18
+minutes, now takes about 2.4 seconds. In the measured scenarios (`tools/bench`), the Git
+and CVS decoders' costs now grow with the history (at most n log n), no longer with its square or with
+history × tree size. **Decoding is unchanged:** the same input gives the same artifact, apart from the
+brygge and decoder versions its provenance records and one CVS drop-reason text that no longer names a
+version. Also: a closed CVS read race (Unix and Windows), a release workflow that cannot report success
+without releasing, and faster CI. Install with `cargo install --locked brygge`, or download a binary from
+the GitHub release.
+
+The detailed changes that made up 0.2.0 follow.
+
 ### Added
 
 - **`tools/bench` measures the three remaining scale targets, and records a baseline on 0.1.1** (0.2.0 batch A;

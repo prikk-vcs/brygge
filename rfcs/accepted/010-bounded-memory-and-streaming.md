@@ -156,9 +156,16 @@ building. Ranked by how far each exceeds O(IR):
   n). The `span-overlap-v1` values are unchanged: byte-identical, and property-tested against the old
   function.
 - **Decision on increment 4** *(2026-09-24, architect, D-3)*: **not in 0.2.0; deferred until a real import
-  is memory-bound.** After increments 5 and 3, every scenario's peak is a **constant** multiple of its
-  content: Git ~2.8×, CVS ~4.2×, SVN ~4.6×. No history-driven term remains. A streaming writer could
-  trim only that constant, at the cost of reworking `brygge-ir`'s write path. The same reasoning deferred
+  is memory-bound.** After increments 5 and 3, every scenario's peak **tracks the IR itself**, and no
+  history × tree term remains:
+  - content-heavy repositories peak at a constant multiple of their content (Git ~2.8×, CVS ~4.2×, SVN
+    ~4.6×);
+  - history-heavy ones peak at about 5 KiB per atom (`git-commits` 99 MiB for 341 KiB of content at 20k
+    commits; `svn-revs` 87 MiB at 20k revisions), which is the IR's atoms.
+
+  A streaming writer could trim only that constant, at the cost of reworking `brygge-ir`'s write path.
+  *(Wording corrected on review 027: an earlier version said "a constant multiple of content" for every
+  scenario, which is false for history-heavy ones.)* The same reasoning deferred
   increment 2.
 - **Decide increment 4 on the numbers** (D-3). *(Decided above.)* If the peak after 2, 3 and 5 is ~2×IR, and that is the
   binding term on the largest scenario, it is scheduled; otherwise it is recorded as not needed.
