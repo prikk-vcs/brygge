@@ -48,6 +48,8 @@ are imported only with `--reconstruct-refs`, and only the ones that have a name.
   branch point lies elsewhere are on the branch, at their branch-point content, but they do not say where the
   branch was cut, so the parent is **approximate** and flagged like any other approximate cut. The branch-point
   atom sets their content, so the branch's tree is still what `cvs checkout -r <branch>` gives.
+  If the line holding most of the branch points is itself not imported, the whole branch is not imported (below),
+  even when a minority of its files would hang from the main line: it is counted, never guessed.
 
 ## What it does not carry
 
