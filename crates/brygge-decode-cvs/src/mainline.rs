@@ -58,18 +58,28 @@ pub fn magic_branch_number(branch_id: &RevNum) -> Option<RevNum> {
     Some(RevNum(v))
 }
 
-/// The symbol name (if any) `file` gives the branch `branch_id`, resolved through **either** form RCS
-/// uses for a branch symbol (review 008 R-2): the magic branch number (`1.2.0.2`), or — for a vendor
-/// branch, which RCS stores literally — the branch's own number (`1.1.1`) directly. ("Numbers differ
-/// from file to file, so numbers cannot identify a branch" — the *name* is looked up per file, per the
-/// handoff.)
+/// How a file names a branch (RFC 013 D-3): a **magic** branch number (`1.2.0.4`, an ordinary branch, whose
+/// symbol name identifies it across files) or a **literal** one (`1.1.1`, a vendor branch).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BranchSymbol<'a> {
+    /// An ordinary branch, named by a magic branch number.
+    Magic(&'a str),
+    /// A vendor branch, named by its literal (odd-length) number.
+    Literal(&'a str),
+}
+
+/// The symbol `file` gives the branch `branch_id`, and which form it is (the magic form wins if both exist).
 #[must_use]
-pub fn branch_symbol_name<'a>(file: &'a RcsFile, branch_id: &RevNum) -> Option<&'a str> {
-    let magic = magic_branch_number(branch_id);
+pub fn branch_symbol<'a>(file: &'a RcsFile, branch_id: &RevNum) -> Option<BranchSymbol<'a>> {
+    if let Some(magic) = magic_branch_number(branch_id) {
+        if let Some((name, _)) = file.symbols.iter().find(|(_, r)| *r == magic) {
+            return Some(BranchSymbol::Magic(name.as_str()));
+        }
+    }
     file.symbols
         .iter()
-        .find(|(_, r)| Some(r) == magic.as_ref() || r == branch_id)
-        .map(|(name, _)| name.as_str())
+        .find(|(_, r)| r == branch_id)
+        .map(|(name, _)| BranchSymbol::Literal(name.as_str()))
 }
 
 /// The vendor branch's first (earliest) revision, if `file` has one: the entry in the branch point's

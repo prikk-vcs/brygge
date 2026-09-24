@@ -516,8 +516,10 @@ fn faithfulness_statement_text_per_source() {
     let cvs = faithfulness_statement(SourceKind::Cvs);
     assert!(cvs.starts_with("CVS has no atomic commits"));
     assert!(cvs.contains("Unverifiable"));
-    // CVS corrections handoff §2.1: the main-line-only limitation is stated up front, every run.
-    assert!(cvs.contains("Branch history is not imported in this version; the main line is."));
+    // CVS corrections handoff §2.1: the main-line-only limitation is stated up front, every run; RFC 013 D-3
+    // says when branches are imported.
+    assert!(cvs.contains("Branch history is imported only with --reconstruct-refs"));
+    assert!(cvs.contains("otherwise the main line is."));
 }
 
 // A subprocess test proving the statement reaches real stderr even when decode then fails lives in
@@ -1065,6 +1067,69 @@ fn verify_source_invariants_fails_when_a_cvs_atom_is_stripped_to_stated() {
         .unwrap();
     let ir = b.finish().unwrap();
     assert_eq!(verify_bytes(&brygge_ir::to_bytes(&ir)), exit::VERIFY_FAILED);
+}
+
+#[test]
+fn verify_source_invariants_accepts_a_cvs_branch_point_atom() {
+    // RFC 013 D-3: a branch-point atom is brygge's construction (`Derived(ReconstructedBranch)`), and it may
+    // stand beside the reconstructed changesets. A CVS atom that is `Stated` still fails (the test above).
+    use brygge_ir::status::{Derivation, DerivationKind};
+    let derived = |kind: DerivationKind, params: &[(&str, &str)]| {
+        EpistemicStatus::Derived(Derivation {
+            kind,
+            by: "brygge-decode-cvs".to_string(),
+            decoder_version: "0.3.0".to_string(),
+            params: params
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+                .collect(),
+            confidence: None,
+        })
+    };
+    let mut b = IrBuilder::new(blank_provenance(
+        brygge_ir::SourceKind::Cvs,
+        "brygge-decode-cvs",
+    ));
+    let blob = b.add_blob(b"x".to_vec());
+    let root = b
+        .add_atom(AtomDraft {
+            parents: vec![],
+            ops: vec![stated_add("a", blob)],
+            copies: vec![],
+            metadata: MetadataClaims::default(),
+            source: src(brygge_ir::SourceKind::Cvs, b"a@1.1"),
+            status: {
+                let mut d = derived(
+                    DerivationKind::ReconstructedChangeset,
+                    &[
+                        ("window_secs", "180"),
+                        ("cluster_keys", "author,log"),
+                        ("confidence_rule", "span-overlap-v1"),
+                        ("date_rule", "latest-per-file"),
+                    ],
+                );
+                if let EpistemicStatus::Derived(x) = &mut d {
+                    x.confidence = Some(100);
+                }
+                d
+            },
+        })
+        .unwrap();
+    let _ = b
+        .add_atom(AtomDraft {
+            parents: vec![root],
+            ops: vec![stated_add("b", blob)],
+            copies: vec![],
+            metadata: MetadataClaims::default(),
+            source: src(brygge_ir::SourceKind::Cvs, b"branch-point:BR"),
+            status: derived(
+                DerivationKind::ReconstructedBranch,
+                &[("source", "cvs-symbol"), ("line", "BR")],
+            ),
+        })
+        .unwrap();
+    let ir = b.finish().unwrap();
+    assert!(matches!(check_source_invariants(&ir), CheckOutcome::Pass));
 }
 
 #[test]

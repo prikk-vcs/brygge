@@ -51,7 +51,7 @@ fn magic_branch_number_inserts_a_zero_before_the_last_component() {
 }
 
 #[test]
-fn branch_symbol_name_resolves_through_the_magic_number() {
+fn branch_symbol_resolves_through_the_magic_number_and_the_literal_number() {
     let file = crate::rcs::RcsFile {
         head: rev("1.2"),
         symbols: vec![("REL_BRANCH".to_string(), rev("1.2.0.2"))],
@@ -59,8 +59,20 @@ fn branch_symbol_name_resolves_through_the_magic_number() {
         branch: None,
         revisions: BTreeMap::new(),
     };
-    assert_eq!(branch_symbol_name(&file, &rev("1.2.2")), Some("REL_BRANCH"));
-    assert_eq!(branch_symbol_name(&file, &rev("1.2.4")), None);
+    assert_eq!(
+        branch_symbol(&file, &rev("1.2.2")),
+        Some(BranchSymbol::Magic("REL_BRANCH"))
+    );
+    assert_eq!(branch_symbol(&file, &rev("1.2.4")), None);
+    // A vendor branch is named by its literal (odd-length) number.
+    let vendor = crate::rcs::RcsFile {
+        symbols: vec![("vendor".to_string(), rev("1.1.1"))],
+        ..file
+    };
+    assert_eq!(
+        branch_symbol(&vendor, &rev("1.1.1")),
+        Some(BranchSymbol::Literal("vendor"))
+    );
 }
 
 #[test]

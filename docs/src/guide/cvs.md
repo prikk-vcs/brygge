@@ -1,8 +1,8 @@
 # Importing a CVS repository
 
-brygge imports a CVS repository's **main line only**: the trunk, plus — while a
-vendor branch is set — the revisions `cvs import` put there, since that is what a plain `cvs checkout`
-actually gives you. Branch history proper is not imported yet.
+brygge imports a CVS repository's **main line** (the trunk, plus — while a vendor branch is set — the
+revisions `cvs import` put there, since that is what a plain `cvs checkout` gives you). With
+`--reconstruct-refs` it also imports the **branches cut from the main line**, each with its own history.
 
 ## What brygge carries
 
@@ -10,22 +10,57 @@ actually gives you. Branch history proper is not imported yet.
   is `Derived(ReconstructedChangeset)` — CVS has no atomic commit, so brygge's grouping is its own
   judgment, carried with its clustering parameters and a confidence).
 - Main-line tags, with `--reconstruct-refs`.
+- **Branches, with `--reconstruct-refs`** (see below): a ref of kind branch, and the branch's own changesets.
+
+## Branches (with `--reconstruct-refs`)
+
+A CVS branch is not one line of history: each file has its own branch, cut at its own revision, and nothing
+says which commits belong together. A branch is *identified by its symbol name* (`cvs tag -b BR`), so branches
+are imported only with `--reconstruct-refs`, and only the ones that have a name.
+
+- **The branch tree.** The branch's changesets are clustered from that branch's revisions alone (the same
+  rules as the main line), and each is a `Derived(ReconstructedChangeset)`. A branch's ref points at its last
+  changeset; a branch with no commits is a ref at its parent.
+- **The parent is the earliest covering changeset.** The changeset on the main line after which the largest
+  number of the branch's files were at their branch-point revision, the earliest such if several tie. When
+  every file of the branch was at its branch point right after one changeset, the parent is *exact*. When the
+  files were tagged at different moments (for example, one by one with commits between), no single changeset
+  is right: the parent is **approximate**, and brygge says so — the artifact carries a `ConventionViolation`
+  flag ("CVS branch point spans reconstructed changesets") and the run exits `30`. This is a judgment, not a
+  fact; the branch's **content is still exact** (each file's content on the branch is what
+  `cvs checkout -r BR` gives).
+- **The branch-point atom.** A branch may hold only some of the files (for example, a branch tagged from a
+  subdirectory). Then the tree the parent had is not the tree the branch started from, and brygge adds an atom
+  named `branch-point:<name>` between the parent and the first branch changeset. It is
+  `Derived(ReconstructedBranch)` and only adds and deletes the paths that differ, so that the branch's tree
+  equals what CVS gives. A branch that covers the whole tree has no such atom. A file added on the branch is
+  added by its first branch revision; a trunk file added after the cut is not in the branch.
+- **No merges are inferred.** CVS records none (a merge is a plain commit on the target), and brygge does not
+  guess them from the content: a branch's atoms have one parent.
+- **Tags on a branch revision** resolve to the branch changeset that contains that revision.
 
 ## What it does not carry
 
-- Branch history: every revision on a branch other than the currently-set vendor branch is excluded and
-  recorded as a drop (`CVS branch revisions not imported (…)`), never silently.
-- Branch symbols (tags naming a branch, not a revision) are only ever considered with
-  `--reconstruct-refs`; when it is on, a branch symbol is recorded as a drop
-  (`CVS branch symbols not reconstructed (…)`), never reconstructed as a ref. This includes a **vendor**
-  branch's own symbol (e.g. `VENDOR:1.1.1`) — RCS stores it as a literal, odd-length revision number
-  rather than the usual "magic" form, but it is still a branch symbol, not a tag.
-- A **tag** that ends up naming no main-line revision at all — a vendor release tag once the vendor
-  branch has been cleared, or a tag on an ordinary (non-vendor) branch revision — is likewise not
-  reconstructed. It is recorded as its own drop (`CVS tags on branch revisions not reconstructed (…)`),
-  never silently skipped: main-line-only import makes this common, not an edge case.
-
-Branch-aware threading is planned for 0.3.0.
+- Without `--reconstruct-refs`, branches are not imported at all: every revision on a branch other than the
+  currently-set vendor branch is excluded and recorded as a drop (`CVS branch revisions not imported (…)`),
+  never silently.
+- **Unnamed branches**: revisions on a branch whose symbol was deleted have no name to identify the branch
+  across files. They are dropped and recorded (`CVS branch revisions on unnamed branches not imported (…)`).
+- **Branches cut from a branch revision** (a branch of a branch, or a branch cut from a vendor revision after the
+  vendor branch was cleared): not imported yet. A symbol is imported only when it is cut from the **main line
+  in every file that has it**; if it is cut from a branch revision in even one file (a mixed working copy), the
+  whole symbol is not imported, and all its revisions are counted in one record (`CVS branches cut from a
+  branch revision (N branches, M revisions)`). A branch that leaves such a branch's *parent* is still imported.
+- **Vendor branches**: while the vendor branch is the file's default branch, its revisions are the main line,
+  as for `cvs checkout`, and a branch cut from one of them (`cvs import`, then `cvs tag -b`) is a main-line
+  branch like any other. After a file's vendor branch is cleared, later vendor-import revisions are recorded
+  (`CVS vendor-branch revisions after the vendor branch was cleared (… revisions)`). A vendor branch's own
+  symbol (e.g. `VENDOR:1.1.1`) is a literal odd-length number, not a "magic" one, and is not reconstructed as
+  a branch.
+- **A branch symbol naming a revision the file does not have** (for example after `cvs admin -o`): the file
+  is not on the branch; recorded (`CVS branch symbols naming a missing revision (…)`).
+- A **tag** that ends up naming no imported revision is recorded as its own drop
+  (`CVS tags on branch revisions not reconstructed (…)`), never silently skipped.
 
 ## Repositories brygge refuses
 
@@ -53,7 +88,7 @@ because there is no honest way to import them:
     (`1.1.1`) — the admin section's `branch` field, while set, names it the same way.
 - `grep -A20 '^symbols' file,v` shows the raw symbols table directly, for either form.
 
-## If you need branch history now
+## If you need what is not imported
 
-Keep the source repository — brygge never modifies or removes anything it reads — and wait for 0.3.0, or
-use another tool for the branch-aware parts of the migration in the meantime.
+Keep the source repository — brygge never modifies or removes anything it reads — and use another tool for
+the parts above that are recorded as drops.

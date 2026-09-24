@@ -43,16 +43,17 @@ jobs:
         with:
           toolchain: stable
           components: rustfmt, clippy
-      # The Mercurial and Subversion suites drive `hg` and `svnadmin`, and skip cleanly when a tool is
-      # absent. They really run only where the tools are installed: this job, on Linux x86_64. On the other
+      # The Mercurial, Subversion and CVS suites drive `hg`, `svnadmin` and `cvs`, and skip cleanly when a
+      # tool is absent. They really run only where the tools are installed: this job, on Linux x86_64. On the other
       # runners they skip (the decoders are the same code; Git, CVS and the CLI suites run everywhere).
-      - name: Install Mercurial and Subversion (Linux x86_64)
+      - name: Install Mercurial, Subversion and CVS (Linux x86_64)
         if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update
-          sudo apt-get install --yes mercurial subversion
+          sudo apt-get install --yes mercurial subversion cvs
           hg --version | head -n 1
           svnadmin --version | head -n 1
+          cvs --version | head -n 2
       - name: Format
         run: cargo fmt --all -- --check
       - name: Clippy
@@ -73,10 +74,10 @@ jobs:
         with:
           toolchain: "1.85"
           components: clippy
-      - name: Install Mercurial and Subversion
+      - name: Install Mercurial, Subversion and CVS
         run: |
           sudo apt-get update
-          sudo apt-get install --yes mercurial subversion
+          sudo apt-get install --yes mercurial subversion cvs
       - name: Clippy
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - name: Test

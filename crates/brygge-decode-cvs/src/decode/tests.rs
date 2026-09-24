@@ -427,12 +427,12 @@ fn reproduction_a_branch_revision_no_longer_lands_in_a_main_line_tree() {
     // The reason names no version: it must stay true in every release until branches are imported.
     assert_eq!(
         drop.reason,
-        "brygge imports the CVS main line only; branch history is planned for a later release (0.3.0). \
-         Keep the source repository."
+        "CVS branches are imported only with `--reconstruct-refs`: a branch is identified by its symbol \
+         name. Keep the source repository."
     );
     assert!(
-        !drop.reason.contains("0.1"),
-        "the reason must not name the running version: {}",
+        !drop.reason.contains("0.1") && !drop.reason.contains("planned"),
+        "the reason names no version and promises nothing: {}",
         drop.reason
     );
 
@@ -683,10 +683,10 @@ fn derivation_params_carry_confidence_rule_and_date_rule() {
 // --- refs: main-line tags reconstruct; branch symbols are recorded, not reconstructed ------------------
 
 #[test]
-fn a_branch_symbol_is_not_reconstructed_and_is_counted_while_a_main_line_tag_still_is() {
+fn a_branch_symbol_is_reconstructed_as_a_branch_and_a_main_line_tag_still_is() {
     let r = Repo::new();
-    // f.c: a main-line tag REL_1 at 1.1, and a branch revision at 1.2.2.1 tagged with a magic branch
-    // number (DEV -> 1.2.0.2), so it names ONLY a non-main-line revision.
+    // f.c: a main-line tag REL_1 at 1.1, and a branch revision at 1.2.2.1 under the magic branch number
+    // DEV -> 1.2.0.2 (RFC 013 D-3: with --reconstruct-refs the branch is imported).
     let content =
         b"head\t1.2;\naccess;\nsymbols\n\tREL_1:1.1\n\tDEV:1.2.0.2;\nlocks; strict;\n\n\n\
 1.2\ndate\t2024.01.02.00.00.00;\tauthor alice;\tstate Exp;\nbranches\n\t1.2.2.1;\nnext\t1.1;\n\n\
@@ -694,7 +694,7 @@ fn a_branch_symbol_is_not_reconstructed_and_is_counted_while_a_main_line_tag_sti
 1.1\ndate\t2024.01.01.00.00.00;\tauthor alice;\tstate Exp;\nbranches;\nnext\t;\n\n\n\
 desc\n@@\n\n\n\
 1.2\nlog\n@r2@\ntext\n@v1\nv2\n@\n\n\n\
-1.2.2.1\nlog\n@branch@\ntext\n@branch content\n@\n\n\n\
+1.2.2.1\nlog\n@branch@\ntext\n@d1 2\na1 1\nbranch content\n@\n\n\n\
 1.1\nlog\n@r1@\ntext\n@d2 1\n@\n";
     r.write_vfile("f.c", content);
     let opts = Options {
@@ -703,22 +703,49 @@ desc\n@@\n\n\n\
     };
     let ir = decode(&Source::LocalRepo(r.path().to_path_buf()), &opts).unwrap();
 
-    let rel = ir.refs.iter().find(|r| r.name == "REL_1");
-    assert!(rel.is_some(), "the main-line tag still reconstructs");
-
     assert!(
-        !ir.refs.iter().any(|r| r.name == "DEV"),
-        "the branch symbol is not reconstructed"
+        ir.refs.iter().any(|r| r.name == "REL_1"),
+        "the main-line tag still reconstructs"
     );
-    let drop = ir
-        .loss
-        .dropped
+    let dev = ir
+        .refs
         .iter()
-        .find(|d| d.what.starts_with("CVS branch symbols not reconstructed"))
-        .expect("the branch symbol is counted");
-    assert_eq!(
-        drop.what, "CVS branch symbols not reconstructed (1)",
-        "exact count (review 008 R-7)"
+        .find(|r| r.name == "DEV")
+        .expect("the branch ref");
+    assert_eq!(dev.kind, brygge_ir::model::RefKind::Branch);
+    assert!(
+        !ir.loss
+            .dropped
+            .iter()
+            .any(|d| d.what.starts_with("CVS branch symbols not reconstructed")),
+        "nothing is left to count: {:?}",
+        ir.loss.dropped
+    );
+}
+
+#[test]
+fn a_branch_symbol_naming_a_missing_revision_is_counted_and_never_refused() {
+    let r = Repo::new();
+    // DEV names branch point 1.5, which the file does not have (outdated): the file is not on the branch.
+    let content = b"head\t1.1;\naccess;\nsymbols\n\tDEV:1.5.0.2;\nlocks; strict;\n\n\n\
+1.1\ndate\t2024.01.01.00.00.00;\tauthor alice;\tstate Exp;\nbranches;\nnext\t;\n\n\n\
+desc\n@@\n\n\n\
+1.1\nlog\n@r1@\ntext\n@v1\n@\n";
+    r.write_vfile("f.c", content);
+    let opts = Options {
+        reconstruct_refs: true,
+        ..Options::default()
+    };
+    let ir = decode(&Source::LocalRepo(r.path().to_path_buf()), &opts).unwrap();
+    assert!(!ir.refs.iter().any(|r| r.name == "DEV"));
+    let whats: Vec<&str> = ir.loss.dropped.iter().map(|d| d.what.as_str()).collect();
+    assert!(
+        whats.contains(&"CVS branch symbols naming a missing revision (1 files, 0 revisions)"),
+        "{whats:?}"
+    );
+    assert!(
+        whats.contains(&"CVS branch symbols not reconstructed (1)"),
+        "{whats:?}"
     );
 }
 
@@ -773,16 +800,21 @@ fn a_literal_vendor_branch_symbol_and_its_tag_are_both_counted_not_silently_skip
         "CVS tags on branch revisions not reconstructed (1)"
     );
 
-    // The excluded-revisions drop names 1 branch (VENDOR), not 0 named / unnamed.
+    // The vendor branch's non-main-line revisions get their own record (RFC 013 D-3, OQ-6).
     let branch_revs_drop = ir
         .loss
         .dropped
         .iter()
-        .find(|d| d.what.starts_with("CVS branch revisions not imported"))
-        .expect("branch revisions drop present");
+        .find(|d| d.what.starts_with("CVS vendor-branch revisions"))
+        .expect("the vendor-branch revisions are counted");
     assert_eq!(
         branch_revs_drop.what,
-        "CVS branch revisions not imported (2 revision(s) on 1 branch(es))"
+        "CVS vendor-branch revisions after the vendor branch was cleared (2 revisions)"
+    );
+    assert!(
+        !branch_revs_drop.reason.contains("planned"),
+        "{}",
+        branch_revs_drop.reason
     );
 }
 
@@ -931,7 +963,7 @@ desc\n@@\n\n\n\
     assert!(
         whats
             .iter()
-            .any(|w| w.starts_with("CVS branch revisions not imported")),
+            .any(|w| w.starts_with("CVS branch revisions on unnamed branches not imported")),
         "{whats:?}"
     );
     assert!(

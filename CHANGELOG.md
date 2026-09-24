@@ -10,6 +10,14 @@ Every handoff adds its own entry in its own commit.
 
 ### Added
 
+- **CVS branch history, with `--reconstruct-refs`** (0.3.0, RFC 013 D-3). Each named branch cut from the main
+  line is a ref with its own changesets, clustered from that branch's revisions. Its parent is the earliest
+  main-line changeset after which the most files were at their branch point; when the files were tagged at
+  different moments the parent is approximate and flagged (`ConventionViolation`, exit `30`). A branch of
+  only some files gets a `branch-point:<name>` atom (`Derived(ReconstructedBranch)`) so that its tree equals
+  `cvs checkout -r <branch>`, and a branch cut from a `cvs import` (a vendor revision that is still the default)
+  is a main-line branch too. No merges are inferred. A symbol cut from a branch revision in any file, and vendor
+  revisions after the vendor branch was cleared, are counted as drops, not imported yet.
 - **Mercurial: paths stored under hashed `dh/` names (very long paths) are read, not refused** (0.3.0, RFC 013 D-1).
   The store path encoding is now Mercurial's own `_hybridencode`, complete, and each filelog's index and data
   files are opened by their own encoded names (a hashed name embeds the SHA-1 of its own path).
@@ -28,6 +36,14 @@ Every handoff adds its own entry in its own commit.
 - **Mercurial: paths with a Windows-reserved component (`aux`, `con`, `com1`, ...), a directory named `*.i`, `*.d`
   or `*.hg`, or a directory ending in `.` or a space are read.** They failed before, because the encoding was
   incomplete. A `fncache` repository without `dotencode` is read with the right encoding, too.
+
+### Breaking
+
+- **CVS: an artifact made with `--reconstruct-refs` from a repository with branches changes.** It now has the
+  branches' refs and atoms, and the `CVS branch symbols not reconstructed` and `CVS branch revisions not
+  imported` drops no longer count what is imported. The drop-reason text changes, too (it no longer says the
+  import is "planned"). Without `--reconstruct-refs` the main line is the same as before; only that reason text
+  differs.
 
 ### Changed
 

@@ -393,8 +393,8 @@ pub fn faithfulness_statement(kind: SourceKind) -> &'static str {
         SourceKind::Cvs => {
             "CVS has no atomic commits: every changeset is brygge's reconstruction (derived), and a \
              changeset cannot be checked against the source. File contents and per-file history are \
-             carried as recorded. Authorship is Unverifiable. Branch history is not imported in this \
-             version; the main line is."
+             carried as recorded. Authorship is Unverifiable. Branch history is imported only with \
+             --reconstruct-refs (a branch is identified by its symbol name); otherwise the main line is."
         }
     }
 }
@@ -1018,13 +1018,19 @@ fn check_source_invariants(ir: &Ir) -> CheckOutcome {
     match kind {
         brygge_ir::SourceKind::Cvs => {
             for atom in &ir.atoms {
+                // A reconstructed changeset, or (RFC 013 D-3) a branch-point atom, which is brygge's
+                // construction of a branch's tree at its cut (`Derived(ReconstructedBranch)`). Nothing in a
+                // CVS import is ever `Stated` at the atom level.
                 let ok = matches!(
                     &atom.status,
-                    EpistemicStatus::Derived(d) if d.kind == DerivationKind::ReconstructedChangeset
+                    EpistemicStatus::Derived(d)
+                        if d.kind == DerivationKind::ReconstructedChangeset
+                            || d.kind == DerivationKind::ReconstructedBranch
                 );
                 if !ok {
                     return CheckOutcome::Fail(
-                        "a CVS atom is not Derived(ReconstructedChangeset)".to_string(),
+                        "a CVS atom is not Derived(ReconstructedChangeset) or Derived(ReconstructedBranch)"
+                            .to_string(),
                     );
                 }
                 if !atom.copies.is_empty() {
