@@ -5,6 +5,10 @@ was accepted with the condition "do not damage v0 productivity" (D-2); OQ-3 was 
 include Windows and macOS (D-9, D-10). Handoff: `rfcs/handoffs/012-release-automation/`.
 **Amended 2026-09-24 (owner ruling):** the tag ruleset of D-2 is dropped for v0, and released-tag
 immutability becomes a governance rule; D-11 (publishing the book on GitHub Pages) is added.
+**Amended again 2026-09-24, after the first automated release (0.1.1; owner ruling):** the per-release
+approval gate of D-2 is removed, because it "does not match v0 development: too much cost at any
+release". The `release` environment stays, without a required reviewer. The owner's authorization is the
+go-ahead given before the architect pushes the tag.
 
 ## Summary
 
@@ -13,11 +17,11 @@ immutability becomes a governance rule; D-11 (publishing the book on GitHub Page
   - who performs each step was decided by a message, not by a mechanism;
   - every step ran on one person's machine, with one person's long-lived crates.io credential.
 - **This RFC moves the cut into GitHub Actions.** The workflow publishes only a tag that passes the full
-  gate suite, and only after the owner approves that specific release in GitHub. It publishes to crates.io
+  gate suite (as first accepted, also only after the owner approved the run in GitHub; that gate was
+  removed for v0 after 0.1.1, see D-2). It publishes to crates.io
   **without a stored secret**, verifies the published result, and creates the GitHub release from the
   CHANGELOG.
-- **What stays human:** the owner's authorization, now a recorded approval rather than a message, and the
-  architect's tag.
+- **What stays human:** the owner's go-ahead, recorded by the architect, and the architect's tag.
 
 ## Constraints
 
@@ -50,14 +54,24 @@ immutability becomes a governance rule; D-11 (publishing the book on GitHub Page
     clippy `-D warnings`, test, `cargo deny`, `cargo audit`, the IR-isolation check, the link check);
   - **packaging:** `cargo publish --workspace --dry-run --locked` succeeds.
 
-### D-2 — The owner's authorization is a GitHub environment approval
+### D-2 — The owner's authorization: the go-ahead before the tag *(amended twice, 2026-09-24)*
 
-- The publishing jobs run in a GitHub **environment named `release`**, with the owner as its **required
-  reviewer**.
-- After `verify` passes, the run pauses until the owner approves *this* run in GitHub. That approval is
-  the recorded authorization of the cut and its scope.
-- The architect pushes the tag (`GOVERNANCE.md`); the owner approves the run; nobody else can make a
-  publication happen.
+- **The rule now** (owner ruling after 0.1.1, v0):
+  - the owner gives the architect an explicit go-ahead for each release;
+  - the architect then pushes the tag;
+  - the tag push starts the workflow, which publishes with **no further manual step**.
+
+  The go-ahead is the recorded authorization (the architect records it in the release's review record).
+- **The `release` environment stays, without a required reviewer.** It still does two things, at no
+  per-release cost:
+  - its **deployment rule** admits only `main` and `*.*.*` tags, so a run from any other ref cannot reach
+    the crates.io job;
+  - its **name** scopes crates.io trusted publishing (D-3). The six crates' trusted-publisher settings
+    name it, so they need no change.
+- **History:** as first accepted, this decision made the owner the environment's required reviewer, so
+  the run paused before publishing until the owner approved it in GitHub. The first automated release
+  (0.1.1) used that gate. The owner then removed it for v0; it can be reinstated when the project's needs
+  change.
 - **Released tags: a governance rule, not a mechanism** *(amended 2026-09-24, owner ruling: "rules
   should meet the needs")*.
   - The ruleset first proposed here is **dropped for v0.** With one maintainer, and crates.io versions
@@ -70,14 +84,16 @@ immutability becomes a governance rule; D-11 (publishing the book on GitHub Page
     go-ahead.
   - A ruleset can be reconsidered when the project gains other maintainers.
 - **No branch protection, required reviews or required status checks** are added either. Day-to-day
-  pushes, other tags and CI are untouched; the approval gate applies only to runs that publish.
+  pushes, other tags and CI are untouched.
 - **An honest limit.** The architect and the implementer act through the owner's own git and `gh`
   credentials, so GitHub cannot tell them apart from the owner.
-  - An agent holding the owner's `gh` token could technically approve a pending deployment.
-  - The boundary therefore rests on `GOVERNANCE.md` and the agents' standing instructions: **no agent
-    ever approves a `release` run.** Optionally, and recommended when convenient, agents can be given a
-    fine-grained token without the Actions/Deployments write permission, so the gate holds mechanically
-    against agents too. This is recorded as a residual in `brygge-03`.
+  - With no approval gate, **pushing a release tag is the act that publishes.** An agent that pushed a
+    version tag on `main` whose tree passes `verify` would start a publication.
+  - The boundary therefore rests on `GOVERNANCE.md` and the agents' standing instructions:
+    - only the architect tags, and only after the owner's go-ahead;
+    - the implementer never tags.
+  - `verify`'s checks narrow what such a tag could publish to a commit on `main`, at the workspace
+    version, with a CHANGELOG section and green gates. This is recorded as a residual in `brygge-03`.
 
 ### D-3 — crates.io without a stored secret (trusted publishing)
 
@@ -139,8 +155,8 @@ immutability becomes a governance rule; D-11 (publishing the book on GitHub Page
 ### D-8 — Governance follows the mechanism
 
 - `GOVERNANCE.md` "Cutting a release" becomes:
-  - the architect prepares and pushes the tag, on the owner's go-ahead;
-  - the owner approves the `release` run in GitHub;
+  - the architect prepares and pushes the tag, on the owner's go-ahead (the authorization, per D-2 as
+    amended);
   - the workflow executes the publication;
   - the architect checks the run and reports.
 - The manual procedure stays documented as the **fallback** (the workflow is unavailable, or crates.io's
@@ -241,16 +257,16 @@ OQ-3 answered by the owner: include Windows and macOS (D-9, D-10); OQ-4 accepted
 
 ## Consequences
 
-- A release needs three acts: the architect's tag, your approval in GitHub, and the workflow's run. It no
-  longer depends on anyone's machine or credential.
+- A release needs the owner's go-ahead, the architect's tag, and the workflow's run. It no longer depends
+  on anyone's machine or crates.io credential.
 - The pipeline is a new, security-relevant surface.
   - `brygge-03` gains a control under T-4: *the release pipeline*, which publishes only the gated, tagged
-    commit, only on owner approval, with short-lived credentials and pinned actions, and verifies the
-    published result.
+    commit, with short-lived credentials and pinned actions, and verifies the published result.
   - It also gains a residual: *a compromised GitHub account of the owner or architect*. That is mitigated
-    by the approval gate and two-factor authentication, which the owner is asked to confirm.
+    by two-factor authentication (confirmed by the owner).
 - **Owner setup, once:**
-  - create the `release` environment with yourself as reviewer;
+  - create the `release` environment, with its `main`/`*.*.*` deployment rule (the required reviewer
+    was removed after 0.1.1);
   - configure the six crates' trusted publisher on crates.io.
 
   *(The tag ruleset was dropped by the 2026-09-24 amendment.)*

@@ -8,6 +8,14 @@ Every handoff adds its own entry in its own commit.
 
 ## [Unreleased]
 
+### Changed
+
+- **A release no longer waits for a manual approval in GitHub.** The owner's go-ahead, given before the
+  architect pushes the tag, is the authorization, and the tag starts the publication. The `release`
+  environment stays, without a reviewer: it still limits publishing to `main` and release tags, and it
+  scopes crates.io trusted publishing. (0.1.1 was released with the approval gate, which then proved too
+  costly per release for v0.)
+
 ## [0.1.1] — 2026-09-24
 
 **Windows support, and releases cut by an owner-approved workflow.** brygge 0.1.0 could not be built on

@@ -106,9 +106,10 @@ published crates are byte-identical to the tagged source. The boundary was not w
 | Authorizing the cut, and the scope of publication (tag, crates.io, GitHub release) | **owner**, explicitly, per release |
 | Executing the cut: the tag, `cargo publish`, the install check, the GitHub release | **architect**, on that authorization, one step at a time |
 
-Since RFC 012 (accepted 2026-09-24), the cut is executed by `release.yml`. The architect pushes the tag,
-and the **owner's approval of the `release` run in GitHub is the authorization**. The workflow publishes
-and releases. The procedure and the owner's one-time setup are in
+Since RFC 012 (accepted 2026-09-24), the cut is executed by `release.yml`. The **owner's explicit go-ahead,
+given immediately before the tag, is the authorization**; the architect records it and pushes the tag, and
+the workflow verifies, publishes and releases with no further manual step. (A per-release approval click
+in GitHub was used for 0.1.1 and then removed for v0 by owner ruling.) The procedure and the owner's one-time setup are in
 [`../releasing.md`](../releasing.md); the manual steps below remain the fallback.
 
 - **A published version's tag is never moved or deleted.** A tag whose release failed *before* anything

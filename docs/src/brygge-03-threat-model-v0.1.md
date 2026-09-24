@@ -106,16 +106,18 @@ The decoder libraries (~100 crates for `gix`, or C for `libgit2`, plus SVN/CVS) 
 - **C-4c — pin and lock.** Exact dependency versions; the lockfile is committed; upgrades are deliberate and reviewed.
 - **C-4d — supply-chain gates in CI.** `cargo-deny` (advisories, licenses, banned/duplicate crates) and `cargo-audit` run in CI; a new advisory fails the build. New or upgraded decoder dependencies get explicit architect review (governance). A **weekly** `cargo audit` against a fresh advisory database runs with no code change (`security-audit.yml`), because advisories arrive on their own schedule. The isolation of `brygge-ir` (C-4a/C-5) is enforced in CI against a declared allowlist of its dependency closure (`tools/check-ir-isolation.sh`), not merely observed.
 - **C-4e — minimize.** The dependency set is kept as small as the mission allows; a dependency is justified, not defaulted-in.
-- **C-4f — the release pipeline publishes only what was verified, only on the owner's approval** (RFC 012; `release.yml`). A compromised pipeline could publish a malicious `brygge` to every `cargo install` user, so it is the place brygge holds its only publish credential. The pipeline enforces:
+- **C-4f — the release pipeline publishes only what was verified, on the owner's go-ahead** (RFC 012; `release.yml`). A compromised pipeline could publish a malicious `brygge` to every `cargo install` user, so it is the place brygge holds its only publish credential. The pipeline enforces:
   - **What is released:**
     - an annotated `X.Y.Z` tag, on `main`, equal to the workspace version, with its CHANGELOG section;
     - gated by the same reusable workflow as CI, on the tagged commit;
     - built for the four CI-proven platforms before anything is published, unless a dispatch turns the
       binaries off (as for 0.1.0, whose release has none, and whose gates run on Linux only). Publication is
       all-or-nothing behind these checks.
-  - **Who authorizes it:** the `release` environment requires the owner's approval before the job that can
-    publish. The environment admits only `main` and release tags. A published version's tag is never moved
-    or deleted: a governance rule (`GOVERNANCE.md`), not a GitHub ruleset. It was deliberately not
+  - **Who authorizes it:** the owner's explicit go-ahead, given before the architect pushes the tag
+    (`GOVERNANCE.md`); the tag push starts the publication. *(A per-release approval gate in the
+    `release` environment was used for 0.1.1 and removed for v0 by owner ruling, RFC 012 D-2.)* The
+    `release` environment stays, without a reviewer: it scopes crates.io trusted publishing, and it
+    admits only `main` and release tags. A published version's tag is never moved or deleted: a governance rule (`GOVERNANCE.md`), not a GitHub ruleset. It was deliberately not
     mechanized in v0 (RFC 012 D-2, amended), because crates.io versions cannot change anyway.
   - **What the credential is:** crates.io trusted publishing issues a token that lasts minutes, to this
     workflow in this environment; no crates.io token is stored anywhere.
@@ -189,12 +191,13 @@ A change that breaks one of these is a security bug, not a preference. Several m
 - **RR-release-agent-credentials — the AI agents (architect, implementer) act through the owner's own git
   and GitHub credentials, so GitHub cannot tell them apart from the owner** (RFC 012 D-2).
   - Nothing mechanical stops an agent from creating, moving or deleting a tag.
-  - An agent holding the owner's `gh` token could technically approve a pending `release` deployment.
+  - With no approval gate, **pushing a release tag is the act that publishes**, so an agent that pushed a
+    version tag could start a publication.
   - **Mitigations:**
-    - `GOVERNANCE.md` ("Cutting a release") and the agents' standing instructions: no agent approves a
-      release run, and the implementer never tags;
-    - optionally, a fine-grained token for agents without Actions and Deployments write, which makes the
-      gate mechanical (`releasing.md`, setup step 3);
+    - `GOVERNANCE.md` ("Cutting a release") and the agents' standing instructions: only the architect
+      tags, only after the owner's go-ahead, and the implementer never tags;
+    - `verify`'s checks narrow what such a tag could publish to a commit on `main`, at the workspace
+      version, with a CHANGELOG section and green gates;
     - two-factor authentication on the owner's accounts.
 - **RR-release-dispatch-tools — a dispatched release runs the release tools of the commit it was dispatched
   from, not of the tag** (needed to release a tag that predates the tools, like 0.1.0).
