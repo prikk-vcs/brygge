@@ -95,6 +95,14 @@ building. Ranked by how far each exceeds O(IR):
 3. **CVS reconstruction bound.** Reconstruct per-file content along the delta chain incrementally (reuse the
    running content instead of re-walking from `head`), and avoid holding all `FileRev`s where the clustering
    pass allows a bounded window. Local to `brygge-decode-cvs`.
+5. **Git snapshot retention bound** *(added 2026-09-24 for 0.2.0)*. `brygge-decode-git` caches a full
+   flat path→(oid, mode) snapshot for every distinct root tree it diffs (`snap_cache`, never evicted), which
+   is **O(commits × tree)**, the same shape increment 1 removed from SVN. Bound it: a snapshot is needed
+   only while a commit that has it as its own tree or as its first parent's tree is still to be processed.
+   Commits are processed parent-first, so count each snapshot's remaining uses and evict it at zero.
+   **O(commits × tree) → O(frontier × tree)**, where the frontier is the set of commits whose children are
+   not all done (small for ordinary histories). Local to `brygge-decode-git`; byte-identical output.
+   Numbered 5 so that increment 4 stays the gated last step.
 4. **Streaming artifact writer (gated, D-3).** Only if 1–3 leave a measured ~2×IR peak that binds on a real
    large repository. Touches `brygge-ir`; byte-identical; the one increment that would carry an architect
    note against RFC 003 D-3 (the write path, not the format).
@@ -109,9 +117,36 @@ building. Ranked by how far each exceeds O(IR):
   ~2.8 GiB → ~62 MiB at 20k** — pre-bound grew O(revisions × tree), post-bound tracks the IR (the reduction
   widens with scale, as predicted). The remaining targets (2–3) are to be measured with this harness before
   they are built; increment 4's gate (D-3) is decided on its numbers.
-- **OQ-B — CVS incremental reconstruction vs branches.** Reusing running content down the trunk is
-  straightforward; branch revisions (forward deltas off a branch point) complicate a single running buffer.
-  *Leaning:* bound the trunk case first, keep branches on the current per-revision reconstruction, measure.
+- **OQ-B — CVS incremental reconstruction vs branches** — **RESOLVED 2026-09-24 by scope.** Since RFC 007's
+  0.1.0 corrections, brygge imports the CVS **main line only**: trunk revisions, plus the default (vendor)
+  branch's revisions while it is set. So increment 3 is:
+  - one pass down the trunk `next` chain from `head`, applying each reverse delta once and yielding every
+    trunk revision's content in turn;
+  - the vendor branch's forward deltas applied once from its branch point.
+
+  Revisions that are not imported are never reconstructed. Branch-aware import (0.3.0) revisits this.
+
+### Plan for 0.2.0 *(added 2026-09-24)*
+
+- **Measure first (OQ-A):** `tools/bench` gains scenarios that exercise each remaining target, and a
+  baseline is recorded on 0.1.1 before any increment is built:
+  - `git-commits` (long history over a fixed tree), for increment 5;
+  - `cvs-revs` (few files, long trunk delta chains), for increment 3; today's `cvs` scenario has
+    single-revision files and cannot show it;
+  - `svn-dump` (a large dump), for increment 2.
+- **Build increments 2, 3 and 5,** each measured A/B against the baseline, each byte-identical (D-1, D-2).
+- **The baseline** (0.1.1, recorded in `tools/bench/README.md`, review 022) **re-ranks the targets by
+  evidence** *(2026-09-24)*:
+  - **Git, increment 5:** the peak is O(commits × tree): 1.16 GiB for 341 KiB of content at 20,000 commits.
+    **Built first.**
+  - **CVS, increment 3:** the peak is a constant ~4.5× content, **not** superlinear; **time** is quadratic
+    in chain length (920 s at 5,000 revisions per file). **Built second.** Its acceptance is time
+    (linear), with the peak not rising.
+  - **SVN, increment 2:** a constant ~4.6× content against the ~3× floor. It is the smallest measured gain
+    for the largest change (a dumpstream parser rewrite). **Deferred** under this RFC's own rule (build
+    what measurement justifies), until a real import needs it.
+- **Decide increment 4 on the numbers** (D-3). If the peak after 2, 3 and 5 is ~2×IR, and that is the
+  binding term on the largest scenario, it is scheduled; otherwise it is recorded as not needed.
 
 ## Consequences
 

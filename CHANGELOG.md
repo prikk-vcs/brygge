@@ -8,6 +8,15 @@ Every handoff adds its own entry in its own commit.
 
 ## [Unreleased]
 
+### Added
+
+- **`tools/bench` measures the three remaining scale targets, and records a baseline on 0.1.1** (0.2.0 batch A;
+  dev-only, not published, not run in CI). New scenarios: `git-commits` (a fixed tree, then many commits: the Git
+  snapshot cache), `git-content`, `cvs-revs` (long trunk delta chains: CVS reconstruction), and `svn-dump` (a
+  content-heavy dump). Each is deterministic and checks that the decode reproduces the generator's atoms, blobs,
+  content bytes (and, for `cvs-revs`, every revision's text). Only the decode is timed, and its peak memory is
+  measured from a reset mark. The baseline tables are in `tools/bench/README.md`. No decoder code changed.
+
 ### Fixed
 
 - **The release workflow no longer reports success without releasing.** A dispatch with the binaries off skipped

@@ -75,6 +75,7 @@ name = "brygge-bench"
 version = "0.1.1"
 dependencies = [
  "brygge-decode-cvs",
+ "brygge-decode-git",
  "brygge-decode-svn",
  "brygge-ir",
 ]
