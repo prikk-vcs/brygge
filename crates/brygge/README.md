@@ -14,7 +14,10 @@ This crate is the command-line tool. The IR library is [`brygge-ir`](https://cra
 cargo install --locked brygge
 ```
 
-It needs Rust 1.85 or later. `--locked` builds the exact dependency set brygge was tested with. Decoding a
+It needs Rust 1.85 or later. `--locked` builds the exact dependency set brygge was tested with. Prebuilt
+binaries for Linux (x86_64, arm64), macOS (Apple Silicon) and Windows (x86_64) are attached to every
+[GitHub release](https://github.com/prikk-vcs/brygge/releases) from 0.1.1 on, with checksums and build-provenance
+attestations (`gh attestation verify <file> --repo prikk-vcs/brygge`). Decoding a
 live Subversion repository also needs `svnadmin`; decoding a dumpfile does not.
 
 ## Commands
@@ -59,7 +62,7 @@ no one. Every piece of text from a repository is escaped before it reaches your 
 - Security model: <https://github.com/prikk-vcs/brygge/blob/main/docs/src/brygge-03-threat-model-v0.1.md>
 - Changes: <https://github.com/prikk-vcs/brygge/blob/main/CHANGELOG.md>
 
-brygge 0.1.0 decodes, inspects and verifies. It has no encoder yet: the first, for prikk, waits on prikk's
+brygge decodes, inspects and verifies. It has no encoder yet: the first, for prikk, waits on prikk's
 import foundations.
 
 License: Apache-2.0.

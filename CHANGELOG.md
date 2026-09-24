@@ -8,6 +8,17 @@ Every handoff adds its own entry in its own commit.
 
 ## [Unreleased]
 
+## [0.1.1] — 2026-09-24
+
+**Windows support, and releases cut by an owner-approved workflow.** brygge 0.1.0 could not be built on
+Windows; 0.1.1 builds and is tested there, as on Linux (x86_64 and arm64) and macOS (Apple Silicon). From
+0.1.1 on, every release ships prebuilt binaries for those four platforms, with checksums and
+build-provenance attestations. Decoding is unchanged on every platform 0.1.0 supported: the same input
+gives the same artifact, apart from the brygge and decoder versions its provenance records. Install with
+`cargo install --locked brygge`, or download a binary from the GitHub release.
+
+The detailed changes that made up 0.1.1 follow.
+
 ### Windows support, CI on every platform, and an owner-approved release workflow (RFC 012)
 
 #### Fixed
@@ -42,6 +53,12 @@ Every handoff adds its own entry in its own commit.
 
 - CI's actions are on their current majors (`actions/checkout` v7, off Node.js 20), and its workflow
   permissions are `contents: read`. Nothing in CI depended on `ubuntu-latest` being Ubuntu 24.
+- CI runs on branch pushes and pull requests only; a release tag is gated by the run the release workflow
+  calls, not by a second, duplicate run. Test steps run with `--no-fail-fast`.
+- The x86_64 Linux binary is built on `ubuntu-24.04`, not `ubuntu-latest`, so a runner-image change cannot
+  silently raise the glibc version it needs.
+- Two tests that need a file name that is not valid UTF-8 do not run on macOS, whose file systems (APFS,
+  HFS+) cannot hold such a name; the escaping they check stays tested on every platform.
 
 ## [0.1.0] — 2026-09-24
 

@@ -5,8 +5,9 @@ map: what brygge is, the state at handover, the invariants you must never regres
 lives, how to build and gate it, and the prioritized backlog. Everything it references is in this
 repository; nothing load-bearing lives only in someone's head.
 
-**Date of handover:** 2026-09-12. **Updated for the 0.1.0 release, 2026-09-24.** **State:** brygge
-**0.1.0 is released**: the decode → IR half for all four named sources, on IR contract **0.2.0**. All gates
+**Date of handover:** 2026-09-12. **Updated for the 0.1.1 release, 2026-09-24.** **State:** brygge
+**0.1.0 is released**: the decode → IR half for all four named sources, on IR contract **0.2.0**.
+**0.1.1** follows with Windows support and the release workflow (RFC 012). All gates
 are green, and CI enforces them on the declared MSRV. The encode → prikk half waits on prikk's import
 foundations (see §8).
 
@@ -211,7 +212,7 @@ the team inherits the reasoning, not just the TODO. `ROADMAP.md` is authoritativ
   streams yet (0.2.0).
 - **No progress reporting or cancellation.** Interrupting a decode is safe (the artifact write is atomic),
   but it produces nothing.
-- The threat model is the living document, revisited every release (v0.3 for 0.1.0).
+- The threat model is the living document, revisited every release (v0.3 for 0.1.0, v0.4 for 0.1.1).
 
 ---
 

@@ -3,9 +3,9 @@
 | | |
 |---|---|
 | Document | brygge Threat Model (security) |
-| Version | v0.3 |
-| Date | 2026-09-24 (v0.3 revision; v0.2 2026-09-09; v0.1 2026-09-03) |
-| Revised | **v0.3 (2026-09-24)** folds the 0.1.0 correction cycle (intake review CR-01…CR-21, reviews 002–011) and closes the model against the code as built. **New controls:** **C-1f** output neutralization; **C-2f** source-object integrity (Git objects re-hashed, the commit-graph cache not trusted, tag chains verified; every hg revision checked against its node with a collision-detecting SHA-1); **C-6d** only what the source would publish is imported (Git carried namespaces; the hg published view). **Restated to match the code:** **C-2a** (strict, typed refusal; the panic boundary; release overflow checks), **C-2c** (read confinement, and the floor refusals that enforce it), **C-2d** (the declared ceilings, checked before allocation), **C-3a** (the seven `verify` checks and the three-valued verdict), **C-3b** (IR contract 0.2.0: version gate first, critical bit, strict canonical form, digest over the stored bytes), **C-7** (atomic write), **C-8** (cancellation and progress are **not** built; stated as such), **C-9** (no stated non-determinism remains in the IR). **Residuals:** **RR-cvs-reconstruction**, **RR-cvs-read-toctou** and **RR-svn-special-toggle** added; **RR-git-loose-object-symlink**, **RR-git-object-id-unverified** and **RR-hg-node-unverified** (found and closed in the same cycle) closed; **RR-gix-sha1** narrowed; **RR-4** and **RR-svn-svnadmin-version** updated to the rulings and the code. **v0.2 (2026-09-09)** folds the RFC 004 (gix) and RFC 006 (SVN Tier D) security-review deltas: **C-2e/C-4b/INV-4** — a C surface may be isolated to a **subprocess**, not only a dedicated FFI crate; **TB-2** acknowledges subprocess decoder producers; **C-2b** clarifies that invoking a trusted external tool is not executing source-provided code; and three residuals added — **RR-gix-sha1**, **RR-svn-svnadmin**, **RR-svn-svnadmin-version**. |
+| Version | v0.4 |
+| Date | 2026-09-24 (v0.4 and v0.3 revisions; v0.2 2026-09-09; v0.1 2026-09-03) |
+| Revised | **v0.4 (2026-09-24)** folds RFC 012 (release automation) and the new supported platforms. **New control:** **C-4f** the release pipeline (a verified, gated, tagged commit on `main`; published only on the owner's approval; crates.io trusted publishing with no stored secret; SHA-pinned actions in the jobs that hold credentials; published crates checked byte for byte against the tag; binaries with checksums and build-provenance attestations; released tags immutable). **C-4d** gains the weekly advisory check. **C-2c** is proven on Windows (symlinks and directory junctions refused, in CI) and noted for macOS. **New residuals:** **RR-release-agent-credentials** and **RR-release-dispatch-tools**. **v0.3 (2026-09-24)** folds the 0.1.0 correction cycle (intake review CR-01…CR-21, reviews 002–011) and closes the model against the code as built. **New controls:** **C-1f** output neutralization; **C-2f** source-object integrity (Git objects re-hashed, the commit-graph cache not trusted, tag chains verified; every hg revision checked against its node with a collision-detecting SHA-1); **C-6d** only what the source would publish is imported (Git carried namespaces; the hg published view). **Restated to match the code:** **C-2a** (strict, typed refusal; the panic boundary; release overflow checks), **C-2c** (read confinement, and the floor refusals that enforce it), **C-2d** (the declared ceilings, checked before allocation), **C-3a** (the seven `verify` checks and the three-valued verdict), **C-3b** (IR contract 0.2.0: version gate first, critical bit, strict canonical form, digest over the stored bytes), **C-7** (atomic write), **C-8** (cancellation and progress are **not** built; stated as such), **C-9** (no stated non-determinism remains in the IR). **Residuals:** **RR-cvs-reconstruction**, **RR-cvs-read-toctou** and **RR-svn-special-toggle** added; **RR-git-loose-object-symlink**, **RR-git-object-id-unverified** and **RR-hg-node-unverified** (found and closed in the same cycle) closed; **RR-gix-sha1** narrowed; **RR-4** and **RR-svn-svnadmin-version** updated to the rulings and the code. **v0.2 (2026-09-09)** folds the RFC 004 (gix) and RFC 006 (SVN Tier D) security-review deltas: **C-2e/C-4b/INV-4** — a C surface may be isolated to a **subprocess**, not only a dedicated FFI crate; **TB-2** acknowledges subprocess decoder producers; **C-2b** clarifies that invoking a trusted external tool is not executing source-provided code; and three residuals added — **RR-gix-sha1**, **RR-svn-svnadmin**, **RR-svn-svnadmin-version**. |
 | Basis | brygge Requirements v0.2 (PU/NG/PR/HO/VF/ID/FA/BN/IR/UD/OQ) and External Design v0.2 (BD/CL/IX/FS/PX/CF/FL/CT/OP/GATED); RFC 113 (import contract); project rules (`.git-exclude/rules/`, §Release Deliverables — a threat model is a first-class release deliverable) |
 | ID scheme | `A-` asset · `TB-` trust boundary · `T-` threat · `C-` control · `INV-` security invariant · `RR-` residual risk · `ASSUME-` assumption |
 | Not | code, an API, or a dependency audit report. It states what brygge must defend, against whom, and how — so the design and tests can be checked against it. |
@@ -60,6 +60,13 @@ A crafted source exploits brygge or its host through TB-1/TB-2: memory-safety bu
   - **CVS:** any symlink under the repository root, file or directory, is refused; entries are examined with `lstat` and never followed (residual: RR-cvs-read-toctou).
   - **Mercurial:** the store is read in place; a repository in the middle of a merge is refused.
   - **SVN:** a dumpfile is read as one stream; a live repository is read only through `svnadmin dump`.
+  - **Per platform** (RFC 012; tested in CI on Linux x86_64 and arm64, macOS and Windows):
+    - **Windows:** a file symlink, a directory symlink and a **directory junction** are each refused, under
+      a CVS root and in Git's redirected-directory checks. `std` reports a junction as a symlink, because
+      its reparse tag is a name surrogate, and a CI test asserts it. A Windows name that is not valid
+      Unicode is refused as `non-utf8-path`.
+    - **macOS:** APFS and HFS+ cannot hold a file name that is not valid UTF-8, so that refusal cannot
+      arise there. Its escaping stays tested on every platform.
 - **C-2d — resource bounds, refuse rather than exhaust** (→ T-8). Declared ceilings on object size, total count, path length and depth, and decompressed size. A ceiling is checked **before** the memory it protects is allocated, and hitting one is a typed refusal (`ResourceLimit`, exit 20) naming what exceeded and the ceiling with its unit, never an OOM, a stack overflow or a hang. Each decoder keeps its ceilings in one place, and its README lists them:
   - **Git:** blob size, read from the object header before the body is read; commit count; path length; tree depth, enforced by an iterative tree walk (recursion on attacker-chosen depth could abort the process beyond any panic boundary); tag-chain length.
   - **Mercurial:** every decompression (zlib, zstd) and every delta application is bounded, and each reconstructed revision must equal its index's recorded length. The obsstore and the small metadata files (phaseroots, bookmarks, localtags) have ceilings; the dirstate read is 40 bytes.
@@ -97,8 +104,29 @@ The decoder libraries (~100 crates for `gix`, or C for `libgit2`, plus SVN/CVS) 
 - **C-4a — isolate the weight behind the decoder boundary.** The heavy deps live only in the per-source decoder crates; the IR, the honesty/verify path, and the encoders do not link them. VF-3 (internal verification) must run without any decoder dependency present — the internal analogue of BN-5.
 - **C-4b — pure-Rust preferred; C isolated by FFI crate *or subprocess*.** Prefer pure Rust (e.g. `gix`, keeps `forbid(unsafe)` maximal) over a C library (e.g. `libgit2`). If C code is unavoidable for a source, isolate it — in **preference order**: (1) a pure-Rust reader (no C at all — the ideal); (2) a **subprocess** that produces a parseable stream brygge reads in pure Rust (RFC 006 SVN Tier D: `svnadmin dump` → brygge's own dumpstream parser) — the C fault surface is a *separate process*, not brygge's address space, and vanishes entirely when the operator supplies the dumped stream directly; (3) a single dedicated **FFI crate** — the one place `unsafe`/C is linked into brygge, mirroring prikk's `prikk-ffi` discipline — used only when neither (1) nor (2) is available. The subprocess (2) is stronger isolation than the FFI crate (3) and is preferred wherever the source ecosystem offers a suitable tool.
 - **C-4c — pin and lock.** Exact dependency versions; the lockfile is committed; upgrades are deliberate and reviewed.
-- **C-4d — supply-chain gates in CI.** `cargo-deny` (advisories, licenses, banned/duplicate crates) and `cargo-audit` run in CI; a new advisory fails the build. New or upgraded decoder dependencies get explicit architect review (governance). The isolation of `brygge-ir` (C-4a/C-5) is enforced in CI against a declared allowlist of its dependency closure (`tools/check-ir-isolation.sh`), not merely observed.
+- **C-4d — supply-chain gates in CI.** `cargo-deny` (advisories, licenses, banned/duplicate crates) and `cargo-audit` run in CI; a new advisory fails the build. New or upgraded decoder dependencies get explicit architect review (governance). A **weekly** `cargo audit` against a fresh advisory database runs with no code change (`security-audit.yml`), because advisories arrive on their own schedule. The isolation of `brygge-ir` (C-4a/C-5) is enforced in CI against a declared allowlist of its dependency closure (`tools/check-ir-isolation.sh`), not merely observed.
 - **C-4e — minimize.** The dependency set is kept as small as the mission allows; a dependency is justified, not defaulted-in.
+- **C-4f — the release pipeline publishes only what was verified, only on the owner's approval** (RFC 012; `release.yml`). A compromised pipeline could publish a malicious `brygge` to every `cargo install` user, so it is the place brygge holds its only publish credential. The pipeline enforces:
+  - **What is released:**
+    - an annotated `X.Y.Z` tag, on `main`, equal to the workspace version, with its CHANGELOG section;
+    - gated by the same reusable workflow as CI, on the tagged commit;
+    - built for the four CI-proven platforms before anything is published, unless a dispatch turns the
+      binaries off (as for 0.1.0, whose release has none, and whose gates run on Linux only). Publication is
+      all-or-nothing behind these checks.
+  - **Who authorizes it:** the `release` environment requires the owner's approval before the job that can
+    publish. The environment admits only `main` and release tags. Released tags are immutable (a tag
+    ruleset).
+  - **What the credential is:** crates.io trusted publishing issues a token that lasts minutes, to this
+    workflow in this environment; no crates.io token is stored anywhere.
+    - Permissions are least-privilege per job (`contents: read` by default; `id-token: write` only where a
+      token is minted; `contents: write` only for the GitHub release).
+    - Every third-party action in `release.yml` is pinned to a commit SHA.
+    - No workflow expression is interpolated into a shell script.
+  - **What was released is checked:**
+    - after publication, `brygge` is installed from crates.io and smoke-tested;
+    - every published crate is compared byte for byte with the tag;
+    - binaries carry SHA-256 checksums and GitHub build-provenance attestations
+      (`gh attestation verify`).
 
 ### T-5 (Elevation) — brygge output enlarging the target's audited surface
 A design in which consuming a brygge import forces the target to link a brygge dependency would defeat the whole separation: prikk's deliberately small audited dependency surface would grow through the back door (A-TARGET-TRUST, BN-5).
@@ -147,7 +175,7 @@ A change that breaks one of these is a security bug, not a preference. Several m
 
 ## 5. Residual risks & assumptions (RR-…, ASSUME-…)
 
-- **RR-1 — The heavy decoder dependencies may contain vulnerabilities.** This is the accepted cost of the mission (it is *why* brygge is separate from prikk). Mitigated by isolation (C-4a), pure-Rust preference (C-4b), pinning + supply-chain gates (C-4c/d), and the recommendation that operators run brygge over **untrusted** source repositories in a sandbox (container / restricted user / no ambient credentials), since TB-1 input reaches those libraries.
+- **RR-1 — The heavy decoder dependencies may contain vulnerabilities.** This is the accepted cost of the mission (it is *why* brygge is separate from prikk). Mitigated by isolation (C-4a), pure-Rust preference (C-4b), pinning + supply-chain gates (C-4c/d), and the recommendation that operators run brygge over **untrusted** source repositories in a sandbox (container / restricted user / no ambient credentials), since TB-1 input reaches those libraries. *(v0.4 note: `cargo audit` reports RUSTSEC-2026-0306, an **informational** "unsound" advisory against `faster-hex 0.10.0`, reached only through `gix-hash`. It is tracked by the weekly audit and reviewed with every dependency update.)*
 - **RR-2 — brygge cannot make a lying source honest.** A faithfully-imported falsehood is still a falsehood; VF-2 checks *correspondence to the source*, not the source's own truthfulness. Detecting source-level fraud is out of scope.
 - **RR-3 — Secrets/PII in source history are carried faithfully.** Redaction would break fidelity (VF-2) and is the operator's decision in the source, before or after import; brygge's duty is to *state* that content is carried verbatim (C-6c), not to scrub it.
 - **RR-4 — brygge's artifact is integrity-*detectable* (C-3b) but not cryptographically *authenticated*, and brygge never signs.** prikk ruled on 2026-09-13 (RFC 113 OQ-1/OQ-2) that the **importer** signs the import declaration, and that the importer is prikk's own import command, run by an adopted maintainer. Authentication therefore happens at prikk's boundary, over what that maintainer imports, once prikk's import attestation (UD-1) is built. Until then, anyone who can alter an artifact can also recompute its digest; the defense is `verify --against-source` (C-3c) against the source.
@@ -157,6 +185,25 @@ A change that breaks one of these is a security bug, not a preference. Several m
 - **RR-cvs-reconstruction — a CVS changeset is brygge's derived judgment, not a source record** (RFC 007). A consumer that *ignores the `Derived` status* could over-trust the grouping as if CVS had recorded it. The marking is in every atom; the confidence rule (`span-overlap-v1`), its inputs and every order split are recorded; the fidelity report leads with it; and the faithfulness statement states the limit before the run. The residual is a consumer discarding honesty brygge attached, which brygge cannot prevent, only make impossible to lose (the CVS-specific sharpening of RR-2).
 - **RR-cvs-read-toctou — a symlink swapped in after the `lstat` walk would be followed.** The CVS reader examines entries without following them, then opens files by path; a symlink substituted in between would be followed on the open. Exploiting it needs write access to the source repository *while brygge reads it*, which is a compromise of A-HOST (ASSUME-1), not a crafted repository at rest. The fix, comparing the opened file's device and inode with the `lstat` result, is scheduled for 0.2.0.
 - **RR-svn-special-toggle — a property-only change of `svn:special`** (setting or clearing it on a file without new text) keeps the file's previous content, so a `link ` prefix is neither added nor stripped for that node. It is rare, and malformed symlink text is still refused (C-2a). The fix is scheduled with SVN delta dumps (0.3.0).
+- **RR-release-agent-credentials — the AI agents (architect, implementer) act through the owner's own git
+  and GitHub credentials, so GitHub cannot tell them apart from the owner** (RFC 012 D-2).
+  - The tag ruleset keeps released tags immutable against anyone, but cannot stop an agent from *creating*
+    a tag.
+  - An agent holding the owner's `gh` token could technically approve a pending `release` deployment.
+  - **Mitigations:**
+    - `GOVERNANCE.md` ("Cutting a release") and the agents' standing instructions: no agent approves a
+      release run, and the implementer never tags;
+    - optionally, a fine-grained token for agents without Actions and Deployments write, which makes the
+      gate mechanical (`releasing.md`, setup step 4);
+    - two-factor authentication on the owner's accounts.
+- **RR-release-dispatch-tools — a dispatched release runs the release tools of the commit it was dispatched
+  from, not of the tag** (needed to release a tag that predates the tools, like 0.1.0).
+  - **Mitigation:** the `release` environment admits only `main` and release tags, so those tools are
+    always code committed to `main` or to a release tag. It is reviewed by the project's process, not
+    enforced by a branch rule: RFC 012 D-2 deliberately adds no branch protection, and CI gates such a
+    commit after it is pushed.
+  - The tools' test-only environment hooks (`BRYGGE_TEST_*`) are set by no workflow, and
+    `verify-published` checks the real crates.io independently.
 - **Closed in v0.3:**
   - **RR-git-loose-object-symlink** (a symlinked loose object could read outside the repository): a loose object now either hashes to its id, so it is the right object wherever it was read from, or the decode stops (C-2f).
   - **RR-git-object-id-unverified** (a preserved Git id could be a false link): every object is verified (C-2f).
@@ -174,6 +221,7 @@ A change that breaks one of these is a security bug, not a preference. Several m
 | C-2f source identifiers verified | ○ | ● | ● | | | | | | |
 | C-3a…c integrity/verify/determinism | | | ● | | | | | | ● |
 | C-4a…e dependency isolation/audit | | ○ | | ● | ○ | | | | |
+| C-4f the release pipeline | ○ | | ● | ● | | | | | |
 | C-5 boundary-not-enlarged (tested) | | | | ○ | ● | | | | |
 | C-6a…c no-network / carried-verbatim | | | | | | ● | ○ | | |
 | C-6d only what the source would publish | | | | | | ● | | | |
@@ -190,6 +238,7 @@ A change that breaks one of these is a security bug, not a preference. Several m
 | T-1 / C-1* / INV-1 | NG-3, HO-1…HO-5, VF-4, FS-01/02/04, CF-02; RFC 113 §2/§3; C-1f: CL-07, CR-19 |
 | T-2 / C-2* / INV-2 | TB-1, FA-2/FA-3, PR-4; PU-5 (why the surface exists); C-2c: CR-11; C-2d: RFC 010 D-4, CR-10/CR-17; C-2f: PR-4, VF-2 |
 | T-3 / C-3* / INV-6 | VF-1/VF-3, IX-07, HO-4, FS-02, ID-4; C-3a: CR-02, RFC 011 D-10; C-3b: RFC 011 |
+| T-4 / C-4f | RFC 012 (release automation); `GOVERNANCE.md` "Cutting a release"; `docs/src/development/releasing.md` |
 | T-4 / C-4* / INV-4 | PU-5, BN-5; project dependency-discipline (mirrors prikk's small, audited dependency posture and `prikk-ffi`) |
 | T-5 / C-5 / INV-5 | BN-5, CT-05 |
 | T-6 / C-6* / INV-3 | CT-01, NG-3, PR-3/PR-4; C-6d: CR-05, owner ruling D-4 (2026-09-23) |
@@ -197,4 +246,4 @@ A change that breaks one of these is a security bug, not a preference. Several m
 | T-8 / C-8 | FA-1/FA-3/FA-4/FA-5, OP-02 |
 | T-9 / C-9 / INV-6 | VF-1, ID-4, UD-4 |
 
-*End of Threat Model v0.3. Per project rules, this document is revisited every release: a release whose changes touch new source parsers, new dependencies, the IR/provenance format, or any untrusted-input path **updates** this model; other releases **re-verify** its controls still hold. The controls most likely to need a test from day one: INV-2 (no source code executed; path-safety), INV-4/INV-5 (dependency isolation; output consumable without brygge deps), and INV-1 (honesty is present and non-suppressible in every produced object).*
+*End of Threat Model v0.4. Per project rules, this document is revisited every release: a release whose changes touch new source parsers, new dependencies, the IR/provenance format, or any untrusted-input path **updates** this model; other releases **re-verify** its controls still hold. The controls most likely to need a test from day one: INV-2 (no source code executed; path-safety), INV-4/INV-5 (dependency isolation; output consumable without brygge deps), and INV-1 (honesty is present and non-suppressible in every produced object).*
