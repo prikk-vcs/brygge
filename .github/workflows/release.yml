@@ -1,9 +1,11 @@
 name: Release
 
 # RFC 012: a tagged release is verified, built, published to crates.io by trusted publishing, checked
-# against what was published, and released on GitHub. The owner's approval of the `release` environment is
-# the authorization of the cut. Who does what: docs/src/development/handoffs/GOVERNANCE.md, "Cutting a
-# release"; the owner's one-time setup and the procedure: docs/src/development/releasing.md.
+# against what was published, and released on GitHub. The authorization of the cut is the owner's go-ahead,
+# given before the architect pushes the tag (RFC 012 D-2, as amended); nothing in this workflow waits for an
+# approval. The `release` environment has no reviewer: it scopes crates.io trusted publishing to this workflow
+# and admits only `main` and release tags. Who does what: docs/src/development/handoffs/GOVERNANCE.md,
+# "Cutting a release"; the owner's one-time setup and the procedure: docs/src/development/releasing.md.
 #
 # Two ways in:
 #   - the architect pushes an annotated tag X.Y.Z;
@@ -205,7 +207,7 @@ jobs:
           path: source/dist/*
           if-no-files-found: error
 
-  # ---- 4. publish-crates: the owner approves, then crates.io by trusted publishing ---------------------
+  # ---- 4. publish-crates: crates.io by trusted publishing (the `release` environment, no reviewer) ------
   publish-crates:
     name: publish to crates.io
     needs: [verify, gates, build]
@@ -248,6 +250,10 @@ jobs:
   verify-published:
     name: verify what was published
     needs: publish-crates
+    # Explicit, like the conditions of publish-crates and github-release: the default `success()` is false
+    # when ANY job upstream was skipped, and `build` is skipped when the binaries are off, so without this the
+    # job (and the release after it) would be skipped although publish-crates succeeded.
+    if: ${{ !cancelled() && needs.publish-crates.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -279,9 +285,9 @@ jobs:
         run: ../release-tools/tools/check-published.sh "$TAG"
 
   # ---- 6. github-release: binaries with provenance, notes from CHANGELOG ---------------------------------
-  # No environment of its own: the owner's approval of `publish-crates` authorizes the cut, and this job can
-  # only run after that job and `verify-published` have succeeded. The attestation needs `id-token: write`,
-  # which does not depend on the environment.
+  # No environment of its own: the cut was authorized by the owner's go-ahead before the tag was pushed, and this
+  # job can only run after `publish-crates` and `verify-published` have succeeded. The attestation needs
+  # `id-token: write`, which does not depend on an environment.
   github-release:
     name: GitHub release
     needs: [verify-published, build]
@@ -349,3 +355,45 @@ jobs:
             files=(../dist/*.tar.gz ../dist/*.tar.gz.sha256 ../dist/*.zip ../dist/*.zip.sha256)
           fi
           gh release create "$TAG" --verify-tag --title "$TAG" --notes-file "$RUNNER_TEMP/notes.md" "${files[@]}"
+
+  # ---- 7. outcome: the run is green only when the release was made ------------------------------------
+  # A skipped job is not a failure, so without this a run in which nothing was released could end green. This
+  # job runs whatever happened before it, and fails the run unless every job did what it was for: the
+  # verification, the gates, the publication, the check of what was published and the GitHub release all
+  # succeeded, and the build succeeded or was skipped because the binaries were off. It reads the results
+  # through `env:` and needs no checkout.
+  outcome:
+    name: outcome
+    needs: [verify, gates, build, publish-crates, verify-published, github-release]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      RESULT_VERIFY: ${{ needs.verify.result }}
+      RESULT_GATES: ${{ needs.gates.result }}
+      RESULT_BUILD: ${{ needs.build.result }}
+      RESULT_PUBLISH: ${{ needs.publish-crates.result }}
+      RESULT_VERIFY_PUBLISHED: ${{ needs.verify-published.result }}
+      RESULT_RELEASE: ${{ needs.github-release.result }}
+    steps:
+      - name: The release was made, or the run fails
+        run: |
+          echo "verify the tag:                  $RESULT_VERIFY"
+          echo "gates:                           $RESULT_GATES"
+          echo "build (skipped: binaries off):   $RESULT_BUILD"
+          echo "publish to crates.io:            $RESULT_PUBLISH"
+          echo "verify what was published:       $RESULT_VERIFY_PUBLISHED"
+          echo "GitHub release:                  $RESULT_RELEASE"
+          ok=true
+          for r in "$RESULT_VERIFY" "$RESULT_GATES" "$RESULT_PUBLISH" "$RESULT_VERIFY_PUBLISHED" "$RESULT_RELEASE"; do
+            [ "$r" = success ] || ok=false
+          done
+          if [ "$RESULT_BUILD" != success ] && [ "$RESULT_BUILD" != skipped ]; then
+            ok=false
+          fi
+          if [ "$ok" != true ]; then
+            echo "::error::the release was not made: at least one job did not do its work (see the results above)"
+            exit 1
+          fi
+          echo "the release was made"
