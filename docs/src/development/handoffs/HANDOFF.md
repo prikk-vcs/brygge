@@ -104,7 +104,8 @@ module style (`foo.rs` + `foo/`, no `mod.rs`), tests as siblings (`#[cfg(test)] 
 foundations · 002 honesty & provenance · 003 determinism, format & versioning · 004 Git decoder · 005
 Mercurial decoder · 006 Subversion decoder · 007 CVS decoder · 009 dependency & supply-chain policy · 011
 the IR contract re-cut (contract 0.2.0) · and 000, the RFC lifecycle policy. **Accepted:** 010 bounded
-memory & streaming (increment 1 shipped in 0.1.0; increments 2–4 are 0.2.0). **008 is reserved** for the
+memory & streaming (increment 1 shipped in 0.1.0; increments 3, 3b and 5 in 0.2.0; increments 2 and 4
+deferred by measurement) · 012 release automation · 013 source reach (0.3.0, in progress). **008 is reserved** for the
 Track-B prikk-encoder RFC; its design begins when prikk's import foundations exist (§8).
 
 ## 6. Governance and method (unchanged by the handover)
@@ -182,11 +183,13 @@ the team inherits the reasoning, not just the TODO. `ROADMAP.md` is authoritativ
    content-heavy repositories (Git ~2.8×, CVS ~4.2×, SVN ~4.6×), and about 5 KiB per atom for
    history-heavy ones. Revisit when a real import is memory-bound.
 
-**0.3.0 — Source reach:**
-6. **CVS branch-aware import,** which lifts 0.1.0's main-line-only limit.
-7. **SVN delta dumps** (svndiff), which also closes `RR-svn-special-toggle`.
-8. **Mercurial hashed long paths** (`dh/`).
-9. **CVS adaptive clustering windows.**
+**0.3.0 — Source reach** (RFC 013; handoffs in `rfcs/handoffs/013-source-reach/`):
+6. **CVS branch-aware import** (with `--reconstruct-refs`), which lifts 0.1.0's main-line-only limit.
+7. **SVN delta dumps** (svndiff0, `svnadmin --deltas` and `svnrdump`), which also closes
+   `RR-svn-special-toggle`.
+8. **Mercurial's store path encoding, completed** (hashed `dh/` long paths, reserved names, `.i`/`.d`
+   directories).
+9. **CVS adaptive clustering windows:** deferred (RFC 013 OQ-3); no measured need yet.
 
 **Deferred by explicit owner decision:**
 10. **A TUI:** deferred, *not* rejected (2026-09-12). If pursued, the standing architect recommendation is a
