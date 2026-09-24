@@ -95,7 +95,11 @@ pub(crate) fn scan_with(root: &Path, limits: &Limits) -> Result<Vec<CvsFile>, Er
                         ),
                     });
                 }
-                let bytes = read_bounded(&path, limits.max_rcs_bytes)?;
+                // The walk's own `lstat` of this entry (never following a link), kept for `read_bounded`.
+                let walked = entry.metadata().map_err(|e| {
+                    Error::Read(format!("cannot stat {}: {e}", display_path(&path)))
+                })?;
+                let bytes = read_bounded(&path, limits.max_rcs_bytes, &walked)?;
                 // Review 008 F-4: a parse error names the file it came from (losslessly, `\xNN` for
                 // non-UTF-8 bytes) — a bare "unparseable RCS date for revision 1.2" is not actionable.
                 let rcs = rcs::parse_rcs(&bytes).map_err(|e| match e {
@@ -120,20 +124,37 @@ fn ends_with_comma_v(path: &Path) -> bool {
         .is_some_and(|n| n.as_encoded_bytes().ends_with(b",v"))
 }
 
-/// Read a `,v` file into memory, refusing before allocation if its size already exceeds
-/// `max_rcs_bytes` (CR-10) — checked from filesystem metadata, not after a full read. Reading itself is
-/// still bounded with `take(max_rcs_bytes + 1)` in case the file grows after the metadata check.
-fn read_bounded(path: &Path, max_rcs_bytes: u64) -> Result<Vec<u8>, Error> {
-    let meta = std::fs::metadata(path)
+/// Read a `,v` file into memory, refusing before allocation if its size already exceeds `max_rcs_bytes`
+/// (CR-10) — checked from the *opened* file's metadata, not after a full read. Reading itself is still bounded
+/// with `take(max_rcs_bytes + 1)` in case the file grows after the metadata check.
+///
+/// **The window between the walk and the open is closed here** (`RR-cvs-read-toctou`): the walk examined the
+/// entry without following links (`walked`), and this opens it by path, so a link swapped in between would be
+/// followed. The opened file must be the very file the walk saw (Unix: same device and inode) or, on Windows,
+/// must not be a link or reparse point itself (it is opened without following one). Otherwise: a `Read` error,
+/// and nothing is read. This is the only place the CVS decoder opens a source file.
+fn read_bounded(
+    path: &Path,
+    max_rcs_bytes: u64,
+    walked: &std::fs::Metadata,
+) -> Result<Vec<u8>, Error> {
+    let file = open_without_following(path)
+        .map_err(|e| Error::Read(format!("cannot read {}: {e}", display_path(path))))?;
+    let meta = file
+        .metadata()
         .map_err(|e| Error::Read(format!("cannot stat {}: {e}", display_path(path))))?;
+    if !is_the_walked_file(walked, &meta) {
+        return Err(Error::Read(format!(
+            "{} changed while being read",
+            display_path(path)
+        )));
+    }
     if meta.len() > max_rcs_bytes {
         return Err(Error::ResourceLimit {
             what: "an RCS file".to_string(),
             ceiling: format!("{max_rcs_bytes} bytes"),
         });
     }
-    let file = std::fs::File::open(path)
-        .map_err(|e| Error::Read(format!("cannot read {}: {e}", display_path(path))))?;
     let mut bytes = Vec::new();
     file.take(max_rcs_bytes + 1)
         .read_to_end(&mut bytes)
@@ -145,6 +166,40 @@ fn read_bounded(path: &Path, max_rcs_bytes: u64) -> Result<Vec<u8>, Error> {
         });
     }
     Ok(bytes)
+}
+
+/// Open `path` for reading. On Unix this is an ordinary open (the identity check after it catches a swap). On
+/// Windows it is opened with `FILE_FLAG_OPEN_REPARSE_POINT`, which opens a link itself rather than its target.
+#[cfg(unix)]
+fn open_without_following(path: &Path) -> std::io::Result<std::fs::File> {
+    std::fs::File::open(path)
+}
+
+#[cfg(windows)]
+fn open_without_following(path: &Path) -> std::io::Result<std::fs::File> {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+}
+
+/// Is `opened` the file the walk saw as `walked`? Unix: a regular file with the same device and inode. Windows
+/// (whose stable `std` has no file-index API): a regular file that is neither a symlink nor a reparse point.
+#[cfg(unix)]
+fn is_the_walked_file(walked: &std::fs::Metadata, opened: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt as _;
+    opened.is_file() && walked.dev() == opened.dev() && walked.ino() == opened.ino()
+}
+
+#[cfg(windows)]
+fn is_the_walked_file(_walked: &std::fs::Metadata, opened: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt as _;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+    opened.is_file()
+        && !opened.file_type().is_symlink()
+        && opened.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0
 }
 
 /// Render `bytes` as valid UTF-8 kept verbatim and each invalid byte escaped as `\xNN` — never a lossy

@@ -10,7 +10,7 @@ brygge decode hg <repository> --out <artifact>
 
 `<repository>` is the working directory that contains `.hg` (or the `.hg` directory itself).
 
-## What 0.1.0 carries
+## What brygge carries
 
 - **Every published changeset**, as a *stated* atom: its parents, its file operations, and its message,
   byte for byte.

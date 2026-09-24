@@ -98,7 +98,7 @@ Each source has a user guide with the details, including what it refuses and wha
 - **CVS** ([guide](docs/src/guide/cvs.md)) — **there is no atomic commit**, so brygge *reconstructs*
   changesets by clustering per-file revisions. **Every CVS changeset is therefore `derived`**: a labelled
   reconstruction, not the source's record. Content and per-file history are faithful; a low-confidence
-  reconstruction is flagged or refused. 0.1.0 imports the **main line** only. For CVS,
+  reconstruction is flagged or refused. brygge imports the **main line** only (branch history is planned for 0.3.0). For CVS,
   `verify --against-source` checks *per-file content and deterministic reproduction*, **not** changeset
   correspondence, because there is no source changeset to check against.
 
@@ -130,5 +130,5 @@ not apply to). The machine output is specified in
   backlog, and how to build and gate), then
   [`GOVERNANCE.md`](docs/src/development/handoffs/GOVERNANCE.md) (who decides what) and
   [`ROADMAP.md`](ROADMAP.md).
-- **`encode` is not in 0.1.0.** The prikk encoder (RFC 008) waits on prikk's import foundations
+- **`encode` is not in brygge yet.** The prikk encoder (RFC 008) waits on prikk's import foundations
   (`ROADMAP.md`, Track B); this release is decode + inspect + verify.

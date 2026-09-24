@@ -9,7 +9,7 @@ repository recorded it. Before the run it states: *"Git: content, history and me
 source recorded them. Renames are inferred only with --infer-renames, and are then marked derived.
 Authorship is Unverifiable."*
 
-## What 0.1.0 carries
+## What brygge carries
 
 - Every commit reachable from a branch (`refs/heads/*`) or a tag (`refs/tags/*`), as a stated atom that
   keeps its commit id. Each file change is carried as the literal add, modify or delete between the commit

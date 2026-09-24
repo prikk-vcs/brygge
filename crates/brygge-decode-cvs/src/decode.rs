@@ -158,7 +158,7 @@ pub fn decode(source: &Source, opts: &Options) -> Result<Ir, Error> {
         ref_stats = add_refs(&files, &rev_to_atom, &mut builder)?;
     }
 
-    const BRANCH_REASON: &str = "brygge 0.1.0 imports the CVS main line only; branch history is \
+    const BRANCH_REASON: &str = "brygge imports the CVS main line only; branch history is \
                                   planned for a later release (0.3.0). Keep the source repository.";
     let mut boundary = loss.into_boundary();
     if branches.excluded_revisions > 0 {

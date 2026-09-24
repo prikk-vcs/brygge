@@ -18,7 +18,7 @@ brygge decode svn repo.dump --out repo.ir        # the preferred form
 brygge decode svn /path/to/repo --out repo.ir    # or let brygge run svnadmin dump
 ```
 
-## What 0.1.0 carries
+## What brygge carries
 
 - **Every revision**, in order, as one history entry each, with its file operations read literally from
   the dump.

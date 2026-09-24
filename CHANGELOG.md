@@ -22,12 +22,23 @@ Every handoff adds its own entry in its own commit.
 - **The release workflow no longer reports success without releasing.** A dispatch with the binaries off skipped
   the check of what was published and the GitHub release, and the run still ended green; those jobs now run,
   and a final job fails any run in which the release was not made.
+- **`RR-cvs-read-toctou` is closed** (0.2.0 batch C). The CVS reader examines each entry without following
+  links, then opens the `,v` file by path; a link swapped in between was followed. The opened file must now be the
+  file the walk saw (same device and inode on Unix; on Windows a file that is opened without following a link and
+  is neither a symlink nor a reparse point), otherwise the read fails with "<path> changed while being read".
+  A repository that is not changing decodes byte for byte as before.
 - **A GitHub release is marked "Latest" only when it is the highest version.** Releasing an older tag (0.1.0
   after 0.1.1) had made it "Latest"; `tools/release-latest.sh` now decides, comparing versions as numbers, and
   the workflow passes its answer to `gh release create --latest`.
 
 ### Changed
 
+- **The CVS drop reason no longer names a version** (0.2.0 batch C). In a CVS artifact with branch revisions, the
+  reason text of the dropped-branch records is now "brygge imports the CVS main line only; branch history is
+  planned for a later release (0.3.0). Keep the source repository." (it began "brygge 0.1.0 imports ..."). Only
+  that text changes; nothing else in any artifact does.
+- **CI caches the pinned mdBook binary** (0.2.0 batch C), so the book check and the deploy no longer compile
+  mdBook on every run. Changing the pinned version in `tools/install-mdbook.sh` invalidates the cache.
 - **A release no longer waits for a manual approval in GitHub.** The owner's go-ahead, given before the
   architect pushes the tag, is the authorization, and the tag starts the publication. The `release`
   environment stays, without a reviewer: it still limits publishing to `main` and release tags, and it

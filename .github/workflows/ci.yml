@@ -132,7 +132,15 @@ jobs:
         run: ./tools/test-release-tools.sh
       # The book (RFC 012 D-11): built on every branch push and pull request, with the same pinned mdBook and
       # the same warning-is-failure script as docs.yml, so a broken SUMMARY.md or page is caught before the
-      # deploy. Skipped in a release run: an old tag need not contain book.toml.
+      # deploy. Skipped in a release run: an old tag need not contain book.toml. Only the installed mdBook
+      # binary is cached, keyed on the runner and a hash of tools/install-mdbook.sh, so changing the pinned
+      # version there invalidates it; install-mdbook.sh skips the install when the exact version is present.
+      - name: Cache the pinned mdBook
+        if: ${{ !inputs.ref }}
+        uses: actions/cache@v6
+        with:
+          path: ~/.cargo/bin/mdbook
+          key: mdbook-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/install-mdbook.sh') }}
       - name: Install mdBook (pinned)
         if: ${{ !inputs.ref }}
         run: ./tools/install-mdbook.sh

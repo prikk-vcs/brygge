@@ -424,6 +424,18 @@ fn reproduction_a_branch_revision_no_longer_lands_in_a_main_line_tree() {
          revisions)"
     );
 
+    // The reason names no version: it must stay true in every release until branches are imported.
+    assert_eq!(
+        drop.reason,
+        "brygge imports the CVS main line only; branch history is planned for a later release (0.3.0). \
+         Keep the source repository."
+    );
+    assert!(
+        !drop.reason.contains("0.1"),
+        "the reason must not name the running version: {}",
+        drop.reason
+    );
+
     // Exit 10 (recorded loss): the drop is `Other`-class, non-representation.
     assert!(
         ir.loss

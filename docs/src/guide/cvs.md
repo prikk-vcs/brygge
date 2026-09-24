@@ -1,10 +1,10 @@
 # Importing a CVS repository
 
-brygge 0.1.0 imports a CVS repository's **main line only**: the trunk, plus — while a
+brygge imports a CVS repository's **main line only**: the trunk, plus — while a
 vendor branch is set — the revisions `cvs import` put there, since that is what a plain `cvs checkout`
 actually gives you. Branch history proper is not imported yet.
 
-## What 0.1.0 carries
+## What brygge carries
 
 - The main line's full per-file content and history, reconstructed into changesets (every changeset atom
   is `Derived(ReconstructedChangeset)` — CVS has no atomic commit, so brygge's grouping is its own

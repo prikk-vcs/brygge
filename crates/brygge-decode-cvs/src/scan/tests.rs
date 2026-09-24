@@ -198,6 +198,86 @@ fn a_directory_junction_is_refused() {
     assert_symlink_refusal(result);
 }
 
+// ---- RR-cvs-read-toctou: the file opened is the file the walk saw ----------------------------------------
+
+fn read_step_error(result: Result<Vec<u8>, crate::Error>) -> String {
+    match result {
+        Err(crate::Error::Read(m)) => m,
+        Ok(_) => panic!("expected the read to be refused, got Ok"),
+        Err(other) => panic!("expected a Read error, got {other}"),
+    }
+}
+
+#[test]
+fn the_read_step_returns_the_file_the_walk_saw() {
+    let root = fresh_root("toctou-ok");
+    let file = root.join("real.c,v");
+    let text = minimal_rcs("1.1", "2024.01.01.00.00.00");
+    std::fs::write(&file, &text).unwrap();
+    let walked = std::fs::symlink_metadata(&file).unwrap();
+    let result = read_bounded(&file, 1 << 20, &walked);
+    let _ = std::fs::remove_dir_all(&root);
+    assert_eq!(result.unwrap(), text);
+}
+
+/// The walk saw a regular `,v`; before it is opened, a symlink to another valid `,v` takes its place. Refused.
+#[test]
+fn a_file_replaced_by_a_symlink_between_the_walk_and_the_open_is_refused() {
+    let root = fresh_root("toctou-symlink");
+    let victim = root.join("real.c,v");
+    let other = root.join("other.c,v");
+    std::fs::write(&victim, minimal_rcs("1.1", "2024.01.01.00.00.00")).unwrap();
+    std::fs::write(&other, minimal_rcs("1.9", "2024.02.02.00.00.00")).unwrap();
+    let walked = std::fs::symlink_metadata(&victim).unwrap(); // the walk's lstat
+    std::fs::remove_file(&victim).unwrap();
+    let made = link_created("a file symlink", symlink_file(&other, &victim));
+
+    let result = made.then(|| read_bounded(&victim, 1 << 20, &walked));
+    let _ = std::fs::remove_dir_all(&root);
+    if let Some(result) = result {
+        let m = read_step_error(result);
+        assert!(m.contains("real.c,v"), "the path is named: {m}");
+        assert!(m.contains("changed while being read"), "{m}");
+    }
+}
+
+/// Unix: a different regular file at the same path is not the file the walk saw either (its inode differs).
+/// The replacement exists before the original is replaced, so the two inodes are distinct by construction.
+#[cfg(unix)]
+#[test]
+fn a_file_replaced_by_another_regular_file_between_the_walk_and_the_open_is_refused() {
+    let root = fresh_root("toctou-regular");
+    let victim = root.join("real.c,v");
+    let other = root.join("other.c,v");
+    std::fs::write(&victim, minimal_rcs("1.1", "2024.01.01.00.00.00")).unwrap();
+    std::fs::write(&other, minimal_rcs("1.9", "2024.02.02.00.00.00")).unwrap();
+    let walked = std::fs::symlink_metadata(&victim).unwrap();
+    std::fs::rename(&other, &victim).unwrap();
+
+    let result = read_bounded(&victim, 1 << 20, &walked);
+    let _ = std::fs::remove_dir_all(&root);
+    let m = read_step_error(result);
+    assert!(m.contains("changed while being read"), "{m}");
+}
+
+/// The path is shown losslessly (`\xNN` for a byte that is not UTF-8), as everywhere else in this crate.
+#[cfg(all(unix, not(target_os = "macos")))]
+#[test]
+fn the_changed_while_read_message_shows_a_non_utf8_path_losslessly() {
+    let root = fresh_root("toctou-name");
+    let victim = root.join(non_unicode_name());
+    let other = root.join("other.c,v");
+    std::fs::write(&victim, minimal_rcs("1.1", "2024.01.01.00.00.00")).unwrap();
+    std::fs::write(&other, minimal_rcs("1.9", "2024.02.02.00.00.00")).unwrap();
+    let walked = std::fs::symlink_metadata(&victim).unwrap();
+    std::fs::rename(&other, &victim).unwrap();
+
+    let result = read_bounded(&victim, 1 << 20, &walked);
+    let _ = std::fs::remove_dir_all(&root);
+    let m = read_step_error(result);
+    assert!(m.contains(NON_UNICODE_ESCAPED), "{m}");
+}
+
 #[test]
 fn the_same_path_in_attic_and_live_is_refused() {
     let root = fresh_root("attic");

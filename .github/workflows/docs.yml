@@ -38,7 +38,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@v1
         with:
           toolchain: stable
-      # The one pinned mdBook, shared with ci.yml (tools/install-mdbook.sh).
+      # The one pinned mdBook, shared with ci.yml (tools/install-mdbook.sh). Only the installed binary is
+      # cached, keyed on the runner and a hash of that script, so changing the pin invalidates the cache.
+      - name: Cache the pinned mdBook
+        uses: actions/cache@v6
+        with:
+          path: ~/.cargo/bin/mdbook
+          key: mdbook-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/install-mdbook.sh') }}
       - name: Install mdBook
         run: ./tools/install-mdbook.sh
       - name: Set up Pages
