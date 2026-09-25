@@ -8,6 +8,25 @@ Every handoff adds its own entry in its own commit.
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-09-25
+
+**Source reach: brygge now reads Subversion, Mercurial and CVS history it used to refuse or leave out.**
+Subversion delta dumps are read, including every `svnrdump` dump, so a remote repository can be imported: dump
+it yourself with `svnrdump`, then decode the file. The fulltext, `--deltas` and `svnrdump` dumps of one
+repository give byte-identical artifacts, and every checksum a dump states is checked. Mercurial repositories
+with very long paths, Windows-reserved names or directories named `*.i`/`*.d` are read with Mercurial's own
+store encoding. With `--reconstruct-refs`, CVS branch history is imported, nested branches included: each
+branch's tree equals `cvs checkout -r <branch>`, and its branch point is marked as brygge's judgment.
+**Two fixes for every earlier release:** an artifact from a CVS repository with branch revisions, or from a
+Mercurial repository with a named branch of several heads, failed its own `verify` (exit 50). Earlier
+artifacts of the first kind are valid and now verify; those of the second kind must be decoded again.
+**To note:** CVS artifacts made with `--reconstruct-refs` from repositories with branches change; the atom
+ids of Mercurial changesets on named branches change; SVN dump checksums are now checked and one node's
+text is limited to 1 GiB. One new dependency: `md-5`. Install with `cargo install --locked brygge`, or
+download a binary from the GitHub release.
+
+The detailed changes that made up 0.3.0 follow.
+
 ### Added
 
 - **Subversion delta dumps** (0.3.0, RFC 013 D-2). `svnadmin dump --deltas` and every `svnrdump dump` are read
@@ -50,7 +69,7 @@ Every handoff adds its own entry in its own commit.
 - **An artifact containing both kinds of flag, or drops of different classes (for example any CVS repository with
   branch revisions), failed its own `verify` integrity check (exit 50)**, because the reader compared names
   instead of the specified variant order. The reader now follows the specification (`ir-artifact-format.md` §6).
-  Artifacts already written by any version are valid and now verify. The byte format and the contract version
+  Artifacts that failed only for this reason are valid and now verify. The byte format and the contract version
   (0.2.0) are unchanged.
 - **Mercurial: paths with a Windows-reserved component (`aux`, `con`, `com1`, ...), a directory named `*.i`, `*.d`
   or `*.hg`, or a directory ending in `.` or a space are read.** They failed before, because the encoding was

@@ -61,7 +61,7 @@ dependencies = [
 
 [[package]]
 name = "brygge"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "brygge-decode-cvs",
  "brygge-decode-git",
@@ -72,7 +72,7 @@ dependencies = [
 
 [[package]]
 name = "brygge-bench"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "brygge-decode-cvs",
  "brygge-decode-git",
@@ -82,7 +82,7 @@ dependencies = [
 
 [[package]]
 name = "brygge-decode-cvs"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "brygge-ir",
  "sha2",
@@ -90,7 +90,7 @@ dependencies = [
 
 [[package]]
 name = "brygge-decode-git"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "brygge-ir",
  "gix",
@@ -98,7 +98,7 @@ dependencies = [
 
 [[package]]
 name = "brygge-decode-hg"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "brygge-ir",
  "flate2",
@@ -108,7 +108,7 @@ dependencies = [
 
 [[package]]
 name = "brygge-decode-svn"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "brygge-ir",
  "md-5",
@@ -117,7 +117,7 @@ dependencies = [
 
 [[package]]
 name = "brygge-ir"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "sha2",
 ]

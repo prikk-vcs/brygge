@@ -5,10 +5,11 @@ map: what brygge is, the state at handover, the invariants you must never regres
 lives, how to build and gate it, and the prioritized backlog. Everything it references is in this
 repository; nothing load-bearing lives only in someone's head.
 
-**Date of handover:** 2026-09-12. **Updated for the 0.2.0 release, 2026-09-24.** **State:** brygge
+**Date of handover:** 2026-09-12. **Updated for the 0.3.0 release, 2026-09-25.** **State:** brygge
 **0.1.0 is released**: the decode → IR half for all four named sources, on IR contract **0.2.0**.
-**0.1.1** added Windows support and the release workflow (RFC 012), and **0.2.0** bounds long Git and
-CVS histories (RFC 010). All gates
+**0.1.1** added Windows support and the release workflow (RFC 012), **0.2.0** bounds long Git and
+CVS histories (RFC 010), and **0.3.0** reaches SVN delta dumps, Mercurial's hashed store paths and CVS branch
+history (RFC 013). All gates
 are green, and CI enforces them on the declared MSRV. The encode → prikk half waits on prikk's import
 foundations (see §8).
 
@@ -183,13 +184,14 @@ the team inherits the reasoning, not just the TODO. `ROADMAP.md` is authoritativ
    content-heavy repositories (Git ~2.8×, CVS ~4.2×, SVN ~4.6×), and about 5 KiB per atom for
    history-heavy ones. Revisit when a real import is memory-bound.
 
-**0.3.0 — Source reach** (RFC 013; handoffs in `rfcs/handoffs/013-source-reach/`):
-6. **CVS branch-aware import** (with `--reconstruct-refs`), which lifts 0.1.0's main-line-only limit.
-7. **SVN delta dumps** (svndiff0, `svnadmin --deltas` and `svnrdump`), which also closes
+**0.3.0 — Source reach** (RFC 013, done; handoffs in `rfcs/handoffs/013-source-reach/`):
+6. **Done:** **CVS branch-aware import** (with `--reconstruct-refs`), which lifts 0.1.0's main-line-only limit.
+7. **Done:** **SVN delta dumps** (svndiff0, `svnadmin --deltas` and `svnrdump`), which also closes
    `RR-svn-special-toggle`.
-8. **Mercurial's store path encoding, completed** (hashed `dh/` long paths, reserved names, `.i`/`.d`
+8. **Done:** **Mercurial's store path encoding, completed** (hashed `dh/` long paths, reserved names, `.i`/`.d`
    directories).
-9. **CVS adaptive clustering windows:** deferred (RFC 013 OQ-3); no measured need yet.
+9. **CVS adaptive clustering windows:** deferred (RFC 013 OQ-3); no measured need yet. **CVS vendor branches
+   after clearing:** deferred (OQ-6); counted with an exact record until a real repository needs them.
 
 **Deferred by explicit owner decision:**
 10. **A TUI:** deferred, *not* rejected (2026-09-12). If pursued, the standing architect recommendation is a
@@ -209,16 +211,16 @@ the team inherits the reasoning, not just the TODO. `ROADMAP.md` is authoritativ
 - **No encode yet.** 0.1.0 is decode + inspect + verify (§8, Track B).
 - **CVS is lossy by nature** (SRC-C3): the changeset is brygge's reconstruction, and every atom is
   `Derived`. Changeset-level `verify --against-source` is *not offered*, because there is no source
-  changeset to check against; only per-file content and deterministic reproduction are. 0.1.0 imports the
-  main line only. All of this is stated before the run (VF-5) and in `docs/src/guide/cvs.md`.
-- **SVN reads fulltext dumps**; delta-format dumps are refused. **CVS reads a local repository**;
+  changeset to check against; only per-file content and deterministic reproduction are. Branch history is
+  imported with `--reconstruct-refs` (0.3.0); without it, the main line only. All of this is stated before the run (VF-5) and in `docs/src/guide/cvs.md`.
+- **SVN reads dumpfiles of every form** (fulltext, `--deltas`, `svnrdump`), and svndiff 1/2 are refused by name. **CVS reads a local repository**;
   `:pserver:` is refused.
 - **Git SHA-256 repositories are refused** until the Git dependency reads them.
 - **Peak memory is O(content)**: the IR *is* the content. Ceilings refuse rather than exhaust, but nothing
-  streams yet (0.2.0).
+  streams: RFC 010 increments 2 and 4 are deferred by measurement.
 - **No progress reporting or cancellation.** Interrupting a decode is safe (the artifact write is atomic),
   but it produces nothing.
-- The threat model is the living document, revisited every release (v0.3 for 0.1.0, v0.4 for 0.1.1, v0.5 for 0.2.0).
+- The threat model is the living document, revisited every release (v0.3 for 0.1.0, v0.4 for 0.1.1, v0.5 for 0.2.0, v0.6 for 0.3.0).
 
 ---
 

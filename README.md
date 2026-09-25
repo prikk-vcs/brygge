@@ -98,7 +98,7 @@ Each source has a user guide with the details, including what it refuses and wha
 - **CVS** ([guide](docs/src/guide/cvs.md)) — **there is no atomic commit**, so brygge *reconstructs*
   changesets by clustering per-file revisions. **Every CVS changeset is therefore `derived`**: a labelled
   reconstruction, not the source's record. Content and per-file history are faithful; a low-confidence
-  reconstruction is flagged or refused. brygge imports the **main line** only (branch history is planned for 0.3.0). For CVS,
+  reconstruction is flagged or refused. Branch history is imported with `--reconstruct-refs` (each branch's tree equals `cvs checkout -r`, its branch point marked as brygge's judgment); without it, the **main line** only. For CVS,
   `verify --against-source` checks *per-file content and deterministic reproduction*, **not** changeset
   correspondence, because there is no source changeset to check against.
 

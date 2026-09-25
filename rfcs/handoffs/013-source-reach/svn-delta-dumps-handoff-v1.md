@@ -203,6 +203,6 @@ repository must give **byte-identical artifacts**.
 
 ## 9. Review request
 
-`.git-exclude/review-request/029-svn-delta-dumps.md`. Commit this handoff's own update and `rfcs/accepted/013-source-reach.md` (OQ-5 ruled) with the batch. Include the parser's bounds list, mapped to the
+`.git-exclude/review-request/029-svn-delta-dumps.md`. Commit this handoff's own update and `rfcs/done/013-source-reach.md` (OQ-5 ruled) with the batch. Include the parser's bounds list, mapped to the
 tests; the `cargo tree` and `cargo deny` output for `md-5`; and the three-form `cmp` results. After
 approval, commit and push, and append CI.

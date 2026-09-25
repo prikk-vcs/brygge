@@ -1,6 +1,6 @@
 # RFC 013 — Source reach (0.3.0): hashed Mercurial store paths, SVN delta dumps, CVS branch history
 
-**Status.** **Accepted (2026-09-24)** by the owner ("013 is accepted"). The owner stated no other answer
+**Status.** **Done (2026-09-25): implemented in 0.3.0.** **Accepted (2026-09-24)** by the owner ("013 is accepted"). The owner stated no other answer
 to OQ-1…OQ-4, so they are recorded as the recommendations, as for RFC 011's OQ-A; the owner can object.
 - **OQ-1:** CVS branches are imported with `--reconstruct-refs`.
 - **OQ-2:** unnamed branches are still dropped and counted.
@@ -27,7 +27,7 @@ Handoffs: `rfcs/handoffs/013-source-reach/`.
     carry), a **branch-point atom** of `Derived(ReconstructedBranch)` ops reconciles it. This is cvs2git's
     semantics too;
   - **nested branches:** the parent line is the line of the branch-point revisions.
-- **OQ-6 added (pending the owner):** vendor branches after clearing.
+- **OQ-6 (vendor branches after clearing):** built as recommended (not reconstructed; counted with an exact record); design and implementation deferred until a real repository needs it.
 
 ## Summary
 

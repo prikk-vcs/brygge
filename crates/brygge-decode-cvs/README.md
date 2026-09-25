@@ -10,10 +10,11 @@ a CVS repository's RCS `,v` files directly and reconstructs changesets, producin
   clustering per-file revisions on (author, log message, time window). **Every `ChangeAtom` is therefore
   `Derived(ReconstructedChangeset)`**, carrying its clustering parameters and a confidence — the honest
   "lossy-but-labelled" verdict (SRC-C3). Per-file content and history are carried faithfully.
-- **Main line only (owner ruling D-2):** the trunk, plus — while a vendor branch is set — that branch's
-  own revisions; every other revision is excluded and recorded, never silently. See
-  [`docs/src/guide/cvs.md`](../../docs/src/guide/cvs.md) for what that means for a migration and how to
-  see a repository's branches beforehand; branch-aware threading is planned for 0.3.0.
+- **The main line, and branches with `--reconstruct-refs` (RFC 013 D-3):** the main line is the trunk,
+  plus — while a vendor branch is set — that branch's own revisions. With `--reconstruct-refs`, each named
+  branch (nested ones included) is imported with its own changesets and a derived branch point. What is not
+  imported (unnamed branches, vendor branches after clearing, branches whose parent line is not imported) is
+  recorded, never silently. See [`docs/src/guide/cvs.md`](../../docs/src/guide/cvs.md).
 - **Honest limits:** changeset-level `verify --against-source` is **not offered** — there is no CVS atom to
   round-check against; brygge offers per-file content correspondence and reconstruction determinism (VF-1),
   and says so before the run (VF-5). CVS records **no renames** (delete+add, no `CopyRecord`).

@@ -122,7 +122,7 @@ A refusal exits `20` and says why; nothing is written.
 | `remote-source`: a URL instead of a local repository | make a local copy with `svnrdump dump <url> > repo.dump`, run yourself, and give brygge the dumpfile |
 | a dump whose text deltas are **svndiff version 1 or 2** (compressed) | dump again with `svnadmin dump` (fulltext or `--deltas`) or with `svnrdump` |
 | a dump format version other than 1–3 | dump with a current `svnadmin` |
-| a dump over 8 GiB, or one node's text over 1 GiB | refused before it is read into memory (or allocated); larger dumps are planned for a later release |
+| a dump over 8 GiB, or one node's text over 1 GiB | refused before it is read into memory (or allocated); larger dumps are not supported (streaming is deferred by measurement, RFC 010) |
 
 An **incremental delta dump** (a delta against a revision the dump does not hold) is a read error, not a
 refusal of a feature: exit `1`, naming the path (see "Dump forms").
