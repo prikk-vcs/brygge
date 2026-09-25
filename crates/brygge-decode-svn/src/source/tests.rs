@@ -219,3 +219,93 @@ fn a_large_stderr_with_valid_stdout_under_the_cap_succeeds() {
         "the child must exit 0 and stdout must be returned whole, not killed by SIGPIPE on stderr"
     );
 }
+
+// ---- a source path that does not exist (0.3.0 cut prep) --------------------------------------------------
+
+fn expect_open(result: Result<Vec<u8>, Error>) -> String {
+    match result {
+        Err(Error::Open(m)) => m,
+        other => panic!("expected an open error, got {other:?}"),
+    }
+}
+
+/// A missing dumpfile or repository path is `source not found: <path>` (an open error), and nothing is run:
+/// the message is ours, not `svnadmin`'s ("Can't open file '<path>/format'").
+#[test]
+fn a_missing_path_is_source_not_found_for_a_dumpfile_and_for_a_repository() {
+    let path = unique_temp_path("missing");
+    let want = format!("source not found: {}", path.display());
+    let limits = Limits::default();
+    assert_eq!(
+        expect_open(Source::DumpFile(path.clone()).load_with(&limits)),
+        want
+    );
+    assert_eq!(
+        expect_open(Source::LocalRepo(path).load_with(&limits)),
+        want
+    );
+}
+
+/// The remote refusal keeps precedence: a URL does not exist as a path either, and is still `remote-source`.
+#[test]
+fn a_url_is_still_the_remote_source_refusal_with_its_remedy() {
+    let result = Source::LocalRepo(std::path::PathBuf::from("svn://example.org/r"))
+        .load_with(&Limits::default());
+    match result {
+        Err(Error::FloorRefusal { feature, reason }) => {
+            assert_eq!(feature, floor::REMOTE_SOURCE);
+            assert!(
+                reason.contains("svnrdump dump <url> > repo.dump"),
+                "{reason}"
+            );
+        }
+        other => panic!("expected the remote-source refusal, got {other:?}"),
+    }
+}
+
+/// A FIFO is neither a dumpfile nor a repository directory: refused before anything reads it, so it does not
+/// block (a reader of a FIFO with no writer would wait forever).
+#[cfg(unix)]
+#[test]
+fn a_fifo_is_neither_a_dumpfile_nor_a_repository_and_does_not_block() {
+    let path = unique_temp_path("fifo");
+    if !Command::new("mkfifo")
+        .arg(&path)
+        .status()
+        .is_ok_and(|s| s.success())
+    {
+        eprintln!("skipping: mkfifo is not available");
+        return;
+    }
+    let want = format!(
+        "SVN source is neither a dumpfile nor a repository directory: {}",
+        path.display()
+    );
+    let (tx, rx) = std::sync::mpsc::channel();
+    let p = path.clone();
+    std::thread::spawn(move || {
+        let limits = Limits::default();
+        let a = Source::DumpFile(p.clone()).load_with(&limits);
+        let b = Source::LocalRepo(p).load_with(&limits);
+        let _ = tx.send((a, b));
+    });
+    let (dump, repo) = rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("refused without blocking on the FIFO");
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(expect_open(dump), want);
+    assert_eq!(expect_open(repo), want);
+}
+
+/// A link to a directory or a file is what it points at (not refused as "neither").
+#[cfg(unix)]
+#[test]
+fn a_symlink_to_a_file_or_directory_is_not_refused_as_neither() {
+    let dir = unique_temp_path("linkdir");
+    std::fs::create_dir(&dir).unwrap();
+    let link = unique_temp_path("link");
+    std::os::unix::fs::symlink(&dir, &link).unwrap();
+    assert!(check_present(&link).is_ok());
+    let _ = std::fs::remove_file(&link);
+    let _ = std::fs::remove_dir(&dir);
+}

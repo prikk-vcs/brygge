@@ -36,6 +36,10 @@ Every handoff adds its own entry in its own commit.
 
 ### Fixed
 
+- **A source path that does not exist is reported as `source not found: <path>` for every source kind**; `decode
+  svn` no longer runs `svnadmin` on it (it reported `svnadmin: Can't open file '<path>/format'`). A remote source
+  keeps its refusal, and an SVN path that is neither a file nor a directory (a FIFO, a socket) is refused before it
+  is read. `verify --against-source <missing>` says the same in its `not-checked` detail.
 - **Subversion: setting or clearing `svn:special` without a text change** kept the file's old content, so the
   `link ` prefix was neither taken off nor put back. The content now follows the flag, in fulltext and delta
   dumps alike. Only a repository that hits it changes.

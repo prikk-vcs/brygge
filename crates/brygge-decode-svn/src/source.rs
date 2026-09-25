@@ -81,7 +81,10 @@ impl Source {
 
     pub(crate) fn load_with(&self, limits: &Limits) -> Result<Vec<u8>, Error> {
         match self {
-            Self::DumpFile(path) => read_dumpfile_bounded(path, limits),
+            Self::DumpFile(path) => {
+                check_present(path)?;
+                read_dumpfile_bounded(path, limits)
+            }
             Self::LocalRepo(path) => dump_local_repo(path, limits),
         }
     }
@@ -151,6 +154,29 @@ fn read_dumpfile_bounded(path: &Path, limits: &Limits) -> Result<Vec<u8>, Error>
     Ok(bytes)
 }
 
+/// The source path must exist (`source not found: <path>`, the words every source kind uses; a dangling
+/// symlink exists, and is left to what reads it), and must be a file (a dumpfile) or a directory (a
+/// repository): a FIFO, a socket or a device is neither, and is refused **before anything reads it** (a FIFO
+/// would block a reader, or be handed to `svnadmin` as a repository).
+fn check_present(path: &Path) -> Result<(), Error> {
+    if let Err(e) = std::fs::symlink_metadata(path) {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            return Err(Error::Open(format!("source not found: {}", path.display())));
+        }
+        return Ok(()); // unreadable for another reason: what reads it says why
+    }
+    // Following symlinks: a link to a file or a directory is that.
+    if let Ok(meta) = std::fs::metadata(path) {
+        if !meta.is_file() && !meta.is_dir() {
+            return Err(Error::Open(format!(
+                "SVN source is neither a dumpfile nor a repository directory: {}",
+                path.display()
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Run a read-only `svnadmin dump` on a local repository, capturing the fulltext dumpstream from stdout.
 fn dump_local_repo(path: &Path, limits: &Limits) -> Result<Vec<u8>, Error> {
     // A URL is not a local repository; brygge does not dump over the network (INV-3).
@@ -164,6 +190,8 @@ fn dump_local_repo(path: &Path, limits: &Limits) -> Result<Vec<u8>, Error> {
                 .to_string(),
         });
     }
+    // After the remote refusal (which keeps its precedence and text), and before `svnadmin` is run.
+    check_present(path)?;
     // `svnadmin dump <repo> --quiet` writes a fulltext dumpstream to stdout (no `--deltas`), progress to
     // stderr (suppressed by --quiet, but still captured, bounded, for a failure message). Fixed argv, no
     // shell. It performs no network I/O and runs no repository hooks.

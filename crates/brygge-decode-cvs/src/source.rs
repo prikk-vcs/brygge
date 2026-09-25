@@ -33,6 +33,13 @@ impl Source {
                                 .to_string(),
                     });
                 }
+                // A path that does not exist says so, in the words every source kind uses (a dangling
+                // symlink exists, and is left to the check below).
+                if let Err(e) = std::fs::symlink_metadata(path) {
+                    if e.kind() == std::io::ErrorKind::NotFound {
+                        return Err(Error::Open(format!("source not found: {}", path.display())));
+                    }
+                }
                 if !path.is_dir() {
                     return Err(Error::Open(format!(
                         "{} is not a directory (expected a local CVS repository of ,v files)",

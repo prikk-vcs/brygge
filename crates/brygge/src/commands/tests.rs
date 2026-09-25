@@ -2690,3 +2690,133 @@ fn an_hg_artifacts_params_carry_no_rename_or_infer_keys() {
     assert_eq!(run_verify(&out, Some(&repo), Format::Machine), exit::CLEAN);
     let _ = std::fs::remove_file(&out);
 }
+
+// ---- a source path that does not exist (0.3.0 cut prep) --------------------------------------------------
+
+fn plain_opts() -> SourceOpts {
+    SourceOpts {
+        infer_renames: false,
+        reconstruct_refs: false,
+        layout: LayoutPolicy::default(),
+        cvs_window: 300,
+        cvs_floor: 50,
+    }
+}
+
+const ALL_KINDS: [SourceKind; 4] = [
+    SourceKind::Git,
+    SourceKind::Hg,
+    SourceKind::Svn,
+    SourceKind::Cvs,
+];
+
+/// One rule, one wording, for every source kind: a path that does not exist is `source not found: <path>`, an
+/// open error (exit 1), and `decode svn` no longer runs `svnadmin` on it.
+#[test]
+fn a_missing_source_path_is_source_not_found_for_every_kind() {
+    let missing = std::env::temp_dir().join(format!("brygge-cli-missing-{}", std::process::id()));
+    let want = format!("source not found: {}", missing.display());
+    for kind in ALL_KINDS {
+        match decode_source(kind, &missing, &plain_opts()) {
+            Err((code, msg)) => {
+                assert_eq!(code, exit::FAILURE, "{kind:?}");
+                assert!(msg.contains(&want), "{kind:?}: {msg}");
+                assert!(!msg.contains("svnadmin"), "{kind:?} ran nothing: {msg}");
+            }
+            Ok(_) => panic!("{kind:?}: decoded a source that does not exist"),
+        }
+    }
+}
+
+/// The remote refusal keeps precedence and its text: exit 20 (`svn` and `cvs` name a URL as remote).
+#[test]
+fn a_url_is_still_a_floor_refusal_not_source_not_found() {
+    match decode_source(
+        SourceKind::Svn,
+        Path::new("svn://example.org/r"),
+        &plain_opts(),
+    ) {
+        Err((code, msg)) => {
+            assert_eq!(code, exit::FLOOR_REFUSAL);
+            assert!(msg.contains("remote-source"), "{msg}");
+            assert!(msg.contains("svnrdump dump <url> > repo.dump"), "{msg}");
+            assert!(!msg.contains("source not found"), "{msg}");
+        }
+        Ok(_) => panic!("decoded a URL"),
+    }
+    match decode_source(
+        SourceKind::Cvs,
+        Path::new(":pserver:x@example.org:/cvs"),
+        &plain_opts(),
+    ) {
+        Err((code, _)) => assert_eq!(code, exit::FLOOR_REFUSAL),
+        Ok(_) => panic!("decoded a :pserver: source"),
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn an_svn_fifo_is_neither_a_dumpfile_nor_a_repository_and_does_not_block() {
+    let path = std::env::temp_dir().join(format!("brygge-cli-fifo-{}", std::process::id()));
+    if !PCommand::new("mkfifo")
+        .arg(&path)
+        .status()
+        .is_ok_and(|s| s.success())
+    {
+        eprintln!("skipping: mkfifo is not available");
+        return;
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    let p = path.clone();
+    std::thread::spawn(move || {
+        let _ = tx.send(decode_source(SourceKind::Svn, &p, &plain_opts()).map(|_| ()));
+    });
+    let got = rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("refused without blocking on the FIFO");
+    let _ = std::fs::remove_file(&path);
+    match got {
+        Err((code, msg)) => {
+            assert_eq!(code, exit::FAILURE);
+            assert!(
+                msg.contains("SVN source is neither a dumpfile nor a repository directory"),
+                "{msg}"
+            );
+        }
+        Ok(()) => panic!("decoded a FIFO"),
+    }
+}
+
+/// `verify --against-source <missing>` re-decodes through the same code, so its `not-checked` detail carries
+/// the same wording, for every kind: for an SVN artifact made from a dumpfile as well (a missing path has no
+/// "form" to mismatch).
+#[test]
+fn against_source_with_a_missing_path_is_not_checked_with_the_same_wording() {
+    let missing =
+        std::env::temp_dir().join(format!("brygge-cli-missing-vs-{}", std::process::id()));
+    let want = format!("source not found: {}", missing.display());
+    for (kind, decoder) in [
+        (brygge_ir::SourceKind::Git, "brygge-decode-git"),
+        (brygge_ir::SourceKind::Hg, "brygge-decode-hg"),
+        (brygge_ir::SourceKind::Svn, "brygge-decode-svn"),
+        (brygge_ir::SourceKind::Cvs, "brygge-decode-cvs"),
+    ] {
+        let is_svn = kind == brygge_ir::SourceKind::Svn;
+        let label = decoder;
+        let mut prov = blank_provenance(kind, decoder);
+        if is_svn {
+            prov.params.insert("source_form".into(), "dumpfile".into());
+        }
+        let ir = IrBuilder::new(prov).finish().unwrap();
+        match run_against_source(&ir, &missing) {
+            AgainstSourceOutcome::NotChecked(detail) => {
+                assert!(detail.contains(&want), "{label}: {detail}");
+                assert!(
+                    !detail.contains("verify against the same form"),
+                    "{label}: {detail}"
+                );
+            }
+            _ => panic!("{label}: expected NotChecked"),
+        }
+    }
+}

@@ -1250,6 +1250,12 @@ fn run_against_source(ir1: &Ir, repo: &Path) -> AgainstSourceOutcome {
 /// before this handoff) or the forms already match.
 fn svn_source_form_mismatch(ir1: &Ir, repo: &Path) -> Option<String> {
     let recorded = ir1.provenance.params.get("source_form")?;
+    // A path that does not exist has no form: it is not a "repository" for want of being a file. The
+    // re-decode says `source not found`, as it does for every source kind.
+    if matches!(std::fs::symlink_metadata(repo), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
+    {
+        return None;
+    }
     let given = if repo.is_file() {
         "dumpfile"
     } else {

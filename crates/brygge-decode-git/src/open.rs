@@ -193,6 +193,12 @@ fn declares_sha256_object_format(config: &Path) -> bool {
 /// [`Error::FloorRefusal`] on a refused repository shape (CR-11) or a SHA-256 object-format repository;
 /// [`Error::Open`] if the path is not a readable Git repository.
 pub fn open(path: &Path) -> Result<gix::Repository, Error> {
+    // A path that does not exist says so, in the words every source kind uses (a dangling symlink exists).
+    if let Err(e) = std::fs::symlink_metadata(path) {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            return Err(Error::Open(format!("source not found: {}", path.display())));
+        }
+    }
     check_repository_shape(path)?;
     if declares_sha256_object_format(&git_dir_of(path).join("config")) {
         return Err(Error::FloorRefusal {

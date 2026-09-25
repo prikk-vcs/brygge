@@ -262,6 +262,12 @@ fn offset_minutes(tz: i64) -> Option<i16> {
 
 /// Resolve the repository root and its `.hg/store` directory.
 fn locate(path: &Path) -> Result<(PathBuf, PathBuf), Error> {
+    // A path that does not exist says so, in the words every source kind uses (a dangling symlink exists).
+    if let Err(e) = std::fs::symlink_metadata(path) {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            return Err(Error::Open(format!("source not found: {}", path.display())));
+        }
+    }
     let root = if path.join(".hg").is_dir() {
         path.to_path_buf()
     } else if path.file_name().is_some_and(|n| n == ".hg") && path.is_dir() {
