@@ -84,6 +84,9 @@ format from brygge would be built to be thrown away, and it could set a preceden
 design (prikk RFC 113 §6).
 
 ### Phase B0 — requirements to prikk (proactive, no code) — letter 001 sent 2026-09-23, answered
+- **prikk letter 004 (2026-10-15)** withdrew the hours figure, and gave release-build `seal`
+  measurements (see the B1 risk below). brygge's reply 003 (the figure removed; a read-back; prikk's offer to measure a shape accepted
+  for when its import work is scheduled) was authorized by the owner the same day.
 - **Letter 001** (an importer's requirements and questions) was sent with the owner's authorization. prikk
   answered the same day (its replies 001 and 002).
 - **What prikk has settled, and brygge builds to:**
@@ -116,20 +119,34 @@ design (prikk RFC 113 §6).
   written.
 - Gaps found while conforming go back to prikk as further letters (requirements or questions), never as
   a proposed prikk design.
-- **Risk — feasibility at scale (open, prikk-side; corrected per prikk reply 003).**
-  - **The figure:** prikk's `seal` reads O(N) objects per block, so seal time grows linearly with depth
-    and cumulatively about quadratically. The best evidence is a single-run projection of 23–101 hours at
-    depth 2,048 (prikk RFC 133 §5b, RFC 139). **That projection stands.**
-  - **The item that would change its shape** is reducing seal's per-block object reads, and **it is not
-    scheduled.** prikk will schedule it with its import work, and will tell brygge when.
-  - **A different, smaller cost:** `commit` baseline reconstruction (prikk RFC 136 increment 2c, queued).
-    It does not decide the projection.
-  - **The one lever known now:** batching several atoms into one block divides the number of seals. That
-    is reasoned from the mechanism, not measured, and it lowers the constant, not the shape. The batching
-    policy is prikk's foundations decision. brygge's IR keeps atom boundaries, so either policy can be
-    encoded.
-  - **Why it matters:** real migrations are 10⁴–10⁶ commits.
-  - **brygge's plan:** size nothing against a number until prikk reports.
+- **Risk — feasibility at scale (open, prikk-side; restated per prikk letter 004, 2026-10-15).**
+  - **prikk's earlier hours projection is withdrawn** (it came from an unoptimized build). brygge sized
+    nothing against it.
+  - **What prikk measured instead, in release builds** (its RFC 139 profile `prikk-self`, three histories
+    built block by block, medians):
+    - **before (0.47.0):** one `seal` at depth 1,024 took 4.5–5.0 s and about 1.8 GiB, growing with depth,
+      because `seal` walked the whole ancestor lineage;
+    - **since 0.48.0 (2026-09-30):** `seal`, `merge` and `sync seal` start from the nearest
+      maintainer-signed checkpoint (every 64th block) and fold at most 63 blocks. At depth 1,024, an
+      ordinary `seal` takes 0.12 s and about 30 MiB, and a checkpoint-writing `seal` 1.8 s. Building to
+      1,024 took 279 s, against 1,947 s before;
+    - **it is not flat:** at depth 2,048 an ordinary `seal` averaged 1.7 s, and building took 1,308 s. The
+      fold and the checkpoint write grow with the **tree's size**, not with depth.
+  - **When the full walk still happens:** a checkpoint no adopted maintainer signed, or one more than 63
+    blocks back, is not used; and the first `seal` after an upgrade walks the whole history once.
+  - **Deepest measured: 2,048 sealed blocks.** prikk does not estimate beyond it, and real migrations are
+    10⁴–10⁶ commits. prikk has not re-measured on 0.52.0, which did not change how `seal` derives its
+    state.
+  - **What decides a deep import now:** the number of blocks it writes, and the per-seal cost at that
+    depth, which grows with the tree's size.
+    - **Batching** atoms into fewer, larger blocks still divides the number of seals. The batching policy
+      is prikk's foundations decision. brygge's IR keeps atom boundaries, so either policy can be encoded.
+    - **Memory** is no longer the first limit at measured depths.
+  - **Also paid by an import:** `commit` baseline reconstruction (prikk RFC 136 increment 2c; letter 004
+    does not restate its status).
+  - **brygge's plan:** size nothing beyond what prikk has measured. prikk offers to measure a shape brygge
+    describes: commits, files per commit, atoms per block. brygge can supply measured shapes of real
+    repositories from its IR when prikk's import work is scheduled.
 
 ### Phase B2 — a second target encoder
 - Proves PU-3: a non-prikk target's encoder written against the IR alone, with no brygge change.
