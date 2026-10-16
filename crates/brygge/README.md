@@ -14,7 +14,7 @@ This crate is the command-line tool. The IR library is [`brygge-ir`](https://cra
 cargo install --locked brygge
 ```
 
-It needs Rust 1.85 or later. `--locked` builds the exact dependency set brygge was tested with. Prebuilt
+It needs Rust 1.87 or later. `--locked` builds the exact dependency set brygge was tested with. Prebuilt
 binaries for Linux (x86_64, arm64), macOS (Apple Silicon) and Windows (x86_64) are attached to every
 [GitHub release](https://github.com/prikk-vcs/brygge/releases) from 0.1.1 on, with checksums and build-provenance
 attestations (`gh attestation verify <file> --repo prikk-vcs/brygge`). Decoding a

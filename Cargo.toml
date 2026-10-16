@@ -5,7 +5,9 @@ members  = ["crates/*", "tools/*"]
 [workspace.package]
 version      = "0.3.0"
 edition      = "2024"
-rust-version = "1.85"
+# Raised from 1.85 to 1.87 for the ruzstd security fix below (RUSTSEC-2026-0344): ruzstd's patched line
+# (>=0.9.1) declares rust-version 1.87, and no earlier line is patched. See the dependency's own comment.
+rust-version = "1.87"
 license      = "Apache-2.0"
 authors      = ["nabbisen"]
 repository   = "https://github.com/prikk-vcs/brygge"
@@ -33,7 +35,10 @@ gix = { version = "0.87", features = ["blob-diff", "revision"] }
 # (no C): flate2 with the `rust_backend` (miniz_oxide) for zlib chunks, ruzstd for zstd chunks (the modern
 # hg default). Small, decompression-only; isolated in `brygge-decode-hg` (RFC 009 D-1). No gix-scale review.
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
-ruzstd = "0.7"
+# >= 0.9.1 only: RUSTSEC-2026-0344 (a decompression bomb — a compressed block's decoded size was never
+# bounded before 0.9.1) is patched there and nowhere earlier. 0.9.1 declares rust-version 1.87, which is
+# why the workspace MSRV above is 1.87, not 1.85 (security-fix handoff, review request 035).
+ruzstd = "0.9"
 # The Mercurial decoder's revision-hash verification: SHA-1 with collision detection, as Mercurial itself
 # uses (sha1dc). Already in the lock file through gix-hash, so this adds only a dependency edge for
 # `brygge-decode-hg`, not a new crate (architect decision under RFC 009, release-prep handoff §1).

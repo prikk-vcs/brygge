@@ -487,6 +487,16 @@ fn check_flags(e: &Entry) -> Result<(), Error> {
 /// `0x00` raw (byte 0 included) · `u` raw (byte 0 dropped) · `x` zlib · `0x28` zstd frame. Bounded at
 /// `limits.max_revision_bytes` + 1 for zlib and zstd alike (RFC 010 CR-17): a compression bomb — a small
 /// stored chunk that inflates to an enormous text — is refused, not allocated.
+///
+/// **zstd, specifically (RUSTSEC-2026-0344, closed by upgrading to `ruzstd` ≥ 0.9.1):** before 0.9.1, one
+/// compressed *block*'s decoded size was never checked against the spec's own per-block cap (the smaller of
+/// the window and 128 KiB), so a crafted frame could make `ruzstd` allocate without bound **inside a single
+/// `read()` call** — before this function's `.take(limits.max_revision_bytes + 1)` ever got control back, so
+/// that wrapper could not have stopped it. `ruzstd` ≥ 0.9.1 enforces the per-block cap itself, independent of
+/// `limits`; the window is additionally capped at `limits.max_revision_bytes` explicitly here (a window
+/// cannot usefully exceed the revision ceiling it would feed), so an oversized window is a typed
+/// `ResourceLimit`, refused in [`ruzstd::decoding::FrameDecoder::init`] before any window buffer is
+/// allocated — never a bare `Read` error from exhausting memory.
 fn decompress(chunk: &[u8], limits: &Limits) -> Result<Vec<u8>, Error> {
     let Some(&first) = chunk.first() else {
         return Ok(Vec::new());
@@ -509,8 +519,16 @@ fn decompress(chunk: &[u8], limits: &Limits) -> Result<Vec<u8>, Error> {
             Ok(out)
         }
         0x28 => {
-            let mut dec = ruzstd::StreamingDecoder::new(chunk)
-                .map_err(|e| read_err(format!("zstd init: {e}")))?;
+            let mut dec = ruzstd::decoding::StreamingDecoder::new_with_max_window_size(
+                chunk,
+                limits.max_revision_bytes,
+            )
+            .map_err(|e| match e {
+                ruzstd::decoding::errors::FrameDecoderError::WindowSizeTooBig { .. } => {
+                    resource_limit("a zstd frame's window", limits.max_revision_bytes)
+                }
+                other => read_err(format!("zstd init: {other}")),
+            })?;
             let mut out = Vec::new();
             (&mut dec)
                 .take(limits.max_revision_bytes + 1)

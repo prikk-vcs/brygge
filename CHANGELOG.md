@@ -8,6 +8,21 @@ Every handoff adds its own entry in its own commit.
 
 ## [Unreleased]
 
+### Security
+
+- **A crafted Mercurial zstd-compressed revlog chunk could exhaust memory** (RUSTSEC-2026-0344 in `ruzstd`
+  before 0.9.1; present in every brygge release, 0.1.0–0.3.0). A compressed block's decoded size was never
+  bounded before `ruzstd` 0.9.1, so a tiny stored chunk (well under 1 KB) could make the decoder allocate
+  gigabytes inside a single read, before brygge's own ceiling ever got a chance to run. `ruzstd` is upgraded
+  to ≥ 0.9.1, which bounds every block against the format's own 128 KiB cap; the zstd frame's window is also
+  now capped explicitly at brygge's own revision-size ceiling, refused before any window buffer is allocated.
+  Denial of service only; no memory corruption. The zlib path was never affected.
+
+### Changed
+
+- **MSRV raised from 1.85 to 1.87**, forced by the security fix above: `ruzstd`'s only patched line
+  (≥ 0.9.1) declares `rust-version = "1.87"`, and no earlier line carries the fix.
+
 ## [0.3.0] — 2026-09-25
 
 **Source reach: brygge now reads Subversion, Mercurial and CVS history it used to refuse or leave out.**

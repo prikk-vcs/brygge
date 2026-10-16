@@ -299,6 +299,107 @@ fn a_zstd_chunk_that_inflates_past_the_limit_is_refused() {
     }
 }
 
+// ---- RUSTSEC-2026-0344: a single zstd block over the spec's own 128 KiB cap -----------------------
+//
+// No upstream fixture exists for this advisory (the fix commit, `d3907c960c`, carries none): a real
+// encoder never produces an out-of-spec block, so the frame below is hand-built, bit by bit, against
+// RFC 8878 and checked against `ruzstd` 0.9.1's own decoder (not copied from anywhere). It is a
+// 22-byte zstd frame with one block: one literal byte, then one RLE-mode sequence whose match length
+// (code 52, the maximum, plus 16 extra bits all set) decodes to 131,074 bytes — 3 bytes over the
+// 128 KiB (131,072-byte) cap RFC 8878 §3.1.1.2.4 puts on every block. Before `ruzstd` 0.9.1 this was
+// never checked per block (only brygge's own outer ceiling checked the *total*, and only after a whole
+// `read()` call returned — too late for a bomb that grows unbounded inside one call); 0.9.1 checks it
+// as the block decodes and refuses it immediately, which is what these two tests prove.
+
+/// One base-128 "varint" is not used here (the tag/sequence header fields below are literal bytes), but
+/// the 3-byte little-endian block header is: bit 0 `Last_Block`, bits 2:1 `Block_Type`, bits 23:3
+/// `Block_Size` (21 bits).
+fn zstd_block_header(last: bool, block_type: u8, size21: u32) -> [u8; 3] {
+    [
+        u8::from(last) | (block_type << 1) | (((size21 & 0x1f) as u8) << 3),
+        ((size21 >> 5) & 0xff) as u8,
+        ((size21 >> 13) & 0xff) as u8,
+    ]
+}
+
+/// The 22-byte frame described above.
+fn zstd_single_block_over_the_cap() -> Vec<u8> {
+    // regenerated_size = 1 literal + (65539 + 65535) match = 131,075 decoded bytes total, 3 over the cap.
+    let mut block = vec![
+        0x08,        // literals header: Raw, size_format=0, regenerated_size=1 (5 bits)
+        b'A',        // the one literal byte
+        0x01,        // Number_of_Sequences = 1
+        0b0101_0100, // ll/of/ml Symbol_Compression_Modes, all RLE (bits 7:6, 5:4, 3:2)
+        1,           // ll RLE symbol: code 1 -> literal-length value 1, 0 extra bits
+        0,           // of RLE symbol: code 0 -> offset 1 (a one-byte-back repeat), 0 extra bits
+        52,          // ml RLE symbol: code 52 -> base 65,539, 16 extra bits
+    ];
+    // The reversed sequences bitstream: read from the end backward, MSB-first within each byte. Byte
+    // 0x01 (read first) is 7 zero pad bits then the end-of-stream sentinel `1`; the following 16 bits
+    // (0xFF, 0xFF) are the match length's 16 extra bits, all set -> ml = 65,539 + 65,535 = 131,074.
+    block.extend_from_slice(&[0xFF, 0xFF, 0x01]);
+
+    let mut f = Vec::new();
+    f.extend_from_slice(&0xFD2F_B528u32.to_le_bytes()); // magic
+    f.push((2 << 6) | (1 << 5)); // frame descriptor: Frame_Content_Size is 4 bytes, Single_Segment set
+    f.extend_from_slice(&131_075u32.to_le_bytes()); // Frame_Content_Size
+    f.extend_from_slice(&zstd_block_header(true, 2, block.len() as u32)); // Compressed, last block
+    f.extend_from_slice(&block);
+    f
+}
+
+#[test]
+fn a_zstd_block_over_the_128kib_cap_is_refused_not_allocated() {
+    let chunk = zstd_single_block_over_the_cap();
+    assert_eq!(chunk.first(), Some(&0x28), "zstd frame magic's first byte");
+
+    let dir = unique_dir("zstd-rustsec-2026-0344");
+    // The default ceiling (1 GiB) is nowhere near 131 KiB: this must be refused on the block's own
+    // merits, not because of brygge's application-level ceiling.
+    let index_path = write_single_rev_revlog(&dir, "rev", &chunk, 131_075);
+    let rl = Revlog::open(&index_path).expect("open revlog");
+    let result = rl.revision(0);
+    let _ = std::fs::remove_dir_all(&dir);
+    match result {
+        Err(crate::Error::Read(msg)) => {
+            assert!(
+                msg.contains("zstd"),
+                "the zstd decoder's own refusal, not brygge's outer ceiling: {msg}"
+            );
+        }
+        other => panic!("expected a typed Read error (refused, not allocated), got {other:?}"),
+    }
+}
+
+#[test]
+fn a_zstd_frame_declaring_an_enormous_window_is_a_resource_limit_before_any_allocation() {
+    // A non-single-segment frame whose Window_Descriptor declares a 1 GiB window (exponent 20,
+    // mantissa 0: window_log = 30, window_size = 2^30), with no blocks at all (the point here is the
+    // window check at `init`, before any block is even read).
+    let mut f = Vec::new();
+    f.extend_from_slice(&0xFD2F_B528u32.to_le_bytes());
+    f.push(0); // frame descriptor: no FCS, not single-segment, no checksum, no dict id
+    f.push(20 << 3); // window descriptor: exponent 20, mantissa 0 -> 1 GiB
+    f.extend_from_slice(&zstd_block_header(true, 0, 0)); // one empty Raw block, last
+
+    let dir = unique_dir("zstd-huge-window");
+    let index_path = write_single_rev_revlog(&dir, "rev", &f, 0);
+    let rl = Revlog::open(&index_path).expect("open revlog");
+    // Far below the declared 1 GiB window: the refusal must come from the window check, not from ever
+    // trying to decode a (nonexistent) oversized revision.
+    let limits = Limits {
+        max_revision_bytes: 4096,
+    };
+    let result = rl.revision_with(0, &limits);
+    let _ = std::fs::remove_dir_all(&dir);
+    match result {
+        Err(crate::Error::ResourceLimit { what, .. }) => {
+            assert!(what.contains("window"), "{what}");
+        }
+        other => panic!("expected a resource-limit refusal, got {other:?}"),
+    }
+}
+
 #[test]
 fn a_snapshot_length_mismatch_against_the_index_is_a_read_error() {
     // Marker 0x00 is raw (byte 0 included), so the reconstructed text is exactly this chunk.

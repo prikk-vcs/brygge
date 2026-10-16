@@ -13,7 +13,7 @@ network, and writes only where you tell it.
 cargo install --locked brygge
 ```
 
-brygge needs Rust 1.85 or later to build. `--locked` builds the exact dependency set brygge was
+brygge needs Rust 1.87 or later to build. `--locked` builds the exact dependency set brygge was
 tested with; without it, cargo may pick newer dependencies that need a newer Rust. Decoding a live
 Subversion repository also needs `svnadmin` on your `PATH`; decoding a dumpfile needs nothing else.
 Prebuilt binaries for Linux (x86_64, arm64), macOS (Apple Silicon) and Windows (x86_64) are attached to every

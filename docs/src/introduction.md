@@ -17,7 +17,7 @@ It reads untrusted repositories, uses no network, and writes only the file you n
 cargo install --locked brygge
 ```
 
-brygge needs Rust 1.85 or later to build. Prebuilt binaries for Linux (x86_64, arm64), macOS (Apple
+brygge needs Rust 1.87 or later to build. Prebuilt binaries for Linux (x86_64, arm64), macOS (Apple
 Silicon) and Windows (x86_64) are attached to every
 [GitHub release](https://github.com/prikk-vcs/brygge/releases) from 0.1.1 on.
 
