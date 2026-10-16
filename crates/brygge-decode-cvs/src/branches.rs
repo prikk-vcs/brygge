@@ -72,7 +72,7 @@ pub struct MagicBranch {
 #[must_use]
 pub fn magic_branch(rev: &RevNum) -> Option<MagicBranch> {
     let n = rev.0.len();
-    if n < 4 || n % 2 != 0 || rev.0.get(n - 2) != Some(&0) {
+    if n < 4 || !n.is_multiple_of(2) || rev.0.get(n - 2) != Some(&0) {
         return None;
     }
     let point = RevNum(rev.0.get(..n - 2)?.to_vec());

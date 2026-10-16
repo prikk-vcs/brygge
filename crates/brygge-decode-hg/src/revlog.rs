@@ -242,7 +242,7 @@ impl Revlog {
     /// own offset. We read the `.d` sequentially (offset == running sum of comp_len), which is how a
     /// revlog is laid out, avoiding reliance on the version-polluted rev-0 offset field.
     fn parse_split(index_buf: &[u8]) -> Result<Vec<Entry>, Error> {
-        if index_buf.len() % ENTRY_LEN != 0 {
+        if !index_buf.len().is_multiple_of(ENTRY_LEN) {
             return Err(read_err("revlog index size is not a multiple of 64"));
         }
         let count = index_buf.len() / ENTRY_LEN;

@@ -1683,7 +1683,7 @@ fn big(seed: u8, n: usize) -> String {
         x ^= x >> 17;
         x ^= x << 5;
         s.push(char::from(b'a' + (x % 26) as u8));
-        if s.len() % 61 == 0 {
+        if s.len().is_multiple_of(61) {
             s.push('\n');
         }
     }
