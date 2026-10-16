@@ -8,15 +8,29 @@ Every handoff adds its own entry in its own commit.
 
 ## [Unreleased]
 
+## [0.3.1] — 2026-10-17
+
+**Security: a crafted Mercurial repository could exhaust brygge's memory.** In every release from 0.1.0
+to 0.3.0, a zstd-compressed revlog chunk of a few tens of kilobytes could make brygge allocate gigabytes
+and fail (RUSTSEC-2026-0344, in `ruzstd` before 0.9.1). It is a denial of service only, with no memory
+corruption, and it needs a hostile repository. 0.3.1 upgrades `ruzstd` and bounds every zstd block and
+window before allocation. **Upgrade if you decode Mercurial repositories you do not control.** The
+minimum supported Rust version rises from 1.85 to 1.87, which the fix requires; the prebuilt binaries are
+unaffected. Decoding is otherwise unchanged. Install with `cargo install --locked brygge`, or download a
+binary from the GitHub release.
+
+The detailed changes that made up 0.3.1 follow.
+
 ### Security
 
 - **A crafted Mercurial zstd-compressed revlog chunk could exhaust memory** (RUSTSEC-2026-0344 in `ruzstd`
   before 0.9.1; present in every brygge release, 0.1.0–0.3.0). A compressed block's decoded size was never
-  bounded before `ruzstd` 0.9.1, so a tiny stored chunk (well under 1 KB) could make the decoder allocate
-  gigabytes inside a single read, before brygge's own ceiling ever got a chance to run. `ruzstd` is upgraded
-  to ≥ 0.9.1, which bounds every block against the format's own 128 KiB cap; the zstd frame's window is also
-  now capped explicitly at brygge's own revision-size ceiling, refused before any window buffer is allocated.
-  Denial of service only; no memory corruption. The zlib path was never affected.
+  bounded before `ruzstd` 0.9.1, so a stored chunk of a few tens of kilobytes (60 KB in brygge's
+  reproduction) could make the decoder allocate gigabytes (2.6 GB) inside a single read, before brygge's
+  own ceiling ever got a chance to run. `ruzstd` is upgraded to ≥ 0.9.1, which bounds every block against
+  the format's own 128 KiB cap; the zstd frame's window is also now capped explicitly at brygge's own
+  revision-size ceiling, refused before any window buffer is allocated. Denial of service only; no memory
+  corruption. The zlib path was never affected.
 
 ### Changed
 
