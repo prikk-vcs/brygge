@@ -62,6 +62,7 @@ in the same commit that moves an RFC between folders.
 |---|---|---|
 | [010](accepted/010-bounded-memory-and-streaming.md) | Bounded memory & streaming (increment 1 shipped in 0.1.0; increments 3, 3b and 5 in 0.2.0; increments 2 and 4 deferred by measurement) | `handoffs/010-bounded-memory-and-streaming/` |
 | [012](accepted/012-release-automation.md) | Release automation: CI on Linux, macOS and Windows; tag-triggered, owner-approved publication (crates.io trusted publishing); binaries with provenance; GitHub release from the CHANGELOG | `handoffs/012-release-automation/` |
+| [014](accepted/014-hardening.md) | Hardening (0.4.0): mutation tests of every untrusted parser on stable Rust (quick in every test run, deep on parser or dependency changes and at each cut, under a memory cap); real-world validation on public repositories | `handoffs/014-hardening/` |
 
 ### Done
 
