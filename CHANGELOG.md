@@ -8,6 +8,11 @@ Every handoff adds its own entry in its own commit.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`brygge … | head` (or any reader that stops early) no longer panics with "Broken pipe"**: brygge stops
+  writing and exits with the command's own status. Other output errors are reported and exit `1`.
+
 ## [0.3.1] — 2026-10-17
 
 **Security: a crafted Mercurial repository could exhaust brygge's memory.** In every release from 0.1.0

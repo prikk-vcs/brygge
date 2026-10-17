@@ -21,6 +21,7 @@ use brygge_ir::{Decoded, Ir, LossClass};
 use crate::cli::{Format, SourceKind};
 use crate::display;
 use crate::exit;
+use crate::output;
 
 const VERIFY_VERSION: u32 = 4;
 const INSPECT_VERSION: u32 = 4;
@@ -444,7 +445,7 @@ pub fn run_decode(
     reconstruct_refs: bool,
     format: Format,
 ) -> i32 {
-    eprintln!("{}", faithfulness_statement(kind));
+    output::stderr(faithfulness_statement(kind));
 
     let default_cvs = brygge_decode_cvs::Options::default();
     let ir = match decode_source(
@@ -460,23 +461,26 @@ pub fn run_decode(
     ) {
         Ok(ir) => ir,
         Err((code, msg)) => {
-            eprintln!("{}", display::human(&msg));
+            output::stderr(&display::human(&msg));
             return code;
         }
     };
 
     let bytes = brygge_ir::to_bytes(&ir);
     if let Err(e) = atomic_write(out, &bytes) {
-        eprintln!("cannot write {}: {e}", out.display());
+        output::stderr(&format!("cannot write {}: {e}", out.display()));
         return exit::FAILURE;
     }
-    eprintln!("wrote {} ({} bytes)", out.display(), bytes.len());
+    output::stderr(&format!("wrote {} ({} bytes)", out.display(), bytes.len()));
 
     // The end-of-run report is `inspect`'s default report (FS-02): the exact same call.
     let report = brygge_ir::honesty::summary(&ir);
-    match format {
-        Format::Human => print!("{}", report.render_human()),
-        Format::Machine => print!("{}", report.render_machine()),
+    let rendered = match format {
+        Format::Human => report.render_human(),
+        Format::Machine => report.render_machine(),
+    };
+    if let Some(code) = output::stdout(&rendered) {
+        return code;
     }
     // Exit class (CL-08): a flagged condition (RFC 011 D-8 — an unresolved SVN layout, a CVS
     // reconstruction under the confidence floor) takes precedence; else recorded loss if any
@@ -503,33 +507,32 @@ pub fn run_inspect(artifact: &Path, atoms: bool, format: Format) -> i32 {
     let decoded = match read_ir(artifact) {
         Ok(d) => d,
         Err(e) => {
-            eprintln!("{}", display::human(&e));
+            output::stderr(&display::human(&e));
             return exit::FAILURE;
         }
     };
     if decoded.skipped_non_critical_fields > 0 {
-        eprintln!(
+        output::stderr(&format!(
             "note: {} field(s) from a newer contract were not understood and were skipped (none of \
              them can change what this artifact claims)",
             decoded.skipped_non_critical_fields
-        );
+        ));
     }
     let ir = &decoded.ir;
     let report = brygge_ir::honesty::summary(ir)
         .with_skipped_non_critical_fields(decoded.skipped_non_critical_fields);
-    match format {
-        Format::Human => {
-            print!("{}", report.render_human());
-            if atoms {
-                print!("{}", render_atoms_human(ir));
-            }
-        }
-        Format::Machine => {
-            print!("{}", report.render_machine());
-            if atoms {
-                print!("{}", render_atoms_machine(ir));
-            }
-        }
+    let mut rendered = match format {
+        Format::Human => report.render_human(),
+        Format::Machine => report.render_machine(),
+    };
+    if atoms {
+        rendered.push_str(&match format {
+            Format::Human => render_atoms_human(ir),
+            Format::Machine => render_atoms_machine(ir),
+        });
+    }
+    if let Some(code) = output::stdout(&rendered) {
+        return code;
     }
     exit::CLEAN
 }
@@ -1384,7 +1387,7 @@ pub fn run_verify(artifact: &Path, against_source: Option<&Path>, format: Format
     let bytes = match std::fs::read(artifact) {
         Ok(b) => b,
         Err(e) => {
-            eprintln!("cannot read {}: {e}", artifact.display());
+            output::stderr(&format!("cannot read {}: {e}", artifact.display()));
             return exit::FAILURE;
         }
     };
@@ -1431,7 +1434,9 @@ pub fn run_verify(artifact: &Path, against_source: Option<&Path>, format: Format
     let skipped = parsed
         .as_ref()
         .map_or(0, |decoded| decoded.skipped_non_critical_fields);
-    render_verify(format, &checks, internal_pass, &against, &verdict, skipped);
+    if let Some(code) = render_verify(format, &checks, internal_pass, &against, &verdict, skipped) {
+        return code;
+    }
     verdict.exit_code()
 }
 
@@ -1488,6 +1493,10 @@ fn verify_machine_lines(
     out
 }
 
+/// Renders the report into one string, then writes it in a single call (so a reader that closes the
+/// pipe mid-report is no different from one that closes it before the first byte: either way, at most
+/// one write is attempted). `Some(exit::FAILURE)` only for a genuine write error, not `BrokenPipe`; the
+/// caller must then return it instead of the exit code it was about to compute.
 fn render_verify(
     format: Format,
     checks: &[(&'static str, CheckOutcome)],
@@ -1495,7 +1504,8 @@ fn render_verify(
     against: &AgainstSourceOutcome,
     verdict: &Verdict,
     skipped_non_critical_fields: u64,
-) {
+) -> Option<i32> {
+    let mut s = String::new();
     match format {
         Format::Machine => {
             for line in verify_machine_lines(
@@ -1505,45 +1515,54 @@ fn render_verify(
                 verdict,
                 skipped_non_critical_fields,
             ) {
-                println!("{line}");
+                let _ = writeln!(s, "{line}");
             }
         }
         Format::Human => {
-            println!("verify — the honesty checks any reader can run with no source (always run):");
+            let _ = writeln!(
+                s,
+                "verify — the honesty checks any reader can run with no source (always run):"
+            );
             for (name, outcome) in checks {
                 let mark = match outcome {
                     CheckOutcome::Pass => "ok",
                     CheckOutcome::Fail(_) => "FAIL",
                     CheckOutcome::NotChecked(_) => "not-checked",
                 };
-                println!("  [{mark}] {name}");
+                let _ = writeln!(s, "  [{mark}] {name}");
                 if let Some(d) = outcome.detail() {
-                    println!("      {}", display::human(d));
+                    let _ = writeln!(s, "      {}", display::human(d));
                 }
             }
-            println!(
+            let _ = writeln!(
+                s,
                 "  authorship: Unverifiable by construction (no IR field can express target \
                  verification)"
             );
-            println!(
+            let _ = writeln!(
+                s,
                 "  internal: {}",
                 if internal_pass { "pass" } else { "fail" }
             );
             if let AgainstSourceOutcome::NotChecked(reason) = against {
-                println!(
+                let _ = writeln!(
+                    s,
                     "  against-source: could not be checked ({})",
                     display::human(reason)
                 );
             } else if !matches!(against, AgainstSourceOutcome::NotRun) {
-                println!("  against-source: {}", against.human_label());
+                let _ = writeln!(s, "  against-source: {}", against.human_label());
                 if let Some(d) = against.detail().or_else(|| against.note()) {
-                    println!("      {}", display::human(d));
+                    let _ = writeln!(s, "      {}", display::human(d));
                 }
             }
-            println!("{}", verdict.human_line());
+            let _ = writeln!(s, "{}", verdict.human_line());
         }
     }
+    output::stdout(&s)
 }
 
 #[cfg(test)]
+#[allow(clippy::print_stdout, clippy::print_stderr)]
+// test diagnostics ("skipping: ... not on PATH")
 mod tests;

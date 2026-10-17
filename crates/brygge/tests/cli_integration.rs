@@ -428,3 +428,171 @@ fn a_check_that_could_not_run_says_not_checked_in_both_forms_and_its_detail_foll
     assert!(!h.contains("n/a"), "{h}");
     let _ = std::fs::remove_file(&path);
 }
+
+// ---- the CLI must not panic when its reader closes the pipe (handoff `cli-broken-pipe-handoff-v1.md`) ---
+
+use std::collections::BTreeMap;
+use std::io::{BufRead, BufReader, Read as _};
+
+/// Spawn `args`, read at most one line of stdout, then drop that handle (closing our end of the pipe)
+/// before waiting for the child. Returns the exit code and the full stderr text.
+fn run_and_close_stdout_after_one_line(args: &[&str]) -> (Option<i32>, String) {
+    let mut child = Command::new(bin())
+        .args(args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn brygge");
+    {
+        let stdout = child.stdout.take().expect("piped stdout");
+        let mut reader = BufReader::new(stdout);
+        let mut line = String::new();
+        let _ = reader.read_line(&mut line); // best effort; some reports are a single short line
+        // `reader` (and the `ChildStdout` it owns) is dropped here, closing our read end before `wait`.
+    }
+    let status = child.wait().expect("wait for brygge");
+    let mut stderr = String::new();
+    child
+        .stderr
+        .take()
+        .expect("piped stderr")
+        .read_to_string(&mut stderr)
+        .expect("read stderr");
+    (status.code(), stderr)
+}
+
+/// A synthetic artifact with `n` atoms (one file, modified `n` times), so `inspect --atoms` renders a
+/// report far bigger than any pipe buffer (RFC 010-scale default is 64 KiB on Linux): the writer is then
+/// genuinely still writing, not merely racing a reader that already drained everything, when our one-line
+/// read closes the pipe underneath it.
+fn big_artifact(n: usize) -> std::path::PathBuf {
+    let mut builder = brygge_ir::builder::IrBuilder::new(brygge_ir::ImportProvenance {
+        source: brygge_ir::SourceIdentity {
+            kind: brygge_ir::SourceKind::Git,
+            repo_id: b"r".to_vec(),
+            atom_id: b"r".to_vec(),
+            signatures: Vec::new(),
+            extras: Vec::new(),
+        },
+        brygge_version: "0.1.0".into(),
+        decoder: "brygge-decode-git".into(),
+        decoder_version: "0.1.0".into(),
+        params: BTreeMap::new(),
+    });
+    let mut parent = None;
+    for i in 0..n {
+        let blob = builder.add_blob(format!("content {i}").into_bytes());
+        let op = if i == 0 {
+            brygge_ir::model::PathOp::Add {
+                path: "f".into(),
+                blob,
+                mode: 0o100_644,
+                status: brygge_ir::status::EpistemicStatus::Stated,
+            }
+        } else {
+            brygge_ir::model::PathOp::Modify {
+                path: "f".into(),
+                blob,
+                mode: 0o100_644,
+                status: brygge_ir::status::EpistemicStatus::Stated,
+            }
+        };
+        let id = builder
+            .add_atom(brygge_ir::builder::AtomDraft {
+                parents: parent.into_iter().collect(),
+                ops: vec![op],
+                copies: Vec::new(),
+                metadata: brygge_ir::model::MetadataClaims::default(),
+                source: brygge_ir::model::SourceIdentity {
+                    kind: brygge_ir::SourceKind::Git,
+                    repo_id: b"r".to_vec(),
+                    atom_id: format!("c{i}").into_bytes(),
+                    signatures: Vec::new(),
+                    extras: Vec::new(),
+                },
+                status: brygge_ir::status::EpistemicStatus::Stated,
+            })
+            .expect("add_atom");
+        parent = Some(id);
+    }
+    let ir = builder.finish().expect("finish");
+    let bytes = brygge_ir::to_bytes(&ir);
+    let path = std::env::temp_dir().join(format!("brygge-cli-big-{}.ir", std::process::id()));
+    std::fs::write(&path, &bytes).unwrap();
+    path
+}
+
+#[test]
+fn version_through_a_closed_pipe_does_not_panic() {
+    let (code, stderr) = run_and_close_stdout_after_one_line(&["--version"]);
+    assert_eq!(code, Some(0), "stderr: {stderr}");
+    assert!(!stderr.contains("panicked"), "{stderr}");
+}
+
+#[test]
+fn inspect_of_a_large_report_through_a_closed_pipe_does_not_panic() {
+    // Large enough that the single `write_all` of the rendered report cannot complete in one pipe
+    // buffer: the writer is still blocked, mid-write, when our read end closes.
+    let path = big_artifact(5_000);
+    let (code, stderr) =
+        run_and_close_stdout_after_one_line(&["inspect", path.to_str().unwrap(), "--atoms"]);
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(code, Some(0), "stderr: {stderr}");
+    assert!(!stderr.contains("panicked"), "{stderr}");
+}
+
+#[test]
+fn decode_through_a_closed_pipe_still_writes_a_complete_verifying_artifact() {
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let repo = TempRepo::new();
+    repo.commit("a.txt", "one\n", "c1");
+    let out = repo.dir.join("out.ir");
+    let (code, stderr) = run_and_close_stdout_after_one_line(&[
+        "decode",
+        "git",
+        repo.path().to_str().unwrap(),
+        "--out",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(code, Some(0), "stderr: {stderr}");
+    assert!(!stderr.contains("panicked"), "{stderr}");
+    // The artifact itself does not depend on anyone having read the stdout report.
+    assert!(out.exists());
+    let verify = Command::new(bin())
+        .args(["verify"])
+        .arg(&out)
+        .output()
+        .unwrap();
+    assert_eq!(verify.status.code(), Some(0));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_stdout_write_error_that_is_not_a_broken_pipe_exits_failure_with_a_message() {
+    // /dev/full always answers ENOSPC: a real, non-pipe stdout write error.
+    let full = match std::fs::OpenOptions::new().write(true).open("/dev/full") {
+        Ok(f) => f,
+        Err(_) => {
+            eprintln!("skipping: /dev/full is not available");
+            return;
+        }
+    };
+    let out = Command::new(bin())
+        .args(["--version"])
+        .stdout(full)
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .expect("run brygge");
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("cannot write to stdout"), "{stderr}");
+    assert!(!stderr.contains("panicked"), "{stderr}");
+}

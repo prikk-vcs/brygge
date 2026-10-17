@@ -7,11 +7,17 @@
 //! core and `verify`'s internal checks link no decoder (RFC 009 D-1); `decode` and
 //! `verify --against-source` wire in the four decoder crates. Every string that can originate in a source
 //! repository is neutralized before it reaches stdout or stderr (`display`, CR-19).
+//!
+//! `print!`/`println!`/`eprint!`/`eprintln!` are denied outside tests: every write goes through
+//! [`output::stdout`]/[`output::stderr`] instead, so a reader that closes the pipe early (`brygge … |
+//! head`) cannot turn into a panic (`cli-broken-pipe-handoff-v1.md`).
+#![deny(clippy::print_stdout, clippy::print_stderr)]
 
 mod cli;
 mod commands;
 mod display;
 mod exit;
+mod output;
 
 use cli::Command;
 
@@ -20,7 +26,7 @@ fn main() {
     let code = match cli::parse(&args) {
         Ok(cmd) => run(cmd),
         Err(usage) => {
-            eprintln!("{usage}");
+            output::stderr(&usage);
             exit::USAGE
         }
     };
@@ -30,12 +36,20 @@ fn main() {
 fn run(cmd: Command) -> i32 {
     match cmd {
         Command::Version => {
-            println!("brygge {}", env!("CARGO_PKG_VERSION"));
-            println!("IR contract version: {}", brygge_ir::version::CURRENT);
+            let report = format!(
+                "brygge {}\nIR contract version: {}\n",
+                env!("CARGO_PKG_VERSION"),
+                brygge_ir::version::CURRENT
+            );
+            if let Some(code) = output::stdout(&report) {
+                return code;
+            }
             exit::CLEAN
         }
         Command::Help => {
-            println!("{}", cli::USAGE);
+            if let Some(code) = output::stdout(&format!("{}\n", cli::USAGE)) {
+                return code;
+            }
             exit::CLEAN
         }
         Command::Decode {
