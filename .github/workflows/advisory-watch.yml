@@ -1,0 +1,38 @@
+name: Advisory watch
+
+# RFC 012 D-7, reframed by RFC 014 D-7. This workflow watches one external event: a new RustSec advisory
+# against a dependency (RUSTSEC-2026-0306 against `faster-hex` is one already in the tree, informational,
+# via `gix-hash`). Nothing in this repository can signal that event, and GitHub offers no event for it, so
+# this workflow polls.
+#
+# It is brygge's only scheduled workflow. Every other job runs because something changed (a push, the paths
+# it guards), because a release is cut, or on demand — see `GOVERNANCE.md`, "Work is triggered, never
+# scheduled". Adding another scheduled workflow requires an RFC.
+#
+# `cargo-audit` is installed from source with `--locked`, not through a third-party action: this job's whole
+# purpose is to say whether the dependencies are trustworthy, so it adds no opaque dependency of its own.
+
+on:
+  schedule:
+    # Polling interval for the advisory database (not a task cadence).
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cargo-audit:
+    name: cargo audit (newest advisory database)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: stable
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+      # No `--no-fetch`: a fresh database is the point. A finding fails the job, with the advisory id and
+      # the affected crate in cargo-audit's own output.
+      - name: Run cargo audit
+        run: cargo audit

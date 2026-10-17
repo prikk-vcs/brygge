@@ -66,6 +66,13 @@ crates** (any C/FFI confined to a single dedicated crate **or a subprocess** —
 no `mod.rs`), tests as siblings (`#[cfg(test)] mod tests;`, never inline), no panics on fallible input,
 public items documented.
 
+## Work is triggered, never scheduled
+
+Jobs run on a push, a change to the paths they guard, a release cut, a finding, or on demand. The single
+exception is the **advisory watch** (`.github/workflows/advisory-watch.yml`), which polls the RustSec
+database because a new advisory is an external event with no trigger here. A new scheduled job needs an
+RFC.
+
 ## The security gate (brygge-specific)
 
 Any change that (a) adds or alters a **source decoder**, (b) changes a **dependency**, (c) touches an

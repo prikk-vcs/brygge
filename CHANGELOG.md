@@ -8,6 +8,12 @@ Every handoff adds its own entry in its own commit.
 
 ## [Unreleased]
 
+### Changed
+
+- The scheduled advisory check is renamed **Advisory watch** (`advisory-watch.yml`) and documented as
+  brygge's only scheduled job, the one poll of an external source; all other work is triggered (RFC 014
+  D-7).
+
 ### Fixed
 
 - **`brygge … | head` (or any reader that stops early) no longer panics with "Broken pipe"**: brygge stops

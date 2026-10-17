@@ -147,6 +147,9 @@ go-ahead given before the architect pushes the tag.
 
 ### D-7 — A scheduled advisory check
 
+**Amended by RFC 014 D-7 (2026-10-17):** the job is `advisory-watch.yml`, framed as the one poll of an
+external source; see `GOVERNANCE.md`.
+
 - Add `security-audit.yml`, following prikk's: a weekly `cargo audit` against a fresh advisory database,
   plus `workflow_dispatch`, with `contents: read`.
 - **Why:** advisories arrive with nobody touching the code. The `faster-hex` advisory already present
