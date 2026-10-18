@@ -464,4 +464,49 @@ else
     echo "skip check-published tests: the 0.1.0 tag is not fetched (git fetch --tags)"
 fi
 
+# ---- tools/check-release-dev-deps.sh: a scratch workspace reproducing review 059 F-1's bug shape ------
+devdeps="$scratch/devdeps"
+mkdir -p "$devdeps/pub-crate/src" "$devdeps/nopub-crate/src"
+cat >"$devdeps/Cargo.toml" <<'TOML'
+[workspace]
+resolver = "3"
+members = ["pub-crate", "nopub-crate"]
+TOML
+cat >"$devdeps/nopub-crate/Cargo.toml" <<'TOML'
+[package]
+name = "nopub-crate"
+version = "0.1.0"
+edition = "2021"
+publish = false
+TOML
+echo "" >"$devdeps/nopub-crate/src/lib.rs"
+cat >"$devdeps/pub-crate/Cargo.toml" <<'TOML'
+[package]
+name = "pub-crate"
+version = "0.1.0"
+edition = "2021"
+
+[dev-dependencies]
+nopub-crate = { version = "0.1.0", path = "../nopub-crate" }
+TOML
+echo "" >"$devdeps/pub-crate/src/lib.rs"
+
+expect_fail "check-release-dev-deps: a versioned dev-dependency on a publish = false crate fails" \
+    "pub-crate depends (dev, path) on nopub-crate with version requirement" \
+    tools/check-release-dev-deps.sh "$devdeps"
+
+# The fix: path-only, no version (review 059 F-1's actual fix, reproduced here).
+cat >"$devdeps/pub-crate/Cargo.toml" <<'TOML'
+[package]
+name = "pub-crate"
+version = "0.1.0"
+edition = "2021"
+
+[dev-dependencies]
+nopub-crate = { path = "../nopub-crate" }
+TOML
+expect_ok "check-release-dev-deps: a path-only dev-dependency on the same crate passes" \
+    tools/check-release-dev-deps.sh "$devdeps"
+expect_ok "check-release-dev-deps: this repository's own manifests pass" tools/check-release-dev-deps.sh
+
 echo "all $passed release-tool checks passed"

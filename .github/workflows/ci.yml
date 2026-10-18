@@ -131,6 +131,12 @@ jobs:
       - name: Release tools (tests)
         if: ${{ !inputs.ref }}
         run: ./tools/test-release-tools.sh
+      # Review 059 F-2: `cargo publish --workspace --dry-run` (used above and by release.yml's verify
+      # step) resolves workspace members locally and would not have caught F-1's bug (a dev-dependency
+      # with a version on a publish = false crate) — a real `cargo publish` fails at the first crate.
+      - name: Dev-dependencies on publish = false crates (RFC 014 D-1)
+        if: ${{ !inputs.ref }}
+        run: ./tools/check-release-dev-deps.sh
       # The book (RFC 012 D-11): built on every branch push and pull request, with the same pinned mdBook and
       # the same warning-is-failure script as docs.yml, so a broken SUMMARY.md or page is caught before the
       # deploy. Skipped in a release run: an old tag need not contain book.toml. Only the installed mdBook

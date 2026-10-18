@@ -15,5 +15,10 @@ homepage.workspace     = true
 brygge-ir = { workspace = true }
 sha2 = { workspace = true }
 
+[dev-dependencies]
+# Path-only, test-only (RFC 014 D-1): dropped by `cargo publish`. No `version` (review 059 F-1): see
+# brygge-ir's Cargo.toml for why.
+brygge-mutate = { path = "../../tools/mutate" }
+
 [lints]
 workspace = true

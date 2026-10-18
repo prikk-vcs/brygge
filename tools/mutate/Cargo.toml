@@ -1,0 +1,14 @@
+[package]
+name        = "brygge-mutate"
+description = "Dev-only mutation-testing harness (RFC 014 D-1/D-2/D-3): a small deterministic generator, generic and format-aware mutation operators, and a quick/deep test harness, used by each parser crate as a path-only dev-dependency. Not published; not part of the shipped surface."
+publish     = false
+
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+authors.workspace      = true
+repository.workspace   = true
+
+[lints]
+workspace = true

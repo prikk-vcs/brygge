@@ -49,6 +49,18 @@ impl RevNum {
             .collect::<Vec<_>>()
             .join(".")
     }
+
+    /// Whether this has a shape a delta chain can actually reach: trunk (`len == 2`), or a revision on
+    /// some branch (a branch point, a branch sequence number, and at least one revision on it — even
+    /// length, at least 4). RFC 014 D-1 mutation finding: a crafted `head` or revision number of any
+    /// other length (0, 1, or odd and `>= 3` — a branch's own *tag* shape, never a revision) made
+    /// `delta_path`'s branch arithmetic (`n - 2`, `n - 1`) subtract past zero and panic. Every place that
+    /// branches on `is_trunk()` must check this first instead of assuming the only other shape.
+    #[must_use]
+    pub fn has_reachable_shape(&self) -> bool {
+        let len = self.0.len();
+        len == 2 || (len >= 4 && len.is_multiple_of(2))
+    }
 }
 
 /// One revision's metadata and stored text (full content for `head`, a diff otherwise). Its own number
@@ -151,6 +163,11 @@ impl RcsFile {
             }
             if num.is_trunk() {
                 pending.insert(num);
+            } else if !num.has_reachable_shape() {
+                return Err(Error::Read(format!(
+                    "malformed revision number {} (neither trunk nor a reachable branch revision)",
+                    num.to_dotted()
+                )));
             } else {
                 let n = num.0.len();
                 let bp = RevNum(num.0.get(..n.saturating_sub(2)).unwrap_or(&[]).to_vec());
@@ -182,7 +199,7 @@ impl RcsFile {
                     }
                 }
                 steps += 1;
-                if steps > MAX_CHAIN {
+                if steps > self.chain_bound() {
                     return Err(Error::Read(
                         "delta chain too long (malformed ,v)".to_string(),
                     ));
@@ -228,7 +245,7 @@ impl RcsFile {
                     ))
                 })?;
             let mut left = targets.len();
-            for _ in 0..MAX_CHAIN {
+            for _ in 0..self.chain_bound() {
                 lines = apply_diff(&lines, &self.rev(&cur)?.text)?;
                 if targets.contains(&cur) {
                     if wanted.contains(&cur) {
@@ -271,6 +288,16 @@ impl RcsFile {
             .ok_or_else(|| Error::Read(format!("revision {} not found", num.to_dotted())))
     }
 
+    /// The chain-walk bound (RFC 014 D-1, review 059 F-3): a walk that is not stuck in a cycle can never
+    /// need more steps than there are revisions to visit at all, so bounding by the smaller of that and
+    /// `MAX_CHAIN` turns a crafted `next`/branch cycle's cost (otherwise the full `MAX_CHAIN`, measured at
+    /// about 40ms) into a handful of steps, with no change for any real file (whose length is always far
+    /// under `MAX_CHAIN` anyway). At least 1, so the walk's first position — which may already be the
+    /// target — is always checked even on a pathological zero-revision file.
+    fn chain_bound(&self) -> usize {
+        self.revisions.len().clamp(1, MAX_CHAIN)
+    }
+
     /// The chain `[head, …, target]` such that applying each successor's stored diff transforms the running
     /// content from `head` to `target`.
     fn delta_path(&self, target: &RevNum) -> Result<Vec<RevNum>, Error> {
@@ -278,7 +305,7 @@ impl RcsFile {
             // Walk from head down the `next` chain until target.
             let mut chain = Vec::new();
             let mut cur = self.head.clone();
-            for _ in 0..MAX_CHAIN {
+            for _ in 0..self.chain_bound() {
                 chain.push(cur.clone());
                 if cur == *target {
                     return Ok(chain);
@@ -297,6 +324,11 @@ impl RcsFile {
             Err(Error::Read(
                 "delta chain too long (malformed ,v)".to_string(),
             ))
+        } else if !target.has_reachable_shape() {
+            Err(Error::Read(format!(
+                "malformed revision number {} (neither trunk nor a reachable branch revision)",
+                target.to_dotted()
+            )))
         } else {
             // A branch revision: reconstruct the branch point, then walk forward along the branch.
             let n = target.0.len();
@@ -317,7 +349,7 @@ impl RcsFile {
                     ))
                 })?;
             let mut cur = bhead;
-            for _ in 0..MAX_CHAIN {
+            for _ in 0..self.chain_bound() {
                 path.push(cur.clone());
                 if cur == *target {
                     return Ok(path);
@@ -420,7 +452,13 @@ fn apply_diff(source: &[Vec<u8>], diff: &[u8]) -> Result<Vec<Vec<u8>>, Error> {
                 i += 1;
             }
             Some(b'a') => {
-                let mut lines = Vec::with_capacity(count);
+                // `count` is an attacker-controlled field (RFC 014 D-1 mutation finding): pre-allocating
+                // it directly is a decompression-bomb-shaped bug (RUSTSEC-2026-0344's class) — a huge
+                // claimed count with few actual lines following would try to reserve capacity for all of
+                // it before the loop's own `.ok_or` bound ever gets a chance to refuse. Capped to what the
+                // rest of the script could possibly hold; the loop below still refuses a genuinely
+                // malformed script exactly as before.
+                let mut lines = Vec::with_capacity(count.min(script.len().saturating_sub(i + 1)));
                 for k in 0..count {
                     let l = script.get(i + 1 + k).ok_or_else(|| {
                         Error::Read("RCS diff 'a' ran past its lines".to_string())
@@ -435,12 +473,20 @@ fn apply_diff(source: &[Vec<u8>], diff: &[u8]) -> Result<Vec<Vec<u8>>, Error> {
     }
 
     // Apply commands (which reference original-source line numbers, in increasing order).
+    //
+    // `start`/`after` are attacker-controlled fields (RFC 014 D-1 mutation finding): a claimed line
+    // number far past `source.len()` used to drive this loop directly, so a single tiny, well-formed-
+    // looking command (e.g. `d99999999999 1`) made this spin for as long as that claimed number, with no
+    // relation to the file's actual (already bounded) size — confirmed to hang for minutes on a few dozen
+    // bytes. Once `src` reaches `source.len()` there is nothing left to copy, so neither loop needs to run
+    // any further; capping their bound there costs nothing for a well-formed diff (`start`/`after` never
+    // legitimately exceed `source.len()`) and makes a malformed one's cost track the real source size.
     let mut out: Vec<Vec<u8>> = Vec::new();
     let mut src = 0usize; // count of source lines already consumed (0-based)
     for cmd in cmds {
         match cmd {
             DiffCmd::Delete { start, count } => {
-                let stop = start.saturating_sub(1);
+                let stop = start.saturating_sub(1).min(source.len());
                 while src < stop {
                     if let Some(l) = source.get(src) {
                         out.push(l.clone());
@@ -450,6 +496,7 @@ fn apply_diff(source: &[Vec<u8>], diff: &[u8]) -> Result<Vec<Vec<u8>>, Error> {
                 src = src.saturating_add(count);
             }
             DiffCmd::Add { after, lines } => {
+                let after = after.min(source.len());
                 while src < after {
                     if let Some(l) = source.get(src) {
                         out.push(l.clone());
@@ -627,6 +674,14 @@ pub fn parse_rcs(data: &[u8]) -> Result<RcsFile, Error> {
                     }
                     let name_bytes = cur.token_bytes();
                     if name_bytes.is_empty() {
+                        // RFC 014 D-1 mutation finding: at true end of input this must refuse, not spin
+                        // — advancing past a byte that does not exist is not "making progress", and a
+                        // truncated/malformed `symbols` list (no closing `;`) made this loop forever.
+                        if cur.peek().is_none() {
+                            return Err(Error::Read(
+                                "unexpected end of ,v in symbols list (no closing ';')".to_string(),
+                            ));
+                        }
                         cur.pos += 1;
                         continue;
                     }
@@ -740,6 +795,14 @@ pub fn parse_rcs(data: &[u8]) -> Result<RcsFile, Error> {
                     }
                     let b = cur.token();
                     if b.is_empty() {
+                        // Same fix as the symbols list above: a truncated `branches` list (no closing
+                        // `;`) must refuse at end of input, not spin forever.
+                        if cur.peek().is_none() {
+                            return Err(Error::Read(
+                                "unexpected end of ,v in branches list (no closing ';')"
+                                    .to_string(),
+                            ));
+                        }
                         cur.pos += 1;
                         continue;
                     }
@@ -905,3 +968,6 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod mutation;

@@ -28,6 +28,14 @@ allow = [
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+# A path-only dependency with no `version` is a "wildcard" by this check's own definition, but a
+# dev-dependency on a `publish = false`, path-only tool crate (e.g. `brygge-mutate`, RFC 014 D-1) is
+# exactly that on purpose: giving it a `version` instead would be kept in the published manifest, and
+# crates.io requires that version to exist there, which it never will (review 059 F-1 — a real `cargo
+# publish` would fail at the first crate; `--dry-run` resolves workspace members locally and would not
+# have caught it). The release-tools guard (`tools/check-release-dev-deps.sh`) independently checks that
+# no such versioned dev-dependency on a `publish = false` crate ever reaches a published manifest.
+allow-wildcard-paths = true
 # The light core (brygge-ir) must never link a source-decoder or C-git library (RFC 009 D-1/D-2).
 # Prefer pure-Rust `gix` for Git; ban the libgit2 bindings workspace-wide. A future decoder that truly
 # needs a C library adds a scoped, owner-approved exception in its own RFC.

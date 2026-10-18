@@ -14,5 +14,18 @@ homepage.workspace     = true
 [dependencies]
 sha2 = { workspace = true }
 
+[dev-dependencies]
+# Path-only, test-only (RFC 014 D-1): dropped by `cargo publish`, so brygge-ir's published dependency
+# closure is unchanged. `tools/check-ir-isolation.sh` checks the *normal* closure only, so this is
+# invisible to it (deliberately: a dev-dependency is not RFC 009 D-7's concern).
+#
+# No `version` here (review 059 F-1): a dev-dependency *with* a version is kept in the published
+# manifest, and crates.io requires that version to exist there — `brygge-mutate` never is and never will
+# be published. `cargo publish --workspace --dry-run` resolves workspace members locally and would not
+# have caught this; a real `cargo publish` would have failed at the first crate. Path-only is what cargo
+# actually strips. `allow-wildcard-paths` in `deny.toml` is what keeps this from tripping the
+# wildcard-dependency gate instead.
+brygge-mutate = { path = "../../tools/mutate" }
+
 [lints]
 workspace = true

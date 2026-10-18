@@ -263,3 +263,6 @@ fn check_structure(ir: &Ir) -> Result<()> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod mutation;

@@ -122,6 +122,47 @@ desc\n@@\n\n\n\
 }
 
 #[test]
+fn an_ed_add_commands_claimed_count_does_not_preallocate_past_the_script() {
+    // RFC 014 D-1 mutation finding: an `a<n> <count>` ed command's `count` used to pre-allocate a
+    // `Vec::with_capacity(count)` directly — a decompression-bomb-shaped bug (RUSTSEC-2026-0344's class):
+    // a claimed count of billions, with no lines actually following it, would try to reserve gigabytes
+    // before the loop's own bounds check ever ran. It must now be a typed error, fast, not an allocation
+    // attempt sized by an attacker-chosen field.
+    // head (1.2) carries full text; 1.1's stored `text` is the reverse delta applied to reach it, which
+    // is where an ed command's `count` is read — so the attack must land on a non-head revision.
+    let vfile = b"head\t1.2;\naccess;\nsymbols;\nlocks; strict;\n\n\n\
+1.2\ndate\t2024.01.02.00.00.00;\tauthor a;\tstate Exp;\nbranches;\nnext\t1.1;\n\n\
+1.1\ndate\t2024.01.01.00.00.00;\tauthor a;\tstate Exp;\nbranches;\nnext\t;\n\n\n\
+desc\n@@\n\n\n\
+1.2\nlog\n@head@\ntext\n@only line\n@\n\n\n\
+1.1\nlog\n@x@\ntext\n@a1 999999999999\nonly one line follows\n@\n";
+    let f = parse_rcs(vfile).unwrap();
+    assert!(f.content_of(&rev("1.1")).is_err());
+}
+
+#[test]
+fn an_ed_commands_claimed_line_number_cannot_spin_the_apply_loop() {
+    // RFC 014 D-1 mutation finding: `d<n> <count>`/`a<n> <count>`'s `n` drove the copy-unchanged-lines
+    // loop directly, with no bound tied to the source's actual (already-bounded) length — a single
+    // `d99999999999 1` command on a two-line source hung the decoder for minutes, confirmed by hand before
+    // the fix. It must now resolve near-instantly however large the claimed line number is.
+    let vfile = b"head\t1.2;\naccess;\nsymbols;\nlocks; strict;\n\n\n\
+1.2\ndate\t2024.01.02.00.00.00;\tauthor a;\tstate Exp;\nbranches;\nnext\t1.1;\n\n\
+1.1\ndate\t2024.01.01.00.00.00;\tauthor a;\tstate Exp;\nbranches;\nnext\t;\n\n\n\
+desc\n@@\n\n\n\
+1.2\nlog\n@head@\ntext\n@only line\n@\n\n\n\
+1.1\nlog\n@x@\ntext\n@d99999999999 1\n@\n";
+    let f = parse_rcs(vfile).unwrap();
+    let start = std::time::Instant::now();
+    let _ = f.content_of(&rev("1.1"));
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(1),
+        "took {:?}, far longer than a bounded-size source should ever need",
+        start.elapsed()
+    );
+}
+
+#[test]
 fn an_unparseable_date_is_a_read_error_not_a_fabricated_epoch() {
     // Review 008 R-3: a malformed date must never silently become `0` (1970) — that would fabricate a
     // false claim that then feeds clustering and `repo_id`.
@@ -712,4 +753,77 @@ fn a_nested_branch_point_that_does_not_exist_is_an_error_not_a_silent_omission()
             "{missing}: content_of agrees"
         );
     }
+}
+
+#[test]
+fn a_truncated_symbols_list_is_a_read_error_not_an_infinite_loop() {
+    // RFC 014 D-1 mutation finding: truncating a file right after "symbols\n" (no closing `;`) spun the
+    // admin-section parser forever — `cur.pos` kept advancing past the end of the buffer with no
+    // termination condition. Found by the mutation harness's truncate operator on the very first seed.
+    let vfile = b"head\t1.3;\naccess;\nsymbols\n";
+    let start = std::time::Instant::now();
+    let result = parse_rcs(vfile);
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(1),
+        "took {:?}: looks like it is spinning again",
+        start.elapsed()
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn a_truncated_branches_list_is_a_read_error_not_an_infinite_loop() {
+    // Same bug, same fix, the delta section's `branches` field.
+    let vfile = b"head\t1.1;\naccess;\nsymbols;\nlocks; strict;\n\n\n\
+1.1\ndate\t2024.01.01.00.00.00;\tauthor a;\tstate Exp;\nbranches\n";
+    let start = std::time::Instant::now();
+    let result = parse_rcs(vfile);
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(1),
+        "took {:?}: looks like it is spinning again",
+        start.elapsed()
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn a_malformed_revision_number_shape_is_a_read_error_not_a_subtraction_panic() {
+    // RFC 014 D-1 mutation finding: `delta_path`'s branch arithmetic (`n - 2`, `n - 1`) assumed every
+    // non-trunk revision number has at least 3 components; a mutated `head` of `1.33.12.00.00` (5
+    // components — a shape neither trunk nor an actual reachable branch revision) made it subtract past
+    // zero and panic with overflow checks on. Found by the mutation harness via a boundary write plus a
+    // splice, within a few thousand iterations of the very first seed.
+    let vfile = b"head\t1.33.12.00.00;\naccess;\nsymbols;\nlocks; strict;\n\n\n\
+1.33.12.00.00\ndate\t2024.01.01.00.00.00;\tauthor a;\tstate Exp;\nbranches;\nnext\t;\n\n\n\
+desc\n@@\n\n\n\
+1.33.12.00.00\nlog\n@x@\ntext\n@only line\n@\n";
+    let f = parse_rcs(vfile).unwrap();
+    assert!(f.content_of(&f.head).is_err());
+}
+
+#[test]
+fn a_next_cycle_is_refused_in_a_bounded_number_of_steps_not_the_full_max_chain() {
+    // Review 059 F-3: a 2-revision cycle in `next` (head and 1.2 point at each other; 1.1 exists but is
+    // never reached) used to cost the full MAX_CHAIN (1,000,000 steps, ~40ms measured by hand) before the
+    // existing "chain too long" refusal. Bounding the walk by the file's own revision count instead turns
+    // this into a handful of steps: a loose 50ms ceiling (two orders of magnitude above what a few
+    // revisions should ever need) still catches a regression back to the unbounded walk, without being
+    // so tight that ordinary machine noise could fail this test.
+    let vfile = b"head\t1.3;\naccess;\nsymbols;\nlocks; strict;\n\n\n\
+1.3\ndate\t2024.01.03.00.00.00;\tauthor a;\tstate Exp;\nbranches;\nnext\t1.2;\n\n\
+1.2\ndate\t2024.01.02.00.00.00;\tauthor a;\tstate Exp;\nbranches;\nnext\t1.3;\n\n\
+1.1\ndate\t2024.01.01.00.00.00;\tauthor a;\tstate Exp;\nbranches;\nnext\t;\n\n\n\
+desc\n@@\n\n\n\
+1.3\nlog\n@x@\ntext\n@only line\n@\n\n\n\
+1.2\nlog\n@y@\ntext\n@only line\n@\n\n\n\
+1.1\nlog\n@z@\ntext\n@only line\n@\n";
+    let f = parse_rcs(vfile).unwrap();
+    let start = std::time::Instant::now();
+    let result = f.content_of(&rev("1.1"));
+    let elapsed = start.elapsed();
+    assert!(result.is_err());
+    assert!(
+        elapsed < std::time::Duration::from_millis(50),
+        "took {elapsed:?}: looks like it ran the full MAX_CHAIN again"
+    );
 }

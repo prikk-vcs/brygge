@@ -85,6 +85,7 @@ name = "brygge-decode-cvs"
 version = "0.3.1"
 dependencies = [
  "brygge-ir",
+ "brygge-mutate",
  "sha2",
 ]
 
@@ -119,8 +120,13 @@ dependencies = [
 name = "brygge-ir"
 version = "0.3.1"
 dependencies = [
+ "brygge-mutate",
  "sha2",
 ]
+
+[[package]]
+name = "brygge-mutate"
+version = "0.3.1"
 
 [[package]]
 name = "bstr"
