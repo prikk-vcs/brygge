@@ -68,6 +68,8 @@ dependencies = [
  "brygge-decode-hg",
  "brygge-decode-svn",
  "brygge-ir",
+ "brygge-mutate",
+ "sha2",
 ]
 
 [[package]]
@@ -102,6 +104,7 @@ name = "brygge-decode-hg"
 version = "0.3.1"
 dependencies = [
  "brygge-ir",
+ "brygge-mutate",
  "flate2",
  "ruzstd",
  "sha1-checked",
@@ -112,6 +115,7 @@ name = "brygge-decode-svn"
 version = "0.3.1"
 dependencies = [
  "brygge-ir",
+ "brygge-mutate",
  "md-5",
  "sha1-checked",
 ]

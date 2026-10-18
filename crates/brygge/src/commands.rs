@@ -1566,3 +1566,6 @@ fn render_verify(
 #[allow(clippy::print_stdout, clippy::print_stderr)]
 // test diagnostics ("skipping: ... not on PATH")
 mod tests;
+
+#[cfg(test)]
+mod mutation;

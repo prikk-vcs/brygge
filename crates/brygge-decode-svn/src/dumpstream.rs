@@ -608,3 +608,6 @@ pub fn parse_dump_with(data: &[u8], limits: &Limits) -> Result<Dump, Error> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod mutation;

@@ -304,3 +304,6 @@ fn escape_decode(text: &[u8]) -> Result<Vec<u8>, Error> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod mutation;

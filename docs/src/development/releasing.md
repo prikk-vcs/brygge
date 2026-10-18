@@ -37,10 +37,15 @@ Do these once, before the first automated release. Each is reversible in the sam
 
 ## Cutting a release
 
-1. **The architect prepares the cut commit:**
-   - the version bump in `Cargo.toml` (the workspace version and the workspace dependency versions);
-   - `CHANGELOG.md`: `[Unreleased]` → `[X.Y.Z] — <date>`, headed by the release notes;
-   - status lines, where they name a version.
+1. **The preparation:**
+   - **the architect** assembles the cut commit: the version bump in `Cargo.toml` (the workspace version
+     and the workspace dependency versions); `CHANGELOG.md`: `[Unreleased]` → `[X.Y.Z] — <date>`, headed
+     by the release notes; status lines, where they name a version;
+   - **the dev team runs the deep mutation depth** (`BRYGGE_MUTATION_DEPTH=deep cargo test --workspace
+     --release --locked`, under the same memory cap `mutation.yml` uses) locally, for every parser crate,
+     and records the iterations, the time, and any finding in the cut request (RFC 014). This is a
+     recorded step of the prep, not a new CI gate — `mutation.yml` already runs the same depth on every
+     push that touches a parser.
 2. **The implementer commits and pushes it,** and reports its CI result (all four platforms green).
 3. **The architect asks the owner for the go-ahead,** immediately before the tag, and records it. Then
    the architect pushes the annotated tag: `git tag -a X.Y.Z -m "brygge X.Y.Z"`, then

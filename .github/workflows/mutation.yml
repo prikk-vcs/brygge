@@ -1,0 +1,64 @@
+name: Mutation (deep)
+
+# RFC 014 D-2/D-3. The quick depth runs in every `cargo test`, everywhere (the ordinary `ci.yml` gate
+# job) — it is always on, part of the normal suite. This workflow runs the *deep* depth instead: many
+# more mutations per seed, in release mode, under a memory cap. It triggers only when a parser's own
+# source, the CLI's `verify` checks (`crates/brygge/src/**` — an artifact someone else produced is
+# untrusted input too, review 061 F-3), the shared generator (`tools/mutate`), or `Cargo.lock` changes —
+# the only reasonable trigger for work that costs real CI minutes to find real bugs (RFC 014 D-1's four
+# CVS findings came from exactly this depth). **No `schedule`:** see `GOVERNANCE.md`, "Work is triggered,
+# never scheduled" — this is not an exception to that rule, it is triggered like every other job, just on
+# a narrower path set.
+#
+# The deep depth also runs by hand as part of every release cut's preparation (see
+# `docs/src/development/releasing.md`), independent of this workflow.
+
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - "crates/brygge-decode-*/src/**"
+      - "crates/brygge-ir/src/**"
+      - "crates/brygge/src/**"
+      - "tools/mutate/**"
+      - "Cargo.lock"
+      - ".github/workflows/mutation.yml"
+  pull_request:
+    paths:
+      - "crates/brygge-decode-*/src/**"
+      - "crates/brygge-ir/src/**"
+      - "crates/brygge/src/**"
+      - "tools/mutate/**"
+      - "Cargo.lock"
+      - ".github/workflows/mutation.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deep:
+    name: mutation tests (deep depth, memory-capped)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: stable
+      # Built *without* the cap below: linking this workspace's release test binaries (gix's dependency
+      # tree, mainly) needs well over the 2 GiB the next step imposes — calibrated the hard way, by
+      # putting `ulimit -v` around `cargo test` directly and watching `rust-lld` itself die with "LLVM
+      # ERROR: out of memory". Running the already-built binaries afterwards needs none of that headroom.
+      - name: Build the test binaries (release, uncapped)
+        run: cargo test --workspace --release --locked --no-run
+      # The cap: calibrated against a reconstruction of review-request-035's zstd decompression bomb
+      # (RUSTSEC-2026-0344) — a 260 KB input whose declared content inflates to 2.6 GB. Run against the
+      # pre-0.9.1 `ruzstd` under this exact cap, it dies ("Allocating new space for the ringbuffer
+      # failed", i.e. killed by the cap); the fixed `ruzstd` (0.9.1+, what this tree links) refuses it in
+      # under a millisecond, nowhere near the cap. The ordinary deep run below — six mutation modules,
+      # 100,000 mutations each — finishes in well under a second, with ample margin under 2 GiB.
+      - name: Deep mutation tests, under a memory cap (RFC 014 D-2/D-3)
+        run: |
+          ulimit -v 2000000
+          BRYGGE_MUTATION_DEPTH=deep cargo test --workspace --release --locked --no-fail-fast

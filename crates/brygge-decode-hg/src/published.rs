@@ -222,8 +222,15 @@ fn read_bookmarks(root: &Path, limits: &Limits) -> Result<Vec<(String, [u8; 20])
     let Some(data) = read_bounded(&path, "the bookmarks file", limits)? else {
         return Ok(Vec::new());
     };
-    let body = std::str::from_utf8(&data)
-        .map_err(|_| Error::Read(format!("{} is not valid UTF-8", path.display())))?;
+    parse_bookmarks(&data)
+}
+
+/// The parse itself, with no filesystem access — the one place [`read_bookmarks`] does the real parse,
+/// after reading the file; also used directly by mutation tests (RFC 014 D-1) to avoid a temp-file round
+/// trip per iteration.
+pub(crate) fn parse_bookmarks(data: &[u8]) -> Result<Vec<(String, [u8; 20])>, Error> {
+    let body = std::str::from_utf8(data)
+        .map_err(|_| Error::Read("the bookmarks file is not valid UTF-8".to_string()))?;
     let mut out = Vec::new();
     for line in body.lines() {
         let line = line.trim();
@@ -311,3 +318,6 @@ fn pin(node_to_rev: &HashMap<[u8; 20], usize>, pinned: &mut [bool], node: &[u8; 
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod mutation;

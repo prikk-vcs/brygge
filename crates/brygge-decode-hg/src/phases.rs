@@ -38,8 +38,7 @@ pub(crate) fn compute(
     let Some(data) = read_bounded(&path, "the phaseroots file", limits)? else {
         return Ok(phase);
     };
-    let body = std::str::from_utf8(&data)
-        .map_err(|_| Error::Read(format!("{} is not valid UTF-8", path.display())))?;
+    let roots = parse_phaseroots(&data)?;
 
     let mut node_to_rev: HashMap<[u8; 20], usize> = HashMap::with_capacity(n);
     for rev in 0..n {
@@ -48,23 +47,7 @@ pub(crate) fn compute(
         }
     }
 
-    for line in body.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        let (phase_str, node_hex) = line
-            .split_once(' ')
-            .ok_or_else(|| Error::Read(format!("malformed phaseroots line {line:?}")))?;
-        let declared: u32 = phase_str
-            .parse()
-            .map_err(|_| Error::Read(format!("malformed phaseroots line {line:?}")))?;
-        if !KNOWN_PHASES.contains(&declared) {
-            return Err(Error::Read(format!(
-                "unknown phaseroots phase value {declared} in {line:?}"
-            )));
-        }
-        let node = parse_hex20(node_hex)?;
+    for (declared, node) in roots {
         // "Any node not present in the changelog is ignored."
         if let Some(&rev) = node_to_rev.get(&node) {
             if let Some(slot) = phase.get_mut(rev) {
@@ -97,5 +80,39 @@ pub(crate) fn compute(
     Ok(phase)
 }
 
+/// Parse `phaseroots`' text into `(declared phase, node)` pairs, with no filesystem access and no
+/// changelog needed — the one place [`compute`] does the real parse, after reading the file. Also used
+/// directly by mutation tests (RFC 014 D-1) to avoid a temp-file round trip per iteration.
+///
+/// # Errors
+/// [`Error::Read`] on non-UTF-8 content, a malformed line, or an unknown phase value.
+pub(crate) fn parse_phaseroots(data: &[u8]) -> Result<Vec<(u32, [u8; 20])>, Error> {
+    let body = std::str::from_utf8(data)
+        .map_err(|_| Error::Read("the phaseroots file is not valid UTF-8".to_string()))?;
+    let mut out = Vec::new();
+    for line in body.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let (phase_str, node_hex) = line
+            .split_once(' ')
+            .ok_or_else(|| Error::Read(format!("malformed phaseroots line {line:?}")))?;
+        let declared: u32 = phase_str
+            .parse()
+            .map_err(|_| Error::Read(format!("malformed phaseroots line {line:?}")))?;
+        if !KNOWN_PHASES.contains(&declared) {
+            return Err(Error::Read(format!(
+                "unknown phaseroots phase value {declared} in {line:?}"
+            )));
+        }
+        out.push((declared, parse_hex20(node_hex)?));
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod mutation;

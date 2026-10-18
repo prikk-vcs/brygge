@@ -90,6 +90,13 @@ pub(crate) fn precursor_nodes(store: &Path, limits: &Limits) -> Result<HashSet<[
     file.take(limits.max_obsstore_bytes.saturating_add(1))
         .read_to_end(&mut data)
         .map_err(|e| Error::Open(format!("cannot read {}: {e}", path.display())))?;
+    parse_bytes(&data, limits)
+}
+
+/// The parse itself, with no filesystem access — the one place [`precursor_nodes`] does the real parse,
+/// after reading the file; also used directly by mutation tests (RFC 014 D-1) to avoid a temp-file round
+/// trip per iteration.
+pub(crate) fn parse_bytes(data: &[u8], limits: &Limits) -> Result<HashSet<[u8; 20]>, Error> {
     if data.len() as u64 > limits.max_obsstore_bytes {
         return Err(resource_limit(
             "the obsstore file",
@@ -113,7 +120,7 @@ pub(crate) fn precursor_nodes(store: &Path, limits: &Limits) -> Result<HashSet<[
     let mut offset = 1usize;
     while offset < len {
         let record_start = offset;
-        let size = usize::try_from(u32_be(&data, record_start)?)
+        let size = usize::try_from(u32_be(data, record_start)?)
             .map_err(|_| read_err("record size too large"))?;
         if size < FIXED_HEADER_LEN {
             return Err(read_err("record size smaller than its own fixed header"));
@@ -125,10 +132,10 @@ pub(crate) fn precursor_nodes(store: &Path, limits: &Limits) -> Result<HashSet<[
             return Err(read_err("record extends past end of file"));
         }
 
-        let flags = u16_be(&data, record_start + 14)?;
-        let numsuc = byte_at(&data, record_start + 16)?;
-        let numpar = byte_at(&data, record_start + 17)?;
-        let nummeta = byte_at(&data, record_start + 18)?;
+        let flags = u16_be(data, record_start + 14)?;
+        let numsuc = byte_at(data, record_start + 16)?;
+        let numpar = byte_at(data, record_start + 17)?;
+        let nummeta = byte_at(data, record_start + 18)?;
         let node_width: usize = if flags & USING_SHA256 != 0 { 32 } else { 20 };
 
         let mut pos = record_start + FIXED_HEADER_LEN;
@@ -173,3 +180,6 @@ pub(crate) fn precursor_nodes(store: &Path, limits: &Limits) -> Result<HashSet<[
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod mutation;

@@ -8,6 +8,12 @@ Every handoff adds its own entry in its own commit.
 
 ## [Unreleased]
 
+### Added
+
+- **Mutation tests for every parser that reads untrusted bytes, including the IR artifact reader**: a
+  quick depth in every test run, and a deep depth under a memory cap whenever parser code or
+  `Cargo.lock` changes, and at each release cut (RFC 014). No change to the published crates.
+
 ### Changed
 
 - The scheduled advisory check is renamed **Advisory watch** (`advisory-watch.yml`) and documented as
@@ -18,6 +24,15 @@ Every handoff adds its own entry in its own commit.
 
 - **`brygge … | head` (or any reader that stops early) no longer panics with "Broken pipe"**: brygge stops
   writing and exits with the command's own status. Other output errors are reported and exit `1`.
+- **A CVS `,v` file truncated right after an unterminated `symbols` or `branches` list no longer hangs
+  `brygge decode cvs` indefinitely**: refused at once, found by RFC 014's mutation tests.
+- **A crafted ed-script line number or line count in a CVS `,v` file's delta text no longer makes
+  decoding spin for minutes, or pre-allocate memory sized by that untrusted field**: both are now bounded
+  by the file's own size, closing a class the same shape as RUSTSEC-2026-0344.
+- **A malformed CVS revision number (neither a trunk number nor a reachable branch revision) no longer
+  panics**: refused with a typed error.
+- **A crafted cyclic revision chain in a CVS `,v` file no longer costs up to a million steps per lookup**:
+  every delta-chain walk is now bounded by the file's own revision count.
 
 ## [0.3.1] — 2026-10-17
 

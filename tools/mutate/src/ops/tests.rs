@@ -84,6 +84,42 @@ fn a_uvarint_boundary_encodes_minimal_leb128() {
 }
 
 #[test]
+fn a_big_endian_varint_boundary_matches_svndiffs_own_reader() {
+    // A tiny reimplementation of svndiff's own varint reader (big-endian base-128, continuation bit on
+    // every byte but the last), so this proves round-tripping against the real convention, not just
+    // against itself.
+    fn read(mut bytes: &[u8]) -> u64 {
+        let mut value = 0u64;
+        loop {
+            let b = bytes[0];
+            bytes = &bytes[1..];
+            value = value * 128 + u64::from(b & 0x7f);
+            if b & 0x80 == 0 {
+                return value;
+            }
+        }
+    }
+
+    let data = b"x\x05y".to_vec();
+    let pos = InterestingPosition {
+        offset: 1,
+        encoding: Encoding::BigEndianVarint { len: 1 },
+        ceiling: Some(1000),
+    };
+    for (boundary, expected) in [
+        (Boundary::Zero, 0u64),
+        (Boundary::One, 1),
+        (Boundary::Ceiling, 1000),
+        (Boundary::CeilingPlus1, 1001),
+    ] {
+        let out = apply_boundary(&data, &pos, boundary);
+        assert_eq!(out.first().copied(), Some(b'x'));
+        assert_eq!(out.last().copied(), Some(b'y'));
+        assert_eq!(read(&out[1..out.len() - 1]), expected);
+    }
+}
+
+#[test]
 fn a_boundary_past_the_end_leaves_the_data_unchanged() {
     let data = [0u8; 2];
     let pos = InterestingPosition {

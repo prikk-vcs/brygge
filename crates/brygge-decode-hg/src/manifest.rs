@@ -79,3 +79,6 @@ pub fn parse(text: &[u8]) -> Result<BTreeMap<String, Entry>, Error> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod mutation;

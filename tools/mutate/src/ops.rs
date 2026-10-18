@@ -38,10 +38,18 @@ pub enum Encoding {
         /// How many bytes the original decimal span occupies.
         len: usize,
     },
-    /// A minimal unsigned LEB128 varint (7 value bits per byte, high bit set on every byte but the
-    /// last — brygge-ir's canon format, and common to many binary formats) spanning exactly `len` bytes
-    /// of the original seed. As `Decimal`, the span is spliced out and the new varint spliced in.
+    /// A minimal unsigned LEB128 varint (7 value bits per byte, **least**-significant group first, high
+    /// bit set on every byte but the last — brygge-ir's canon format, and common to many binary formats)
+    /// spanning exactly `len` bytes of the original seed. As `Decimal`, the span is spliced out and the
+    /// new varint spliced in.
     Uvarint {
+        /// How many bytes the original varint occupies.
+        len: usize,
+    },
+    /// A minimal base-128 varint, **most**-significant group first (svndiff's — the same continuation-bit
+    /// convention as `Uvarint`, but the opposite byte order), spanning exactly `len` bytes of the
+    /// original seed.
+    BigEndianVarint {
         /// How many bytes the original varint occupies.
         len: usize,
     },
@@ -156,6 +164,13 @@ pub fn apply_boundary(data: &[u8], pos: &InterestingPosition, boundary: Boundary
             let value = resolve(boundary, pos.ceiling, u64::MAX);
             splice(data, pos.offset, len, &encode_uvarint(value))
         }
+        Encoding::BigEndianVarint { len } => {
+            if data.get(pos.offset..pos.offset + len).is_none() {
+                return data.to_vec();
+            }
+            let value = resolve(boundary, pos.ceiling, u64::MAX);
+            splice(data, pos.offset, len, &encode_big_endian_varint(value))
+        }
     }
 }
 
@@ -172,6 +187,25 @@ fn encode_uvarint(mut v: u64) -> Vec<u8> {
         out.push(byte | 0x80);
     }
     out
+}
+
+/// Minimal base-128, most-significant group first, matching svndiff's integer encoding: the same
+/// continuation-bit convention as [`encode_uvarint`], with the groups in the opposite order.
+fn encode_big_endian_varint(mut v: u64) -> Vec<u8> {
+    let mut groups = vec![(v & 0x7f) as u8];
+    v >>= 7;
+    while v > 0 {
+        groups.push((v & 0x7f) as u8);
+        v >>= 7;
+    }
+    groups.reverse();
+    let last = groups.len() - 1;
+    for (i, g) in groups.iter_mut().enumerate() {
+        if i != last {
+            *g |= 0x80;
+        }
+    }
+    groups
 }
 
 /// Replace `data[offset..offset+len]` with `replacement`, growing or shrinking as needed.

@@ -163,6 +163,39 @@ impl Revlog {
                 });
             }
         };
+        // Whether the `.d` file needs reading at all (inline stores never touch it) — and, when it is
+        // missing, whether that is really an error — depends on the index alone; `from_bytes` below does
+        // the one real parse of it.
+        let inline = !index_buf.is_empty() && u32_be(&index_buf, 0)? & FLAG_INLINE != 0;
+        let data_buf = if index_buf.is_empty() || inline {
+            Vec::new()
+        } else {
+            match std::fs::read(data_path) {
+                Ok(b) => b,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    let data_is_needed = Self::parse_split(&index_buf)?
+                        .iter()
+                        .any(|en| en.comp_len > 0);
+                    if data_is_needed {
+                        return Err(read_err(format!(
+                            "{data_missing} not found at {} (the revlog is not inline, and its index stores data)",
+                            data_path.display()
+                        )));
+                    }
+                    Vec::new()
+                }
+                Err(e) => return Err(read_err(format!("{}: {e}", data_path.display()))),
+            }
+        };
+        Self::from_bytes(index_buf, data_buf)
+    }
+
+    /// Parse a revlog from its index and data bytes directly, with no filesystem access. The one place
+    /// [`open_with_data`](Self::open_with_data) does the real index parse (version check, inline flag,
+    /// entries); also used directly by mutation tests (RFC 014 D-1) so they can feed bytes without a
+    /// temp-file round trip per iteration. `data_buf` is ignored for an inline revlog (its data lives in
+    /// `index_buf` itself).
+    pub(crate) fn from_bytes(index_buf: Vec<u8>, data_buf: Vec<u8>) -> Result<Self, Error> {
         if index_buf.is_empty() {
             return Ok(Self {
                 entries: Vec::new(),
@@ -179,29 +212,12 @@ impl Revlog {
             )));
         }
         let inline = version & FLAG_INLINE != 0;
-
         let entries = if inline {
             Self::parse_inline(&index_buf)?
         } else {
             Self::parse_split(&index_buf)?
         };
-        let data_buf = if inline {
-            Vec::new()
-        } else {
-            match std::fs::read(data_path) {
-                Ok(b) => b,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    if entries.iter().any(|en| en.comp_len > 0) {
-                        return Err(read_err(format!(
-                            "{data_missing} not found at {} (the revlog is not inline, and its index stores data)",
-                            data_path.display()
-                        )));
-                    }
-                    Vec::new()
-                }
-                Err(e) => return Err(read_err(format!("{}: {e}", data_path.display()))),
-            }
-        };
+        let data_buf = if inline { Vec::new() } else { data_buf };
         Ok(Self {
             entries,
             inline,
@@ -589,3 +605,6 @@ fn mpatch(base: &[u8], delta: &[u8], limits: &Limits) -> Result<Vec<u8>, Error> 
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod mutation;

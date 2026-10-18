@@ -20,5 +20,14 @@ brygge-decode-hg = { workspace = true }
 brygge-decode-svn = { workspace = true }
 brygge-decode-cvs = { workspace = true }
 
+[dev-dependencies]
+# Path-only, test-only (RFC 014 D-1): dropped by `cargo publish`. No `version` (review 059 F-1): see
+# brygge-ir's Cargo.toml for why.
+brygge-mutate = { path = "../../tools/mutate" }
+# Test-only, for the resigned-mutation approach (recomputing an artifact's digest after mutating its
+# body — brygge-ir's own algorithm, duplicated here since `brygge-ir::canon` is crate-private). Already
+# linked transitively via `brygge-ir`; this is a dev-dependency only, dropped on publish.
+sha2 = { workspace = true }
+
 [lints]
 workspace = true

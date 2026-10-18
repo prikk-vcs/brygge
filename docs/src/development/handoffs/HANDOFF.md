@@ -152,6 +152,26 @@ cargo +1.87 test --workspace --locked
 cargo run -p brygge-bench --release
 ```
 
+**Mutation tests (RFC 014 D-1/D-2/D-3):** every parser that reads untrusted bytes (the four decoders'
+hand-written readers, and `brygge-ir`'s artifact reader) mutates a handful of its own valid fixtures —
+generic byte operators plus format-aware boundary writes at the fields a parser module itself declares
+"interesting" (a length, a count, a window size) — and asserts no panic and no output past the format's
+own ceiling. Two depths, picked by `BRYGGE_MUTATION_DEPTH`:
+- **quick** (unset, the default): part of the ordinary `cargo test --workspace` above, on every push,
+  everywhere; adds well under a second per crate.
+- **deep** (`BRYGGE_MUTATION_DEPTH=deep`, `--release`): orders of magnitude more mutations per seed.
+  `.github/workflows/mutation.yml` runs it under a memory cap (`ulimit -v`) whenever a parser's source,
+  `tools/mutate`, or `Cargo.lock` changes — not scheduled (`GOVERNANCE.md`, "Work is triggered, never
+  scheduled") — and the dev team also runs it by hand as part of every release cut's preparation
+  (`docs/src/development/releasing.md`).
+
+A finding — a panic, an over-ceiling `Ok`, or a run slower than its time budget — panics the test with the
+seed index, the iteration, the exact operator chain, and the path of a saved file holding the mutated
+input (under `target/mutation-findings/`); rerun the same test to reproduce it, or feed the saved file
+through the parser directly. Turn the finding into a named regression test in the crate's ordinary tests
+before fixing it, so it runs on stable everywhere, forever (four such findings came from the very first
+module built this way, `brygge-decode-cvs`'s RCS reader — see its `rcs/mutation.rs` module doc).
+
 **CI's result for the pushed commit is part of every report** (`gh run list`): a review request states the
 local 1.87 run before the commit, and the CI run id and its result after the push. A red CI blocks the cut and
 is fixed before anything else. `Cargo.lock` holds `human_format` at 1.1.0 for the MSRV (see the root
