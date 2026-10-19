@@ -98,6 +98,14 @@ impl Cvs {
             String::from_utf8_lossy(&out.stdout),
             String::from_utf8_lossy(&out.stderr)
         );
+        // `cvs update` (a sticky-tag switch, in every use here) sets the working file's mtime to the
+        // current time. A write immediately after, within the same one-second tick, makes CVS's own
+        // mtime-equality shortcut treat the file as unchanged and silently skip the next commit — a
+        // real, textbook CVS/RCS granularity quirk (review 064), not a brygge behaviour. The same
+        // margin as `commit_in`'s post-commit wait clears it.
+        if args.first() == Some(&"update") {
+            std::thread::sleep(Duration::from_millis(1100));
+        }
         String::from_utf8_lossy(&out.stdout).into_owned()
     }
 
@@ -735,8 +743,12 @@ fn edit_script_strictness_matches_cvs_on_every_well_defined_row() {
         eprintln!("skipping: cvs not on PATH");
         return;
     }
-    // Every row of review 063 §2 except the zero-count add (CVS's result there is undefined, not a row
-    // to match — it has its own unit test, `rcs::tests::a_zero_count_add_is_refused_by_name...`).
+    // Class A only (review 064 §3): the rows where real cvs 1.11.23 (local) and 1.12.13 (CI) agree, so
+    // there is one result to match. Review 064 moved every row where the two versions disagree, or
+    // where CVS's own result is undefined, to brygge-only unit tests (`rcs::tests`, the "Class B"
+    // section) — there is no oracle result to prove those against, and requiring one would make this
+    // test non-reproducible across CVS versions (exactly what review 064 found on this row set, request
+    // 044).
     let rows = [
         OracleRow {
             name: "real: d1 2 / a2 1",
@@ -744,39 +756,9 @@ fn edit_script_strictness_matches_cvs_on_every_well_defined_row() {
             expect_accept: Some("line X\n"),
         },
         OracleRow {
-            name: "d1 2 / a1 1 (the old, unrealistic fixture shape)",
-            script: "d1 2\na1 1\nline X\n",
-            expect_accept: None,
-        },
-        OracleRow {
-            name: "d1 2 / a0 1",
-            script: "d1 2\na0 1\nline X\n",
-            expect_accept: None,
-        },
-        OracleRow {
             name: "a0 1 before d1 2",
             script: "a0 1\nline X\nd1 2\n",
             expect_accept: Some("line X\n"),
-        },
-        OracleRow {
-            name: "out of order (a2 1 before d1 2)",
-            script: "a2 1\nline X\nd1 2\n",
-            expect_accept: None,
-        },
-        OracleRow {
-            name: "overlap (d1 1 / d1 2)",
-            script: "d1 1\nd1 2\n",
-            expect_accept: None,
-        },
-        OracleRow {
-            name: "add then delete a line already copied (a1 1 / d1 1)",
-            script: "a1 1\nx\nd1 1\n",
-            expect_accept: None,
-        },
-        OracleRow {
-            name: "d2 1 / a1 1",
-            script: "d2 1\na1 1\n",
-            expect_accept: None,
         },
         OracleRow {
             name: "delete past the end (d1 5)",
@@ -807,11 +789,6 @@ fn edit_script_strictness_matches_cvs_on_every_well_defined_row() {
             name: "zero-count delete, d1 2 / d3 0",
             script: "d1 2\nd3 0\n",
             expect_accept: Some(""),
-        },
-        OracleRow {
-            name: "zero-count delete, out of order (d1 2 / d1 0)",
-            script: "d1 2\nd1 0\n",
-            expect_accept: None,
         },
         OracleRow {
             name: "zero-count delete, past the end (d9 0)",

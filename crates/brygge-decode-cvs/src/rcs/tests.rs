@@ -943,6 +943,60 @@ fn a_zero_count_delete_in_order_and_in_range_is_a_no_op() {
 
 #[test]
 fn a_zero_count_delete_out_of_order_or_past_the_end_is_still_refused() {
+    // Review 064 §3, Class B: 1.11.23 refuses `d1 2 / d1 0` (wraparound); 1.12.13 accepts it as a
+    // no-op, because it applies fragments last-to-first and the zero-count delete lands after the
+    // vector has already shrunk. Neither is a rule to match — brygge refuses it regardless of version.
     assert!(content_of_1_1("d1 2\nd1 0\n").is_err());
     assert!(content_of_1_1("d9 0\n").is_err());
+}
+
+// ---- Class B (review 064 §3): CVS's own result is undefined, or the two CVS lines disagree on it.
+// brygge refuses every one of these regardless of version — no oracle test, since there is no real-tool
+// result to match. Each one was an oracle row in review 063's original set, moved here after review 064
+// read CVS 1.12.13's `rcs.c` and found it applies ed fragments last-to-first (`df->next = dfhead`,
+// correct only for ascending, non-overlapping scripts — which is all `diff -n` ever writes), while
+// 1.11.23 applies them first-to-last with unsigned arithmetic (review 063 §3). An out-of-order or
+// overlapping script has no meaning in either: one version refuses it as a wraparound by-product, the
+// other returns whatever its reversed traversal happens to produce.
+
+#[test]
+fn an_add_immediately_undone_by_the_delete_that_follows_it_is_refused() {
+    // `d1 2 / a1 1`: 1.11.23 refuses it ("invalid change text"); 1.12.13 applies `a1 1` first (giving
+    // `[one, X, two]`), then `d1 2` deletes the first two — `[two]`, an artifact of the script deleting
+    // its own insertion, not a result CVS intends. The add is out of order either way (`after = 1 <
+    // consumed = 2`), so brygge refuses it under the original rule, before any version-specific replay.
+    assert!(content_of_1_1("d1 2\na1 1\nline X\n").is_err());
+}
+
+#[test]
+fn an_add_before_the_first_line_after_a_full_delete_is_refused() {
+    // `d1 2 / a0 1`: 1.11.23 refuses it; 1.12.13 produces another reverse-order artifact (the add lands
+    // before the deletion is replayed). Out of order under the rule (`after = 0 < consumed = 2`).
+    assert!(content_of_1_1("d1 2\na0 1\nline X\n").is_err());
+}
+
+#[test]
+fn an_add_before_a_delete_that_reaches_back_over_it_is_refused() {
+    // `a2 1 / d1 2`: the add consumes through line 2, then the delete starts at line 1 — behind it.
+    // Both CVS versions refuse or produce an artifact (review 064 §3); brygge refuses it as out of order.
+    assert!(content_of_1_1("a2 1\nline X\nd1 2\n").is_err());
+}
+
+#[test]
+fn a_delete_overlapping_an_earlier_delete_is_refused() {
+    // `d1 1 / d1 2`: the second delete restarts at line 1, already consumed by the first. Same
+    // undefined-in-both-versions shape as the rows above.
+    assert!(content_of_1_1("d1 1\nd1 2\n").is_err());
+}
+
+#[test]
+fn a_delete_of_a_line_an_earlier_add_already_passed_is_refused() {
+    // `d2 1 / a1 1`: the delete consumes through line 2, then the add targets line 1 — behind it.
+    assert!(content_of_1_1("d2 1\na1 1\n").is_err());
+}
+
+#[test]
+fn a_delete_right_after_an_add_at_the_same_line_the_add_already_passed_is_refused() {
+    // `a1 1 / d1 1`: the add consumes through line 1, then the delete restarts at line 1 — behind it.
+    assert!(content_of_1_1("a1 1\nx\nd1 1\n").is_err());
 }
