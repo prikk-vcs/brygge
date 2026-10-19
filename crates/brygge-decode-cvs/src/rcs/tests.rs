@@ -3,6 +3,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
 
 use super::{RevNum, parse_rcs};
+use crate::Error;
 
 /// A hand-written `,v` with three trunk revisions. 1.3 is full text; 1.2 and 1.1 are reverse deltas.
 const SAMPLE: &[u8] = b"head\t1.3;\n\
@@ -826,4 +827,122 @@ desc\n@@\n\n\n\
         elapsed < std::time::Duration::from_millis(50),
         "took {elapsed:?}: looks like it ran the full MAX_CHAIN again"
     );
+}
+
+// ---- RFC 014 edit-script strictness (review 063's ruling) -------------------------------------------
+//
+// head (1.2) is the two-line fulltext "line one\n"/"line two\n"; 1.1's stored text is the ed script
+// under test, applied in reverse to reach 1.1 from 1.2. `consumed` starts at 0.
+
+fn two_line_source_with_delta(diff: &str) -> Vec<u8> {
+    let mut v = b"head\t1.2;\naccess;\nsymbols;\nlocks; strict;\n\n\n\
+1.2\ndate\t2024.01.02.00.00.00;\tauthor a;\tstate Exp;\nbranches;\nnext\t1.1;\n\n\
+1.1\ndate\t2024.01.01.00.00.00;\tauthor a;\tstate Exp;\nbranches;\nnext\t;\n\n\n\
+desc\n@@\n\n\n\
+1.2\nlog\n@head@\ntext\n@line one\nline two\n@\n\n\n\
+1.1\nlog\n@delta@\ntext\n@"
+        .to_vec();
+    v.extend(diff.as_bytes());
+    v.extend(b"@\n");
+    v
+}
+
+fn content_of_1_1(diff: &str) -> Result<Vec<u8>, Error> {
+    let vfile = two_line_source_with_delta(diff);
+    let f = parse_rcs(&vfile).unwrap();
+    f.content_of(&rev("1.1"))
+}
+
+#[test]
+fn an_out_of_order_delete_is_refused_naming_the_command() {
+    let e = content_of_1_1("d2 1\nd1 1\n").unwrap_err();
+    let Error::Read(msg) = e else {
+        panic!("expected Read, got {e:?}")
+    };
+    assert!(msg.contains("d1 1"), "{msg}");
+    assert!(msg.contains("out of order"), "{msg}");
+}
+
+#[test]
+fn an_overlapping_delete_is_refused() {
+    let e = content_of_1_1("d1 2\nd1 1\n").unwrap_err();
+    assert!(matches!(e, Error::Read(_)));
+}
+
+#[test]
+fn a_delete_past_the_end_is_refused() {
+    let e = content_of_1_1("d1 5\n").unwrap_err();
+    let Error::Read(msg) = e else {
+        panic!("expected Read, got {e:?}")
+    };
+    assert!(msg.contains("d1 5"), "{msg}");
+    assert!(msg.contains("past the end"), "{msg}");
+}
+
+#[test]
+fn an_add_past_the_end_is_refused() {
+    let e = content_of_1_1("a9 1\nnew\n").unwrap_err();
+    let Error::Read(msg) = e else {
+        panic!("expected Read, got {e:?}")
+    };
+    assert!(msg.contains("a9 1"), "{msg}");
+    assert!(msg.contains("past the end"), "{msg}");
+}
+
+#[test]
+fn an_out_of_order_add_is_refused() {
+    let e = content_of_1_1("a2 1\nx\nd1 1\n").unwrap_err();
+    assert!(matches!(e, Error::Read(_)));
+}
+
+#[test]
+fn a_zero_count_add_is_refused_by_name_regardless_of_position() {
+    // Review 063 §3: CVS's own apply_rcs_changes writes one line anyway for a zero-count add — past the
+    // end of its allocated vector. Undefined behaviour, not a well-defined no-op; brygge refuses it
+    // unconditionally rather than matching CVS's order-dependent result.
+    let e = content_of_1_1("a1 0\n").unwrap_err();
+    let Error::Read(msg) = e else {
+        panic!("expected Read, got {e:?}")
+    };
+    assert!(msg.contains("a1 0"), "{msg}");
+    assert!(msg.contains("zero-count add"), "{msg}");
+}
+
+#[test]
+fn an_add_right_after_a_delete_ending_at_the_same_line_is_valid() {
+    assert_eq!(content_of_1_1("d1 2\na2 1\nnew\n").unwrap(), b"new\n");
+}
+
+#[test]
+fn a_delete_of_the_last_line_is_valid() {
+    assert_eq!(content_of_1_1("d2 1\n").unwrap(), b"line one\n");
+}
+
+#[test]
+fn an_add_after_the_last_line_is_valid() {
+    assert_eq!(
+        content_of_1_1("a2 1\nextra\n").unwrap(),
+        b"line one\nline two\nextra\n"
+    );
+}
+
+#[test]
+fn an_add_at_0_before_the_first_line_is_valid() {
+    assert_eq!(
+        content_of_1_1("a0 1\nfirst\n").unwrap(),
+        b"first\nline one\nline two\n"
+    );
+}
+
+#[test]
+fn a_zero_count_delete_in_order_and_in_range_is_a_no_op() {
+    assert_eq!(content_of_1_1("d1 0\n").unwrap(), b"line one\nline two\n");
+    // Also valid right after a delete that consumed everything, exactly at the boundary.
+    assert_eq!(content_of_1_1("d1 2\nd3 0\n").unwrap(), b"");
+}
+
+#[test]
+fn a_zero_count_delete_out_of_order_or_past_the_end_is_still_refused() {
+    assert!(content_of_1_1("d1 2\nd1 0\n").is_err());
+    assert!(content_of_1_1("d9 0\n").is_err());
 }

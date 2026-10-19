@@ -694,7 +694,7 @@ fn a_branch_symbol_is_reconstructed_as_a_branch_and_a_main_line_tag_still_is() {
 1.1\ndate\t2024.01.01.00.00.00;\tauthor alice;\tstate Exp;\nbranches;\nnext\t;\n\n\n\
 desc\n@@\n\n\n\
 1.2\nlog\n@r2@\ntext\n@v1\nv2\n@\n\n\n\
-1.2.2.1\nlog\n@branch@\ntext\n@d1 2\na1 1\nbranch content\n@\n\n\n\
+1.2.2.1\nlog\n@branch@\ntext\n@d1 2\na2 1\nbranch content\n@\n\n\n\
 1.1\nlog\n@r1@\ntext\n@d2 1\n@\n";
     r.write_vfile("f.c", content);
     let opts = Options {

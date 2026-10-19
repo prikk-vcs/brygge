@@ -115,7 +115,7 @@ impl RcsFile {
         let mut lines = split_lines(&head_rev.text);
         for r in path.iter().skip(1) {
             let diff = &self.rev(r)?.text;
-            lines = apply_diff(&lines, diff)?;
+            lines = apply_diff(&lines, diff).map_err(|e| with_revision(e, r))?;
         }
         Ok(join_lines(&lines))
     }
@@ -214,7 +214,8 @@ impl RcsFile {
                         self.head.to_dotted()
                     )));
                 };
-                lines = apply_diff(&lines, &self.rev(&next)?.text)?;
+                lines = apply_diff(&lines, &self.rev(&next)?.text)
+                    .map_err(|e| with_revision(e, &next))?;
                 cur = next;
             }
         }
@@ -246,7 +247,8 @@ impl RcsFile {
                 })?;
             let mut left = targets.len();
             for _ in 0..self.chain_bound() {
-                lines = apply_diff(&lines, &self.rev(&cur)?.text)?;
+                lines = apply_diff(&lines, &self.rev(&cur)?.text)
+                    .map_err(|e| with_revision(e, &cur))?;
                 if targets.contains(&cur) {
                     if wanted.contains(&cur) {
                         out.insert(cur.clone(), join_lines(&lines));
@@ -411,6 +413,16 @@ fn join_lines(lines: &[Vec<u8>]) -> Vec<u8> {
     out
 }
 
+/// Name `rev` in an [`Error::Read`] from [`apply_diff`], so a refusal says which revision's delta it
+/// came from, not only which command — `apply_diff` itself knows only the two line buffers, not which
+/// revision it is being called for.
+fn with_revision(e: Error, rev: &RevNum) -> Error {
+    match e {
+        Error::Read(msg) => Error::Read(format!("{msg} (revision {})", rev.to_dotted())),
+        other => other,
+    }
+}
+
 enum DiffCmd {
     /// Delete `count` source lines starting at 1-based `start`.
     Delete { start: usize, count: usize },
@@ -474,29 +486,74 @@ fn apply_diff(source: &[Vec<u8>], diff: &[u8]) -> Result<Vec<Vec<u8>>, Error> {
 
     // Apply commands (which reference original-source line numbers, in increasing order).
     //
-    // `start`/`after` are attacker-controlled fields (RFC 014 D-1 mutation finding): a claimed line
-    // number far past `source.len()` used to drive this loop directly, so a single tiny, well-formed-
-    // looking command (e.g. `d99999999999 1`) made this spin for as long as that claimed number, with no
-    // relation to the file's actual (already bounded) size — confirmed to hang for minutes on a few dozen
-    // bytes. Once `src` reaches `source.len()` there is nothing left to copy, so neither loop needs to run
-    // any further; capping their bound there costs nothing for a well-formed diff (`start`/`after` never
-    // legitimately exceed `source.len()`) and makes a malformed one's cost track the real source size.
+    // The RCS/CVS reference rule (handoff `rcs-edit-script-strictness-handoff-v1.md`, threat model
+    // C-2a "refuse rather than misread"): commands are ascending and non-overlapping, relative to
+    // `src`, the source lines already consumed (copied past or deleted) by an earlier command. Before
+    // M-1's caps (`start`/`after`/`count` are each attacker-controlled fields) and before this rule, an
+    // out-of-order, overlapping, or past-the-end command was silently tolerated and produced *some*
+    // text — exactly the misread C-2a forbids, since CVS itself refuses every one of these (proven
+    // against the real tool in `decode::cvs_fixtures`'s oracle tests, not merely asserted here).
     let mut out: Vec<Vec<u8>> = Vec::new();
     let mut src = 0usize; // count of source lines already consumed (0-based)
     for cmd in cmds {
         match cmd {
             DiffCmd::Delete { start, count } => {
-                let stop = start.saturating_sub(1).min(source.len());
+                // Review 063: a zero count is a well-defined no-op in CVS's own `apply_rcs_changes`
+                // (`src/rcs.c`) — it still has to be in order and in range, but is not refused by name.
+                if start < src + 1 {
+                    return Err(Error::Read(format!(
+                        "RCS edit script command 'd{start} {count}' is out of order or overlaps an \
+                         earlier command ({src} source lines already consumed)"
+                    )));
+                }
+                let stop = start - 1; // 0-based: `src <= stop` is guaranteed by the check above
+                let end = start.checked_add(count).ok_or_else(|| {
+                    Error::Read(format!(
+                        "RCS edit script command 'd{start} {count}' overflows"
+                    ))
+                })?;
+                if end > source.len() + 1 {
+                    return Err(Error::Read(format!(
+                        "RCS edit script command 'd{start} {count}' deletes past the end of the source \
+                         ({} lines)",
+                        source.len()
+                    )));
+                }
                 while src < stop {
                     if let Some(l) = source.get(src) {
                         out.push(l.clone());
                     }
                     src += 1;
                 }
-                src = src.saturating_add(count);
+                src += count;
             }
             DiffCmd::Add { after, lines } => {
-                let after = after.min(source.len());
+                // Review 063: unlike a zero-count delete, a zero-count add is memory-unsafe in CVS's own
+                // `apply_rcs_changes` (its parse loop takes no text, but its apply step unconditionally
+                // writes one line anyway, past the end of the allocated vector — undefined behaviour, not
+                // a well-defined no-op) — refused by name regardless of position, since no real RCS tool
+                // ever writes this shape and CVS's own result for it is not something to match.
+                if lines.is_empty() {
+                    return Err(Error::Read(format!(
+                        "RCS edit script command 'a{after} 0' is a zero-count add, which no RCS tool \
+                         writes (CVS mishandles it)"
+                    )));
+                }
+                if after < src {
+                    return Err(Error::Read(format!(
+                        "RCS edit script command 'a{after} {}' is out of order or overlaps an earlier \
+                         command ({src} source lines already consumed)",
+                        lines.len()
+                    )));
+                }
+                if after > source.len() {
+                    return Err(Error::Read(format!(
+                        "RCS edit script command 'a{after} {}' adds past the end of the source ({} \
+                         lines)",
+                        lines.len(),
+                        source.len()
+                    )));
+                }
                 while src < after {
                     if let Some(l) = source.get(src) {
                         out.push(l.clone());

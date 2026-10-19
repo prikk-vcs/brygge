@@ -15,7 +15,7 @@ use brygge_ir::Ir;
 use brygge_ir::model::PathOp;
 
 use super::decode;
-use crate::{Options, Source};
+use crate::{Error, Options, Source};
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -99,6 +99,31 @@ impl Cvs {
             String::from_utf8_lossy(&out.stderr)
         );
         String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
+    /// Like [`run`](Self::run), but does not assert success — for the edit-script oracle tests
+    /// (review 063), where some corrupted `,v` files are *expected* to make `cvs` itself fail.
+    fn try_run(&self, dir: &Path, args: &[&str]) -> (bool, String) {
+        let out = Command::new("cvs")
+            .current_dir(dir)
+            .env("HOME", self.base.join("home"))
+            .env("CVSEDITOR", "true")
+            .env("EDITOR", "true")
+            .env("LC_ALL", "C")
+            .arg("-q")
+            .arg("-d")
+            .arg(&self.root)
+            .args(args)
+            .output()
+            .expect("run cvs");
+        (
+            out.status.success(),
+            format!(
+                "{}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            ),
+        )
     }
 
     fn write(&self, rel: &str, text: &str) {
@@ -607,4 +632,194 @@ fn a_tag_on_a_branch_revision_resolves_to_the_branch_changeset() {
         "{:?}",
         ir.loss.dropped
     );
+}
+
+// ---- RFC 014 edit-script strictness: the oracle (review 063) ------------------------------------------
+//
+// "The oracle is CVS itself" (the handoff), ruled by review 063 against CVS 1.11.23's source
+// (`apply_rcs_changes`, `src/rcs.c`) and a real repository: every row below except the zero-count add is
+// *well-defined* in CVS, so brygge's refusal must agree with CVS's own, on both the CVS version installed
+// here and CI's (1.12.13) — review 063 asks that a disagreement between the two stop and be reported, not
+// silently picked one way.
+
+/// A real two-revision file whose **real, CVS-generated** delta for 1.1 is exactly `d1 2\na2 1\n<head's
+/// one line>\n` (review 063 §1): commit a 1-line file first (becomes 1.1), then a 2-line file (becomes
+/// head, 1.2) — the reverse delta from 1.2 back to 1.1 then deletes both head lines and adds the one
+/// original line back, in that order. Confirmed against a real `cvs` run before being relied on here.
+fn two_rev_oracle_file() -> (Cvs, PathBuf) {
+    let c = Cvs::new();
+    c.write("f.c", "line X\n");
+    c.add(&["f.c"]);
+    c.commit("first"); // -> 1.1
+    c.write("f.c", "line one\nline two\n");
+    c.commit("second"); // -> 1.2 (head)
+    let v_path = c.root.join("proj").join("f.c,v");
+    (c, v_path)
+}
+
+/// Replace 1.1's stored delta (the last `text\n@...@` block in the file — reliable for this file's own
+/// two-revision, trunk-only shape) with `script`. `script` must not itself contain a literal `@` (none of
+/// the oracle rows do).
+fn with_1_1_delta(original: &[u8], script: &str) -> Vec<u8> {
+    assert!(!script.contains('@'), "the oracle rows never need an @");
+    let marker = b"text\n@";
+    let at = original
+        .windows(marker.len())
+        .enumerate()
+        .rfind(|(_, w)| *w == marker)
+        .map(|(i, _)| i)
+        .expect("a text section");
+    let delta_start = at + marker.len();
+    let mut out = original[..delta_start].to_vec();
+    out.extend(script.as_bytes());
+    out.push(b'@');
+    out
+}
+
+/// One oracle row: `script` is 1.1's corrupted delta; `expect_accept` is whether both the real `cvs` and
+/// brygge should accept it (and, when they do, the exact expected 1.1 content).
+struct OracleRow {
+    name: &'static str,
+    script: &'static str,
+    expect_accept: Option<&'static str>,
+}
+
+fn run_oracle_row(row: &OracleRow) {
+    let (c, v_path) = two_rev_oracle_file();
+    let original = std::fs::read(&v_path).expect("read f.c,v");
+    let corrupted = with_1_1_delta(&original, row.script);
+    // CVS commits the RCS file read-only (its usual repository permissions); writable before
+    // overwriting it with the corrupted bytes.
+    let mut perms = std::fs::metadata(&v_path)
+        .expect("stat f.c,v")
+        .permissions();
+    #[allow(clippy::permissions_set_readonly_false)]
+    perms.set_readonly(false);
+    std::fs::set_permissions(&v_path, perms).expect("make f.c,v writable");
+    std::fs::write(&v_path, &corrupted).expect("write corrupted f.c,v");
+
+    let (cvs_ok, cvs_out) = c.try_run(&c.base, &["checkout", "-p", "-r", "1.1", "proj/f.c"]);
+    let brygge_result = decode(&Source::LocalRepo(c.root.join("proj")), &Options::default());
+
+    match row.expect_accept {
+        Some(expected) => {
+            assert!(
+                cvs_ok,
+                "[{}] cvs refused a well-formed script: {cvs_out}",
+                row.name
+            );
+            assert_eq!(cvs_out, expected, "[{}] cvs's own content", row.name);
+            brygge_result.unwrap_or_else(|e| {
+                panic!("[{}] brygge refused a script CVS accepts: {e}", row.name)
+            });
+        }
+        None => {
+            assert!(
+                !cvs_ok,
+                "[{}] cvs accepted a script review 063 said it refuses: {cvs_out}",
+                row.name
+            );
+            let Err(Error::Read(_)) = brygge_result else {
+                panic!(
+                    "[{}] expected Error::Read (CVS refuses this), got {brygge_result:?}",
+                    row.name
+                );
+            };
+        }
+    }
+}
+
+#[test]
+fn edit_script_strictness_matches_cvs_on_every_well_defined_row() {
+    if !cvs_available() {
+        eprintln!("skipping: cvs not on PATH");
+        return;
+    }
+    // Every row of review 063 §2 except the zero-count add (CVS's result there is undefined, not a row
+    // to match — it has its own unit test, `rcs::tests::a_zero_count_add_is_refused_by_name...`).
+    let rows = [
+        OracleRow {
+            name: "real: d1 2 / a2 1",
+            script: "d1 2\na2 1\nline X\n",
+            expect_accept: Some("line X\n"),
+        },
+        OracleRow {
+            name: "d1 2 / a1 1 (the old, unrealistic fixture shape)",
+            script: "d1 2\na1 1\nline X\n",
+            expect_accept: None,
+        },
+        OracleRow {
+            name: "d1 2 / a0 1",
+            script: "d1 2\na0 1\nline X\n",
+            expect_accept: None,
+        },
+        OracleRow {
+            name: "a0 1 before d1 2",
+            script: "a0 1\nline X\nd1 2\n",
+            expect_accept: Some("line X\n"),
+        },
+        OracleRow {
+            name: "out of order (a2 1 before d1 2)",
+            script: "a2 1\nline X\nd1 2\n",
+            expect_accept: None,
+        },
+        OracleRow {
+            name: "overlap (d1 1 / d1 2)",
+            script: "d1 1\nd1 2\n",
+            expect_accept: None,
+        },
+        OracleRow {
+            name: "add then delete a line already copied (a1 1 / d1 1)",
+            script: "a1 1\nx\nd1 1\n",
+            expect_accept: None,
+        },
+        OracleRow {
+            name: "d2 1 / a1 1",
+            script: "d2 1\na1 1\n",
+            expect_accept: None,
+        },
+        OracleRow {
+            name: "delete past the end (d1 5)",
+            script: "d1 5\n",
+            expect_accept: None,
+        },
+        OracleRow {
+            name: "add past the end (a9 1)",
+            script: "a9 1\nx\n",
+            expect_accept: None,
+        },
+        OracleRow {
+            name: "two adds at one position (a2 1 / a2 1)",
+            script: "a2 1\nx\na2 1\ny\n",
+            expect_accept: Some("line one\nline two\nx\ny\n"),
+        },
+        OracleRow {
+            name: "two adds at 0",
+            script: "a0 1\nx\na0 1\ny\n",
+            expect_accept: Some("x\ny\nline one\nline two\n"),
+        },
+        OracleRow {
+            name: "zero-count delete, in order and in range (d1 0)",
+            script: "d1 0\n",
+            expect_accept: Some("line one\nline two\n"),
+        },
+        OracleRow {
+            name: "zero-count delete, d1 2 / d3 0",
+            script: "d1 2\nd3 0\n",
+            expect_accept: Some(""),
+        },
+        OracleRow {
+            name: "zero-count delete, out of order (d1 2 / d1 0)",
+            script: "d1 2\nd1 0\n",
+            expect_accept: None,
+        },
+        OracleRow {
+            name: "zero-count delete, past the end (d9 0)",
+            script: "d9 0\n",
+            expect_accept: None,
+        },
+    ];
+    for row in &rows {
+        run_oracle_row(row);
+    }
 }

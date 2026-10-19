@@ -33,6 +33,9 @@ Every handoff adds its own entry in its own commit.
   panics**: refused with a typed error.
 - **A crafted cyclic revision chain in a CVS `,v` file no longer costs up to a million steps per lookup**:
   every delta-chain walk is now bounded by the file's own revision count.
+- CVS: an RCS edit script whose commands are out of order, overlap, or reach past the end of the previous
+  revision is refused, as CVS itself refuses it; brygge no longer decodes such a file into content no CVS
+  checkout would give.
 
 ## [0.3.1] — 2026-10-17
 
