@@ -42,6 +42,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
 
 mod corpus;
+mod profile;
 mod real;
 
 use std::path::{Path, PathBuf};
@@ -110,6 +111,77 @@ fn main() {
             if !real::run_one_variant(&toml_path, &cache_dir, &name, &variant) {
                 std::process::exit(1);
             }
+        }
+        // RFC 015 D-1: where a real decode's peak memory goes, phase by phase (P1..P6), for the real
+        // corpus's two largest entries and the largest synthetic scenario per kind.
+        Some("profile") => {
+            let (Some(out_dir), Some(cache_dir)) = (
+                args.get(2).map(PathBuf::from),
+                args.get(3).map(PathBuf::from),
+            ) else {
+                eprintln!("usage: brygge-bench profile <out-dir> <real-cache-dir>");
+                std::process::exit(2);
+            };
+            let synth_dir = out_dir.join("synth");
+            std::fs::create_dir_all(&synth_dir).expect("create the synthetic-corpus directory");
+            let mut targets = vec![
+                profile::Target {
+                    label: "fish-shell",
+                    source: profile::ProfileSource::Git(cache_dir.join("git").join("fish-shell")),
+                },
+                profile::Target {
+                    label: "tortoisehg-thg",
+                    source: profile::ProfileSource::Hg(cache_dir.join("hg").join("tortoisehg-thg")),
+                },
+            ];
+            for (scenario, n) in [
+                ("git-commits", 20_000u64),
+                ("cvs-revs", 5_000),
+                ("svn-dump", 20_000),
+            ] {
+                let dir = synth_dir.join(scenario);
+                std::fs::create_dir_all(&dir).expect("create the scenario's own directory");
+                let Some(corpus) = prepare(scenario, n, &dir) else {
+                    panic!("unknown scenario {scenario}");
+                };
+                let source = match corpus.source {
+                    Source::Git(p) => profile::ProfileSource::Git(p),
+                    Source::Cvs(p) | Source::CvsRefs(p) => profile::ProfileSource::Cvs(p),
+                    Source::Svn(p) => profile::ProfileSource::Svn(p),
+                };
+                targets.push(profile::Target {
+                    label: match scenario {
+                        "git-commits" => "git-commits-20000",
+                        "cvs-revs" => "cvs-revs-5000",
+                        "svn-dump" => "svn-dump-20000",
+                        other => other,
+                    },
+                    source,
+                });
+            }
+            profile::run(&targets, &out_dir.join("artifacts"));
+        }
+        Some("profile-one") => {
+            let (Some(phase), Some(kind), Some(path)) = (
+                args.get(2).cloned(),
+                args.get(3).cloned(),
+                args.get(4).map(PathBuf::from),
+            ) else {
+                eprintln!("usage: brygge-bench profile-one <p1|p2> <kind> <path>");
+                std::process::exit(2);
+            };
+            profile::run_one(&phase, &kind, &path);
+        }
+        Some("profile-spill") => {
+            let (Some(kind), Some(path), Some(spill_dir)) = (
+                args.get(2).cloned(),
+                args.get(3).map(PathBuf::from),
+                args.get(4).map(PathBuf::from),
+            ) else {
+                eprintln!("usage: brygge-bench profile-spill <kind> <path> <spill-dir>");
+                std::process::exit(2);
+            };
+            profile::run_spill(&kind, &path, &spill_dir);
         }
         Some("corpus") => {
             // Write a scenario's corpus and stop (no decode): so the same input can be decoded by two builds

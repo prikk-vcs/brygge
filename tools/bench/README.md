@@ -393,3 +393,131 @@ fixture), at `evolve`'s real scale.
    `svnrdump dump https://core.svn.wordpress.org -r 0:2700` (no cached dump file existed on disk to check
    it against). Re-dumped and re-hashed; the corrected hash is what's in `real.toml` now and what this run
    verified against.
+
+## RFC 015 D-1: where the peak goes
+
+**Measurement only — no change to any published crate** (the handoff's own scope). `brygge-bench profile
+<out-dir> <real-corpus-cache-dir>` runs six phases (P1 decode only, P2 decode+serialize, P3 the full CLI
+decode, P4 `verify`, P5 `inspect`, P6 `verify --against-source`) against `fish-shell` and `tortoisehg-thg`
+(the real corpus's two largest) and the largest synthetic scenario per kind that has one
+(`git-commits 20000`, `cvs-revs 5000`, `svn-dump 20000`; **no hg equivalent exists** — see the finding
+below). **Every phase runs in its own process** (`profile-one` for P1/P2, the real `brygge` binary for
+P3-P6), **polled from outside** by the orchestrator (`/proc/<pid>/status`'s `VmHWM`, `/proc/<pid>/statm`
+for the timeline, every 50 ms) — the same reason `real.rs`'s decodes do, and for the same cause this batch
+found there too: a process that measures itself can have an earlier step's allocator retention inflate a
+later step's own reading of its own peak. Here it's stronger still, since P1 and P2 genuinely are
+different processes (profile-one re-invoked), never sharing an address space at all.
+
+**brygge `0.4.0` @ `799b025`. Machine: Linux 7.2.10-1-cachyos x86_64, AMD Ryzen 9 9950X (32 threads), 59
+GiB RAM, release build. Output filesystem: `/home` (btrfs on SSD, 158 GiB free at the time of the run) —
+the real-corpus source clones stay on the machine's tmpfs cache from batch R; artifacts and the spill test
+write to btrfs, so file-write costs reflect a real disk, not RAM.**
+
+### The attribution table
+
+| Target | Atoms | Content | Metadata | Artifact | Meta/atom | P1 | P2 | P3 | P4 | P5 | P6 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| `fish-shell` (git) | 23,496 | 4,619 MiB | 15.2 MiB | 4,636 MiB | 680 B | 9,620 MiB | 18,671 MiB | 18,676 MiB | 9,325 MiB | 9,326 MiB | 18,932 MiB |
+| `tortoisehg-thg` (hg) | 20,596 | 1,666 MiB | 9.4 MiB | 1,676 MiB | 481 B | 3,485 MiB | 6,812 MiB | 6,813 MiB | 3,395 MiB | 3,395 MiB | 6,868 MiB |
+| `git-commits` (synthetic, 20,000) | 20,001 | 0.33 MiB | 5.6 MiB | 6.6 MiB | 296 B | 99.9 MiB | 101.0 MiB | 100.0 MiB | 37.9 MiB | 37.8 MiB | 129.6 MiB |
+| `cvs-revs` (synthetic, 5,000×20 files) | 100,000 | 528 MiB | 36.0 MiB | 567 MiB | 377 B | 2,215 MiB | 3,291 MiB | 3,292 MiB | 1,344 MiB | 1,344 MiB | 3,513 MiB |
+| `svn-dump` (synthetic, 20,000) | 20,003 | 39.6 MiB | 4.2 MiB | 44.5 MiB | 219 B | 139.5 MiB | 198.6 MiB | 243.4 MiB | 112.8 MiB | 112.8 MiB | 232.5 MiB |
+
+### The derived holders (handoff §2)
+
+`decoder's working set` subtracts content and metadata from P1; `serialization buffers` is P2−P1; `the
+file write` is P3−P2; `the reader's copy` is P4 (same order as P5). All in MiB.
+
+| Target | Content store | Decoder working set (P1−content−metadata) | Serialization buffers (P2−P1) | File write (P3−P2) | Reader's copy (P4) | Peak÷content (P1 / P6) |
+|---|---:|---:|---:|---:|---:|---|
+| `fish-shell` | 4,619 | **4,986** | 9,052 | 5 | 9,325 | 2.08× / 4.10× |
+| `tortoisehg-thg` | 1,666 | **1,809** | 3,328 | 1 | 3,395 | 2.09× / 4.12× |
+| `git-commits` | 0.33 | **93.9** | 1.1 | **−1.0** | 37.9 | 300× / 389× |
+| `cvs-revs` | 528 | **1,651** | 1,076 | 1 | 1,344 | 4.20× / 6.65× |
+| `svn-dump` | 39.6 | **95.7** | 59.0 | **44.8** | 112.8 | 3.52× / 5.87× |
+
+### What does not add up (reported plainly, as asked)
+
+1. **The decoder's working set is sometimes *larger* than the content itself** — `fish-shell`'s is 4,986
+   MiB against 4,619 MiB of content, and `tortoisehg-thg`'s is 1,809 against 1,666. This is **not
+   metadata's own in-memory size**: `metadata_bytes` is `encode_metadata().len()`, the *serialized*
+   record (brygge-ir has no public way to ask for the live `Vec<ChangeAtom>`'s own heap footprint, and
+   the handoff's formula uses the serialized figure as the available proxy). Rust's in-memory
+   representation of that many atoms, each with `String`/`Vec` fields, is reliably larger than its
+   packed-varint encoding — so "decoder working set" here is really **decoder logic's own allocations
+   plus however much the live metadata structures exceed their serialized size**, not a clean isolation
+   of the two. Treat it as an upper bound on the decoder's own cost, not an exact figure. This is squarely
+   `gix`'s (and, for hg, the revlog reader's) own object/commit-graph/manifest caches — brygge's own code
+   does not hold a second copy of this scale.
+2. **`git-commits`' file-write holder is negative** (−1.0 MiB): P3's peak (100.0 MiB) is *below* P2's
+   (101.0 MiB). This scenario's content is tiny (0.33 MiB) — its peak is almost entirely the Git decoder's
+   own fixed overhead (loading the repository, `gix`'s own structures), which varies by roughly a
+   megabyte between separate process runs. **Noise, not a real negative cost** — a holder's subtraction
+   only means something once the term it's isolating is large relative to the baseline it's subtracted
+   from, which is why this batch deliberately profiled the *real* corpus's largest entries and not only
+   synthetic ones.
+3. **No synthetic hg scenario exists**, so there is no "hg equivalent" row the handoff asked for
+   alongside `git-commits`/`cvs-revs`/`svn-dump`. Git's `git fast-import` lets `git-commits` build 20,000
+   commits in one streamed subprocess; Mercurial has no comparable bulk-import mechanism available here,
+   and building an hg-scale equivalent by shelling out to `hg commit` once per revision would mean tens of
+   thousands of process spawns — minutes to hours, not a measurement tool. `tortoisehg-thg` (20,596 real
+   changesets) already stands in as the large hg data point; a true synthetic generator (if wanted) is its
+   own piece of work, not added here to avoid forcing something weak into existence just to fill the row.
+
+### The per-atom metadata cost (handoff §3)
+
+RFC 010's **5 KiB/atom** figure was synthetic (a worst-case design assumption, per `HANDOFF.md`). Measured
+on both the real corpus and these more realistic synthetic scenarios: **219–680 bytes/atom** — 7 to 23×
+lower. `fish-shell` (680 B/atom, the richest commit messages and the most path operations per atom) and
+`tortoisehg-thg` (481 B/atom) bracket the real-world range; the synthetic scenarios (219–377 B/atom, one
+or two trivial path operations per atom, short synthetic messages) sit below it, as expected for
+deliberately minimal generators. **Batches W/S/V should size any fixed per-atom budget from the real-world
+end of this range, not the synthetic one, and with real headroom above 680 B, not 5 KiB.**
+
+### The spill cost (handoff §3, feeds RFC 015 D-3)
+
+`brygge-bench profile-spill git <fish-shell> <spill-dir>`: decode (baseline, in memory), **write every
+blob to its own file** (still holding the whole decoded `Ir`), **drop the `Ir` entirely**, then **read
+every blob back from disk one at a time** (never holding more than one), as a disk-backed store would
+read on demand.
+
+| Step | Time | Peak |
+|---|---:|---:|
+| Decode (baseline) | 37.9 s | 9,618 MiB |
+| Write every blob (61,428 files; **still holding the `Ir`**) | 8.0 s | 9,400 MiB |
+| Drop the `Ir`, then read every blob back, one at a time | 1.2 s | **4,703 MiB** |
+
+- **A real reduction, but only to about half, not to near-zero.** Dropping the fully-materialized `Ir`
+  and reading blobs back one at a time *does* lower the peak (9,400 → 4,703 MiB) — genuine memory is
+  released, not just the measurement resetting. But a one-at-a-time read-back of a disk-backed store
+  should cost on the order of the baseline process plus one blob (tens of MiB, not thousands), so **~4.7
+  GiB of resident memory survives the drop.** This is very likely glibc `malloc`'s own arena retention:
+  large single allocations (plausibly the content store's biggest backing buffers) are typically `mmap`'d
+  and returned to the OS immediately on free, which is consistent with *some* of the ~9.4 GiB being
+  released; many smaller allocations (plausibly the `Vec<ChangeAtom>` and its nested `String`/`Vec`
+  fields) stay in retained heap arenas that `free()` does not hand back to the kernel.
+- **The implication for D-3:** `drop()`-ing an already-fully-materialized `Ir` is not, by itself, a
+  working spill strategy on this allocator — it leaves several GiB resident regardless. A genuinely
+  disk-backed content store would need to **never fully materialize the content in the first place**
+  (stream it to disk as it is produced, holding only metadata and on-demand blob handles), not build the
+  whole `Ir` and spill it afterward. That shapes what a streaming writer (D-2) and a disk-backed store
+  (D-3) actually need to do, rather than trying to reclaim memory after the fact.
+- **The write step's own peak (9,400 MiB) is lower than decode's (9,618 MiB)** by a small, plausible
+  margin — likely the same per-run noise as finding 2 above, at a scale where it does not change the
+  conclusion.
+
+### Summary for batches W, S and V
+
+- **The IR's content dominates the floor** (2.08–4.20× at P1 on real-content-heavy targets), but **P2's
+  serialization step roughly doubles the peak** on every target — holding the decoded `Ir` and its
+  serialized bytes simultaneously is the single largest, most consistent cost in this table, and the
+  clearest streaming-writer target (RFC 015 D-2: write blobs as they are produced, never holding both
+  forms at once).
+- **The reader's path (P4/P5) is reliably the cheapest phase** on every target (always below P1), so
+  `verify`/`inspect` are not the problem; **P6 (`verify --against-source`) is reliably the most expensive**
+  (it holds both a fresh decode and the reader's reconstruction at once) — any future streaming reader
+  should prioritize not regressing P4/P5's cheap path while P6 stays inherently the sum of both.
+- RFC 010's 5 KiB/atom planning figure is about 10–23× too high for real history; re-baseline from
+  219–680 B/atom.
+- Naive `drop()` does not reclaim most of a large `Ir`'s memory on this machine's allocator — D-2/D-3's
+  design should avoid ever fully materializing content, not rely on freeing it after the fact.

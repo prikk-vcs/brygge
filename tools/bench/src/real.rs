@@ -639,7 +639,7 @@ fn percentiles(sorted: &[usize]) -> (usize, usize, usize, usize) {
 // ---- verify, through the real `brygge` binary ------------------------------------------------------
 
 /// The `brygge` binary built alongside this one (same `cargo build`, same `target/<profile>/`).
-fn brygge_bin() -> PathBuf {
+pub(crate) fn brygge_bin() -> PathBuf {
     let exe = std::env::current_exe().expect("current exe");
     let dir = exe.parent().expect("has a parent");
     let candidate = dir.join("brygge");
