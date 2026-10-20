@@ -329,7 +329,14 @@ build.** `Peak÷content` is the peak RSS divided by the IR's own content bytes, 
 apart from "a multiple of content, as designed" (the synthetic Git scenarios run about 2.8×) versus a real
 problem.
 
-| Repository | Pin | Variant | Exit | Time | Peak | Content | Artifact | Peak÷content | Atoms | Files/commit (min/med/p90/max) | Tree (start/med/max/end) | Dropped | Flagged | verify | against-source |
+**"Peak" below is the decode alone (P1 in RFC 015 D-1's sense) — `brygge decode`, the command a user
+actually runs, peaks higher** (P3: about 4× the content before batch W, per "RFC 015 D-1: where the peak
+goes"; fish-shell's P1 here reads 9.6 GiB, its P3 is 18.7 GiB). Review 074 found this after this table was
+first written; not re-run here since D-1's own table already has the real-corpus P1-P6 figures for
+`fish-shell` and `tortoisehg-thg`, and amending every row's exit/verify/shape data for the rest would mean
+re-running the whole corpus for a label's sake.
+
+| Repository | Pin | Variant | Exit | Time | Peak (decode only, P1) | Content | Artifact | Peak÷content | Atoms | Files/commit (min/med/p90/max) | Tree (start/med/max/end) | Dropped | Flagged | verify | against-source |
 |---|---|---|---|---:|---:|---:|---:|---:|---:|---|---|---:|---:|---|---|
 | `jq` (git) | `34f7186b` | default | **refused** | — | — | — | — | — | — | — | — | — | — | — | — |
 | `jq` (git) | `34f7186b` | infer_renames | **refused** | — | — | — | — | — | — | — | — | — | — | — | — |
