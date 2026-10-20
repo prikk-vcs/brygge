@@ -6,7 +6,7 @@ read as precedent for date-driven work. **Do this first;** batches M and R follo
 ## 0. First, commit the architect's files on their own
 
 Commit as "RFC 014 accepted (Hardening, 0.4.0); handoffs":
-- `rfcs/accepted/014-hardening.md`;
+- `rfcs/done/014-hardening.md`;
 - `rfcs/handoffs/014-hardening/` (this file and its two siblings);
 - `rfcs/README.md`;
 - `ROADMAP.md`.

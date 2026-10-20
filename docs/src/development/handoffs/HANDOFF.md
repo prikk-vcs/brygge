@@ -5,11 +5,12 @@ map: what brygge is, the state at handover, the invariants you must never regres
 lives, how to build and gate it, and the prioritized backlog. Everything it references is in this
 repository; nothing load-bearing lives only in someone's head.
 
-**Date of handover:** 2026-09-12. **Updated for the 0.3.1 release, 2026-10-17.** **State:** brygge
+**Date of handover:** 2026-09-12. **Updated for the 0.4.0 release, 2026-10-20.** **State:** brygge
 **0.1.0 is released**: the decode → IR half for all four named sources, on IR contract **0.2.0**.
 **0.1.1** added Windows support and the release workflow (RFC 012), **0.2.0** bounds long Git and
-CVS histories (RFC 010), and **0.3.0** reaches SVN delta dumps, Mercurial's hashed store paths and CVS branch
-history (RFC 013). All gates
+CVS histories (RFC 010), **0.3.0** reaches SVN delta dumps, Mercurial's hashed store paths and CVS branch
+history (RFC 013), and **0.4.0** mutation-tests every untrusted parser and validates brygge against real
+public repositories of every source kind (RFC 014). All gates
 are green, and CI enforces them on the declared MSRV. The encode → prikk half waits on prikk's import
 foundations (see §8).
 
@@ -213,13 +214,30 @@ the team inherits the reasoning, not just the TODO. `ROADMAP.md` is authoritativ
 9. **CVS adaptive clustering windows:** deferred (RFC 013 OQ-3); no measured need yet. **CVS vendor branches
    after clearing:** deferred (OQ-6); counted with an exact record until a real repository needs them.
 
+**0.4.0 — Hardening** (RFC 014, done; handoffs in `rfcs/handoffs/014-hardening/`):
+10. **Done:** mutation tests for every parser of untrusted bytes, the IR artifact reader, and `verify`'s
+    checks — a quick depth in every test run, a deep depth under a memory cap whenever parser code or a
+    dependency changes, and at each release cut. Found and fixed five pre-existing CVS defects, present
+    since 0.1.0 (RFC 014 D-1).
+11. **Done:** real-world validation — brygge decodes and verifies pinned public repositories of every
+    source kind; results and import shapes in `tools/bench/README.md` (RFC 014 D-4). Findings: Git
+    submodules are refused by name (a floor change, candidate for a later RFC, not part of 0.4.0); memory
+    at real scale (a project needing ~10 GiB is memory-bound on an ordinary machine) fires RFC 010's
+    revisit trigger for its next cycle.
+12. **Done:** RCS edit-script strictness — an edit script whose commands are out of order, overlap, reach
+    past the end, or add zero lines is refused, since no tool writes one and no CVS version defines one
+    (reviews 063/064).
+13. **Done:** `brygge … | head` (or any reader that stops early) no longer panics with "Broken pipe".
+14. **Done:** the scheduled advisory check renamed **Advisory watch**, documented as brygge's only
+    scheduled job — every other job is triggered (RFC 014 D-7).
+
 **Deferred by explicit owner decision:**
-10. **A TUI:** deferred, *not* rejected (2026-09-12). If pursued, the standing architect recommendation is a
+15. **A TUI:** deferred, *not* rejected (2026-09-12). If pursued, the standing architect recommendation is a
     **separate `brygge-tui` crate over `brygge-ir`** (never in the decode binary), designed to make
     derived/dropped/refused *more* visible, not less. Draft an RFC first.
 
 **Track B — encode → prikk:**
-11. **RFC 008 (prikk encoder).** prikk decides its import design, and brygge informs it proactively
+16. **RFC 008 (prikk encoder).** prikk decides its import design, and brygge informs it proactively
     (ROADMAP Track B).
     - prikk ruled OQ-1…OQ-3 on 2026-09-13: the importer signs, and an adopted maintainer seals.
     - prikk ruled UD-4 on 2026-09-23. The importer is prikk's own import command.
@@ -240,7 +258,7 @@ the team inherits the reasoning, not just the TODO. `ROADMAP.md` is authoritativ
   streams: RFC 010 increments 2 and 4 are deferred by measurement.
 - **No progress reporting or cancellation.** Interrupting a decode is safe (the artifact write is atomic),
   but it produces nothing.
-- The threat model is the living document, revisited every release (v0.3 for 0.1.0, v0.4 for 0.1.1, v0.5 for 0.2.0, v0.6 for 0.3.0, v0.7 for 0.3.1).
+- The threat model is the living document, revisited every release (v0.3 for 0.1.0, v0.4 for 0.1.1, v0.5 for 0.2.0, v0.6 for 0.3.0, v0.7 for 0.3.1, v0.8 for 0.4.0).
 
 ---
 

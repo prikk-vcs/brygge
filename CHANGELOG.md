@@ -8,6 +8,22 @@ Every handoff adds its own entry in its own commit.
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-10-20
+
+**Hardening: brygge's parsers are now tested against malformed input, and proven on real
+repositories.** Mutation tests feed every parser of untrusted bytes, the IR artifact reader and
+`verify`'s checks with deliberately malformed variants of real inputs, aimed at sizes, counts and
+ceilings: a quick round on every push, and a deep round under a memory cap whenever parser code or a
+dependency changes. They found five defects in the CVS reader, present since 0.1.0. The worst let a
+32-byte crafted `,v` file hang `brygge decode cvs` indefinitely. All five are fixed. brygge also decodes
+and verifies pinned public repositories of every source kind, and refuses by name one that holds a Git
+submodule; the results are in `tools/bench/README.md`. **Also:** RCS edit scripts that no tool writes
+are refused, and `brygge … | head` no longer panics. **To note:** a large repository needs memory of
+about 2–4× its content (fish-shell, 23,496 commits: about 9.6 GiB). Reducing that is the next release's
+theme. Install with `cargo install --locked brygge`, or download a binary from the GitHub release.
+
+The detailed changes that made up 0.4.0 follow.
+
 ### Added
 
 - **Mutation tests for every parser that reads untrusted bytes, including the IR artifact reader**: a
@@ -35,9 +51,11 @@ Every handoff adds its own entry in its own commit.
   panics**: refused with a typed error.
 - **A crafted cyclic revision chain in a CVS `,v` file no longer costs up to a million steps per lookup**:
   every delta-chain walk is now bounded by the file's own revision count.
-- CVS: an RCS edit script whose commands are out of order, overlap, or reach past the end of the previous
-  revision is refused, as CVS itself refuses it; brygge no longer decodes such a file into content no CVS
-  checkout would give.
+- **CVS: an RCS edit script whose commands are out of order, overlap, reach past the end of the previous
+  revision, or add zero lines is refused.** No tool writes such a script. CVS itself refuses commands past
+  the end; for the others it defines nothing (CVS 1.11 refuses out-of-order commands by unsigned wraparound
+  and mishandles a zero-count add, and CVS 1.12 returns an artifact of its reverse traversal or skips the
+  add), so brygge no longer turns such a file into arbitrary content.
 
 ## [0.3.1] — 2026-10-17
 

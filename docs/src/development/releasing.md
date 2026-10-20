@@ -42,7 +42,8 @@ Do these once, before the first automated release. Each is reversible in the sam
      and the workspace dependency versions); `CHANGELOG.md`: `[Unreleased]` → `[X.Y.Z] — <date>`, headed
      by the release notes; status lines, where they name a version;
    - **the dev team runs the deep mutation depth** (`BRYGGE_MUTATION_DEPTH=deep cargo test --workspace
-     --release --locked`, under the same memory cap `mutation.yml` uses) locally, for every parser crate,
+     --release --locked -- --test-threads=4`, built first and then run under the same memory cap
+     `mutation.yml` uses; the pinned thread count matters, because the cap covers the whole test process) locally, for every parser crate,
      and records the iterations, the time, and any finding in the cut request (RFC 014). This is a
      recorded step of the prep, not a new CI gate — `mutation.yml` already runs the same depth on every
      push that touches a parser or `verify`'s own checks.

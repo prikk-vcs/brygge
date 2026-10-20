@@ -58,7 +58,10 @@ jobs:
       # failed", i.e. killed by the cap); the fixed `ruzstd` (0.9.1+, what this tree links) refuses it in
       # under a millisecond, nowhere near the cap. The ordinary deep run below — six mutation modules,
       # 100,000 mutations each — finishes in well under a second, with ample margin under 2 GiB.
+      # `ulimit -v` caps the whole test process, so the cap's meaning depends on how many tests allocate at
+      # once: the thread count is pinned (4), not left to the runner's core count, so a larger runner cannot
+      # turn a sound run into a false failure. A local run uses the same flag (releasing.md).
       - name: Deep mutation tests, under a memory cap (RFC 014 D-2/D-3)
         run: |
           ulimit -v 2000000
-          BRYGGE_MUTATION_DEPTH=deep cargo test --workspace --release --locked --no-fail-fast
+          BRYGGE_MUTATION_DEPTH=deep cargo test --workspace --release --locked --no-fail-fast -- --test-threads=4

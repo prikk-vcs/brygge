@@ -1,6 +1,6 @@
 # RFC 014 — Hardening (0.4.0): mutation-test every untrusted parser, and prove brygge on real repositories
 
-**Status.** **Accepted (2026-10-17)** by the owner ("Yes. Accepted."), with D-7 answering OQ-1. Handoffs: `rfcs/handoffs/014-hardening/`. Proposed (2026-10-17) by the architect. **Revised (2026-10-17)** after the owner's review of
+**Status.** **Done (2026-10-20): implemented in 0.4.0.** **Accepted (2026-10-17)** by the owner ("Yes. Accepted."), with D-7 answering OQ-1. Handoffs: `rfcs/handoffs/014-hardening/`. Proposed (2026-10-17) by the architect. **Revised (2026-10-17)** after the owner's review of
 draft 1, which proposed weekly fuzzing on a nightly toolchain. The owner's points:
 - this project has no date windows, so the work must be **trigger-driven**;
 - a nightly toolchain is not ordinary, so it needs a good reason, and there is none (D-5);
