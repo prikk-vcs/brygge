@@ -1,6 +1,8 @@
 [workspace]
 resolver = "3"
 members  = ["crates/*", "tools/*"]
+# `tools/corpus` is data (RFC 014 D-4's `real.toml`), not a crate.
+exclude  = ["tools/corpus"]
 
 [workspace.package]
 version      = "0.3.1"

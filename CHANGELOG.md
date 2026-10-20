@@ -13,6 +13,8 @@ Every handoff adds its own entry in its own commit.
 - **Mutation tests for every parser that reads untrusted bytes, including the IR artifact reader**: a
   quick depth in every test run, and a deep depth under a memory cap whenever parser code or
   `Cargo.lock` changes, and at each release cut (RFC 014). No change to the published crates.
+- **Real-world validation: brygge decodes and verifies pinned public repositories of each source kind**
+  (`tools/corpus/`); the results and history shapes are in `tools/bench/README.md` (RFC 014 D-4).
 
 ### Changed
 

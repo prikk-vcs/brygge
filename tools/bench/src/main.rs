@@ -42,6 +42,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
 
 mod corpus;
+mod real;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -76,6 +77,39 @@ fn main() {
             let scenario = args.get(2).map(String::as_str).unwrap_or("");
             let n: u64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(0);
             run_one(scenario, n);
+        }
+        Some("real") => {
+            let Some(toml_path) = args.get(2).map(PathBuf::from) else {
+                eprintln!("usage: brygge-bench real <real.toml> <cache-dir>");
+                std::process::exit(2);
+            };
+            let Some(cache_dir) = args.get(3).map(PathBuf::from) else {
+                eprintln!("usage: brygge-bench real <real.toml> <cache-dir>");
+                std::process::exit(2);
+            };
+            if !real::run(&toml_path, &cache_dir) {
+                std::process::exit(1);
+            }
+        }
+        // One (entry, variant), in its own process: so its peak RSS reflects that decode alone, the
+        // same "one decode per subprocess" method `run_matrix`/`run_one` use for the synthetic
+        // scenarios above (the handoff asks for "the bench harness's method"). Spawned by `real::run`,
+        // not meant to be typed by hand.
+        Some("real-decode-one") => {
+            let (Some(toml_path), Some(cache_dir), Some(name), Some(variant)) = (
+                args.get(2).map(PathBuf::from),
+                args.get(3).map(PathBuf::from),
+                args.get(4).cloned(),
+                args.get(5).cloned(),
+            ) else {
+                eprintln!(
+                    "usage: brygge-bench real-decode-one <real.toml> <cache-dir> <name> <variant>"
+                );
+                std::process::exit(2);
+            };
+            if !real::run_one_variant(&toml_path, &cache_dir, &name, &variant) {
+                std::process::exit(1);
+            }
         }
         Some("corpus") => {
             // Write a scenario's corpus and stop (no decode): so the same input can be decoded by two builds
@@ -426,7 +460,7 @@ fn check_cvs_revs_content(ir: &Ir) -> Result<(), String> {
 
 // ---- peak RSS (Linux /proc, no unsafe) -----------------------------------------------------------
 
-fn peak_rss_kib() -> Option<u64> {
+pub(crate) fn peak_rss_kib() -> Option<u64> {
     let status = std::fs::read_to_string("/proc/self/status").ok()?;
     for line in status.lines() {
         if let Some(rest) = line.strip_prefix("VmHWM:") {
@@ -439,7 +473,7 @@ fn peak_rss_kib() -> Option<u64> {
 /// Reset the kernel's peak-RSS mark (`echo 5 > /proc/self/clear_refs`), so `VmHWM` afterwards reflects the
 /// decode alone and not the corpus generation before it. Best effort; where it fails the peak is higher, never
 /// lower, than the decode's own.
-fn reset_peak_rss() {
+pub(crate) fn reset_peak_rss() {
     let _ = std::fs::write("/proc/self/clear_refs", "5");
 }
 

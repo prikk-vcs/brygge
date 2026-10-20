@@ -313,3 +313,60 @@ row (the self-check compares atoms, blobs and content bytes with the generator's
 - The older scenarios (`svn-dump`, `svn-revs`, `svn-content`; their dumps state no checksum) are unchanged within the run-to-run
   noise (`svn-dump 20,000`: 1.25-1.55 s before, 1.34-1.44 s after; `svn-revs 20,000`: 4.3-4.4 s before, 3.9-5.2 s after); their
   peak is 5-25 % lower for the same reason.
+
+## RFC 014 D-4: real repositories
+
+Every repository in `tools/corpus/real.toml` (review 066's amended R-1 list), fetched or dumped once into a
+cache directory outside this repository, decoded with every variant its kind supports, verified through the
+real `brygge` binary (internally, and `--against-source` against the fetched repository itself), and
+summarized into a shape — all via `brygge-bench real tools/corpus/real.toml <cache-dir>`. **One decode per
+subprocess** (`real-decode-one`, spawned by `real` per entry/variant), the same method the synthetic
+scenarios above use, so each peak is that one decode's own high-water mark and not a running total across
+every repository this process has already decoded.
+
+**brygge `0.3.1` @ `09fe12d`. Machine: Linux 7.2.10-1-cachyos x86_64, AMD Ryzen 9 9950X (32 threads), release
+build.**
+
+| Repository | Pin | Variant | Exit | Time | Peak | Atoms | Files/commit (min/med/p90/max) | Tree (start/med/max/end) | Dropped | Flagged | verify | against-source |
+|---|---|---|---|---:|---:|---:|---|---|---:|---:|---|---|
+| `jq` (git) | `34f7186b` | default | **refused** | — | — | — | — | — | — | — | — | — |
+| `jq` (git) | `34f7186b` | infer_renames | **refused** | — | — | — | — | — | — | — | — | — |
+| `fish-shell` (git) | `6cf31373` | default | ok | 36.2 s | 9,620 MiB | 23,496 | 0/1/5/597 | 93/1,595/2,261/2,261 | 6 | 0 | pass | corresponds |
+| `fish-shell` (git) | `6cf31373` | infer_renames | ok | 35.6 s | 9,621 MiB | 23,496 | 0/1/5/597 | 93/1,595/2,261/2,261 | 6 | 0 | pass | corresponds |
+| `tortoisehg-thg` (hg) | `ff01aa72ea78` | default | ok | 61.9 s | 3,487 MiB | 20,596 | 0/1/3/300 | 26/634/767/747 | 4 | 0 | pass | corresponds |
+| `evolve` (hg) | `bcdd16c129b3` | default | ok | 14.8 s | 787 MiB | 7,536 | 0/1/10/147 | 10/232/357/357 | 4 | 0 | pass | corresponds |
+| `openbsd-games` (cvs) | 2026-10-20 | default | ok | 443 ms | 599 MiB | 1,428 | 1/1/8/642 | 642/631/675/583 | 3 | 1 | pass | reproduces |
+| `openbsd-games` (cvs) | 2026-10-20 | reconstruct_refs | ok | 554 ms | 635 MiB | 1,429 | 1/1/8/642 | 642/631/675/583 | 6 | 2 | pass | reproduces |
+| `openbsd-cpio` (cvs) | 2026-10-20 | default | ok | 3 ms | 7.0 MiB | 7 | 1/1/45/45 | 45/45/45/0 | 3 | 0 | pass | reproduces |
+| `openbsd-cpio` (cvs) | 2026-10-20 | reconstruct_refs | ok | 5 ms | 7.1 MiB | 7 | 1/1/45/45 | 45/45/45/0 | 4 | 1 | pass | reproduces |
+| `wordpress-core` (svn) | r2700 | default | ok | 321 ms | 184 MiB | 2,701 | 0/1/4/163 | 0/149/1,141/1,141 | 4 | 0 | pass | corresponds |
+| `wordpress-core` (svn) | r2700 | reconstruct_refs | ok | 318 ms | 184 MiB | 2,701 | 0/1/4/163 | 0/149/1,141/1,141 | 4 | 0 | pass | corresponds |
+
+**Reproducibility:** a second run from the same cache (`fish-shell`, `openbsd-games`, `wordpress-core`,
+spot-checked via two direct `brygge decode` invocations each) gives byte-identical artifacts (`cmp`),
+confirmed before writing this table.
+
+### Findings (reported, not fixed in this batch)
+
+1. **`jq` is refused outright, on both variants:** "refused Git feature 'submodule' below the floor:
+   submodule (gitlink) at `modules/oniguruma` points outside this repository; refused rather than
+   approximated." `jq` embeds `oniguruma` as a real Git submodule. This is C-2a's own stated behaviour
+   (refuse rather than misread) working as designed — but it means the real-world corpus currently has
+   **no decodable Git repository that also has a submodule**, so that shape is validated only by refusing
+   it, not by decoding around it. Whether brygge should eventually support submodules (and how) is for the
+   architect to triage; this batch only reports that a real, popular, moderately-sized project hits it
+   immediately.
+2. **The real-world oracle revealed a genuine measurement bug in this harness, not in brygge:** the first
+   run of `real` decoded every repository **in one process**, and `/proc/self/status`'s `VmHWM` reset
+   (`echo 5 > clear_refs`) did not fully undo the allocator's retained memory from a prior, larger decode in
+   the same process — `evolve`'s peak read **9,317 MiB** right after `fish-shell`'s ~9.4 GiB decode in the
+   same process, and **787 MiB** (12x smaller) once isolated into its own subprocess, matching the
+   synthetic scenarios' already-established "one decode per subprocess" method. The table above is from the
+   corrected, isolated run; `real.rs` and `main.rs` were changed to always spawn `real-decode-one` per
+   (entry, variant), closing the gap for any future entry too, not just the ones that happened to expose it
+   here.
+3. **This session also found and corrected a stale hash:** `wordpress-core`'s SVN dump hash in
+   `real.toml`, as left by the session that was interrupted mid-work, did not match a freshly reproduced
+   `svnrdump dump https://core.svn.wordpress.org -r 0:2700` (no cached dump file existed on disk to check
+   it against). Re-dumped and re-hashed; the corrected hash is what's in `real.toml` now and what this run
+   verified against.

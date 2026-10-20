@@ -1,0 +1,72 @@
+# RFC 014 D-4 (batch R): the approved real-world corpus (review 066, amending request 042's R-1 list).
+#
+# Hand-parsed by `tools/bench/src/real.rs` (no new dependency: a small subset of TOML — `[[entry]]`
+# tables of `key = "value"` strings only, one entry per line, no nesting). Do not add types this parser
+# does not already handle without updating it.
+#
+# Git and hg: `pin` is the commit/node id alone — fetching and checking it out *is* the integrity
+# check. SVN and CVS have no single id, so `hash` is required: the SHA-256 of the dump file (SVN) or of
+# the sorted-path-and-content tree (CVS, `sha256sum` over each file's own hash, sorted by relative
+# path, hashed together). The runner refuses a cache mismatch rather than silently using stale data.
+#
+# Nothing here is fetched automatically into this repository — `cache_dir` (the runner's own argument)
+# is always outside it, and nothing under it is committed.
+
+[[entry]]
+kind = "git"
+name = "jq"
+url = "https://github.com/jqlang/jq.git"
+license = "MIT"
+pin = "34f7186b86743a083a589741b6cea95293524108"
+note = "tag jq-1.8.2; merges, both annotated and lightweight tags, confirmed renames"
+
+[[entry]]
+kind = "git"
+name = "fish-shell"
+url = "https://github.com/fish-shell/fish-shell.git"
+license = "GPL-2.0"
+pin = "6cf31373e9468f1a261319aceb8730e5d1c47e58"
+note = "tag 4.9.3; merges, annotated tags, far larger history (23.5k commits)"
+
+[[entry]]
+kind = "hg"
+name = "tortoisehg-thg"
+url = "https://foss.heptapod.net/mercurial/tortoisehg/thg"
+license = "GPL-2.0"
+pin = "ff01aa72ea781c0dc689a9fa82931b15afccedb8"
+note = "3 named branches (stable, default, hgtk); no obsstore, no non-public phases (checked)"
+
+[[entry]]
+kind = "hg"
+name = "evolve"
+url = "https://foss.heptapod.net/mercurial/evolve"
+license = "GPL-2.0"
+pin = "bcdd16c129b305f2383262f867515e77d3d2afd6"
+note = "7 named branches, +2 heads across them; no obsstore, no non-public phases (checked)"
+
+[[entry]]
+kind = "cvs"
+name = "openbsd-games"
+url = "rsync://anoncvs.eu.openbsd.org/OpenBSD-cvs/src/games/"
+license = "ISC/BSD-style (OpenBSD)"
+pin = "2026-10-20"
+hash = "6cea8515d49901a436745599746713d24b304f44549dbb2ceab87a16102c99ac"
+note = "723 ,v files, 16 MB; real branches and tags (OPENBSD_* symbols)"
+
+[[entry]]
+kind = "cvs"
+name = "openbsd-cpio"
+url = "rsync://anoncvs.eu.openbsd.org/OpenBSD-cvs/src/gnu/usr.bin/cpio/"
+license = "ISC/BSD-style (OpenBSD); GPL-2.0 (upstream GNU cpio)"
+pin = "2026-10-20"
+hash = "aebf0c14d98afdd19bf9845ad048be9e2d7ba1018a0d2f79d89373e6c859b63f"
+note = "vendor import (netbsd_1_1 at 1.1.1/1.1.1.1); whole module now dead (Attic-only)"
+
+[[entry]]
+kind = "svn"
+name = "wordpress-core"
+url = "https://core.svn.wordpress.org"
+license = "GPL-2.0-or-later"
+pin = "2700"
+hash = "81cbbe3fcbcb2c55efdfd8fe60d182b2411a5b3d3a3f3c40776db9545700948f"
+note = "self-contained, standard trunk/branches/tags; dumped r0:2700 (past the first branch and tag); hash corrected (resumed session) against a freshly reproduced dump"

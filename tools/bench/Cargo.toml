@@ -15,6 +15,7 @@ brygge-ir        = { workspace = true }
 brygge-decode-svn = { workspace = true }
 brygge-decode-cvs = { workspace = true }
 brygge-decode-git = { workspace = true }
+brygge-decode-hg  = { workspace = true }
 
 [lints]
 workspace = true

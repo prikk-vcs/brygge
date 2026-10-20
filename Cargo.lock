@@ -78,6 +78,7 @@ version = "0.3.1"
 dependencies = [
  "brygge-decode-cvs",
  "brygge-decode-git",
+ "brygge-decode-hg",
  "brygge-decode-svn",
  "brygge-ir",
 ]
