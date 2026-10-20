@@ -400,11 +400,17 @@ pub fn faithfulness_statement(kind: SourceKind) -> &'static str {
     }
 }
 
-/// Write `bytes` atomically to `out`: a temp file in the same directory, flushed and `sync_all`'d, then
-/// renamed over `out`. The temp file is created with `create_new`, so a pre-existing file or symlink at
-/// that path is an error — never followed, never truncated, and never removed (it is not ours). On any
-/// later failure the temp file we created is removed and `out` is untouched.
-fn atomic_write(out: &Path, bytes: &[u8]) -> std::io::Result<()> {
+/// Write a body atomically to `out`: a temp file in the same directory, written by `write_body`
+/// (returning the number of bytes it wrote), flushed and `sync_all`'d, then renamed over `out`. The
+/// temp file is created with `create_new`, so a pre-existing file or symlink at that path is an error —
+/// never followed, never truncated, and never removed (it is not ours). On any later failure the temp
+/// file we created is removed and `out` is untouched. `write_body` is handed the temp file directly
+/// (not a buffer) so a caller can stream straight into it (RFC 015 D-2) rather than building the whole
+/// body in memory first.
+fn atomic_write(
+    out: &Path,
+    write_body: impl FnOnce(&mut std::fs::File) -> std::io::Result<u64>,
+) -> std::io::Result<u64> {
     let dir = out
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -418,8 +424,8 @@ fn atomic_write(out: &Path, bytes: &[u8]) -> std::io::Result<()> {
         .write(true)
         .create_new(true)
         .open(&tmp)?;
-    let result = (|| -> std::io::Result<()> {
-        f.write_all(bytes)?;
+    let result = (|| -> std::io::Result<u64> {
+        let len = write_body(&mut f)?;
         f.sync_all()?;
         std::fs::rename(&tmp, out)?;
         // The rename is atomic but not yet durable across a power loss until the directory entry
@@ -428,7 +434,7 @@ fn atomic_write(out: &Path, bytes: &[u8]) -> std::io::Result<()> {
         if let Ok(d) = std::fs::File::open(dir) {
             let _ = d.sync_all();
         }
-        Ok(())
+        Ok(len)
     })();
     if result.is_err() {
         let _ = std::fs::remove_file(&tmp);
@@ -466,12 +472,20 @@ pub fn run_decode(
         }
     };
 
-    let bytes = brygge_ir::to_bytes(&ir);
-    if let Err(e) = atomic_write(out, &bytes) {
-        output::stderr(&format!("cannot write {}: {e}", out.display()));
-        return exit::FAILURE;
-    }
-    output::stderr(&format!("wrote {} ({} bytes)", out.display(), bytes.len()));
+    let written = atomic_write(out, |f| {
+        let mut w = std::io::BufWriter::new(f);
+        brygge_ir::artifact::write_to(&ir, &mut w).map_err(std::io::Error::other)?;
+        w.flush()?;
+        w.get_ref().metadata().map(|m| m.len())
+    });
+    let artifact_len = match written {
+        Ok(len) => len,
+        Err(e) => {
+            output::stderr(&format!("cannot write {}: {e}", out.display()));
+            return exit::FAILURE;
+        }
+    };
+    output::stderr(&format!("wrote {} ({artifact_len} bytes)", out.display()));
 
     // The end-of-run report is `inspect`'s default report (FS-02): the exact same call.
     let report = brygge_ir::honesty::summary(&ir);

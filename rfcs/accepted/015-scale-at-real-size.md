@@ -6,7 +6,7 @@
 ## Summary
 
 - RFC 014's real-world corpus measured what synthetic scenarios could not: **fish-shell** (23,496 commits)
-  decodes at a **9.6 GiB** peak, and **TortoiseHg** at 3.5 GiB. That is about 2× their IR content (4.6 GiB and
+  decodes at a **9.6 GiB** peak, and **TortoiseHg** at 3.5 GiB. **Corrected by batch A (review 074):** those are the decode alone. The `brygge decode` users run peaks at **18.7 GiB** and **6.8 GiB**, about 4× their IR content. That is about 2× their IR content (4.6 GiB and
   1.7 GiB): every unique file version, uncompressed.
 - RFC 010 deferred streaming "until a real import is memory-bound". That trigger has fired: an ordinary 8–16
   GiB machine cannot decode a mid-size real project. The threat model records it as **RR-total-memory**.

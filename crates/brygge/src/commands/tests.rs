@@ -2186,6 +2186,16 @@ fn planted_tmp_path(dir: &Path, name: &str) -> PathBuf {
     dir.join(format!(".{name}.brygge-tmp-{}", std::process::id()))
 }
 
+/// A `write_body` for `atomic_write` that just writes `bytes` verbatim — these tests are about the
+/// atomic-write mechanism (the temp file, the rename, cleanup on failure), not about what gets encoded
+/// into it, so a literal byte string stands in for a real artifact.
+fn write_bytes(bytes: &'static [u8]) -> impl FnOnce(&mut std::fs::File) -> std::io::Result<u64> {
+    move |f| {
+        f.write_all(bytes)?;
+        Ok(bytes.len() as u64)
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn a_planted_symlink_at_the_temp_path_fails_the_write_and_its_target_is_untouched() {
@@ -2196,7 +2206,7 @@ fn a_planted_symlink_at_the_temp_path_fails_the_write_and_its_target_is_untouche
     let tmp = planted_tmp_path(&dir, "out.ir");
     std::os::unix::fs::symlink(&victim, &tmp).unwrap();
 
-    let err = atomic_write(&out, b"artifact bytes").unwrap_err();
+    let err = atomic_write(&out, write_bytes(b"artifact bytes")).unwrap_err();
     assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
     assert_eq!(
         std::fs::read(&victim).unwrap(),
@@ -2221,7 +2231,7 @@ fn a_planted_regular_file_at_the_temp_path_is_not_truncated_or_removed() {
     let tmp = planted_tmp_path(&dir, "out.ir");
     std::fs::write(&tmp, b"planted").unwrap();
 
-    assert!(atomic_write(&out, b"artifact bytes").is_err());
+    assert!(atomic_write(&out, write_bytes(b"artifact bytes")).is_err());
     assert_eq!(std::fs::read(&tmp).unwrap(), b"planted");
     assert!(!out.exists());
     let _ = std::fs::remove_dir_all(&dir);
@@ -2231,7 +2241,7 @@ fn a_planted_regular_file_at_the_temp_path_is_not_truncated_or_removed() {
 fn a_normal_write_still_succeeds_and_leaves_no_temp_file() {
     let dir = scratch_dir("ok");
     let out = dir.join("out.ir");
-    atomic_write(&out, b"artifact bytes").unwrap();
+    atomic_write(&out, write_bytes(b"artifact bytes")).unwrap();
     assert_eq!(std::fs::read(&out).unwrap(), b"artifact bytes");
     assert!(tmp_siblings(&dir).is_empty());
     let _ = std::fs::remove_dir_all(&dir);
@@ -2245,7 +2255,7 @@ fn a_non_utf8_output_file_name_is_written_without_a_lossy_conversion() {
     use std::os::unix::ffi::OsStrExt;
     let dir = scratch_dir("nonutf8");
     let out = dir.join(std::ffi::OsStr::from_bytes(b"out-\xff.ir"));
-    atomic_write(&out, b"x").unwrap();
+    atomic_write(&out, write_bytes(b"x")).unwrap();
     assert_eq!(std::fs::read(&out).unwrap(), b"x");
     let _ = std::fs::remove_dir_all(&dir);
 }

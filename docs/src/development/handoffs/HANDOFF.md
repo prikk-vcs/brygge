@@ -153,6 +153,14 @@ cargo +1.87 test --workspace --locked
 cargo run -p brygge-bench --release
 ```
 
+**`cargo publish --workspace --dry-run` is not a per-push gate.** Once a version is actually on
+crates.io, packaging rewrites a dependency's `path =` away, so verifying it must resolve from a
+registry — and a dry-run of that same, now-published version resolves a workspace sibling like
+`brygge-ir` from crates.io, not the local tree, so it cannot see any API added since (review 075). It
+belongs to the release cut's own prep and `release.yml`'s verify step, where the version being checked
+has not been published yet and the check is meaningful; `tools/check-release-dev-deps.sh` stays a
+per-push gate, since it catches the class of bug a dry-run cannot see regardless of version.
+
 **Mutation tests (RFC 014 D-1/D-2/D-3):** every parser that reads untrusted bytes (the four decoders'
 hand-written readers, and `brygge-ir`'s artifact reader) mutates a handful of its own valid fixtures —
 generic byte operators plus format-aware boundary writes at the fields a parser module itself declares

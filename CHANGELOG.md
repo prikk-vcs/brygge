@@ -8,6 +8,16 @@ Every handoff adds its own entry in its own commit.
 
 ## [Unreleased]
 
+### Added
+
+- `brygge-ir`: `artifact::write_to`, a streaming artifact writer; `to_bytes` is built on it.
+
+### Changed
+
+- **`brygge decode` no longer holds extra copies of the content while finishing and writing an
+  artifact: the peak falls from about 4× the content to about 1× (fish-shell: 18.7 → about 4.9 GiB).**
+  Artifacts are byte-identical.
+
 ## [0.4.0] — 2026-10-20
 
 **Hardening: brygge's parsers are now tested against malformed input, and proven on real

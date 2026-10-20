@@ -97,6 +97,84 @@ fn serialization_is_byte_deterministic() {
     assert_eq!(to_bytes(&ir), to_bytes(&ir));
 }
 
+/// Several atoms, a ref, a drop, a flag, and an empty and a large blob — RFC 015 D-2's property test:
+/// `write_to` and `to_bytes` must never diverge, on a richer shape than [`build`]'s two-atom case.
+fn build_rich() -> Ir {
+    let mut b = IrBuilder::new(provenance());
+    let empty_blob = b.add_blob(Vec::new());
+    let large_blob = b.add_blob(vec![0x5au8; 200_000]);
+    let root = b
+        .add_atom(AtomDraft {
+            parents: vec![],
+            ops: vec![
+                PathOp::Add {
+                    path: "empty".into(),
+                    blob: empty_blob,
+                    mode: 0o100_644,
+                    status: EpistemicStatus::Stated,
+                },
+                PathOp::Add {
+                    path: "large".into(),
+                    blob: large_blob,
+                    mode: 0o100_644,
+                    status: EpistemicStatus::Stated,
+                },
+            ],
+            copies: vec![],
+            metadata: MetadataClaims {
+                message: Some(crate::model::Text::utf8("root")),
+                ..MetadataClaims::default()
+            },
+            source: SourceIdentity {
+                kind: SourceKind::Git,
+                repo_id: b"repo".to_vec(),
+                atom_id: b"c1".to_vec(),
+                signatures: Vec::new(),
+                extras: Vec::new(),
+            },
+            status: EpistemicStatus::Stated,
+        })
+        .unwrap();
+    b.add_ref(RefRecord {
+        name: "main".to_string(),
+        kind: RefKind::Branch,
+        target: root,
+        status: EpistemicStatus::Stated,
+        source: None,
+        annotation: None,
+    })
+    .unwrap();
+    b.set_loss(LossBoundary {
+        dropped: vec![DropRecord {
+            class: LossClass::Representation,
+            what: "packfiles".to_string(),
+            reason: "representation, not assertion".to_string(),
+        }],
+    });
+    b.add_flag(Flag {
+        kind: FlagKind::ConventionViolation,
+        what: "layout".to_string(),
+        count: 1,
+        reason: "test fixture".to_string(),
+    });
+    b.finish().unwrap()
+}
+
+#[test]
+fn write_to_equals_to_bytes_and_from_bytes_accepts_it() {
+    for ir in [build(), build_rich()] {
+        let via_to_bytes = to_bytes(&ir);
+
+        let mut cursor = std::io::Cursor::new(Vec::new());
+        write_to(&ir, &mut cursor).unwrap();
+        let via_write_to = cursor.into_inner();
+
+        assert_eq!(via_to_bytes, via_write_to);
+        let decoded = from_bytes(&via_write_to).unwrap();
+        assert_eq!(decoded.ir, ir);
+    }
+}
+
 #[test]
 fn truncation_is_rejected_not_panicked() {
     let ir = build();
@@ -152,7 +230,7 @@ fn container_with_version(ir: &Ir, major: u64, minor: u64, patch: u64) -> Vec<u8
     body.raw(&meta);
     body.uvarint(ir.content.len() as u64);
     for (id, bytes) in ir.content.iter_sorted() {
-        body.raw32(id.as_bytes());
+        body.raw(id.as_bytes());
         body.uvarint(bytes.len() as u64);
         body.raw(bytes);
     }
@@ -365,7 +443,7 @@ fn container_with_meta(ir: &Ir, meta: &[u8]) -> Vec<u8> {
     body.raw(meta);
     body.uvarint(ir.content.len() as u64);
     for (id, bytes) in ir.content.iter_sorted() {
-        body.raw32(id.as_bytes());
+        body.raw(id.as_bytes());
         body.uvarint(bytes.len() as u64);
         body.raw(bytes);
     }

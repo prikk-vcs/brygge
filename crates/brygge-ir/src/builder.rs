@@ -205,12 +205,8 @@ impl IrBuilder {
                 PathOp::Delete { .. } => None,
             })
             .collect();
-        let mut content = ContentStore::new();
-        for (id, bytes) in self.content.iter_sorted() {
-            if referenced.contains(id) {
-                content.insert(bytes.to_vec());
-            }
-        }
+        let mut content = self.content;
+        content.retain(|id| referenced.contains(id));
 
         Ok(Ir {
             atoms: ordered,

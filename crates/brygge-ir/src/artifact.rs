@@ -14,6 +14,7 @@
 //! panic.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::{Seek, SeekFrom, Write};
 
 use sha2::{Digest, Sha256};
 
@@ -26,6 +27,10 @@ const MAGIC: &[u8; 8] = b"BRYGGEIR";
 const PRE_RELEASE_FORMAT: u8 = 1;
 const FORMAT: u8 = 2;
 
+fn io_err(e: std::io::Error) -> Error {
+    Error::Io(e.to_string())
+}
+
 /// The result of decoding an artifact: the [`Ir`] plus how many fields from a newer contract minor were
 /// skipped (RFC 011 §2.2 rule 9). The count is informational: a skipped field was non-critical, so it
 /// cannot change what the artifact claims — `inspect` surfaces it as a note, never a warning.
@@ -37,40 +42,70 @@ pub struct Decoded {
     pub skipped_non_critical_fields: u64,
 }
 
-/// Serialize `ir` to a self-contained artifact (contract [`version::CURRENT`]).
-#[must_use]
-pub fn to_bytes(ir: &Ir) -> Vec<u8> {
+/// Serialize `ir` to a self-contained artifact (contract [`version::CURRENT`]), streaming the blob
+/// store straight from [`crate::content::ContentStore`]'s own bytes with no intermediate copy
+/// (RFC 015 D-2). `out` must support [`Seek`]: the digest is written at its fixed offset only after
+/// the body that it covers has already been written and hashed, then the cursor is restored to the
+/// end, so the whole artifact — digest included — ends up in one streamed pass.
+///
+/// # Errors
+/// [`Error::Io`] if `out` fails to write or seek.
+pub fn write_to<W: Write + Seek>(ir: &Ir, out: &mut W) -> Result<()> {
+    out.write_all(MAGIC).map_err(io_err)?;
+    out.write_all(&[FORMAT]).map_err(io_err)?;
+
     let mut version = crate::canon::CanonWriter::new();
     version.uvarint(u64::from(version::CURRENT.major));
     version.uvarint(u64::from(version::CURRENT.minor));
     version.uvarint(u64::from(version::CURRENT.patch));
-
-    let mut body = crate::canon::CanonWriter::new();
-    let meta_bytes = ir.encode_metadata();
-    body.uvarint(meta_bytes.len() as u64);
-    body.raw(&meta_bytes);
-
-    body.uvarint(ir.content.len() as u64);
-    for (id, bytes) in ir.content.iter_sorted() {
-        body.raw32(id.as_bytes());
-        body.uvarint(bytes.len() as u64);
-        body.raw(bytes);
-    }
+    out.write_all(version.as_bytes()).map_err(io_err)?;
 
     // The digest covers the stored bytes from the first version byte to the end — version, then
-    // metadata, then blobs — never a re-encoding (RFC 011 §2.3/§9).
+    // metadata, then blobs — never a re-encoding (RFC 011 §2.3/§9). It is written here as a
+    // placeholder and overwritten once the hash below is complete.
     let mut hasher = Sha256::new();
     hasher.update(version.as_bytes());
-    hasher.update(body.as_bytes());
-    let digest: [u8; 32] = hasher.finalize().into();
+    let digest_offset = out.stream_position().map_err(io_err)?;
+    out.write_all(&[0u8; 32]).map_err(io_err)?;
 
-    let mut out = Vec::with_capacity(8 + 1 + version.as_bytes().len() + 32 + body.as_bytes().len());
-    out.extend_from_slice(MAGIC);
-    out.push(FORMAT);
-    out.extend_from_slice(version.as_bytes());
-    out.extend_from_slice(&digest);
-    out.extend_from_slice(body.as_bytes());
-    out
+    let meta_bytes = ir.encode_metadata();
+    let meta_len = crate::canon::uvarint_value(meta_bytes.len() as u64);
+    hasher.update(&meta_len);
+    out.write_all(&meta_len).map_err(io_err)?;
+    hasher.update(&meta_bytes);
+    out.write_all(&meta_bytes).map_err(io_err)?;
+
+    let blob_count = crate::canon::uvarint_value(ir.content.len() as u64);
+    hasher.update(&blob_count);
+    out.write_all(&blob_count).map_err(io_err)?;
+    for (id, bytes) in ir.content.iter_sorted() {
+        hasher.update(id.as_bytes());
+        out.write_all(id.as_bytes()).map_err(io_err)?;
+        let blob_len = crate::canon::uvarint_value(bytes.len() as u64);
+        hasher.update(&blob_len);
+        out.write_all(&blob_len).map_err(io_err)?;
+        hasher.update(bytes);
+        out.write_all(bytes).map_err(io_err)?;
+    }
+
+    let digest: [u8; 32] = hasher.finalize().into();
+    let end = out.stream_position().map_err(io_err)?;
+    out.seek(SeekFrom::Start(digest_offset)).map_err(io_err)?;
+    out.write_all(&digest).map_err(io_err)?;
+    out.seek(SeekFrom::Start(end)).map_err(io_err)?;
+    Ok(())
+}
+
+/// Serialize `ir` to a self-contained artifact (contract [`version::CURRENT`]). Built on [`write_to`]
+/// so the two encodings can never diverge.
+#[must_use]
+pub fn to_bytes(ir: &Ir) -> Vec<u8> {
+    let mut cursor = std::io::Cursor::new(Vec::new());
+    // A `Cursor<Vec<u8>>` grows to fit every write and accepts any seek within what it has written —
+    // there is no OS resource to fail, so `write_to` cannot return `Err` here.
+    #[allow(clippy::expect_used)]
+    write_to(ir, &mut cursor).expect("writing to an in-memory Vec cannot fail");
+    cursor.into_inner()
 }
 
 /// Parse an artifact, verifying its version, integrity digest, blob content-addresses, and every

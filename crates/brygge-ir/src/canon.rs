@@ -64,11 +64,6 @@ impl CanonWriter {
     pub fn raw(&mut self, b: &[u8]) {
         self.buf.extend_from_slice(b);
     }
-
-    /// Write a fixed 32-byte id (no length prefix — the schema fixes the width).
-    pub fn raw32(&mut self, b: &[u8; 32]) {
-        self.buf.extend_from_slice(b);
-    }
 }
 
 /// Builds one record's field list, enforcing ascending tag order as fields are added, then frames it as

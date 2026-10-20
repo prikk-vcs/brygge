@@ -83,6 +83,9 @@ pub enum Error {
     /// A structural invariant was violated while building or writing (e.g. a ref targets an unknown
     /// atom). Signals a bug in a caller, never malformed *input*.
     Invariant(String),
+    /// [`artifact::write_to`] could not write to, or seek on, its destination (RFC 015 D-2). Never a
+    /// panic: the caller's own I/O failed, not brygge-ir's encoding.
+    Io(String),
 }
 
 impl std::fmt::Display for Error {
@@ -110,6 +113,7 @@ impl std::fmt::Display for Error {
             ),
             Self::NonCanonical(m) => write!(f, "brygge-ir artifact is not in canonical form: {m}"),
             Self::Invariant(m) => write!(f, "brygge-ir invariant violated: {m}"),
+            Self::Io(m) => write!(f, "writing a brygge-ir artifact failed: {m}"),
         }
     }
 }

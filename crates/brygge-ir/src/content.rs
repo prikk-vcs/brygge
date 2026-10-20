@@ -93,6 +93,13 @@ impl ContentStore {
     pub fn iter_sorted(&self) -> impl Iterator<Item = (&BlobId, &[u8])> {
         self.blobs.iter().map(|(id, bytes)| (id, bytes.as_slice()))
     }
+
+    /// Keep only the blobs `keep` accepts, dropping the rest **in place** — no blob is copied or
+    /// re-hashed (RFC 015 D-2: `IrBuilder::finish` used to prune by building a second store with
+    /// `insert`, a full copy of every referenced blob while the old store was still alive).
+    pub(crate) fn retain(&mut self, mut keep: impl FnMut(&BlobId) -> bool) {
+        self.blobs.retain(|id, _| keep(id));
+    }
 }
 
 /// Lowercase-hex a byte slice without a dependency (and without indexing).
