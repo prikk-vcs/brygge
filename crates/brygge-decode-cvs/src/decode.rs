@@ -9,6 +9,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use sha2::{Digest, Sha256};
 
 use brygge_ir::BlobId;
+use brygge_ir::Storage;
 use brygge_ir::builder::{AtomDraft, IrBuilder};
 use brygge_ir::model::{
     AtomId, DropRecord, Flag, FlagKind, Identity, ImportProvenance, Ir, LossBoundary, LossClass,
@@ -32,6 +33,19 @@ const MODE_REGULAR: u32 = 0o100_644;
 /// a whole-import-under-floor; [`Error::Read`] on a malformed `,v`; [`Error::Ir`] on an IR invariant
 /// violation.
 pub fn decode(source: &Source, opts: &Options) -> Result<Ir, Error> {
+    decode_with_storage(source, opts, &Storage::Memory)
+}
+
+/// [`decode`], with the content kept in `storage` instead of always in memory (RFC 015 D-3).
+///
+/// # Errors
+/// As [`decode`], plus [`Error::Ir`] wrapping [`brygge_ir::Error::Io`] if `storage` is
+/// `Storage::Spill` and the spill file could not be created or written.
+pub fn decode_with_storage(
+    source: &Source,
+    opts: &Options,
+    storage: &Storage,
+) -> Result<Ir, Error> {
     let root = source.resolve()?;
     let files = scan::scan(root)?;
 
@@ -53,7 +67,7 @@ pub fn decode(source: &Source, opts: &Options) -> Result<Ir, Error> {
             params
         },
     };
-    let mut builder = IrBuilder::new(provenance);
+    let mut builder = IrBuilder::with_storage(provenance, storage).map_err(Error::Ir)?;
 
     // With `--reconstruct-refs`, the named branches are imported (RFC 013 D-3, §6): find them by symbol name,
     // and decide which are imported, on which parent line, and in what order. Without it, the main line only,
@@ -157,10 +171,13 @@ pub fn decode(source: &Source, opts: &Options) -> Result<Ir, Error> {
             };
             if on_main || branch_name.is_some() {
                 let dead = rev.state == "dead";
-                let content = if dead {
-                    Vec::new()
+                // RFC 015 D-3: the blob is added here, as soon as the content is reconstructed — not
+                // kept on `FileRev` through clustering (review 074's "fourth copy": every revision of
+                // every file, all at once, for as long as clustering and changeset ordering run).
+                let blob = if dead {
+                    None
                 } else {
-                    contents.take(&f.rcs, num)?
+                    Some(builder.add_blob(contents.take(&f.rcs, num)?)?)
                 };
                 let fr = FileRev {
                     path: f.path.clone(),
@@ -169,7 +186,7 @@ pub fn decode(source: &Source, opts: &Options) -> Result<Ir, Error> {
                     author: rev.author.clone(),
                     log: rev.log.clone(),
                     state: rev.state.clone(),
-                    content,
+                    blob,
                 };
                 match branch_name {
                     Some(name) => branch_revs.entry(name.clone()).or_default().push(fr),
@@ -243,7 +260,7 @@ pub fn decode(source: &Source, opts: &Options) -> Result<Ir, Error> {
         .unwrap_or(&no_snapshots);
 
     for (k, cs) in changesets.iter().enumerate() {
-        let ops = ops_for(&cs.revs, &mut tree, &mut builder)?;
+        let ops = ops_for(&cs.revs, &mut tree)?;
         let atom_id = builder
             .add_atom(AtomDraft {
                 parents: prev_atom.into_iter().collect(),
@@ -655,11 +672,7 @@ fn check_no_later_trunk_after_vendor_branch(f: &scan::CvsFile) -> Result<(), Err
 }
 
 /// Determine a changeset's path operations against the line's running tree, and update the tree.
-fn ops_for(
-    revs: &[FileRev],
-    tree: &mut BTreeMap<String, BlobId>,
-    builder: &mut IrBuilder,
-) -> Result<Vec<PathOp>, Error> {
+fn ops_for(revs: &[FileRev], tree: &mut BTreeMap<String, BlobId>) -> Result<Vec<PathOp>, Error> {
     let mut ops = Vec::new();
     for fr in revs {
         if fr.is_dead() {
@@ -671,7 +684,11 @@ fn ops_for(
             }
             // A dead revision for a path that was never live is a no-op (created-then-deleted off-mainline).
         } else {
-            let blob = builder.add_blob(fr.content.clone()).map_err(Error::Ir)?;
+            // Already in the store (RFC 015 D-3): added when the revision's content was reconstructed,
+            // not here. `blob` is `Some` for every non-dead `FileRev`: the one place that constructs
+            // one (`decode`, above) sets it from `Some(builder.add_blob(...)?)` exactly when `!dead`.
+            #[allow(clippy::expect_used)]
+            let blob = fr.blob.expect("a non-dead FileRev always carries its blob");
             if tree.insert(fr.path.clone(), blob).is_none() {
                 ops.push(PathOp::Add {
                     path: fr.path.clone(),
@@ -1153,7 +1170,7 @@ fn build_branch(
     let mut atoms = Vec::with_capacity(plan.changesets.len());
     let mut snapshots = HashMap::new();
     for (i, cs) in plan.changesets.iter().enumerate() {
-        let ops = ops_for(&cs.revs, &mut branch_tree, builder)?;
+        let ops = ops_for(&cs.revs, &mut branch_tree)?;
         let mut extra: Vec<(&str, String)> = Vec::new();
         if i == 0 && !carried_point {
             point_params(&mut extra);

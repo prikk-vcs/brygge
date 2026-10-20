@@ -13,12 +13,19 @@ Every handoff adds its own entry in its own commit.
 - `brygge-ir`: `artifact::write_to`, a streaming artifact writer; `to_bytes` is built on it.
 - `brygge-ir`: `ContentStore::spilling`, a disk-backed content store for decoding at scale without
   holding every blob in memory at once (RFC 015 D-3).
+- `brygge decode --spill-dir <DIR>`: where to keep file content on disk while decoding, instead of in
+  memory. `decode` always spills; the default is the output artifact's own directory. The option never
+  changes the artifact.
 
 ### Changed
 
 - **`brygge decode` no longer holds extra copies of the content while finishing and writing an
   artifact: the peak falls from about 4× the content to about 1× (fish-shell: 18.7 → about 4.9 GiB).**
   Artifacts are byte-identical.
+- **`brygge decode` keeps file content on disk while decoding, not in memory: the peak is now about the
+  metadata, not the content (fish-shell: 4.9 GiB → about 410 MiB; TortoiseHg: 1.8 GiB → about 172 MiB).**
+  CVS no longer holds every revision's content through changeset reconstruction (`cvs-revs`: 3.3× →
+  about 1.3× content). Artifacts are byte-identical.
 
 ### Breaking
 

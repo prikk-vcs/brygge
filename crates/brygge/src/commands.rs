@@ -321,8 +321,14 @@ fn map_hg_error(e: HgError) -> (i32, String) {
 /// Decode `repo` with the chosen source decoder, mapping decoder errors to a `(exit code, message)`.
 /// A refused format/feature is a clean refusal (`FLOOR_REFUSAL`), not a generic failure. The decoder
 /// invocation itself is panic-guarded (`guard_decoder`, CR-16) for all four sources, since this is the
-/// single path both `decode` and `verify --against-source` use.
-fn decode_source(kind: SourceKind, repo: &Path, opts: &SourceOpts) -> Result<Ir, (i32, String)> {
+/// single path both `decode` and `verify --against-source` use. `storage` (RFC 015 D-3) is never
+/// recorded anywhere in the result; it only chooses where content lives while decoding.
+fn decode_source(
+    kind: SourceKind,
+    repo: &Path,
+    opts: &SourceOpts,
+    storage: &brygge_ir::Storage,
+) -> Result<Ir, (i32, String)> {
     match kind {
         SourceKind::Cvs => {
             let src = CvsSource::LocalRepo(repo.to_path_buf());
@@ -331,7 +337,7 @@ fn decode_source(kind: SourceKind, repo: &Path, opts: &SourceOpts) -> Result<Ir,
                 confidence_floor: opts.cvs_floor,
                 reconstruct_refs: opts.reconstruct_refs,
             };
-            guard_decoder(|| brygge_decode_cvs::decode(&src, &cvs))
+            guard_decoder(|| brygge_decode_cvs::decode_with_storage(&src, &cvs, storage))
                 .map_err(|fault| (exit::FAILURE, fault))?
                 .map_err(map_cvs_error)
         }
@@ -346,7 +352,7 @@ fn decode_source(kind: SourceKind, repo: &Path, opts: &SourceOpts) -> Result<Ir,
                 reconstruct_refs: opts.reconstruct_refs,
                 layout: opts.layout.clone(),
             };
-            guard_decoder(|| brygge_decode_svn::decode(&src, &svn))
+            guard_decoder(|| brygge_decode_svn::decode_with_storage(&src, &svn, storage))
                 .map_err(|fault| (exit::FAILURE, fault))?
                 .map_err(map_svn_error)
         }
@@ -355,14 +361,14 @@ fn decode_source(kind: SourceKind, repo: &Path, opts: &SourceOpts) -> Result<Ir,
                 infer_renames: opts.infer_renames,
                 rename_threshold: 100,
             };
-            guard_decoder(|| brygge_decode_git::decode(repo, &git))
+            guard_decoder(|| brygge_decode_git::decode_with_storage(repo, &git, storage))
                 .map_err(|fault| (exit::FAILURE, fault))?
                 .map_err(map_git_error)
         }
         SourceKind::Hg => {
             // Mercurial records its renames, so there is nothing to infer and no inference option.
             let hg = brygge_decode_hg::Options::default();
-            guard_decoder(|| brygge_decode_hg::decode(repo, &hg))
+            guard_decoder(|| brygge_decode_hg::decode_with_storage(repo, &hg, storage))
                 .map_err(|fault| (exit::FAILURE, fault))?
                 .map_err(map_hg_error)
         }
@@ -442,16 +448,39 @@ fn atomic_write(
     result
 }
 
-/// `decode <git|hg|svn|cvs> <source> --out <artifact>` (CL-01, FL-01/FL-10).
+/// `decode <git|hg|svn|cvs> <source> --out <artifact> [--spill-dir <DIR>]` (CL-01, FL-01/FL-10, RFC 015
+/// D-3/D-3a). Content is always kept in a private spill file while decoding, never in memory: in
+/// `spill_dir` if given, else `out`'s own directory. `spill_dir`, if given, must already exist and be a
+/// directory — never created silently (a usage error, exit 2, otherwise).
 pub fn run_decode(
     kind: SourceKind,
     source: &Path,
     out: &Path,
     infer_renames: bool,
     reconstruct_refs: bool,
+    spill_dir: Option<&Path>,
     format: Format,
 ) -> i32 {
     output::stderr(faithfulness_statement(kind));
+
+    let dir = match spill_dir {
+        Some(dir) => {
+            if !dir.is_dir() {
+                output::stderr(&format!(
+                    "--spill-dir {} does not exist or is not a directory",
+                    dir.display()
+                ));
+                return exit::USAGE;
+            }
+            dir.to_path_buf()
+        }
+        None => out
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf(),
+    };
+    let storage = brygge_ir::Storage::Spill(dir);
 
     let default_cvs = brygge_decode_cvs::Options::default();
     let ir = match decode_source(
@@ -464,6 +493,7 @@ pub fn run_decode(
             cvs_window: default_cvs.window_secs,
             cvs_floor: default_cvs.confidence_floor,
         },
+        &storage,
     ) {
         Ok(ir) => ir,
         Err((code, msg)) => {
@@ -1229,7 +1259,10 @@ fn run_against_source(ir1: &Ir, repo: &Path) -> AgainstSourceOutcome {
         cvs_floor: cvs_floor_from_provenance(ir1),
     };
     let is_cvs = kind == SourceKind::Cvs;
-    let ir2 = match decode_source(kind, repo, &opts) {
+    // Unlike `decode`, `verify --against-source` keeps its re-derived `ir2` in memory (RFC 015 D-3
+    // scopes "always spill" to `decode`; reducing this path's own peak is batch V's, the streaming
+    // reader) — `ir1 == &ir2` only ever compares blob id sets either way, never bytes.
+    let ir2 = match decode_source(kind, repo, &opts, &brygge_ir::Storage::Memory) {
         Ok(ir) => ir,
         Err((_, msg)) => {
             return AgainstSourceOutcome::NotChecked(format!("cannot re-decode source: {msg}"));

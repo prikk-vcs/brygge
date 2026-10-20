@@ -14,6 +14,8 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+use brygge_ir::BlobId;
+
 use crate::rcs::RevNum;
 
 /// One per-file revision — the atomic input to reconstruction.
@@ -31,8 +33,10 @@ pub struct FileRev {
     pub log: Vec<u8>,
     /// RCS state (`dead` = a deletion).
     pub state: String,
-    /// Reconstructed content (empty for a `dead` revision).
-    pub content: Vec<u8>,
+    /// The reconstructed content's address, already in the builder's store (RFC 015 D-3: clustering
+    /// holds every `FileRev` for the whole repository at once, so it carries an id, never the bytes).
+    /// `None` for a `dead` revision, which has no content.
+    pub blob: Option<BlobId>,
 }
 
 impl FileRev {

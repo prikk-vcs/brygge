@@ -12,6 +12,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+use brygge_ir::Storage;
 use brygge_ir::builder::{AtomDraft, IrBuilder};
 use brygge_ir::model::{
     AtomId, CopyRecord, DropRecord, Extra, Identity, ImportProvenance, Ir, LossBoundary, LossClass,
@@ -35,6 +36,15 @@ const DECODER: &str = "brygge-decode-hg";
 /// [`Error::FloorRefusal`] for a refused format or feature; [`Error::Read`] on a malformed store;
 /// [`Error::Ir`] on an IR invariant violation.
 pub fn decode(path: &Path, opts: &Options) -> Result<Ir, Error> {
+    decode_with_storage(path, opts, &Storage::Memory)
+}
+
+/// [`decode`], with the content kept in `storage` instead of always in memory (RFC 015 D-3).
+///
+/// # Errors
+/// As [`decode`], plus [`Error::Ir`] wrapping [`brygge_ir::Error::Io`] if `storage` is
+/// `Storage::Spill` and the spill file could not be created or written.
+pub fn decode_with_storage(path: &Path, opts: &Options, storage: &Storage) -> Result<Ir, Error> {
     let (root, store) = locate(path)?;
     let encoding = check_requirements(&root, &store)?;
 
@@ -88,7 +98,7 @@ pub fn decode(path: &Path, opts: &Options) -> Result<Ir, Error> {
             params
         },
     };
-    let mut builder = IrBuilder::new(provenance);
+    let mut builder = IrBuilder::with_storage(provenance, storage).map_err(Error::Ir)?;
 
     let Some(view) = view else {
         builder.set_loss(loss_boundary(&store, 0, 0, 0, 0, 0, 0));

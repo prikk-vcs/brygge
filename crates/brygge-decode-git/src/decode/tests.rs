@@ -1489,7 +1489,7 @@ fn a_blob_over_the_limit_is_refused() {
         max_blob_bytes: 1024,
         ..Limits::default()
     };
-    match decode_with(r.path(), &Options::default(), &limits) {
+    match decode_with(r.path(), &Options::default(), &limits, &Storage::Memory) {
         Err(crate::Error::ResourceLimit { .. }) => {}
         other => panic!("expected a resource-limit refusal, got {other:?}"),
     }
@@ -1509,7 +1509,12 @@ fn a_deep_tree_is_refused_by_depth_but_a_shallower_one_decodes() {
     let too_deep = TempRepo::new();
     let tree = build_nested_tree(&too_deep, 60);
     commit_tree(&too_deep, &tree, "60 levels");
-    match decode_with(too_deep.path(), &Options::default(), &limits) {
+    match decode_with(
+        too_deep.path(),
+        &Options::default(),
+        &limits,
+        &Storage::Memory,
+    ) {
         Err(crate::Error::ResourceLimit { .. }) => {}
         other => panic!("expected a resource-limit refusal, got {other:?}"),
     }
@@ -1517,8 +1522,13 @@ fn a_deep_tree_is_refused_by_depth_but_a_shallower_one_decodes() {
     let shallow_enough = TempRepo::new();
     let tree = build_nested_tree(&shallow_enough, 40);
     commit_tree(&shallow_enough, &tree, "40 levels");
-    let ir = decode_with(shallow_enough.path(), &Options::default(), &limits)
-        .expect("40 levels is within the injected 50-level ceiling");
+    let ir = decode_with(
+        shallow_enough.path(),
+        &Options::default(),
+        &limits,
+        &Storage::Memory,
+    )
+    .expect("40 levels is within the injected 50-level ceiling");
     assert_eq!(ir.atoms.len(), 1);
 }
 
@@ -1542,7 +1552,7 @@ fn a_path_over_the_limit_is_refused() {
         max_path_bytes: 100,
         ..Limits::default()
     };
-    match decode_with(r.path(), &Options::default(), &limits) {
+    match decode_with(r.path(), &Options::default(), &limits, &Storage::Memory) {
         Err(crate::Error::ResourceLimit { .. }) => {}
         other => panic!("expected a resource-limit refusal, got {other:?}"),
     }
@@ -1563,7 +1573,7 @@ fn the_commit_cap_refuses_when_exceeded() {
         max_commits: 2,
         ..Limits::default()
     };
-    match decode_with(r.path(), &Options::default(), &limits) {
+    match decode_with(r.path(), &Options::default(), &limits, &Storage::Memory) {
         Err(crate::Error::ResourceLimit { .. }) => {}
         other => panic!("expected a resource-limit refusal, got {other:?}"),
     }

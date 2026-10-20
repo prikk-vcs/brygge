@@ -53,6 +53,19 @@ impl std::fmt::Display for BlobId {
     }
 }
 
+/// Where a decode's content lives while building (RFC 015 D-3), chosen by the caller of a decoder — not
+/// a decoder option: it cannot change the output, and review 076 ruled it must never appear in the IR
+/// or its provenance (RFC 015 D-3a), where every recorded option is one that could. A decoder exposes a
+/// `decode_with_storage` alongside its memory-backed `decode` shorthand.
+#[derive(Debug, Clone, Default)]
+pub enum Storage {
+    /// Keep every blob in memory, as [`ContentStore::new`] does.
+    #[default]
+    Memory,
+    /// Spill blobs to a private file in this directory, as [`ContentStore::spilling`] does.
+    Spill(std::path::PathBuf),
+}
+
 /// Where a blob's bytes live: in memory, or at an offset/length in the spill file.
 #[derive(Debug)]
 enum Backing {
@@ -115,6 +128,18 @@ impl ContentStore {
                 index: BTreeMap::new(),
             },
         })
+    }
+
+    /// An empty store in the given [`Storage`]: [`ContentStore::new`] for [`Storage::Memory`],
+    /// [`ContentStore::spilling`] for [`Storage::Spill`].
+    ///
+    /// # Errors
+    /// [`Error::Io`], as [`ContentStore::spilling`].
+    pub fn for_storage(storage: &Storage) -> Result<Self> {
+        match storage {
+            Storage::Memory => Ok(Self::new()),
+            Storage::Spill(dir) => Self::spilling(dir),
+        }
     }
 
     /// Insert `bytes`, returning its content address. Inserting identical bytes twice is idempotent —

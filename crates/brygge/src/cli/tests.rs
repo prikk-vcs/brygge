@@ -47,6 +47,7 @@ fn decode_git_full() {
             out,
             infer_renames,
             reconstruct_refs,
+            spill_dir,
             format,
         } => {
             assert_eq!(kind, SourceKind::Git);
@@ -54,6 +55,7 @@ fn decode_git_full() {
             assert_eq!(out, PathBuf::from("out.ir"));
             assert!(infer_renames);
             assert!(!reconstruct_refs);
+            assert_eq!(spill_dir, None);
             assert_eq!(format, Format::Machine);
         }
         other => panic!("expected Decode, got {other:?}"),
@@ -118,6 +120,53 @@ fn decode_without_out_is_a_usage_error() {
         parse(&v(&["decode", "git"])).is_err(),
         "source required too"
     );
+}
+
+#[test]
+fn spill_dir_parses_and_rejects_a_repeat_or_a_missing_value() {
+    match parse(&v(&[
+        "decode",
+        "git",
+        "/repo",
+        "--out",
+        "out.ir",
+        "--spill-dir",
+        "/tmp/spill",
+    ]))
+    .unwrap()
+    {
+        Command::Decode { spill_dir, .. } => {
+            assert_eq!(spill_dir, Some(PathBuf::from("/tmp/spill")));
+        }
+        other => panic!("got {other:?}"),
+    }
+    match parse(&v(&["decode", "git", "/repo", "--out", "out.ir"])).unwrap() {
+        Command::Decode { spill_dir, .. } => assert_eq!(spill_dir, None, "off by default"),
+        other => panic!("got {other:?}"),
+    }
+    let err = parse(&v(&[
+        "decode",
+        "git",
+        "/repo",
+        "--out",
+        "out.ir",
+        "--spill-dir",
+        "/a",
+        "--spill-dir",
+        "/b",
+    ]))
+    .unwrap_err();
+    assert!(err.contains("--spill-dir given more than once"), "{err}");
+    let err = parse(&v(&[
+        "decode",
+        "git",
+        "/repo",
+        "--out",
+        "out.ir",
+        "--spill-dir",
+    ]))
+    .unwrap_err();
+    assert!(err.contains("--spill-dir needs a value"), "{err}");
 }
 
 #[test]

@@ -110,6 +110,101 @@ fn tmp_ir_path(tag: &str) -> PathBuf {
 
 // ---- decode / inspect / verify roundtrip -----------------------------------------------------------
 
+// ---- --spill-dir (RFC 015 D-3/D-3a) ----------------------------------------------------------------
+
+#[test]
+fn spill_dir_missing_is_a_usage_error() {
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let repo = simple_repo("spill-missing");
+    let out = repo.dir.join("out.ir");
+    let missing = repo.dir.join("does-not-exist");
+    let code = run_decode(
+        SourceKind::Git,
+        repo.path(),
+        &out,
+        false,
+        false,
+        Some(&missing),
+        Format::Machine,
+    );
+    assert_eq!(code, exit::USAGE);
+    assert!(!out.exists(), "no artifact on a usage error");
+}
+
+#[test]
+fn spill_dir_a_file_not_a_directory_is_a_usage_error() {
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let repo = simple_repo("spill-file");
+    let out = repo.dir.join("out.ir");
+    let file = repo.dir.join("a-plain-file");
+    std::fs::write(&file, b"not a directory").unwrap();
+    let code = run_decode(
+        SourceKind::Git,
+        repo.path(),
+        &out,
+        false,
+        false,
+        Some(&file),
+        Format::Machine,
+    );
+    assert_eq!(code, exit::USAGE);
+    assert!(!out.exists(), "no artifact on a usage error");
+}
+
+#[test]
+fn spill_dir_given_a_good_directory_is_used_and_the_artifact_is_byte_identical() {
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let repo = simple_repo("spill-good");
+    let default_out = repo.dir.join("default.ir");
+    let spill_out = repo.dir.join("spill.ir");
+    let spill_dir = repo.dir.join("spill");
+    std::fs::create_dir_all(&spill_dir).unwrap();
+
+    assert_eq!(
+        run_decode(
+            SourceKind::Git,
+            repo.path(),
+            &default_out,
+            false,
+            false,
+            None,
+            Format::Machine,
+        ),
+        exit::CLEAN
+    );
+    assert_eq!(
+        run_decode(
+            SourceKind::Git,
+            repo.path(),
+            &spill_out,
+            false,
+            false,
+            Some(&spill_dir),
+            Format::Machine,
+        ),
+        exit::CLEAN
+    );
+    assert_eq!(
+        std::fs::read(&default_out).unwrap(),
+        std::fs::read(&spill_out).unwrap(),
+        "--spill-dir never changes the artifact"
+    );
+    assert_eq!(
+        std::fs::read_dir(&spill_dir).unwrap().count(),
+        0,
+        "the spill file is never left behind"
+    );
+}
+
 #[test]
 fn decode_inspect_verify_roundtrip() {
     if !git_available() {
@@ -126,6 +221,7 @@ fn decode_inspect_verify_roundtrip() {
             &out,
             false,
             false,
+            None,
             Format::Machine
         ),
         exit::CLEAN
@@ -156,6 +252,7 @@ fn verify_internal_catches_tamper_with_no_source() {
             &out,
             false,
             false,
+            None,
             Format::Machine
         ),
         exit::CLEAN
@@ -189,6 +286,7 @@ fn verify_against_source_detects_a_mismatch() {
             &other_out,
             false,
             false,
+            None,
             Format::Machine
         ),
         exit::CLEAN
@@ -216,6 +314,7 @@ fn a_failing_internal_check_with_a_corresponding_source_still_reports_against_so
             &out,
             false,
             false,
+            None,
             Format::Machine
         ),
         exit::CLEAN
@@ -250,6 +349,7 @@ fn against_source_with_a_nonexistent_path_is_not_checked_not_a_mismatch() {
             &out,
             false,
             false,
+            None,
             Format::Machine
         ),
         exit::CLEAN
@@ -345,6 +445,7 @@ fn decode_a_real_clone_succeeds_and_verifies_against_source() {
             &clone_out,
             false,
             false,
+            None,
             Format::Machine
         ),
         exit::CLEAN,
@@ -365,6 +466,7 @@ fn decode_a_real_clone_succeeds_and_verifies_against_source() {
             &origin_out,
             false,
             false,
+            None,
             Format::Machine
         ),
         exit::CLEAN
@@ -439,6 +541,7 @@ fn decode_of_a_submodule_exits_floor_refusal() {
             &out,
             false,
             false,
+            None,
             Format::Human
         ),
         exit::FLOOR_REFUSAL
@@ -555,6 +658,7 @@ fn a_pre_existing_artifact_survives_a_failing_decode_and_leaves_no_temp_file() {
             &out,
             false,
             false,
+            None,
             Format::Machine
         ),
         exit::CLEAN
@@ -584,6 +688,7 @@ fn a_pre_existing_artifact_survives_a_failing_decode_and_leaves_no_temp_file() {
             &out,
             false,
             false,
+            None,
             Format::Machine
         ),
         exit::FLOOR_REFUSAL
@@ -615,6 +720,7 @@ fn a_successful_decode_replaces_the_existing_artifact_and_leaves_no_temp_file() 
             &out,
             false,
             false,
+            None,
             Format::Machine
         ),
         exit::CLEAN
@@ -629,6 +735,7 @@ fn a_successful_decode_replaces_the_existing_artifact_and_leaves_no_temp_file() 
             &out,
             false,
             false,
+            None,
             Format::Machine
         ),
         exit::CLEAN
@@ -655,6 +762,7 @@ fn inspect_default_equals_decodes_end_of_run_report() {
             &out,
             false,
             false,
+            None,
             Format::Machine
         ),
         exit::CLEAN
@@ -687,6 +795,7 @@ fn inspect_atoms_adds_the_listing_and_reads_the_artifact_once() {
             &out,
             false,
             false,
+            None,
             Format::Machine
         ),
         exit::CLEAN
@@ -718,6 +827,7 @@ fn inspect_report_says_unverifiable_never_unverified() {
             &out,
             false,
             false,
+            None,
             Format::Machine
         ),
         exit::CLEAN
@@ -745,6 +855,7 @@ fn representation_drops_appear_only_on_the_not_history_line() {
             &out,
             false,
             false,
+            None,
             Format::Machine
         ),
         exit::CLEAN
@@ -1508,7 +1619,15 @@ fn decode_svn_from_a_dumpfile_reconstructs_refs_and_verifies() {
     let dump = write_temp_dump(&svn_dump_with_branch());
     let out = tmp_ir_path("svn");
 
-    let code = run_decode(SourceKind::Svn, &dump, &out, false, true, Format::Machine);
+    let code = run_decode(
+        SourceKind::Svn,
+        &dump,
+        &out,
+        false,
+        true,
+        None,
+        Format::Machine,
+    );
     assert!(
         code == exit::CLEAN || code == exit::RECORDED_LOSS,
         "unexpected exit {code}"
@@ -1545,7 +1664,15 @@ fn decode_svn_flat_layout_with_reconstruct_is_a_convention_violation() {
     let dump = write_temp_dump(&b);
     let out = tmp_ir_path("svn-flat");
 
-    let code = run_decode(SourceKind::Svn, &dump, &out, false, true, Format::Machine);
+    let code = run_decode(
+        SourceKind::Svn,
+        &dump,
+        &out,
+        false,
+        true,
+        None,
+        Format::Machine,
+    );
     assert_eq!(code, exit::CONVENTION_VIOLATION);
     let _ = std::fs::remove_file(&dump);
     let _ = std::fs::remove_file(&out);
@@ -1586,7 +1713,15 @@ fn decode_svn_from_a_live_repository_via_svnadmin() {
     assert!(child.wait().map(|s| s.success()).unwrap_or(false));
 
     let out = repo.join("out.ir");
-    let code = run_decode(SourceKind::Svn, &repo, &out, false, true, Format::Machine);
+    let code = run_decode(
+        SourceKind::Svn,
+        &repo,
+        &out,
+        false,
+        true,
+        None,
+        Format::Machine,
+    );
     assert!(
         code == exit::CLEAN || code == exit::RECORDED_LOSS,
         "unexpected exit {code}"
@@ -1608,7 +1743,15 @@ fn cr_07_6_verifying_a_dumpfile_decode_against_a_live_repository_is_not_checked(
     }
     let dump = write_temp_dump(&svn_dump_with_branch());
     let out = tmp_ir_path("svn-form-mismatch");
-    let code = run_decode(SourceKind::Svn, &dump, &out, false, true, Format::Machine);
+    let code = run_decode(
+        SourceKind::Svn,
+        &dump,
+        &out,
+        false,
+        true,
+        None,
+        Format::Machine,
+    );
     assert!(
         code == exit::CLEAN || code == exit::RECORDED_LOSS,
         "unexpected exit {code}"
@@ -1678,7 +1821,15 @@ fn cr_07_6_r1_an_svnadmin_version_difference_alone_does_not_fail_verification() 
     // the comparison helpers directly on hand-built IRs — no real `svnadmin` binary needed.
     let dump = write_temp_dump(&svn_dump_with_branch());
     let out = tmp_ir_path("svn-version-note");
-    let code = run_decode(SourceKind::Svn, &dump, &out, false, true, Format::Machine);
+    let code = run_decode(
+        SourceKind::Svn,
+        &dump,
+        &out,
+        false,
+        true,
+        None,
+        Format::Machine,
+    );
     assert!(
         code == exit::CLEAN || code == exit::RECORDED_LOSS,
         "unexpected exit {code}"
@@ -1806,6 +1957,7 @@ fn decode_cvs_reconstructs_derived_changesets_and_reproduces() {
         &out,
         false,
         false,
+        None,
         Format::Machine,
     );
     assert!(
@@ -1852,6 +2004,7 @@ fn a_cvs_repository_with_a_branch_revision_verifies_its_own_artifact() {
         &out,
         false,
         false,
+        None,
         Format::Machine,
     );
     assert!(
@@ -1926,6 +2079,7 @@ fn decode_cvs_nested_and_mixed_branches_reproduce_and_verify_against_source() {
             out,
             false,
             true,
+            None,
             Format::Machine,
         );
         assert_eq!(
@@ -1969,6 +2123,7 @@ fn decode_cvs_whole_import_under_floor_is_refused() {
         &out,
         false,
         false,
+        None,
         Format::Machine,
     );
     assert_eq!(code, exit::FLOOR_REFUSAL);
@@ -2011,6 +2166,7 @@ fn decode_cvs_partial_under_floor_imports_and_exits_convention_violation() {
         &out,
         false,
         false,
+        None,
         Format::Machine,
     );
     assert_eq!(code, exit::CONVENTION_VIOLATION);
@@ -2044,6 +2200,7 @@ desc\n@@\n\n\n\
         &out,
         false,
         false,
+        None,
         Format::Machine,
     );
     assert_eq!(code, exit::RECORDED_LOSS);
@@ -2168,6 +2325,7 @@ fn decode_hg_and_verify_a_good_artifact_from_every_decoder() {
         &out,
         false,
         false,
+        None,
         Format::Machine,
     );
     assert!(
@@ -2688,7 +2846,15 @@ fn an_hg_artifacts_params_carry_no_rename_or_infer_keys() {
         .join("..")
         .join(format!("brygge-hg-params-{}-{n}.ir", std::process::id()));
     assert_eq!(
-        run_decode(SourceKind::Hg, &repo, &out, false, false, Format::Machine),
+        run_decode(
+            SourceKind::Hg,
+            &repo,
+            &out,
+            false,
+            false,
+            None,
+            Format::Machine
+        ),
         exit::CLEAN
     );
     let ir = brygge_ir::from_bytes(&std::fs::read(&out).unwrap())
@@ -2739,7 +2905,7 @@ fn a_missing_source_path_is_source_not_found_for_every_kind() {
     let missing = std::env::temp_dir().join(format!("brygge-cli-missing-{}", std::process::id()));
     let want = format!("source not found: {}", missing.display());
     for kind in ALL_KINDS {
-        match decode_source(kind, &missing, &plain_opts()) {
+        match decode_source(kind, &missing, &plain_opts(), &brygge_ir::Storage::Memory) {
             Err((code, msg)) => {
                 assert_eq!(code, exit::FAILURE, "{kind:?}");
                 assert!(msg.contains(&want), "{kind:?}: {msg}");
@@ -2757,6 +2923,7 @@ fn a_url_is_still_a_floor_refusal_not_source_not_found() {
         SourceKind::Svn,
         Path::new("svn://example.org/r"),
         &plain_opts(),
+        &brygge_ir::Storage::Memory,
     ) {
         Err((code, msg)) => {
             assert_eq!(code, exit::FLOOR_REFUSAL);
@@ -2770,6 +2937,7 @@ fn a_url_is_still_a_floor_refusal_not_source_not_found() {
         SourceKind::Cvs,
         Path::new(":pserver:x@example.org:/cvs"),
         &plain_opts(),
+        &brygge_ir::Storage::Memory,
     ) {
         Err((code, _)) => assert_eq!(code, exit::FLOOR_REFUSAL),
         Ok(_) => panic!("decoded a :pserver: source"),
@@ -2791,7 +2959,15 @@ fn an_svn_fifo_is_neither_a_dumpfile_nor_a_repository_and_does_not_block() {
     let (tx, rx) = std::sync::mpsc::channel();
     let p = path.clone();
     std::thread::spawn(move || {
-        let _ = tx.send(decode_source(SourceKind::Svn, &p, &plain_opts()).map(|_| ()));
+        let _ = tx.send(
+            decode_source(
+                SourceKind::Svn,
+                &p,
+                &plain_opts(),
+                &brygge_ir::Storage::Memory,
+            )
+            .map(|_| ()),
+        );
     });
     let got = rx
         .recv_timeout(std::time::Duration::from_secs(10))

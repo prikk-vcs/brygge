@@ -47,7 +47,7 @@ impl SourceKind {
 /// A parsed command.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
-    /// `decode <git|hg|svn|cvs> <source> --out <artifact> [--infer-renames | --reconstruct-refs] [--format …]`
+    /// `decode <git|hg|svn|cvs> <source> --out <artifact> [--infer-renames | --reconstruct-refs] [--spill-dir <DIR>] [--format …]`
     Decode {
         /// Which source decoder to use.
         kind: SourceKind,
@@ -59,6 +59,9 @@ pub enum Command {
         infer_renames: bool,
         /// Reconstruct branch/tag refs by convention or symbol, marking each `Derived` (svn/cvs only).
         reconstruct_refs: bool,
+        /// Where to keep file content while decoding, instead of in memory (RFC 015 D-3/D-3a). Must
+        /// already exist and be a directory; `None` means the output artifact's own directory.
+        spill_dir: Option<PathBuf>,
         /// Output format.
         format: Format,
     },
@@ -91,7 +94,7 @@ pub const USAGE: &str = "\
 brygge — carry version-control history into an intermediate representation (IR).
 
 USAGE:
-  brygge decode <git|hg|svn|cvs> <source> --out <artifact> [--infer-renames | --reconstruct-refs] [--format human|machine]
+  brygge decode <git|hg|svn|cvs> <source> --out <artifact> [--infer-renames | --reconstruct-refs] [--spill-dir <DIR>] [--format human|machine]
   brygge inspect <artifact> [--atoms] [--format human|machine]
   brygge verify <artifact> [--against-source <source>] [--format human|machine]
   brygge --version | --help | <command> --help
@@ -101,7 +104,10 @@ COMMANDS:
            For svn, <source> is a repository directory (dumped read-only via `svnadmin dump`) or a
            dumpfile; for cvs, a local repository directory of RCS ,v files. --infer-renames (git) and
            --reconstruct-refs (svn/cvs) each turn on an opt-in, always-marked derived layer; giving either
-           to a source kind it does not apply to is a usage error
+           to a source kind it does not apply to is a usage error. File content is kept on disk while
+           decoding, in a private file removed when brygge exits — --spill-dir <DIR> chooses where (it
+           must already exist); the default is --out's own directory. The option never changes the
+           artifact; a RAM-backed directory (tmpfs) moves the memory cost rather than removing it
   inspect  print the fidelity report an artifact alone reproduces; --atoms adds the per-atom
            listing: epistemic status, source ids, derived parameters, and the loss boundary
   verify   the honesty checks any reader can run with no source (always); with --against-source, also
@@ -206,6 +212,8 @@ fn parse_decode(args: &[String]) -> Result<Command, String> {
     let mut infer_renames_seen = false;
     let mut reconstruct_refs = false;
     let mut reconstruct_refs_seen = false;
+    let mut spill_dir: Option<PathBuf> = None;
+    let mut spill_dir_seen = false;
     let mut format = Format::Human;
     let mut format_seen = false;
     while let Some(arg) = it.next() {
@@ -216,6 +224,13 @@ fn parse_decode(args: &[String]) -> Result<Command, String> {
                 }
                 out_seen = true;
                 out = Some(need_value(&mut it, "--out", "decode")?);
+            }
+            "--spill-dir" => {
+                if spill_dir_seen {
+                    return Err(usage_error("decode", "--spill-dir given more than once"));
+                }
+                spill_dir_seen = true;
+                spill_dir = Some(need_value(&mut it, "--spill-dir", "decode")?);
             }
             "--infer-renames" => {
                 if infer_renames_seen {
@@ -281,6 +296,7 @@ fn parse_decode(args: &[String]) -> Result<Command, String> {
         out,
         infer_renames,
         reconstruct_refs,
+        spill_dir,
         format,
     })
 }

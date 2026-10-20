@@ -17,7 +17,7 @@ fn fr_rev(path: &str, rev: &[u32], date: i64, author: &str, log: &str) -> FileRe
         author: author.as_bytes().to_vec(),
         log: log.as_bytes().to_vec(),
         state: "Exp".to_string(),
-        content: Vec::new(),
+        blob: None,
     }
 }
 

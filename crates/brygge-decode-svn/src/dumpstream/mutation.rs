@@ -330,7 +330,12 @@ fn decode_check(path: &std::path::Path, limits: &crate::source::Limits, bytes: &
         return Outcome::Ok; // a filesystem hiccup is not a finding
     }
     let source = crate::Source::DumpFile(path.to_path_buf());
-    let _ = crate::decode::decode_with(&source, &crate::Options::default(), limits);
+    let _ = crate::decode::decode_with(
+        &source,
+        &crate::Options::default(),
+        limits,
+        &brygge_ir::Storage::Memory,
+    );
     Outcome::Ok
 }
 
@@ -359,6 +364,7 @@ fn decoding_a_mutated_dumpstream_never_panics() {
             }),
             &crate::Options::default(),
             &limits,
+            &brygge_ir::Storage::Memory,
         )
         .is_ok(),
         "the unmutated rich seed must decode cleanly"

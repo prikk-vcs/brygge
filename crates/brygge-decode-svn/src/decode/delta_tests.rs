@@ -354,7 +354,12 @@ fn decode_bytes_with(bytes: &[u8], limits: &Limits) -> Result<Ir, Error> {
     let path =
         std::env::temp_dir().join(format!("brygge-svndelta-{}-{n}.dump", std::process::id()));
     std::fs::write(&path, bytes).unwrap();
-    let out = decode_with(&Source::DumpFile(path.clone()), &Options::default(), limits);
+    let out = decode_with(
+        &Source::DumpFile(path.clone()),
+        &Options::default(),
+        limits,
+        &brygge_ir::Storage::Memory,
+    );
     let _ = std::fs::remove_file(&path);
     out
 }

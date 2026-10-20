@@ -4,6 +4,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
+use brygge_ir::Storage;
 use brygge_ir::builder::{AtomDraft, IrBuilder};
 use brygge_ir::model::{
     AtomId, DropRecord, Flag, FlagKind, Identity, ImportProvenance, Ir, LossBoundary, LossClass,
@@ -23,12 +24,30 @@ use crate::{DECODER, Error, Options, Source, decoder_version, dumpstream, floor,
 /// [`Error::FloorRefusal`] for a refused format or feature; [`Error::Read`] on a malformed dumpstream;
 /// [`Error::Ir`] on an IR invariant violation.
 pub fn decode(source: &Source, opts: &Options) -> Result<Ir, Error> {
-    decode_with(source, opts, &Limits::default())
+    decode_with_storage(source, opts, &Storage::Memory)
+}
+
+/// [`decode`], with the content kept in `storage` instead of always in memory (RFC 015 D-3).
+///
+/// # Errors
+/// As [`decode`], plus [`Error::Ir`] wrapping [`brygge_ir::Error::Io`] if `storage` is
+/// `Storage::Spill` and the spill file could not be created or written.
+pub fn decode_with_storage(
+    source: &Source,
+    opts: &Options,
+    storage: &Storage,
+) -> Result<Ir, Error> {
+    decode_with(source, opts, &Limits::default(), storage)
 }
 
 /// [`decode`] with explicit resource ceilings (RFC 010 D-4): tests use small ones instead of needing
 /// gigabytes.
-pub(crate) fn decode_with(source: &Source, opts: &Options, limits: &Limits) -> Result<Ir, Error> {
+pub(crate) fn decode_with(
+    source: &Source,
+    opts: &Options,
+    limits: &Limits,
+    storage: &Storage,
+) -> Result<Ir, Error> {
     let bytes = source.load_with(limits)?;
     let dump = dumpstream::parse_dump_with(&bytes, limits)?;
     // The dump is parsed; nothing below reads the raw bytes again (the parsed dump holds its own copies).
@@ -72,7 +91,7 @@ pub(crate) fn decode_with(source: &Source, opts: &Options, limits: &Limits) -> R
             params
         },
     };
-    let mut builder = IrBuilder::new(provenance);
+    let mut builder = IrBuilder::with_storage(provenance, storage).map_err(Error::Ir)?;
     let mut loss = Loss::default();
 
     if dump.revisions.is_empty() {

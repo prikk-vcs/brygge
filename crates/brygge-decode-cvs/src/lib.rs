@@ -33,7 +33,7 @@ mod scan;
 mod source;
 mod symbols;
 
-pub use decode::decode;
+pub use decode::{decode, decode_with_storage};
 pub use options::Options;
 pub use source::Source;
 

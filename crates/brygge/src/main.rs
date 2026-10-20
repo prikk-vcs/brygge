@@ -58,8 +58,17 @@ fn run(cmd: Command) -> i32 {
             out,
             infer_renames,
             reconstruct_refs,
+            spill_dir,
             format,
-        } => commands::run_decode(kind, &source, &out, infer_renames, reconstruct_refs, format),
+        } => commands::run_decode(
+            kind,
+            &source,
+            &out,
+            infer_renames,
+            reconstruct_refs,
+            spill_dir.as_deref(),
+            format,
+        ),
         Command::Inspect {
             artifact,
             atoms,

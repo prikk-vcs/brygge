@@ -30,7 +30,7 @@ mod source;
 mod svndiff;
 mod tree;
 
-pub use decode::decode;
+pub use decode::{decode, decode_with_storage};
 pub use options::{LayoutPolicy, Options};
 pub use source::Source;
 

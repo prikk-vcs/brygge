@@ -31,7 +31,7 @@ pub mod version;
 
 pub use artifact::{Decoded, from_bytes, to_bytes};
 pub use builder::{AtomDraft, IrBuilder};
-pub use content::{BlobId, ContentStore};
+pub use content::{BlobId, ContentStore, Storage};
 pub use honesty::{FidelityReport, summary};
 pub use model::{
     Annotation, AtomId, ChangeAtom, CopyRecord, DropRecord, Extra, Flag, FlagKind, Identity,

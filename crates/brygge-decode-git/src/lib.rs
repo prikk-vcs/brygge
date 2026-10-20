@@ -30,7 +30,7 @@ mod floor;
 mod open;
 mod options;
 
-pub use decode::decode;
+pub use decode::{decode, decode_with_storage};
 pub use options::Options;
 
 /// The decoder id and version recorded into IR provenance (`PR-6`) and every derivation (`HO-1`).

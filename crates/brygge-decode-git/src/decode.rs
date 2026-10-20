@@ -13,6 +13,7 @@ use std::path::Path;
 use gix::ObjectId;
 use gix::bstr::ByteSlice;
 
+use brygge_ir::Storage;
 use brygge_ir::builder::{AtomDraft, IrBuilder};
 use brygge_ir::model::{
     Annotation, AtomId, CopyRecord, DropRecord, Extra, Identity, ImportProvenance, Ir,
@@ -133,10 +134,24 @@ fn escape_invalid_utf8(bytes: &[u8]) -> String {
 /// object; [`Error::ResourceLimit`] on a resource ceiling (RFC 010); [`Error::Ir`] if the assembled IR
 /// violates an invariant.
 pub fn decode(path: &Path, opts: &Options) -> Result<Ir, Error> {
-    decode_with(path, opts, &Limits::default())
+    decode_with_storage(path, opts, &Storage::Memory)
 }
 
-pub(crate) fn decode_with(path: &Path, opts: &Options, limits: &Limits) -> Result<Ir, Error> {
+/// [`decode`], with the content kept in `storage` instead of always in memory (RFC 015 D-3).
+///
+/// # Errors
+/// As [`decode`], plus [`Error::Ir`] wrapping [`brygge_ir::Error::Io`] if `storage` is
+/// `Storage::Spill` and the spill file could not be created or written.
+pub fn decode_with_storage(path: &Path, opts: &Options, storage: &Storage) -> Result<Ir, Error> {
+    decode_with(path, opts, &Limits::default(), storage)
+}
+
+pub(crate) fn decode_with(
+    path: &Path,
+    opts: &Options,
+    limits: &Limits,
+    storage: &Storage,
+) -> Result<Ir, Error> {
     let repo = open::open(path)?;
     open::check_repo_floor(&repo)?;
 
@@ -218,7 +233,7 @@ pub(crate) fn decode_with(path: &Path, opts: &Options, limits: &Limits) -> Resul
         },
     };
 
-    let mut builder = IrBuilder::new(provenance);
+    let mut builder = IrBuilder::with_storage(provenance, storage).map_err(Error::Ir)?;
     let mut sha_to_atom: HashMap<ObjectId, AtomId> = HashMap::new();
     // RFC 010 increment 5: know each root tree's uses up front, so a snapshot is dropped after its last one.
     let mut snap_cache = SnapshotCache::new(count_snapshot_uses(&repo, &order, &parents));

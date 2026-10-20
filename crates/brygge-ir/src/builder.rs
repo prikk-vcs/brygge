@@ -9,7 +9,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::content::{BlobId, ContentStore};
+use crate::content::{BlobId, ContentStore, Storage};
 use crate::model::{
     AtomId, ChangeAtom, CopyRecord, Flag, ImportProvenance, Ir, LossBoundary, MetadataClaims,
     PathOp, RefRecord, SourceIdentity,
@@ -59,6 +59,25 @@ impl IrBuilder {
             loss: LossBoundary::default(),
             flags: Vec::new(),
         }
+    }
+
+    /// Start a build with the given import provenance and [`Storage`] (RFC 015 D-3). `Storage::Memory`
+    /// behaves exactly like [`IrBuilder::new`]; `Storage::Spill` opens a private spill file in the given
+    /// directory (RFC 015 D-3a). The storage is never recorded in `provenance`: it cannot change the
+    /// output (review 076).
+    ///
+    /// # Errors
+    /// [`Error::Io`] if `storage` is `Storage::Spill` and the spill file could not be created.
+    pub fn with_storage(provenance: ImportProvenance, storage: &Storage) -> Result<Self> {
+        Ok(Self {
+            content: ContentStore::for_storage(storage)?,
+            atoms: Vec::new(),
+            known: BTreeSet::new(),
+            refs: Vec::new(),
+            provenance,
+            loss: LossBoundary::default(),
+            flags: Vec::new(),
+        })
     }
 
     /// Insert file bytes into the content store, returning the content address.
