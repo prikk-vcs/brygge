@@ -269,7 +269,7 @@ fn a_genuine_internal_failure_dominates_the_exit_even_when_against_source_is_als
         brygge_ir::SourceKind::Git,
         "brygge-decode-git",
     ));
-    let blob = b.add_blob(b"x".to_vec());
+    let blob = b.add_blob(b"x".to_vec()).unwrap();
     let a1 = b
         .add_atom(AtomDraft {
             parents: vec![],
@@ -812,7 +812,7 @@ fn verify_integrity_fails_on_a_flipped_byte() {
         brygge_ir::SourceKind::Git,
         "brygge-decode-git",
     ));
-    let blob = b.add_blob(b"x".to_vec());
+    let blob = b.add_blob(b"x".to_vec()).unwrap();
     let _ = b
         .add_atom(AtomDraft {
             parents: vec![],
@@ -836,7 +836,7 @@ fn verify_structure_fails_on_a_dangling_parent() {
         brygge_ir::SourceKind::Git,
         "brygge-decode-git",
     ));
-    let blob = b.add_blob(b"x".to_vec());
+    let blob = b.add_blob(b"x".to_vec()).unwrap();
     let bogus_parent = brygge_ir::AtomId([0xABu8; 32]);
     let _ = b
         .add_atom(AtomDraft {
@@ -858,7 +858,7 @@ fn verify_fails_on_a_duplicate_ref_in_a_hand_built_artifact() {
         brygge_ir::SourceKind::Git,
         "brygge-decode-git",
     ));
-    let blob = b.add_blob(b"x".to_vec());
+    let blob = b.add_blob(b"x".to_vec()).unwrap();
     let a1 = b
         .add_atom(AtomDraft {
             parents: vec![],
@@ -910,8 +910,8 @@ fn two_ops_for_one_path_is_now_rejected_at_build_time_not_verify_time() {
         brygge_ir::SourceKind::Git,
         "brygge-decode-git",
     ));
-    let blob = b.add_blob(b"x".to_vec());
-    let blob2 = b.add_blob(b"y".to_vec());
+    let blob = b.add_blob(b"x".to_vec()).unwrap();
+    let blob2 = b.add_blob(b"y".to_vec()).unwrap();
     let err = b.add_atom(AtomDraft {
         parents: vec![],
         ops: vec![
@@ -940,7 +940,7 @@ fn verify_replay_fails_on_modify_of_an_absent_path() {
         brygge_ir::SourceKind::Git,
         "brygge-decode-git",
     ));
-    let blob = b.add_blob(b"x".to_vec());
+    let blob = b.add_blob(b"x".to_vec()).unwrap();
     let _ = b
         .add_atom(AtomDraft {
             parents: vec![],
@@ -966,7 +966,7 @@ fn verify_replay_fails_on_add_of_a_present_path() {
         brygge_ir::SourceKind::Git,
         "brygge-decode-git",
     ));
-    let blob = b.add_blob(b"x".to_vec());
+    let blob = b.add_blob(b"x".to_vec()).unwrap();
     let a1 = b
         .add_atom(AtomDraft {
             parents: vec![],
@@ -1007,7 +1007,7 @@ fn verify_derivations_fails_on_a_missing_required_param() {
         brygge_ir::SourceKind::Git,
         "brygge-decode-git",
     ));
-    let blob = b.add_blob(b"x".to_vec());
+    let blob = b.add_blob(b"x".to_vec()).unwrap();
     let _ = b
         .add_atom(AtomDraft {
             parents: vec![],
@@ -1030,7 +1030,7 @@ fn verify_derivations_fails_on_confidence_over_100() {
         brygge_ir::SourceKind::Git,
         "brygge-decode-git",
     ));
-    let blob = b.add_blob(b"x".to_vec());
+    let blob = b.add_blob(b"x".to_vec()).unwrap();
     let mut d = derivation_missing_params(DerivationKind::NormalizedMetadata);
     d.confidence = Some(101);
     let _ = b
@@ -1054,7 +1054,7 @@ fn verify_source_invariants_fails_when_a_cvs_atom_is_stripped_to_stated() {
         brygge_ir::SourceKind::Cvs,
         "brygge-decode-cvs",
     ));
-    let blob = b.add_blob(b"x".to_vec());
+    let blob = b.add_blob(b"x".to_vec()).unwrap();
     let _ = b
         .add_atom(AtomDraft {
             parents: vec![],
@@ -1090,7 +1090,7 @@ fn verify_source_invariants_accepts_a_cvs_branch_point_atom() {
         brygge_ir::SourceKind::Cvs,
         "brygge-decode-cvs",
     ));
-    let blob = b.add_blob(b"x".to_vec());
+    let blob = b.add_blob(b"x".to_vec()).unwrap();
     let root = b
         .add_atom(AtomDraft {
             parents: vec![],
@@ -1135,7 +1135,7 @@ fn verify_source_invariants_accepts_a_cvs_branch_point_atom() {
 #[test]
 fn verify_provenance_fails_on_an_empty_decoder() {
     let mut b = IrBuilder::new(blank_provenance(brygge_ir::SourceKind::Git, ""));
-    let blob = b.add_blob(b"x".to_vec());
+    let blob = b.add_blob(b"x".to_vec()).unwrap();
     let _ = b
         .add_atom(AtomDraft {
             parents: vec![],
@@ -1156,7 +1156,7 @@ fn verify_loss_boundary_fails_on_an_empty_what() {
         brygge_ir::SourceKind::Git,
         "brygge-decode-git",
     ));
-    let blob = b.add_blob(b"x".to_vec());
+    let blob = b.add_blob(b"x".to_vec()).unwrap();
     let _ = b
         .add_atom(AtomDraft {
             parents: vec![],
@@ -1184,7 +1184,7 @@ fn a_well_formed_artifact_passes_every_check() {
         brygge_ir::SourceKind::Git,
         "brygge-decode-git",
     ));
-    let blob = b.add_blob(b"x".to_vec());
+    let blob = b.add_blob(b"x".to_vec()).unwrap();
     let a1 = b
         .add_atom(AtomDraft {
             parents: vec![],
@@ -1225,7 +1225,7 @@ fn replay_of_a_linear_10000_atom_history_clones_nothing_and_peaks_at_one() {
     ));
     let mut parent = None;
     for i in 0..10_000u32 {
-        let blob = b.add_blob(format!("content-{i}").into_bytes());
+        let blob = b.add_blob(format!("content-{i}").into_bytes()).unwrap();
         let path = format!("f{i}.txt");
         let atom = b
             .add_atom(AtomDraft {
@@ -1260,7 +1260,7 @@ fn replay_of_a_branch_point_clones_once_for_the_earlier_sibling_only() {
         brygge_ir::SourceKind::Git,
         "brygge-decode-git",
     ));
-    let blob = b.add_blob(b"root".to_vec());
+    let blob = b.add_blob(b"root".to_vec()).unwrap();
     let root = b
         .add_atom(AtomDraft {
             parents: vec![],
@@ -1271,7 +1271,7 @@ fn replay_of_a_branch_point_clones_once_for_the_earlier_sibling_only() {
             status: EpistemicStatus::Stated,
         })
         .unwrap();
-    let blob_a = b.add_blob(b"a".to_vec());
+    let blob_a = b.add_blob(b"a".to_vec()).unwrap();
     let _child_a = b
         .add_atom(AtomDraft {
             parents: vec![root],
@@ -1282,7 +1282,7 @@ fn replay_of_a_branch_point_clones_once_for_the_earlier_sibling_only() {
             status: EpistemicStatus::Stated,
         })
         .unwrap();
-    let blob_b = b.add_blob(b"b".to_vec());
+    let blob_b = b.add_blob(b"b".to_vec()).unwrap();
     let _child_b = b
         .add_atom(AtomDraft {
             parents: vec![root],
@@ -1313,7 +1313,7 @@ fn a_hostile_commit_message_renders_escaped_in_inspect_atoms_human() {
         brygge_ir::SourceKind::Git,
         "brygge-decode-git",
     ));
-    let blob = b.add_blob(b"x".to_vec());
+    let blob = b.add_blob(b"x".to_vec()).unwrap();
     let _ = b
         .add_atom(AtomDraft {
             parents: vec![],
@@ -1349,7 +1349,7 @@ fn a_line_separator_in_a_commit_subject_renders_escaped_in_inspect_atoms_human()
         brygge_ir::SourceKind::Git,
         "brygge-decode-git",
     ));
-    let blob = b.add_blob(b"x".to_vec());
+    let blob = b.add_blob(b"x".to_vec()).unwrap();
     let _ = b
         .add_atom(AtomDraft {
             parents: vec![],
@@ -1380,7 +1380,7 @@ fn a_ref_named_with_equals_cannot_forge_a_machine_key() {
         brygge_ir::SourceKind::Git,
         "brygge-decode-git",
     ));
-    let blob = b.add_blob(b"x".to_vec());
+    let blob = b.add_blob(b"x".to_vec()).unwrap();
     let a1 = b
         .add_atom(AtomDraft {
             parents: vec![],
@@ -1683,36 +1683,48 @@ fn cr_07_6_r1_an_svnadmin_version_difference_alone_does_not_fail_verification() 
         code == exit::CLEAN || code == exit::RECORDED_LOSS,
         "unexpected exit {code}"
     );
-    let mut ir1 = read_ir(&out).unwrap().ir;
-    ir1.provenance
-        .params
-        .insert("svnadmin_version".to_string(), "1.14.1".to_string());
+    // `Ir` is not `Clone` (RFC 015 D-3: its content store may be a spill file), so each variant below is
+    // its own fresh read of the same artifact, not a clone of one shared `ir1` — independent IRs with
+    // the same content either way, which is all this test needs.
+    let fresh = |version: &str, brygge_version: Option<&str>| {
+        let mut ir = read_ir(&out).unwrap().ir;
+        ir.provenance
+            .params
+            .insert("svnadmin_version".to_string(), version.to_string());
+        if let Some(v) = brygge_version {
+            ir.provenance.brygge_version = v.to_string();
+        }
+        ir
+    };
 
     // Same version: no note, and alignment is a no-op.
-    assert_eq!(svn_version_note(&ir1, &ir1), None);
-    assert_eq!(align_svnadmin_version(&ir1, ir1.clone()), ir1);
+    assert_eq!(
+        svn_version_note(&fresh("1.14.1", None), &fresh("1.14.1", None)),
+        None
+    );
+    assert_eq!(
+        align_svnadmin_version(&fresh("1.14.1", None), fresh("1.14.1", None)),
+        fresh("1.14.1", None)
+    );
 
     // Different version, otherwise identical: a note, and alignment makes them equal (`Corresponds`).
-    let mut ir2 = ir1.clone();
-    ir2.provenance
-        .params
-        .insert("svnadmin_version".to_string(), "1.14.2".to_string());
     assert_eq!(
-        svn_version_note(&ir1, &ir2),
+        svn_version_note(&fresh("1.14.1", None), &fresh("1.14.2", None)),
         Some("1.14.1 vs 1.14.2".to_string())
     );
-    let aligned = align_svnadmin_version(&ir1, ir2.clone());
+    let aligned = align_svnadmin_version(&fresh("1.14.1", None), fresh("1.14.2", None));
     assert_eq!(
-        ir1, aligned,
+        fresh("1.14.1", None),
+        aligned,
         "aligning the version param must make an otherwise-identical IR equal"
     );
 
     // A real difference alongside the version difference must still be caught after alignment.
-    let mut ir3 = ir2.clone();
-    ir3.provenance.brygge_version = "9.9.9-different".to_string();
-    let aligned3 = align_svnadmin_version(&ir1, ir3);
+    let ir3 = fresh("1.14.2", Some("9.9.9-different"));
+    let aligned3 = align_svnadmin_version(&fresh("1.14.1", None), ir3);
     assert_ne!(
-        ir1, aligned3,
+        fresh("1.14.1", None),
+        aligned3,
         "a genuine content difference must survive version alignment"
     );
 
@@ -2047,7 +2059,7 @@ fn verify_cvs_derivations_requires_confidence_rule_as_well_as_date_rule() {
         brygge_ir::SourceKind::Cvs,
         "brygge-decode-cvs",
     ));
-    let blob = b.add_blob(b"x".to_vec());
+    let blob = b.add_blob(b"x".to_vec()).unwrap();
     let mut params = BTreeMap::new();
     params.insert("window_secs".to_string(), "180".to_string());
     params.insert("cluster_keys".to_string(), "author,log".to_string());
@@ -2296,7 +2308,7 @@ fn machine_output_fixture() -> Ir {
         brygge_ir::SourceKind::Git,
         "brygge-decode-git",
     ));
-    let blob = b.add_blob(b"x".to_vec());
+    let blob = b.add_blob(b"x".to_vec()).unwrap();
     let a1 = b
         .add_atom(AtomDraft {
             parents: vec![],

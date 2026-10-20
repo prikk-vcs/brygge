@@ -625,9 +625,14 @@ fn cr_07_1_a_symlink_retargeted_without_a_property_block_strips_the_link_prefix(
             _ => None,
         })
         .expect("a Modify op for 'link' in revision 2");
-    let content = ir.content.get(&blob).expect("blob content present");
+    let content = ir
+        .content
+        .get(&blob)
+        .expect("reading the blob back")
+        .expect("blob content present");
     assert_eq!(
-        content, b"newtarget",
+        content.as_slice(),
+        b"newtarget",
         "the retargeted symlink's content must be the bare target, not the raw 'link <target>' text"
     );
 }

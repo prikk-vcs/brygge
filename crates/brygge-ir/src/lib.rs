@@ -83,9 +83,23 @@ pub enum Error {
     /// A structural invariant was violated while building or writing (e.g. a ref targets an unknown
     /// atom). Signals a bug in a caller, never malformed *input*.
     Invariant(String),
-    /// [`artifact::write_to`] could not write to, or seek on, its destination (RFC 015 D-2). Never a
-    /// panic: the caller's own I/O failed, not brygge-ir's encoding.
+    /// [`artifact::write_to`] could not write to, or seek on, its destination (RFC 015 D-2); or a
+    /// file-backed [`content::ContentStore`] (RFC 015 D-3) could not create, write, or read its spill
+    /// file — a disk-full condition included. Never a panic: the caller's own I/O failed, not
+    /// brygge-ir's encoding.
     Io(String),
+}
+
+impl Error {
+    /// Wrap an [`std::io::Error`] as [`Error::Io`].
+    pub(crate) fn io(e: std::io::Error) -> Self {
+        Self::Io(e.to_string())
+    }
+
+    /// Build [`Error::Io`] from a message directly (no [`std::io::Error`] in hand).
+    pub(crate) fn io_msg(m: impl Into<String>) -> Self {
+        Self::Io(m.into())
+    }
 }
 
 impl std::fmt::Display for Error {

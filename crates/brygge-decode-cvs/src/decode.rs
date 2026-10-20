@@ -134,7 +134,7 @@ pub fn decode(source: &Source, opts: &Options) -> Result<Ir, Error> {
         wanted_here.extend(points.into_iter().flatten().cloned());
         let mut contents = FileContents::new(f, vendor_branch.as_ref(), &wanted_here);
         for point in points.into_iter().flatten() {
-            let blob = builder.add_blob(contents.peek(&f.rcs, point)?);
+            let blob = builder.add_blob(contents.peek(&f.rcs, point)?)?;
             point_blob.insert((fi, point.clone()), blob);
         }
         let skip_branch_point = vendor_import_branch_point(f, &contents)?;
@@ -243,7 +243,7 @@ pub fn decode(source: &Source, opts: &Options) -> Result<Ir, Error> {
         .unwrap_or(&no_snapshots);
 
     for (k, cs) in changesets.iter().enumerate() {
-        let ops = ops_for(&cs.revs, &mut tree, &mut builder);
+        let ops = ops_for(&cs.revs, &mut tree, &mut builder)?;
         let atom_id = builder
             .add_atom(AtomDraft {
                 parents: prev_atom.into_iter().collect(),
@@ -659,7 +659,7 @@ fn ops_for(
     revs: &[FileRev],
     tree: &mut BTreeMap<String, BlobId>,
     builder: &mut IrBuilder,
-) -> Vec<PathOp> {
+) -> Result<Vec<PathOp>, Error> {
     let mut ops = Vec::new();
     for fr in revs {
         if fr.is_dead() {
@@ -671,7 +671,7 @@ fn ops_for(
             }
             // A dead revision for a path that was never live is a no-op (created-then-deleted off-mainline).
         } else {
-            let blob = builder.add_blob(fr.content.clone());
+            let blob = builder.add_blob(fr.content.clone()).map_err(Error::Ir)?;
             if tree.insert(fr.path.clone(), blob).is_none() {
                 ops.push(PathOp::Add {
                     path: fr.path.clone(),
@@ -689,7 +689,7 @@ fn ops_for(
             }
         }
     }
-    ops
+    Ok(ops)
 }
 
 fn metadata_of(cs: &Changeset) -> MetadataClaims {
@@ -1153,7 +1153,7 @@ fn build_branch(
     let mut atoms = Vec::with_capacity(plan.changesets.len());
     let mut snapshots = HashMap::new();
     for (i, cs) in plan.changesets.iter().enumerate() {
-        let ops = ops_for(&cs.revs, &mut branch_tree, builder);
+        let ops = ops_for(&cs.revs, &mut branch_tree, builder)?;
         let mut extra: Vec<(&str, String)> = Vec::new();
         if i == 0 && !carried_point {
             point_params(&mut extra);

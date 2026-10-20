@@ -32,7 +32,7 @@ fn provenance() -> ImportProvenance {
 
 fn build() -> Ir {
     let mut b = IrBuilder::new(provenance());
-    let blob = b.add_blob(b"hello world".to_vec());
+    let blob = b.add_blob(b"hello world".to_vec()).unwrap();
     let root = b
         .add_atom(AtomDraft {
             parents: vec![],
@@ -57,7 +57,7 @@ fn build() -> Ir {
             status: EpistemicStatus::Stated,
         })
         .unwrap();
-    let child_blob = b.add_blob(b"second".to_vec());
+    let child_blob = b.add_blob(b"second".to_vec()).unwrap();
     let _child = b
         .add_atom(AtomDraft {
             parents: vec![root],
@@ -101,8 +101,8 @@ fn serialization_is_byte_deterministic() {
 /// `write_to` and `to_bytes` must never diverge, on a richer shape than [`build`]'s two-atom case.
 fn build_rich() -> Ir {
     let mut b = IrBuilder::new(provenance());
-    let empty_blob = b.add_blob(Vec::new());
-    let large_blob = b.add_blob(vec![0x5au8; 200_000]);
+    let empty_blob = b.add_blob(Vec::new()).unwrap();
+    let large_blob = b.add_blob(vec![0x5au8; 200_000]).unwrap();
     let root = b
         .add_atom(AtomDraft {
             parents: vec![],
@@ -229,10 +229,11 @@ fn container_with_version(ir: &Ir, major: u64, minor: u64, patch: u64) -> Vec<u8
     body.uvarint(meta.len() as u64);
     body.raw(&meta);
     body.uvarint(ir.content.len() as u64);
-    for (id, bytes) in ir.content.iter_sorted() {
+    for id in ir.content.ids() {
+        let bytes = ir.content.get(id).unwrap().unwrap();
         body.raw(id.as_bytes());
         body.uvarint(bytes.len() as u64);
-        body.raw(bytes);
+        body.raw(&bytes);
     }
 
     let mut hasher = Sha256::new();
@@ -388,7 +389,7 @@ fn a_duplicate_atom_id_is_rejected() {
 #[test]
 fn an_orphan_blob_is_rejected() {
     let mut ir = build();
-    ir.content.insert(b"nobody references me".to_vec());
+    ir.content.insert(b"nobody references me".to_vec()).unwrap();
     let bytes = to_bytes(&ir);
     match from_bytes(&bytes) {
         Err(Error::NonCanonical(_)) => {}
@@ -442,10 +443,11 @@ fn container_with_meta(ir: &Ir, meta: &[u8]) -> Vec<u8> {
     body.uvarint(meta.len() as u64);
     body.raw(meta);
     body.uvarint(ir.content.len() as u64);
-    for (id, bytes) in ir.content.iter_sorted() {
+    for id in ir.content.ids() {
+        let bytes = ir.content.get(id).unwrap().unwrap();
         body.raw(id.as_bytes());
         body.uvarint(bytes.len() as u64);
-        body.raw(bytes);
+        body.raw(&bytes);
     }
 
     let mut hasher = Sha256::new();
@@ -597,7 +599,7 @@ fn builder_with_atoms() -> IrBuilder {
     for atom in &ir.atoms {
         for op in &atom.ops {
             if let PathOp::Add { blob, .. } = op {
-                b.add_blob(ir.content.get(blob).unwrap().to_vec());
+                b.add_blob(ir.content.get(blob).unwrap().unwrap()).unwrap();
             }
         }
         b.add_atom(AtomDraft {

@@ -376,7 +376,7 @@ fn tree_at(ir: &Ir, idx: usize) -> BTreeMap<String, (Vec<u8>, u32)> {
                 } => {
                     tree.insert(
                         path.clone(),
-                        (ir.content.get(blob).unwrap().to_vec(), *mode),
+                        (ir.content.get(blob).unwrap().unwrap(), *mode),
                     );
                 }
                 PathOp::Delete { path, .. } => {

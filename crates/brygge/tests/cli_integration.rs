@@ -481,7 +481,9 @@ fn big_artifact(n: usize) -> std::path::PathBuf {
     });
     let mut parent = None;
     for i in 0..n {
-        let blob = builder.add_blob(format!("content {i}").into_bytes());
+        let blob = builder
+            .add_blob(format!("content {i}").into_bytes())
+            .unwrap();
         let op = if i == 0 {
             brygge_ir::model::PathOp::Add {
                 path: "f".into(),

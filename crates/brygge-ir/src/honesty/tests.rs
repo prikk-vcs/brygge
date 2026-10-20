@@ -34,7 +34,7 @@ fn provenance() -> ImportProvenance {
 
 fn build() -> Ir {
     let mut b = IrBuilder::new(provenance());
-    let blob = b.add_blob(b"x".to_vec());
+    let blob = b.add_blob(b"x".to_vec()).unwrap();
     let derived_copy = EpistemicStatus::Derived(Derivation {
         kind: DerivationKind::InferredRename,
         by: "d".into(),
@@ -57,7 +57,7 @@ fn build() -> Ir {
             status: EpistemicStatus::Stated,
         })
         .unwrap();
-    let child_blob = b.add_blob(b"y".to_vec());
+    let child_blob = b.add_blob(b"y".to_vec()).unwrap();
     let _child = b
         .add_atom(AtomDraft {
             parents: vec![root],
@@ -184,7 +184,7 @@ fn human_form_shows_flagged_section_only_when_non_empty() {
     assert!(with_flag.contains("convention-violation: 2"));
 
     let mut b = IrBuilder::new(provenance());
-    let blob = b.add_blob(b"z".to_vec());
+    let blob = b.add_blob(b"z".to_vec()).unwrap();
     let _ = b
         .add_atom(AtomDraft {
             parents: vec![],
@@ -207,7 +207,7 @@ fn human_form_shows_flagged_section_only_when_non_empty() {
 #[test]
 fn a_clean_import_reports_no_derivations() {
     let mut b = IrBuilder::new(provenance());
-    let blob = b.add_blob(b"y".to_vec());
+    let blob = b.add_blob(b"y".to_vec()).unwrap();
     let _ = b
         .add_atom(AtomDraft {
             parents: vec![],
@@ -249,7 +249,7 @@ fn representation_drops_appear_only_on_the_not_history_line() {
 #[test]
 fn a_representation_drop_is_counted_on_the_not_history_line_not_recorded_loss() {
     let mut b = IrBuilder::new(provenance());
-    let blob = b.add_blob(b"z".to_vec());
+    let blob = b.add_blob(b"z".to_vec()).unwrap();
     let _ = b
         .add_atom(AtomDraft {
             parents: vec![],

@@ -1236,16 +1236,17 @@ fn run_against_source(ir1: &Ir, repo: &Path) -> AgainstSourceOutcome {
         }
     };
     // CR-07.6, review 010 R-1: `svnadmin`'s own version is a fact about the tool, not the history, so an
-    // upgrade between the two decodes must never by itself make this comparison fail. Compare against a
-    // copy of `ir2` with that one param aligned to `ir1`'s; keep the original `ir2` around for the
-    // version-mismatch note, which still reports honestly when the versions actually differed.
-    let ir2_for_compare = align_svnadmin_version(ir1, ir2.clone());
+    // upgrade between the two decodes must never by itself make this comparison fail. The version-mismatch
+    // note (if any) is read from `ir2` before it is aligned to `ir1`'s version in place — `Ir` is not
+    // `Clone` (RFC 015 D-3: its content store may be a spill file), so there is no separate "original"
+    // copy to keep; the note already carries everything the original value was needed for.
+    let versions_differ = svn_version_note(ir1, &ir2);
+    let ir2 = align_svnadmin_version(ir1, ir2);
     // Nothing else in the IR is provenance-only-and-volatile any more (import_time was removed by
     // RFC 011), so the aligned decodes are compared directly.
-    let corresponds = ir1 == &ir2_for_compare;
-    let versions_differ = svn_version_note(ir1, &ir2);
+    let corresponds = ir1 == &ir2;
     let detail = || {
-        let d = divergence(ir1, &ir2_for_compare);
+        let d = divergence(ir1, &ir2);
         match &versions_differ {
             Some(v) => format!("{d} (svnadmin versions differ: {v})"),
             None => d,

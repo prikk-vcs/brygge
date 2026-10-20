@@ -363,7 +363,7 @@ fn diff_manifests(
             continue;
         }
         let file = read_file(store, filelogs, path, &entry.filenode)?;
-        let blob = builder.add_blob(file.content.clone());
+        let blob = builder.add_blob(file.content.clone())?;
         if is_add {
             ops.push(PathOp::Add {
                 path: path.clone(),

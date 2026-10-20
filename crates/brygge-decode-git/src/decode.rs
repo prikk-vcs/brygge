@@ -921,7 +921,7 @@ fn diff_to_ops(
     for (path, (oid, mode)) in child {
         match base.get(path) {
             None => {
-                let blob = builder.add_blob(blob_bytes(repo, *oid, limits)?);
+                let blob = builder.add_blob(blob_bytes(repo, *oid, limits)?)?;
                 ops.push(PathOp::Add {
                     path: path.clone(),
                     blob,
@@ -932,7 +932,7 @@ fn diff_to_ops(
             }
             Some((base_oid, base_mode)) => {
                 if base_oid != oid || base_mode != mode {
-                    let blob = builder.add_blob(blob_bytes(repo, *oid, limits)?);
+                    let blob = builder.add_blob(blob_bytes(repo, *oid, limits)?)?;
                     ops.push(PathOp::Modify {
                         path: path.clone(),
                         blob,

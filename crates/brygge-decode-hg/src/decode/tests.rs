@@ -1664,7 +1664,7 @@ fn history_of(ir: &brygge_ir::Ir, path: &str) -> Vec<(String, Vec<u8>)> {
                 if p == path {
                     out.push((
                         crate::util::hex(&atom.source.atom_id),
-                        ir.content.get(blob).unwrap().to_vec(),
+                        ir.content.get(blob).unwrap().unwrap(),
                     ));
                 }
             }

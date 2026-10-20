@@ -53,7 +53,7 @@ fn draft(
 
 fn build() -> Ir {
     let mut b = IrBuilder::new(provenance());
-    let blob = b.add_blob(b"content".to_vec());
+    let blob = b.add_blob(b"content".to_vec()).unwrap();
     let root = b
         .add_atom(draft(
             vec![],
@@ -67,7 +67,7 @@ fn build() -> Ir {
             vec![],
         ))
         .unwrap();
-    let child_blob = b.add_blob(b"content2".to_vec());
+    let child_blob = b.add_blob(b"content2".to_vec()).unwrap();
     let _child = b
         .add_atom(draft(
             vec![root],
@@ -142,7 +142,7 @@ fn ref_to_unknown_atom_is_rejected() {
 #[test]
 fn two_ops_on_one_path_is_rejected() {
     let mut b = IrBuilder::new(provenance());
-    let blob = b.add_blob(b"x".to_vec());
+    let blob = b.add_blob(b"x".to_vec()).unwrap();
     let err = b.add_atom(draft(
         vec![],
         b"aaa",
@@ -183,8 +183,8 @@ fn a_copy_from_an_atom_not_yet_added_is_rejected() {
 #[test]
 fn finish_prunes_a_blob_no_op_references() {
     let mut b = IrBuilder::new(provenance());
-    let referenced = b.add_blob(b"kept".to_vec());
-    let _orphan = b.add_blob(b"never referenced".to_vec());
+    let referenced = b.add_blob(b"kept".to_vec()).unwrap();
+    let _orphan = b.add_blob(b"never referenced".to_vec()).unwrap();
     b.add_atom(draft(
         vec![],
         b"aaa",
@@ -205,12 +205,12 @@ fn finish_prunes_a_blob_no_op_references() {
 #[test]
 fn blob_reads_back_what_add_blob_stored_and_nothing_else() {
     let mut b = IrBuilder::new(provenance());
-    let id = b.add_blob(b"stored".to_vec());
-    assert_eq!(b.blob(&id), Some(&b"stored"[..]));
-    assert_eq!(b.blob(&BlobId::of(b"never added")), None);
+    let id = b.add_blob(b"stored".to_vec()).unwrap();
+    assert_eq!(b.blob(&id).unwrap(), Some(b"stored".to_vec()));
+    assert_eq!(b.blob(&BlobId::of(b"never added")).unwrap(), None);
     // Adding the same bytes again is the same blob (idempotent), and the accessor changes nothing.
-    assert_eq!(b.add_blob(b"stored".to_vec()), id);
-    assert_eq!(b.blob(&id), Some(&b"stored"[..]));
+    assert_eq!(b.add_blob(b"stored".to_vec()).unwrap(), id);
+    assert_eq!(b.blob(&id).unwrap(), Some(b"stored".to_vec()));
 }
 
 #[test]

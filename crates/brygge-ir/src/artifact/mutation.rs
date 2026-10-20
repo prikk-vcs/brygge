@@ -54,7 +54,7 @@ fn provenance() -> ImportProvenance {
 /// possible shape.
 fn richer_ir() -> Ir {
     let mut b = IrBuilder::new(provenance());
-    let blob = b.add_blob(b"hello world".to_vec());
+    let blob = b.add_blob(b"hello world".to_vec()).unwrap();
     let root = b
         .add_atom(AtomDraft {
             parents: vec![],
@@ -79,7 +79,9 @@ fn richer_ir() -> Ir {
             status: EpistemicStatus::Stated,
         })
         .unwrap();
-    let child_blob = b.add_blob(b"second revision, a bit longer than the first".to_vec());
+    let child_blob = b
+        .add_blob(b"second revision, a bit longer than the first".to_vec())
+        .unwrap();
     let child = b
         .add_atom(AtomDraft {
             parents: vec![root],
@@ -130,7 +132,7 @@ fn richer_ir() -> Ir {
 /// private to it) so this module has a second, simpler seed shape.
 fn simple_ir() -> Ir {
     let mut b = IrBuilder::new(provenance());
-    let blob = b.add_blob(b"x".to_vec());
+    let blob = b.add_blob(b"x".to_vec()).unwrap();
     b.add_atom(AtomDraft {
         parents: vec![],
         ops: vec![PathOp::Add {
@@ -159,7 +161,7 @@ fn simple_ir() -> Ir {
 /// has, everything else being bounded by the reader's own length checks (`CanonReader::raw`/`list`,
 /// checked against `remaining()` before any allocation).
 fn check(input_len: usize, decoded: &super::Decoded) -> Outcome {
-    let total_blob_bytes: usize = decoded.ir.content.iter_sorted().map(|(_, b)| b.len()).sum();
+    let total_blob_bytes = usize::try_from(decoded.ir.content.total_bytes()).unwrap_or(usize::MAX);
     if total_blob_bytes > input_len {
         return Outcome::Violation(format!(
             "decoded {total_blob_bytes} bytes of blob content from a {input_len}-byte artifact"

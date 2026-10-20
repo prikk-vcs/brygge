@@ -37,7 +37,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     // Atom 1: create readme.txt — a source-STATED add.
-    let readme = b.add_blob(b"hello, brygge\n".to_vec());
+    let readme = b.add_blob(b"hello, brygge\n".to_vec())?;
     let a1 = b.add_atom(AtomDraft {
         parents: vec![],
         ops: vec![PathOp::Add {
@@ -61,7 +61,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Atom 2: move readme.txt -> docs/readme.txt. Git records delete+create; the rename is INFERRED,
     // so the literal ops are Stated and the copy record is Derived (RFC 001 D-3, RFC 011 D-5).
-    let moved = b.add_blob(b"hello, brygge\n".to_vec()); // same content -> same BlobId (dedup)
+    let moved = b.add_blob(b"hello, brygge\n".to_vec())?; // same content -> same BlobId (dedup)
     let a2 = b.add_atom(AtomDraft {
         parents: vec![a1],
         ops: vec![

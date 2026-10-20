@@ -62,15 +62,21 @@ impl IrBuilder {
     }
 
     /// Insert file bytes into the content store, returning the content address.
-    pub fn add_blob(&mut self, bytes: Vec<u8>) -> BlobId {
+    ///
+    /// # Errors
+    /// [`Error::Io`] if the store is file-backed (RFC 015 D-3) and the blob could not be written.
+    pub fn add_blob(&mut self, bytes: Vec<u8>) -> Result<BlobId> {
         self.content.insert(bytes)
     }
 
     /// The bytes of a blob already given to [`add_blob`](Self::add_blob), if any: a read accessor over the
     /// content store the builder holds, for a decoder whose next change is a delta against content it has
     /// already added (Subversion's svndiff). It lets the decoder keep no second copy of file contents.
-    #[must_use]
-    pub fn blob(&self, id: &BlobId) -> Option<&[u8]> {
+    ///
+    /// # Errors
+    /// [`Error::Io`] if the store is file-backed (RFC 015 D-3) and `id` is present but could not be
+    /// read back.
+    pub fn blob(&self, id: &BlobId) -> Result<Option<Vec<u8>>> {
         self.content.get(id)
     }
 

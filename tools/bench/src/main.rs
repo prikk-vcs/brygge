@@ -512,8 +512,9 @@ fn check_cvs_revs_content(ir: &Ir) -> Result<(), String> {
         let got = ir
             .content
             .get(blob)
+            .map_err(|e| format!("atom {idx}: {e}"))?
             .ok_or_else(|| format!("atom {idx}: blob missing"))?;
-        if got != want.as_slice() {
+        if got != want {
             return Err(format!(
                 "atom {idx}: {path} revision 1.{} differs from the intended text",
                 model.rev

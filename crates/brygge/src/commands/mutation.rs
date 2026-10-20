@@ -52,7 +52,7 @@ fn provenance() -> ImportProvenance {
 /// (so `structure`/`replay` walk a real parent chain), a ref, a drop, and a flag.
 fn seed_ir() -> brygge_ir::Ir {
     let mut b = IrBuilder::new(provenance());
-    let blob = b.add_blob(b"hello world".to_vec());
+    let blob = b.add_blob(b"hello world".to_vec()).unwrap();
     let root = b
         .add_atom(AtomDraft {
             parents: vec![],
@@ -77,7 +77,7 @@ fn seed_ir() -> brygge_ir::Ir {
             status: EpistemicStatus::Stated,
         })
         .unwrap();
-    let child_blob = b.add_blob(b"second revision text".to_vec());
+    let child_blob = b.add_blob(b"second revision text".to_vec()).unwrap();
     let child = b
         .add_atom(AtomDraft {
             parents: vec![root],

@@ -75,15 +75,15 @@ impl<'a> Budget<'a> {
 /// [`Error::Read`] if the blob is not in the builder (a decoder bug, not bad input).
 pub fn svn_text(entry: &FileEntry, builder: &IrBuilder) -> Result<Vec<u8>, Error> {
     let blob = builder
-        .blob(&entry.blob)
+        .blob(&entry.blob)?
         .ok_or_else(|| Error::Read("a tracked file's content is missing (internal)".to_string()))?;
     if entry.special {
         let mut text = Vec::with_capacity(blob.len().saturating_add(5));
         text.extend_from_slice(b"link ");
-        text.extend_from_slice(blob);
+        text.extend_from_slice(&blob);
         Ok(text)
     } else {
-        Ok(blob.to_vec())
+        Ok(blob)
     }
 }
 
@@ -101,7 +101,7 @@ fn blob_for(
     } else {
         svn_text
     };
-    Ok(builder.add_blob(content))
+    Ok(builder.add_blob(content)?)
 }
 
 /// The repository tree at a point: repo-relative file path → file. `BTreeMap` for deterministic order.

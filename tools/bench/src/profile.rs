@@ -330,9 +330,14 @@ pub fn run_spill(kind: &str, path: &Path, spill_dir: &Path) {
     reset_peak_rss();
     let t1 = Instant::now();
     let mut ids: Vec<String> = Vec::with_capacity(blobs);
-    for (id, bytes) in ir.content.iter_sorted() {
+    for id in ir.content.ids() {
+        let bytes = ir
+            .content
+            .get(id)
+            .expect("read a blob back")
+            .expect("blob indexed but absent");
         let file = spill_dir.join(id.to_hex());
-        std::fs::write(&file, bytes).expect("write a spilled blob");
+        std::fs::write(&file, &bytes).expect("write a spilled blob");
         ids.push(id.to_hex());
     }
     let write_ms = t1.elapsed().as_millis();

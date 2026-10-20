@@ -397,9 +397,7 @@ fn reproduction_a_branch_revision_no_longer_lands_in_a_main_line_tree() {
         .iter()
         .flat_map(|a| &a.ops)
         .filter_map(|op| match op {
-            PathOp::Add { blob, .. } | PathOp::Modify { blob, .. } => {
-                ir.content.get(blob).map(<[u8]>::to_vec)
-            }
+            PathOp::Add { blob, .. } | PathOp::Modify { blob, .. } => ir.content.get(blob).unwrap(),
             _ => None,
         })
         .collect();

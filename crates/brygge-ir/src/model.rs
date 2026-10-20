@@ -393,7 +393,11 @@ pub struct ImportProvenance {
 
 /// The whole intermediate representation. The contract version this artifact conforms to is not a field
 /// here — it travels in the container header (RFC 011 §2.3), not the metadata record.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// **Not `Clone`** (RFC 015 D-3): `content` may be backed by an open spill file, which cannot be
+/// cloned by copying a handle without duplicating the underlying file; nothing in this crate or its
+/// decoders clones a whole `Ir` today.
+#[derive(Debug, PartialEq, Eq)]
 pub struct Ir {
     /// The atoms, in canonical (topological, tiebroken) order.
     pub atoms: Vec<ChangeAtom>,

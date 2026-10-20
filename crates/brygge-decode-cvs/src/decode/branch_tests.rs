@@ -210,7 +210,7 @@ fn tree_at(ir: &Ir, idx: usize) -> BTreeMap<String, String> {
         for op in &ir.atoms[i].ops {
             match op {
                 PathOp::Add { path, blob, .. } | PathOp::Modify { path, blob, .. } => {
-                    let text = String::from_utf8(ir.content.get(blob).unwrap().to_vec()).unwrap();
+                    let text = String::from_utf8(ir.content.get(blob).unwrap().unwrap()).unwrap();
                     tree.insert(path.clone(), text.trim_end().to_string());
                 }
                 PathOp::Delete { path, .. } => {

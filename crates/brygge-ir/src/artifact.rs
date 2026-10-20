@@ -27,14 +27,10 @@ const MAGIC: &[u8; 8] = b"BRYGGEIR";
 const PRE_RELEASE_FORMAT: u8 = 1;
 const FORMAT: u8 = 2;
 
-fn io_err(e: std::io::Error) -> Error {
-    Error::Io(e.to_string())
-}
-
 /// The result of decoding an artifact: the [`Ir`] plus how many fields from a newer contract minor were
 /// skipped (RFC 011 §2.2 rule 9). The count is informational: a skipped field was non-critical, so it
 /// cannot change what the artifact claims — `inspect` surfaces it as a note, never a warning.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct Decoded {
     /// The decoded IR.
     pub ir: Ir,
@@ -51,60 +47,76 @@ pub struct Decoded {
 /// # Errors
 /// [`Error::Io`] if `out` fails to write or seek.
 pub fn write_to<W: Write + Seek>(ir: &Ir, out: &mut W) -> Result<()> {
-    out.write_all(MAGIC).map_err(io_err)?;
-    out.write_all(&[FORMAT]).map_err(io_err)?;
+    out.write_all(MAGIC).map_err(Error::io)?;
+    out.write_all(&[FORMAT]).map_err(Error::io)?;
 
     let mut version = crate::canon::CanonWriter::new();
     version.uvarint(u64::from(version::CURRENT.major));
     version.uvarint(u64::from(version::CURRENT.minor));
     version.uvarint(u64::from(version::CURRENT.patch));
-    out.write_all(version.as_bytes()).map_err(io_err)?;
+    out.write_all(version.as_bytes()).map_err(Error::io)?;
 
     // The digest covers the stored bytes from the first version byte to the end — version, then
     // metadata, then blobs — never a re-encoding (RFC 011 §2.3/§9). It is written here as a
     // placeholder and overwritten once the hash below is complete.
     let mut hasher = Sha256::new();
     hasher.update(version.as_bytes());
-    let digest_offset = out.stream_position().map_err(io_err)?;
-    out.write_all(&[0u8; 32]).map_err(io_err)?;
+    let digest_offset = out.stream_position().map_err(Error::io)?;
+    out.write_all(&[0u8; 32]).map_err(Error::io)?;
 
     let meta_bytes = ir.encode_metadata();
     let meta_len = crate::canon::uvarint_value(meta_bytes.len() as u64);
     hasher.update(&meta_len);
-    out.write_all(&meta_len).map_err(io_err)?;
+    out.write_all(&meta_len).map_err(Error::io)?;
     hasher.update(&meta_bytes);
-    out.write_all(&meta_bytes).map_err(io_err)?;
+    out.write_all(&meta_bytes).map_err(Error::io)?;
 
     let blob_count = crate::canon::uvarint_value(ir.content.len() as u64);
     hasher.update(&blob_count);
-    out.write_all(&blob_count).map_err(io_err)?;
-    for (id, bytes) in ir.content.iter_sorted() {
+    out.write_all(&blob_count).map_err(Error::io)?;
+    for id in ir.content.ids() {
+        // One blob in memory at a time (RFC 015 D-3): read back by id, written, then dropped before
+        // the next.
+        let bytes = ir
+            .content
+            .get(id)?
+            .ok_or_else(|| Error::Invariant(format!("blob {id} indexed but not readable")))?;
         hasher.update(id.as_bytes());
-        out.write_all(id.as_bytes()).map_err(io_err)?;
+        out.write_all(id.as_bytes()).map_err(Error::io)?;
         let blob_len = crate::canon::uvarint_value(bytes.len() as u64);
         hasher.update(&blob_len);
-        out.write_all(&blob_len).map_err(io_err)?;
-        hasher.update(bytes);
-        out.write_all(bytes).map_err(io_err)?;
+        out.write_all(&blob_len).map_err(Error::io)?;
+        hasher.update(&bytes);
+        out.write_all(&bytes).map_err(Error::io)?;
     }
 
     let digest: [u8; 32] = hasher.finalize().into();
-    let end = out.stream_position().map_err(io_err)?;
-    out.seek(SeekFrom::Start(digest_offset)).map_err(io_err)?;
-    out.write_all(&digest).map_err(io_err)?;
-    out.seek(SeekFrom::Start(end)).map_err(io_err)?;
+    let end = out.stream_position().map_err(Error::io)?;
+    out.seek(SeekFrom::Start(digest_offset))
+        .map_err(Error::io)?;
+    out.write_all(&digest).map_err(Error::io)?;
+    out.seek(SeekFrom::Start(end)).map_err(Error::io)?;
     Ok(())
 }
 
 /// Serialize `ir` to a self-contained artifact (contract [`version::CURRENT`]). Built on [`write_to`]
 /// so the two encodings can never diverge.
+///
+/// # Panics
+/// If `ir.content` is a file-backed [`crate::content::ContentStore`] (RFC 015 D-3) whose spill file
+/// cannot be read — the store's own contract is that every indexed id reads back, so this signals a
+/// bug in whatever built `ir`, not a normal failure. Every `ir.content` this crate or its decoders
+/// build today is memory-backed, where reading never fails; `write_to` directly, which returns
+/// [`Error::Io`] instead of panicking, is the better choice for an `ir` that might be file-backed.
 #[must_use]
 pub fn to_bytes(ir: &Ir) -> Vec<u8> {
     let mut cursor = std::io::Cursor::new(Vec::new());
-    // A `Cursor<Vec<u8>>` grows to fit every write and accepts any seek within what it has written —
-    // there is no OS resource to fail, so `write_to` cannot return `Err` here.
+    // A `Cursor<Vec<u8>>`'s own `Write`/`Seek` cannot fail — it grows to fit every write and accepts
+    // any seek within what it has written. The one other way `write_to` can return `Err` is a failed
+    // blob read, which is a contract violation in `ir` itself, not an I/O condition this function's
+    // own in-memory destination could cause — see "Panics" above.
     #[allow(clippy::expect_used)]
-    write_to(ir, &mut cursor).expect("writing to an in-memory Vec cannot fail");
+    write_to(ir, &mut cursor).expect("ir.content's own contract: every indexed blob id reads back");
     cursor.into_inner()
 }
 
@@ -198,7 +210,9 @@ pub fn from_bytes(bytes: &[u8]) -> Result<Decoded> {
                 "blob content does not match its id".to_string(),
             ));
         }
-        ir.content.insert(data);
+        // Always the in-memory backing (`Ir::default()`'s `ContentStore::new()`): reading an artifact
+        // back never fails to insert.
+        ir.content.insert(data)?;
     }
     if !r.is_empty() {
         return Err(Error::NonCanonical(
@@ -285,7 +299,7 @@ fn check_structure(ir: &Ir) -> Result<()> {
             }
         }
     }
-    for (id, _) in ir.content.iter_sorted() {
+    for id in ir.content.ids() {
         if !referenced.contains(id) {
             return Err(Error::NonCanonical(format!(
                 "blob {id} is stored but referenced by no operation (orphan)"

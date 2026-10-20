@@ -11,12 +11,23 @@ Every handoff adds its own entry in its own commit.
 ### Added
 
 - `brygge-ir`: `artifact::write_to`, a streaming artifact writer; `to_bytes` is built on it.
+- `brygge-ir`: `ContentStore::spilling`, a disk-backed content store for decoding at scale without
+  holding every blob in memory at once (RFC 015 D-3).
 
 ### Changed
 
 - **`brygge decode` no longer holds extra copies of the content while finishing and writing an
   artifact: the peak falls from about 4× the content to about 1× (fish-shell: 18.7 → about 4.9 GiB).**
   Artifacts are byte-identical.
+
+### Breaking
+
+- **`brygge-ir`: `ContentStore::get`, `IrBuilder::add_blob` and `IrBuilder::blob` now return
+  `Result<...>` instead of panicking or borrowing, and `get`/`ids` give owned bytes instead of a
+  borrowed slice** — a disk-backed store (RFC 015 D-3) can fail to read or write, and cannot hand out a
+  reference into a file. `ContentStore::iter_sorted` is replaced by `ids`, which yields ids only; read
+  each blob's bytes with a separate `get` call. `Ir` and `Decoded` no longer implement `Clone` (a
+  file-backed `ContentStore` may hold an open file handle).
 
 ## [0.4.0] — 2026-10-20
 
