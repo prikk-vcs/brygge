@@ -325,38 +325,61 @@ scenarios above use, so each peak is that one decode's own high-water mark and n
 every repository this process has already decoded.
 
 **brygge `0.3.1` @ `09fe12d`. Machine: Linux 7.2.10-1-cachyos x86_64, AMD Ryzen 9 9950X (32 threads), release
-build.**
+build.** `Peak÷content` is the peak RSS divided by the IR's own content bytes, so a large peak can be told
+apart from "a multiple of content, as designed" (the synthetic Git scenarios run about 2.8×) versus a real
+problem.
 
-| Repository | Pin | Variant | Exit | Time | Peak | Atoms | Files/commit (min/med/p90/max) | Tree (start/med/max/end) | Dropped | Flagged | verify | against-source |
-|---|---|---|---|---:|---:|---:|---|---|---:|---:|---|---|
-| `jq` (git) | `34f7186b` | default | **refused** | — | — | — | — | — | — | — | — | — |
-| `jq` (git) | `34f7186b` | infer_renames | **refused** | — | — | — | — | — | — | — | — | — |
-| `fish-shell` (git) | `6cf31373` | default | ok | 36.2 s | 9,620 MiB | 23,496 | 0/1/5/597 | 93/1,595/2,261/2,261 | 6 | 0 | pass | corresponds |
-| `fish-shell` (git) | `6cf31373` | infer_renames | ok | 35.6 s | 9,621 MiB | 23,496 | 0/1/5/597 | 93/1,595/2,261/2,261 | 6 | 0 | pass | corresponds |
-| `tortoisehg-thg` (hg) | `ff01aa72ea78` | default | ok | 61.9 s | 3,487 MiB | 20,596 | 0/1/3/300 | 26/634/767/747 | 4 | 0 | pass | corresponds |
-| `evolve` (hg) | `bcdd16c129b3` | default | ok | 14.8 s | 787 MiB | 7,536 | 0/1/10/147 | 10/232/357/357 | 4 | 0 | pass | corresponds |
-| `openbsd-games` (cvs) | 2026-10-20 | default | ok | 443 ms | 599 MiB | 1,428 | 1/1/8/642 | 642/631/675/583 | 3 | 1 | pass | reproduces |
-| `openbsd-games` (cvs) | 2026-10-20 | reconstruct_refs | ok | 554 ms | 635 MiB | 1,429 | 1/1/8/642 | 642/631/675/583 | 6 | 2 | pass | reproduces |
-| `openbsd-cpio` (cvs) | 2026-10-20 | default | ok | 3 ms | 7.0 MiB | 7 | 1/1/45/45 | 45/45/45/0 | 3 | 0 | pass | reproduces |
-| `openbsd-cpio` (cvs) | 2026-10-20 | reconstruct_refs | ok | 5 ms | 7.1 MiB | 7 | 1/1/45/45 | 45/45/45/0 | 4 | 1 | pass | reproduces |
-| `wordpress-core` (svn) | r2700 | default | ok | 321 ms | 184 MiB | 2,701 | 0/1/4/163 | 0/149/1,141/1,141 | 4 | 0 | pass | corresponds |
-| `wordpress-core` (svn) | r2700 | reconstruct_refs | ok | 318 ms | 184 MiB | 2,701 | 0/1/4/163 | 0/149/1,141/1,141 | 4 | 0 | pass | corresponds |
+| Repository | Pin | Variant | Exit | Time | Peak | Content | Artifact | Peak÷content | Atoms | Files/commit (min/med/p90/max) | Tree (start/med/max/end) | Dropped | Flagged | verify | against-source |
+|---|---|---|---|---:|---:|---:|---:|---:|---:|---|---|---:|---:|---|---|
+| `jq` (git) | `34f7186b` | default | **refused** | — | — | — | — | — | — | — | — | — | — | — | — |
+| `jq` (git) | `34f7186b` | infer_renames | **refused** | — | — | — | — | — | — | — | — | — | — | — | — |
+| `fish-shell` (git) | `6cf31373` | default | ok | 35.9 s | 9,624 MiB | 4,619 MiB | 4,861,138,620 B | 2.08× | 23,496 | 0/1/5/597 | 93/1,595/2,261/2,261 | 6 | 0 | pass | corresponds |
+| `fish-shell` (git) | `6cf31373` | infer_renames | ok | 36.1 s | 9,623 MiB | 4,619 MiB | 4,861,397,555 B | 2.08× | 23,496 | 0/1/5/597 | 93/1,595/2,261/2,261 | 6 | 0 | pass | corresponds |
+| `eza` (git) | `98442ab1` | default | ok | 937 ms | 183 MiB | 73.1 MiB | 79,900,871 B | 2.51× | 3,374 | 0/1/7/686 | 4/228/1,124/735 | 6 | 0 | pass | corresponds |
+| `eza` (git) | `98442ab1` | infer_renames | ok | 931 ms | 185 MiB | 73.1 MiB | 80,051,113 B | 2.53× | 3,374 | 0/1/7/686 | 4/228/1,124/735 | 6 | 0 | pass | corresponds |
+| `tortoisehg-thg` (hg) | `ff01aa72ea78` | default | ok | 64.1 s | 3,487 MiB | 1,666 MiB | 1,757,988,803 B | 2.09× | 20,596 | 0/1/3/300 | 26/634/767/747 | 4 | 0 | pass | corresponds |
+| `evolve` (hg) | `bcdd16c129b3` | default | ok | 15.3 s | 787 MiB | 364 MiB | 388,063,826 B | 2.16× | 7,536 | 0/1/10/147 | 10/232/357/357 | 4 | 0 | pass | corresponds |
+| `openbsd-games` (cvs) | 2026-10-20 | default | ok | 445 ms | 599 MiB | 185 MiB | 195,630,354 B | 3.23× | 1,428 | 1/1/8/642 | 642/631/675/583 | 3 | 1 | pass | reproduces |
+| `openbsd-games` (cvs) | 2026-10-20 | reconstruct_refs | ok | 557 ms | 635 MiB | 185 MiB | 195,651,740 B | 3.43× | 1,429 | 1/1/8/642 | 642/631/675/583 | 6 | 2 | pass | reproduces |
+| `openbsd-cpio` (cvs) | 2026-10-20 | default | ok | 3 ms | 6.9 MiB | 0.7 MiB | 719,690 B | 10.2× | 7 | 1/1/45/45 | 45/45/45/0 | 3 | 0 | pass | reproduces |
+| `openbsd-cpio` (cvs) | 2026-10-20 | reconstruct_refs | ok | 5 ms | 7.1 MiB | 0.7 MiB | 721,053 B | 10.6× | 7 | 1/1/45/45 | 45/45/45/0 | 4 | 1 | pass | reproduces |
+| `openbsd-libpcap` (cvs) | 2026-10-20 | default | ok | 30 ms | 33.0 MiB | 8.6 MiB | 9,194,825 B | 3.83× | 234 | 1/1/5/23 | 21/25/26/26 | 3 | 0 | pass | reproduces |
+| `openbsd-libpcap` (cvs) | 2026-10-20 | reconstruct_refs | ok | 35 ms | 34.7 MiB | 8.6 MiB | 9,214,100 B | 4.03× | 234 | 1/1/5/23 | 21/25/26/26 | 4 | 0 | pass | reproduces |
+| `wordpress-core` (svn) | r2700 | default | ok | 321 ms | 185 MiB | 78.2 MiB | 83,344,922 B | 2.36× | 2,701 | 0/1/4/163 | 0/149/1,141/1,141 | 4 | 0 | pass | corresponds |
+| `wordpress-core` (svn) | r2700 | reconstruct_refs | ok | 321 ms | 185 MiB | 78.2 MiB | 83,346,399 B | 2.37× | 2,701 | 0/1/4/163 | 0/149/1,141/1,141 | 4 | 0 | pass | corresponds |
 
 **Reproducibility:** a second run from the same cache (`fish-shell`, `openbsd-games`, `wordpress-core`,
 spot-checked via two direct `brygge decode` invocations each) gives byte-identical artifacts (`cmp`),
 confirmed before writing this table.
 
+**The zstd revlog path (review 066/068, F-2):** this machine's Mercurial (7.2.4) clones with
+`revlog-compression-zstd` **by default** — `evolve`'s cached clone above is already in zstd form (its
+revlog chunks start `28 b5 2f fd`), inverting the handoff's original assumption that a clone needed
+upgrading *to* zstd. To get the comparison review 066 asked for, a second clone was made with
+`--config format.revlog-compression=zlib` (chunks start `78 9c`, confirmed zlib) and decoded separately
+(not run through `real.toml`, since the generic fetch path has no per-clone compression override — this
+was a one-off, by hand). **The two decodes produced byte-identical artifacts** (`cmp`), confirming the
+revlog's own compression form leaves no trace in the IR, on real history (not just the synthetic `0344`
+fixture), at `evolve`'s real scale.
+
 ### Findings (reported, not fixed in this batch)
 
 1. **`jq` is refused outright, on both variants:** "refused Git feature 'submodule' below the floor:
    submodule (gitlink) at `modules/oniguruma` points outside this repository; refused rather than
-   approximated." `jq` embeds `oniguruma` as a real Git submodule. This is C-2a's own stated behaviour
-   (refuse rather than misread) working as designed — but it means the real-world corpus currently has
-   **no decodable Git repository that also has a submodule**, so that shape is validated only by refusing
-   it, not by decoding around it. Whether brygge should eventually support submodules (and how) is for the
-   architect to triage; this batch only reports that a real, popular, moderately-sized project hits it
-   immediately.
-2. **The real-world oracle revealed a genuine measurement bug in this harness, not in brygge:** the first
+   approximated." This is C-2a's own stated behaviour (refuse rather than misread), and the owner-ratified
+   floor (FA-3, "for Git, refuse, never approximate") working as designed — kept as the row demonstrating
+   it. `eza` (`eza-community/eza`, tag `v0.23.5`) was added as the corpus's decodable Git sample instead:
+   689 merges, both annotated (76) and lightweight (20) tags, confirmed real renames (`R100`), no
+   submodules at the pin (no `.gitmodules`, no mode-`160000` tree entries), EUPL-1.2, mid-size (3,374
+   atoms). The architect records Git submodule support (carrying a gitlink as a stated pointer, with a
+   drop record for what it points to) as a candidate for a later RFC — a floor change, for the owner to
+   decide, not part of 0.4.0.
+2. **Memory at real scale: fish-shell (23,496 commits, ~2,300-file tree) peaks at 9.6 GiB; TortoiseHg
+   (20,596 changesets) at 3.5 GiB.** RFC 010 deferred its streaming increment "until a real import is
+   memory-bound" — a mid-size, real project needing ~10 GiB is memory-bound on an ordinary 8–16 GiB
+   machine. The architect plans this as the next cycle's theme after 0.4.0; the peak÷content column above
+   (2.08–2.53× for Git, close to the synthetic baseline's ~2.8×) is its first input.
+3. **The real-world oracle revealed a genuine measurement bug in this harness, not in brygge:** the first
    run of `real` decoded every repository **in one process**, and `/proc/self/status`'s `VmHWM` reset
    (`echo 5 > clear_refs`) did not fully undo the allocator's retained memory from a prior, larger decode in
    the same process — `evolve`'s peak read **9,317 MiB** right after `fish-shell`'s ~9.4 GiB decode in the
@@ -365,7 +388,7 @@ confirmed before writing this table.
    corrected, isolated run; `real.rs` and `main.rs` were changed to always spawn `real-decode-one` per
    (entry, variant), closing the gap for any future entry too, not just the ones that happened to expose it
    here.
-3. **This session also found and corrected a stale hash:** `wordpress-core`'s SVN dump hash in
+4. **This session also found and corrected a stale hash:** `wordpress-core`'s SVN dump hash in
    `real.toml`, as left by the session that was interrupted mid-work, did not match a freshly reproduced
    `svnrdump dump https://core.svn.wordpress.org -r 0:2700` (no cached dump file existed on disk to check
    it against). Re-dumped and re-hashed; the corrected hash is what's in `real.toml` now and what this run

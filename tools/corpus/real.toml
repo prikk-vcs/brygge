@@ -29,6 +29,14 @@ pin = "6cf31373e9468f1a261319aceb8730e5d1c47e58"
 note = "tag 4.9.3; merges, annotated tags, far larger history (23.5k commits)"
 
 [[entry]]
+kind = "git"
+name = "eza"
+url = "https://github.com/eza-community/eza.git"
+license = "EUPL-1.2"
+pin = "98442ab17c2c3738701b62a7e060b1431ae2d6ea"
+note = "tag v0.23.5; F-3 (jq's submodule stand-in): 689 merges, both annotated (76) and lightweight (20) tags, confirmed renames (R100), no submodules (confirmed: no .gitmodules, no mode-160000 tree entries at the pin)"
+
+[[entry]]
 kind = "hg"
 name = "tortoisehg-thg"
 url = "https://foss.heptapod.net/mercurial/tortoisehg/thg"
@@ -61,6 +69,15 @@ license = "ISC/BSD-style (OpenBSD); GPL-2.0 (upstream GNU cpio)"
 pin = "2026-10-20"
 hash = "aebf0c14d98afdd19bf9845ad048be9e2d7ba1018a0d2f79d89373e6c859b63f"
 note = "vendor import (netbsd_1_1 at 1.1.1/1.1.1.1); whole module now dead (Attic-only)"
+
+[[entry]]
+kind = "cvs"
+name = "openbsd-libpcap"
+url = "rsync://anoncvs.eu.openbsd.org/OpenBSD-cvs/src/lib/libpcap/"
+license = "4-clause BSD (Regents of the University of California / Lawrence Berkeley Laboratory)"
+pin = "2026-10-20"
+hash = "44c0efee28a13c4e2a92e5d51d9022b1eb048d86014934287aa31326f26e8bd1"
+note = "vendor import (1.1.1.1, 1995, netbsd_1_1); live module, admin branch field cleared (OQ-6's records)"
 
 [[entry]]
 kind = "svn"

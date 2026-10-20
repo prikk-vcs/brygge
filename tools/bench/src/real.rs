@@ -669,15 +669,19 @@ fn print_row(
     ));
     std::fs::create_dir_all(&dir).expect("create a scratch dir for the artifact");
     let artifact = dir.join("artifact");
-    std::fs::write(&artifact, brygge_ir::artifact::to_bytes(ir)).expect("write the artifact");
+    let artifact_bytes = brygge_ir::artifact::to_bytes(ir);
+    let artifact_size = artifact_bytes.len() as u64;
+    std::fs::write(&artifact, &artifact_bytes).expect("write the artifact");
 
     let bin = brygge_bin();
     let verify = run_verify(&bin, &artifact, None);
     let against_source = run_verify(&bin, &artifact, Some(source));
 
     let shape = shape(ir);
+    let content_bytes = ir.content.total_bytes();
     println!(
         "name={} variant={variant} exit=ok time_ms={time_ms} peak_kib={} atoms={} \
+         content_bytes={content_bytes} artifact_bytes={artifact_size} \
          files_per_commit_min={} files_per_commit_median={} files_per_commit_p90={} \
          files_per_commit_max={} tree_start={} tree_median={} tree_max={} tree_end={} \
          dropped={} flagged={} verify={verify} against_source={against_source}",
