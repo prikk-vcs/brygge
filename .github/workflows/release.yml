@@ -76,8 +76,10 @@ jobs:
   # ---- 1. verify: is this tag releasable? (no credential beyond a read-only token) --------------------
   verify:
     name: verify the tag
-    # RFC 016: skipped for an aur_only dispatch, which runs only the `aur` job against an existing release.
-    if: ${{ env.AUR_ONLY != 'true' }}
+    # RFC 016: skipped for an aur_only dispatch, which runs only the `aur` job against an existing
+    # release. The `env` context is not available in a job-level `if:` (only in steps), so this repeats
+    # the expression AUR_ONLY is built from, rather than reading env.AUR_ONLY.
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.aur_only) }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -128,7 +130,8 @@ jobs:
     needs: verify
     # RFC 016: explicit, like build's below — a custom `if:` on a job replaces the default `success()`
     # gate rather than adding to it, so aur_only must be checked here too, not assumed from verify's skip.
-    if: ${{ env.AUR_ONLY != 'true' }}
+    # (The `env` context is not available in a job-level `if:`; see verify's own note above.)
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.aur_only) }}
     permissions:
       contents: read
     uses: ./.github/workflows/ci.yml
@@ -141,7 +144,7 @@ jobs:
   build:
     name: build (${{ matrix.target }})
     needs: verify
-    if: ${{ env.AUR_ONLY != 'true' && (github.event_name != 'workflow_dispatch' || inputs.binaries) }}
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.aur_only) && (github.event_name != 'workflow_dispatch' || inputs.binaries) }}
     strategy:
       fail-fast: false
       matrix:
@@ -404,7 +407,8 @@ jobs:
   aur:
     name: AUR packages
     needs: github-release
-    if: ${{ !cancelled() && (env.AUR_ONLY == 'true' || needs.github-release.result == 'success') }}
+    # The `env` context is not available in a job-level `if:`; see verify's own note above.
+    if: ${{ !cancelled() && ((github.event_name == 'workflow_dispatch' && inputs.aur_only) || needs.github-release.result == 'success') }}
     runs-on: ubuntu-24.04
     environment: release
     permissions:
