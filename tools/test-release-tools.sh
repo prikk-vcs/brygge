@@ -509,4 +509,47 @@ expect_ok "check-release-dev-deps: a path-only dev-dependency on the same crate 
     tools/check-release-dev-deps.sh "$devdeps"
 expect_ok "check-release-dev-deps: this repository's own manifests pass" tools/check-release-dev-deps.sh
 
+# ---- tools/aur-render.sh (RFC 016 D-1) ----------------------------------------------------------------
+# The local stand-in server (started above) still serves $scratch/www; a fake tag archive there stands in
+# for the GitHub tag archive the real script downloads and hashes itself.
+mkdir -p "$scratch/aur-assets" "$scratch/aur-out"
+printf 'fake x86_64 binary\n' >"$scratch/aur-assets/brygge-x86_64-unknown-linux-gnu.tar.gz"
+printf 'fake aarch64 binary\n' >"$scratch/aur-assets/brygge-aarch64-unknown-linux-gnu.tar.gz"
+(
+    cd "$scratch/aur-assets"
+    sha256sum brygge-x86_64-unknown-linux-gnu.tar.gz >brygge-x86_64-unknown-linux-gnu.tar.gz.sha256
+    sha256sum brygge-aarch64-unknown-linux-gnu.tar.gz >brygge-aarch64-unknown-linux-gnu.tar.gz.sha256
+)
+printf 'fake source archive\n' >"$scratch/www/9.9.9.tar.gz"
+export BRYGGE_TEST_TAG_ARCHIVE_BASE="http://127.0.0.1:$port"
+
+expect_ok "aur-render: a good render" tools/aur-render.sh 9.9.9 "$scratch/aur-assets" "$scratch/aur-out"
+for pkg in brygge brygge-bin; do
+    [ -f "$scratch/aur-out/$pkg/PKGBUILD" ] || die "aur-render: $pkg/PKGBUILD was not written"
+    grep -q 'pkgver=9.9.9' "$scratch/aur-out/$pkg/PKGBUILD" || die "aur-render: $pkg/PKGBUILD has the wrong pkgver"
+    grep -q 'pkgrel=1' "$scratch/aur-out/$pkg/PKGBUILD" || die "aur-render: $pkg/PKGBUILD has the wrong pkgrel"
+    grep -qE '@[A-Z_]+@' "$scratch/aur-out/$pkg/PKGBUILD" && die "aur-render: $pkg/PKGBUILD still has an unfilled placeholder"
+done
+pass "aur-render: both PKGBUILDs are written with the version, pkgrel and checksums filled in"
+if command -v makepkg >/dev/null 2>&1; then
+    [ -f "$scratch/aur-out/brygge/.SRCINFO" ] && [ -f "$scratch/aur-out/brygge-bin/.SRCINFO" ] || die "aur-render: makepkg is installed but .SRCINFO was not written"
+    pass "aur-render: .SRCINFO was written (makepkg is installed)"
+else
+    echo "skip the .SRCINFO assertion: makepkg is not installed (it runs inside the archlinux container in CI)"
+fi
+
+rm -rf "$scratch/aur-out2"
+expect_fail "aur-render: a missing asset is refused" "missing asset" \
+    tools/aur-render.sh 9.9.9 "$scratch/does-not-exist" "$scratch/aur-out2"
+[ ! -e "$scratch/aur-out2" ] || die "aur-render: a missing asset should write nothing"
+
+expect_fail "aur-render: a malformed version is refused" "usage: tools/aur-render.sh" \
+    tools/aur-render.sh 9.9 "$scratch/aur-assets" "$scratch/aur-out3"
+
+rm -rf "$scratch/aur-out4"
+AUR_PKGREL=7 tools/aur-render.sh 9.9.9 "$scratch/aur-assets" "$scratch/aur-out4" >/dev/null
+grep -q 'pkgrel=7' "$scratch/aur-out4/brygge/PKGBUILD" || die "aur-render: AUR_PKGREL did not override pkgrel"
+pass "aur-render: AUR_PKGREL overrides pkgrel (RFC 016 D-3)"
+unset BRYGGE_TEST_TAG_ARCHIVE_BASE
+
 echo "all $passed release-tool checks passed"
