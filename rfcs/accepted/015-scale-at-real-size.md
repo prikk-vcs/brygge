@@ -112,7 +112,8 @@
 ## Open questions (the owner's)
 
 - **OQ-1 — The artifact's size.** **Ruled (2026-10-20): deferred, and *scheduled*, not only documented.** It is
-  the planned theme **0.6.0 "Compact artifacts"** (`ROADMAP.md`), following no date, by its trigger:
+  the planned theme **0.6.0 "Compact artifacts"** (`ROADMAP.md`); **moved to 0.7.0 by RFC 017 OQ-3**, bundled
+  with transforms, so the contract changes once. It follows no date, only its trigger, which is unchanged:
   - its RFC opens when 0.5.0 is released;
   - or earlier, if prikk's import design needs smaller artifacts.
 

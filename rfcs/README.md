@@ -66,6 +66,7 @@ in the same commit that moves an RFC between folders.
 | [012](accepted/012-release-automation.md) | Release automation: CI on Linux, macOS and Windows; tag-triggered, owner-approved publication (crates.io trusted publishing); binaries with provenance; GitHub release from the CHANGELOG | `handoffs/012-release-automation/` |
 | [015](accepted/015-scale-at-real-size.md) | Scale at real size (0.5.0): a streaming artifact writer, a disk-backed content store (with `--spill-dir`), a streaming reader; peak memory tracks metadata, not total content; artifacts byte-identical | `handoffs/015-scale-at-real-size/` |
 | [016](accepted/016-arch-linux-packaging.md) | Arch Linux packaging: `brygge` (source) and `brygge-bin` on the AUR, rendered, built and checked in an Arch container, and pushed by `release.yml` | `handoffs/016-arch-linux-packaging/` |
+| [017](accepted/017-extensibility.md) | Extensibility: the IR as the extension point (an encoder guide, an unsupported reference IR → Git encoder), external encoder plugins (`brygge encode <target>`), and honest transforms with the next contract revision | `handoffs/017-extensibility/` (after 0.5.0) |
 
 ### Done
 
