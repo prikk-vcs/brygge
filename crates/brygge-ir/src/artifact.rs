@@ -14,14 +14,16 @@
 //! panic.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::{Seek, SeekFrom, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 
 use sha2::{Digest, Sha256};
 
-use crate::content::BlobId;
+use crate::content::{BlobId, ContentStore};
 use crate::model::{AtomId, Ir, PathOp};
 use crate::version::{self, ContractVersion};
 use crate::{Error, Result};
+
+mod sequential;
 
 const MAGIC: &[u8; 8] = b"BRYGGEIR";
 const PRE_RELEASE_FORMAT: u8 = 1;
@@ -227,6 +229,167 @@ pub fn from_bytes(bytes: &[u8]) -> Result<Decoded> {
         skipped_non_critical_fields: mr.skipped_non_critical_fields()
             + r.skipped_non_critical_fields(),
     })
+}
+
+/// Parse an artifact by reading `r` forward exactly once (RFC 015 D-4): every byte past the stored
+/// digest feeds the integrity hash as it is read, and a blob's bytes are never kept beyond the chunk
+/// that is verifying them. The resulting [`Ir`]'s content store re-reads a blob from `r` — re-hashing it
+/// against its [`BlobId`] — only if something later actually asks for it ([`crate::content`]'s
+/// `Backing::Artifact`); nothing is copied up front. `r` must support [`Seek`]: once, up front, to learn
+/// its total length (the bound every declared length is checked against, in place of
+/// [`crate::canon::CanonReader::remaining`]'s slice bound), and again later, by the content store, for
+/// each on-demand read — this is also why `r` must outlive the call (`'static`): it is kept, not
+/// discarded, once the pass succeeds.
+///
+/// **The digest always wins.** If the body is also malformed, the error reported is
+/// [`Error::DigestMismatch`] whenever the digest itself does not match — the same precedence
+/// [`from_bytes`] already has (its one hash covers the same bytes in a single call, before any of them
+/// are interpreted; nothing here is accepted before that hash matches either, including a structurally
+/// clean parse that still leaves trailing bytes behind). A structural error surfaces on its own only
+/// when the digest matches despite it — a correctly-signed but malformed body, exactly what RFC 014
+/// D-1's mutation tests target.
+///
+/// # Errors
+/// As [`from_bytes`]; [`Error::ArtifactChanged`] is never returned by this call itself (it can only
+/// come from a later [`crate::content::ContentStore::get`] on the `Ir` this returns).
+pub fn read_from<R: Read + Seek + std::fmt::Debug + 'static>(mut r: R) -> Result<Decoded> {
+    let total = r.seek(SeekFrom::End(0)).map_err(Error::io)?;
+    r.seek(SeekFrom::Start(0)).map_err(Error::io)?;
+    let mut sr = sequential::SeqReader::new(r, total);
+
+    let magic = sr.raw(8, "header")?;
+    if magic != MAGIC {
+        return Err(Error::Decode("bad magic".to_string()));
+    }
+    let format = sr.raw_u8("format byte")?;
+    if format == PRE_RELEASE_FORMAT {
+        // As in `from_bytes`: a pre-release artifact's metadata is never parsed, so there is nothing
+        // left to stream — the version gate below would not even apply to its (incompatible) wire
+        // shape.
+        return Err(Error::PreReleaseArtifact);
+    }
+    if format != FORMAT {
+        return Err(Error::Decode(format!("unknown artifact format {format}")));
+    }
+
+    // The version gate runs before the digest is even read (as today): an unsupported contract is
+    // refused on its own terms, never folded into the digest/structure precedence below.
+    let major = u32::try_from(sr.uvarint_hashed()?)
+        .map_err(|_| Error::Decode("version major out of range".to_string()))?;
+    let minor = u32::try_from(sr.uvarint_hashed()?)
+        .map_err(|_| Error::Decode("version minor out of range".to_string()))?;
+    let patch = u32::try_from(sr.uvarint_hashed()?)
+        .map_err(|_| Error::Decode("version patch out of range".to_string()))?;
+    version::ensure_readable(ContractVersion::new(major, minor, patch))?;
+
+    let stored_digest: [u8; 32] = sr
+        .raw(32, "digest")?
+        .try_into()
+        .map_err(|_| Error::Decode("bad digest length".to_string()))?;
+
+    match read_body(&mut sr) {
+        Ok(mut body) if sr.at_end() => {
+            if sr.digest() != stored_digest {
+                return Err(Error::DigestMismatch);
+            }
+            body.ir.content = ContentStore::from_artifact_source(sr.r, body.index);
+            check_structure(&body.ir)?;
+            Ok(Decoded {
+                ir: body.ir,
+                skipped_non_critical_fields: body.skipped,
+            })
+        }
+        // Parsed cleanly, but bytes remain after the last blob: the same digest-first precedence as a
+        // structural error applies (the trailing bytes are still unhashed at this point).
+        Ok(_) => tiebreak(
+            &mut sr,
+            stored_digest,
+            Error::NonCanonical("trailing bytes after blob store".to_string()),
+        ),
+        Err(e @ Error::Io(_)) => Err(e),
+        Err(e) => tiebreak(&mut sr, stored_digest, e),
+    }
+}
+
+/// Finish the pass after a structural problem (an outright error, or clean parse with bytes left over):
+/// drain whatever is left, unread, to the true end of the source, so the digest it was checked against
+/// covers everything the writer covered either way, then prefer reporting a digest mismatch — matching
+/// [`from_bytes`]'s own precedence — and fall back to `structural_err` only when the digest actually
+/// matches despite it.
+fn tiebreak<R: Read>(
+    sr: &mut sequential::SeqReader<R>,
+    stored_digest: [u8; 32],
+    structural_err: Error,
+) -> Result<Decoded> {
+    sr.drain_to_end_hashed()?;
+    if sr.digest() != stored_digest {
+        Err(Error::DigestMismatch)
+    } else {
+        Err(structural_err)
+    }
+}
+
+/// [`read_body`]'s result: the parsed metadata, the blob directory (`BlobId` → its `(offset, length)`
+/// in the source), and the skipped-non-critical-field count — named fields instead of a tuple so the
+/// signature below stays simple enough for clippy's `type_complexity` to pass over.
+struct Body {
+    ir: Ir,
+    index: BTreeMap<BlobId, (u64, u64)>,
+    skipped: u64,
+}
+
+/// The metadata and blob-section body, shared by [`read_from`]'s success and tiebreak paths: parses
+/// exactly like [`from_bytes`]'s own body loop, but streamed — a blob's bytes pass through
+/// [`sequential::SeqReader::blob_body_hash`] and are never collected.
+fn read_body<R: Read>(sr: &mut sequential::SeqReader<R>) -> Result<Body> {
+    let meta_len = usize::try_from(sr.uvarint_len_hashed()?)
+        .map_err(|_| Error::Decode("length too large".to_string()))?;
+    let meta_bytes = sr.hashed(meta_len, "metadata")?;
+    let mut mr = crate::canon::CanonReader::new(&meta_bytes);
+    let ir = Ir::decode_metadata(&mut mr)?;
+    if !mr.is_empty() {
+        return Err(Error::NonCanonical(
+            "trailing bytes in metadata".to_string(),
+        ));
+    }
+    let skipped = mr.skipped_non_critical_fields();
+
+    let nblobs = sr.uvarint_hashed()?;
+    let mut last_blob_id: Option<BlobId> = None;
+    let mut index = BTreeMap::new();
+    for _ in 0..nblobs {
+        let raw_id: [u8; 32] = sr
+            .hashed(32, "blob id")?
+            .try_into()
+            .map_err(|_| Error::Decode("bad blob id length".to_string()))?;
+        let id = BlobId(raw_id);
+        if last_blob_id.is_some_and(|last| id <= last) {
+            return Err(Error::NonCanonical(
+                "blob store ids are not strictly ascending".to_string(),
+            ));
+        }
+        last_blob_id = Some(id);
+        let len = sr.uvarint_len_hashed()?;
+        let offset = sr.position();
+        let actual = sr.blob_body_hash(len)?;
+        if actual != id.0 {
+            return Err(Error::Decode(
+                "blob content does not match its id".to_string(),
+            ));
+        }
+        index.insert(id, (offset, len));
+    }
+    Ok(Body { ir, index, skipped })
+}
+
+/// [`read_from`], over a real file (RFC 015 D-4) — the entry point `verify`/`inspect` use: the file is
+/// opened once and kept open by the resulting [`Ir`]'s content store for its own later, on-demand reads.
+///
+/// # Errors
+/// [`Error::Io`] if `path` cannot be opened; otherwise as [`read_from`].
+pub fn from_file(path: &std::path::Path) -> Result<Decoded> {
+    let file = std::fs::File::open(path).map_err(Error::io)?;
+    read_from(file)
 }
 
 /// The structural checks RFC 011 §2.5 asks a reader to enforce beyond each record's own shape: unique

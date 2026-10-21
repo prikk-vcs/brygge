@@ -16,6 +16,8 @@ Every handoff adds its own entry in its own commit.
 - `brygge decode --spill-dir <DIR>`: where to keep file content on disk while decoding, instead of in
   memory. `decode` always spills; the default is the output artifact's own directory. The option never
   changes the artifact.
+- `brygge-ir`: `artifact::read_from`/`from_file`, a streaming artifact reader (RFC 015 D-4); `brygge
+  verify --spill-dir <DIR>`, the same rule as `decode`'s own, for `--against-source`'s re-decode.
 
 ### Changed
 
@@ -26,6 +28,9 @@ Every handoff adds its own entry in its own commit.
   metadata, not the content (fish-shell: 4.9 GiB → about 410 MiB; TortoiseHg: 1.8 GiB → about 172 MiB).**
   CVS no longer holds every revision's content through changeset reconstruction (`cvs-revs`: 3.3× →
   about 1.3× content). Artifacts are byte-identical.
+- **`brygge verify` and `inspect` read an artifact in one streaming pass, holding only the metadata and
+  an index, instead of loading the whole artifact and a second copy of every blob into memory.** Every
+  blob read later is re-checked against its content address. The verdicts are unchanged.
 
 ### Breaking
 

@@ -11,6 +11,11 @@
 //!   over the mutated body before calling `from_bytes`. This is what actually reaches the canonical-order
 //!   and referential-integrity checks (RFC 011 §2.5) — the ones a corrupted-but-correctly-signed artifact
 //!   would need to defeat.
+//!
+//! Both strategies additionally require [`read_from`] (the streaming reader, RFC 015 D-4, run here over
+//! a fast in-memory `Cursor` rather than a real file) to agree with [`from_bytes`] on every mutated
+//! input — the same `Ok`, or an `Err` of the same variant ([`check_equivalent`]) — so the two readers'
+//! digest/structure precedence can never quietly diverge.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
 
@@ -21,7 +26,7 @@ use brygge_mutate::harness::{self, Outcome, Seed};
 use brygge_mutate::ops::{Encoding, InterestingPosition};
 use sha2::{Digest, Sha256};
 
-use super::{from_bytes, to_bytes};
+use super::{from_bytes, read_from, to_bytes};
 use crate::builder::{AtomDraft, IrBuilder};
 use crate::model::{
     DropRecord, Flag, FlagKind, ImportProvenance, Ir, LossBoundary, LossClass, MetadataClaims,
@@ -179,10 +184,47 @@ fn check(input_len: usize, decoded: &super::Decoded) -> Outcome {
     Outcome::Ok
 }
 
+/// A bare label for an `Err`'s variant (RFC 015 D-4's equivalence check, below): comparable without
+/// requiring `Decoded`/`Error` to implement `PartialEq` themselves, and exhaustive on purpose —
+/// `Error` is `#[non_exhaustive]` only to crates *outside* this one, so a new variant here is a compile
+/// error in this match, not a silently-ignored wildcard arm.
+fn outcome_tag(r: &Result<super::Decoded, crate::Error>) -> &'static str {
+    match r {
+        Ok(_) => "ok",
+        Err(crate::Error::Decode(_)) => "decode",
+        Err(crate::Error::DigestMismatch) => "digest_mismatch",
+        Err(crate::Error::PreReleaseArtifact) => "pre_release",
+        Err(crate::Error::UnsupportedContract { .. }) => "unsupported_contract",
+        Err(crate::Error::UnknownCriticalField { .. }) => "unknown_critical_field",
+        Err(crate::Error::NonCanonical(_)) => "non_canonical",
+        Err(crate::Error::Invariant(_)) => "invariant",
+        Err(crate::Error::Io(_)) => "io",
+        Err(crate::Error::ArtifactChanged(_)) => "artifact_changed",
+    }
+}
+
+/// RFC 015 D-4's own equivalence requirement: on the exact same bytes, [`from_bytes`] and
+/// [`read_from`] (over a `Cursor`, so this stays fast) must agree — the same `Ok`, or an `Err` of the
+/// same variant. A `Cursor<Vec<u8>>` behind `read_from` exercises the streaming reader's own digest/
+/// structure precedence on every seed the harness already generates, with no extra file I/O.
+fn check_equivalent(bytes: &[u8]) -> Result<super::Decoded, Outcome> {
+    let a = from_bytes(bytes);
+    let b = read_from(std::io::Cursor::new(bytes.to_vec()));
+    if outcome_tag(&a) != outcome_tag(&b) {
+        return Err(Outcome::Violation(format!(
+            "from_bytes and read_from disagree on a {}-byte input: {} vs {}",
+            bytes.len(),
+            outcome_tag(&a),
+            outcome_tag(&b)
+        )));
+    }
+    a.map_err(|_| Outcome::Ok)
+}
+
 fn check_raw(bytes: &[u8]) -> Outcome {
-    match from_bytes(bytes) {
+    match check_equivalent(bytes) {
         Ok(decoded) => check(bytes.len(), &decoded),
-        Err(_) => Outcome::Ok,
+        Err(outcome) => outcome,
     }
 }
 
@@ -228,9 +270,9 @@ fn resign(prefix: &[u8], body: &[u8]) -> Vec<u8> {
 
 fn check_resigned(prefix: &[u8], mutated_body: &[u8]) -> Outcome {
     let full = resign(prefix, mutated_body);
-    match from_bytes(&full) {
+    match check_equivalent(&full) {
         Ok(decoded) => check(full.len(), &decoded),
-        Err(_) => Outcome::Ok,
+        Err(outcome) => outcome,
     }
 }
 

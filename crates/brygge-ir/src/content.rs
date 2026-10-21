@@ -66,7 +66,17 @@ pub enum Storage {
     Spill(std::path::PathBuf),
 }
 
-/// Where a blob's bytes live: in memory, or at an offset/length in the spill file.
+/// A seekable, readable artifact source behind [`Backing::Artifact`] (RFC 015 D-4): a real file in
+/// production ([`ContentStore::from_artifact_source`]'s usual caller, [`crate::artifact::from_file`]),
+/// or an owned in-memory `Cursor<Vec<u8>>` in a fast test ([`crate::artifact::read_from`]). Boxed so
+/// `Backing` stays a plain enum with no generic parameter to thread through `ContentStore`/`Ir`/every
+/// caller; `'static` (the implicit default for a `dyn` bound with no lifetime given) so the box can
+/// outlive the call that built it.
+pub(crate) trait ArtifactSource: Read + Seek + std::fmt::Debug {}
+impl<T: Read + Seek + std::fmt::Debug> ArtifactSource for T {}
+
+/// Where a blob's bytes live: in memory, at an offset/length in the spill file, or at an offset/length
+/// in an already content-digested artifact (RFC 015 D-4).
 #[derive(Debug)]
 enum Backing {
     Memory(BTreeMap<BlobId, Vec<u8>>),
@@ -81,6 +91,15 @@ enum Backing {
         /// The spill file's directory (RFC 015 D-3a), kept only to name it in a write/read error —
         /// never read back from, and never part of equality or any other observable behavior.
         dir: PathBuf,
+    },
+    /// RFC 015 D-4: a blob's bytes live at `(offset, length)` in an artifact the streaming reader
+    /// already verified once, in one sequential pass, without keeping a copy of any blob past that
+    /// pass. Every later [`ContentStore::get`] re-hashes what it reads back and compares it with the
+    /// `BlobId` — the one thing standing between a caller and bytes the source no longer actually holds
+    /// ([`Error::ArtifactChanged`]).
+    Artifact {
+        source: RefCell<Box<dyn ArtifactSource>>,
+        index: BTreeMap<BlobId, (u64, u64)>,
     },
 }
 
@@ -146,6 +165,22 @@ impl ContentStore {
         }
     }
 
+    /// A store backed by an already-verified artifact (RFC 015 D-4): `index` maps each blob to its
+    /// `(offset, length)` in `source`, as the streaming reader's own sequential pass found them. Not
+    /// public: only [`crate::artifact::read_from`]/[`crate::artifact::from_file`] build one, right after
+    /// that pass, never before it.
+    pub(crate) fn from_artifact_source(
+        source: impl ArtifactSource + 'static,
+        index: BTreeMap<BlobId, (u64, u64)>,
+    ) -> Self {
+        Self {
+            backing: Backing::Artifact {
+                source: RefCell::new(Box::new(source)),
+                index,
+            },
+        }
+    }
+
     /// Insert `bytes`, returning its content address. Inserting identical bytes twice is idempotent —
     /// the second insert neither writes nor allocates again.
     ///
@@ -170,6 +205,15 @@ impl ContentStore {
                     f.write_all(&bytes).map_err(name)?;
                     e.insert((offset, bytes.len() as u64));
                 }
+            }
+            // An artifact-backed store is read-only (RFC 015 D-4): it represents a file the streaming
+            // reader already verified, not an in-progress build — `IrBuilder` never holds one of these
+            // (it is only ever produced by `artifact::read_from`/`from_file`, after the pass, as the
+            // finished `Ir.content`), so this arm exists only to keep the match exhaustive.
+            Backing::Artifact { .. } => {
+                return Err(Error::Invariant(
+                    "cannot insert into an artifact-backed content store (read-only)".to_string(),
+                ));
             }
         }
         Ok(id)
@@ -200,6 +244,26 @@ impl ContentStore {
                 f.read_exact(&mut buf).map_err(name)?;
                 Ok(Some(buf))
             }
+            Backing::Artifact { source, index } => {
+                let Some(&(offset, len)) = index.get(id) else {
+                    return Ok(None);
+                };
+                let mut s = source.borrow_mut();
+                s.seek(SeekFrom::Start(offset)).map_err(Error::io)?;
+                let mut buf =
+                    vec![0u8; usize::try_from(len).map_err(|e| Error::io_msg(e.to_string()))?];
+                s.read_exact(&mut buf).map_err(Error::io)?;
+                // RFC 015 D-4: the verifying pass hashed these bytes once and moved on without keeping
+                // them; this is the only re-check standing between a caller and bytes the source no
+                // longer actually holds at that offset.
+                if BlobId::of(&buf) != *id {
+                    return Err(Error::ArtifactChanged(format!(
+                        "blob {id} no longer matches its content; the artifact changed after it was \
+                         verified"
+                    )));
+                }
+                Ok(Some(buf))
+            }
         }
     }
 
@@ -208,7 +272,7 @@ impl ContentStore {
     pub fn contains(&self, id: &BlobId) -> bool {
         match &self.backing {
             Backing::Memory(blobs) => blobs.contains_key(id),
-            Backing::File { index, .. } => index.contains_key(id),
+            Backing::File { index, .. } | Backing::Artifact { index, .. } => index.contains_key(id),
         }
     }
 
@@ -217,7 +281,7 @@ impl ContentStore {
     pub fn len(&self) -> usize {
         match &self.backing {
             Backing::Memory(blobs) => blobs.len(),
-            Backing::File { index, .. } => index.len(),
+            Backing::File { index, .. } | Backing::Artifact { index, .. } => index.len(),
         }
     }
 
@@ -233,7 +297,9 @@ impl ContentStore {
     pub fn total_bytes(&self) -> u64 {
         match &self.backing {
             Backing::Memory(blobs) => blobs.values().map(|b| b.len() as u64).sum(),
-            Backing::File { index, .. } => index.values().map(|&(_, len)| len).sum(),
+            Backing::File { index, .. } | Backing::Artifact { index, .. } => {
+                index.values().map(|&(_, len)| len).sum()
+            }
         }
     }
 
@@ -243,7 +309,9 @@ impl ContentStore {
     pub fn ids(&self) -> impl Iterator<Item = &BlobId> {
         match &self.backing {
             Backing::Memory(blobs) => Either::Left(blobs.keys()),
-            Backing::File { index, .. } => Either::Right(index.keys()),
+            Backing::File { index, .. } | Backing::Artifact { index, .. } => {
+                Either::Right(index.keys())
+            }
         }
     }
 
@@ -252,11 +320,15 @@ impl ContentStore {
     /// building a second store with `insert`, a full copy of every referenced blob while the old store
     /// was still alive). For a file-backed store, the unreferenced bytes stay physically in the spill
     /// file — harmless, since the whole file is temporary and never read except by id through the
-    /// index — but are no longer indexed, so `write_to` never streams them.
+    /// index — but are no longer indexed, so `write_to` never streams them. An artifact-backed store is
+    /// never pruned (it is already finished, never passed to `IrBuilder::finish`); the arm exists only
+    /// to keep the match exhaustive.
     pub(crate) fn retain(&mut self, mut keep: impl FnMut(&BlobId) -> bool) {
         match &mut self.backing {
             Backing::Memory(blobs) => blobs.retain(|id, _| keep(id)),
-            Backing::File { index, .. } => index.retain(|id, _| keep(id)),
+            Backing::File { index, .. } | Backing::Artifact { index, .. } => {
+                index.retain(|id, _| keep(id));
+            }
         }
     }
 }

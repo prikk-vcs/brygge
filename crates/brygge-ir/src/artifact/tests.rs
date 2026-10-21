@@ -175,6 +175,85 @@ fn write_to_equals_to_bytes_and_from_bytes_accepts_it() {
     }
 }
 
+/// RFC 015 D-4: [`read_from`] over an in-memory `Cursor` must agree with [`from_bytes`] on every
+/// artifact `write_to` can produce — the same bytes, the same `Ir`, whichever reader is used.
+#[test]
+fn read_from_a_cursor_agrees_with_from_bytes() {
+    for ir in [build(), build_rich()] {
+        let bytes = to_bytes(&ir);
+        let decoded = read_from(std::io::Cursor::new(bytes.clone())).unwrap();
+        assert_eq!(decoded.ir, ir);
+        // And every blob reads back correctly through the artifact-backed store, not just the id set
+        // equality above.
+        for id in ir.content.ids() {
+            assert_eq!(
+                decoded.ir.content.get(id).unwrap(),
+                ir.content.get(id).unwrap()
+            );
+        }
+    }
+}
+
+fn scratch_dir(name: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "brygge-ir-artifact-test-{name}-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+/// [`from_file`] (RFC 015 D-4) over a real file agrees with [`from_bytes`] too.
+#[test]
+fn from_file_agrees_with_from_bytes() {
+    let dir = scratch_dir("from-file");
+    let path = dir.join("artifact");
+    let ir = build_rich();
+    std::fs::write(&path, to_bytes(&ir)).unwrap();
+    let decoded = from_file(&path).unwrap();
+    assert_eq!(decoded.ir, ir);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// RFC 015 D-4's own safety property: a blob modified in the artifact file *after* `from_file`'s
+/// verifying pass is never handed to a caller as if nothing happened — the next read of that blob must
+/// fail, not silently return the new bytes.
+#[test]
+fn a_blob_changed_in_the_file_after_the_pass_is_never_read_as_the_new_bytes() {
+    let dir = scratch_dir("changed-during-read");
+    let path = dir.join("artifact");
+    let ir = build_rich();
+    let bytes = to_bytes(&ir);
+    std::fs::write(&path, &bytes).unwrap();
+
+    let decoded = from_file(&path).unwrap();
+    let id = *ir
+        .content
+        .ids()
+        .find(|id| ir.content.get(id).unwrap().unwrap().len() >= 2)
+        .expect("at least one blob here is 2+ bytes long");
+    let original = decoded.ir.content.get(&id).unwrap().unwrap();
+
+    // Flip one byte of that very blob's bytes in the file, in place (same length, so every other
+    // blob's offset is undisturbed) — found the slow but foolproof way, by searching for the blob's own
+    // bytes in the artifact, rather than assuming its offset.
+    let pos = bytes
+        .windows(original.len())
+        .position(|w| w == original.as_slice())
+        .expect("the blob's bytes are findable verbatim in the artifact");
+    {
+        use std::io::{Seek, SeekFrom, Write};
+        let mut f = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        f.seek(SeekFrom::Start(pos as u64 + 1)).unwrap();
+        f.write_all(&[original[1] ^ 0xff]).unwrap();
+    }
+
+    let err = decoded.ir.content.get(&id).unwrap_err();
+    assert!(matches!(err, Error::ArtifactChanged(_)), "{err}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn truncation_is_rejected_not_panicked() {
     let ir = build();

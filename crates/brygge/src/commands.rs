@@ -147,9 +147,11 @@ fn message_subject(message: Option<&Text>) -> String {
         .unwrap_or_default()
 }
 
+/// Reads `path` through brygge-ir's streaming reader (RFC 015 D-4): the artifact is opened once and
+/// read forward in one pass, never loaded whole into memory the way `std::fs::read` + `from_bytes`
+/// used to (fish-shell's `inspect`/`verify`: 9.3 GiB peak before this, well under 1 GiB after).
 fn read_ir(path: &Path) -> Result<Decoded, String> {
-    let bytes = std::fs::read(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-    brygge_ir::from_bytes(&bytes).map_err(|e| format!("{}: {e}", path.display()))
+    brygge_ir::from_file(path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 // ---- provenance round-trip for `verify --against-source` -------------------------------------------
@@ -1236,7 +1238,7 @@ impl AgainstSourceOutcome {
 /// content + deterministic reproduction), never `corresponds` (changeset-level correspondence, which
 /// does not exist to check). A source that cannot be re-decoded at all is `NotChecked`, never a claimed
 /// mismatch (review 003 R-1).
-fn run_against_source(ir1: &Ir, repo: &Path) -> AgainstSourceOutcome {
+fn run_against_source(ir1: &Ir, repo: &Path, storage: &brygge_ir::Storage) -> AgainstSourceOutcome {
     let Some(kind) = source_kind_of(ir1) else {
         return AgainstSourceOutcome::NotChecked(
             "against-source verify is not implemented for this IR's source kind".to_string(),
@@ -1259,10 +1261,10 @@ fn run_against_source(ir1: &Ir, repo: &Path) -> AgainstSourceOutcome {
         cvs_floor: cvs_floor_from_provenance(ir1),
     };
     let is_cvs = kind == SourceKind::Cvs;
-    // Unlike `decode`, `verify --against-source` keeps its re-derived `ir2` in memory (RFC 015 D-3
-    // scopes "always spill" to `decode`; reducing this path's own peak is batch V's, the streaming
-    // reader) — `ir1 == &ir2` only ever compares blob id sets either way, never bytes.
-    let ir2 = match decode_source(kind, repo, &opts, &brygge_ir::Storage::Memory) {
+    // RFC 015 D-4: the re-derived `ir2` spills too, as `decode`'s own always-spill does — `ir1 == &ir2`
+    // only ever compares blob id sets either way, never bytes, so which backing either side uses can
+    // never change the verdict.
+    let ir2 = match decode_source(kind, repo, &opts, storage) {
         Ok(ir) => ir,
         Err((_, msg)) => {
             return AgainstSourceOutcome::NotChecked(format!("cannot re-decode source: {msg}"));
@@ -1427,19 +1429,48 @@ impl Verdict {
     }
 }
 
-/// `verify <artifact> [--against-source <source>]` (CL-04, CR-02): the internal checks always run; each
-/// can fail. With `--against-source`, additionally re-derive and report the two results separately
-/// (VF-4). Exit `50` if anything fails; exit `1` if a requested `--against-source` could not be checked
-/// at all and nothing that ran failed (the three-valued verdict, review 003 R-5).
-pub fn run_verify(artifact: &Path, against_source: Option<&Path>, format: Format) -> i32 {
-    let bytes = match std::fs::read(artifact) {
-        Ok(b) => b,
-        Err(e) => {
-            output::stderr(&format!("cannot read {}: {e}", artifact.display()));
-            return exit::FAILURE;
-        }
+/// `verify <artifact> [--against-source <source>] [--spill-dir <DIR>]` (CL-04, CR-02): the internal
+/// checks always run; each can fail. With `--against-source`, additionally re-derive and report the two
+/// results separately (VF-4) — the re-decode spills file content to `spill_dir` (or, by default, the
+/// artifact's own directory), the same rule `decode`'s own `--spill-dir` follows (RFC 015 D-4), checked
+/// before any work starts. Exit `50` if anything fails; exit `1` if a requested `--against-source` could
+/// not be checked at all and nothing that ran failed (the three-valued verdict, review 003 R-5).
+pub fn run_verify(
+    artifact: &Path,
+    against_source: Option<&Path>,
+    spill_dir: Option<&Path>,
+    format: Format,
+) -> i32 {
+    let storage = if against_source.is_some() {
+        let dir = match spill_dir {
+            Some(dir) => {
+                if !dir.is_dir() {
+                    output::stderr(&format!(
+                        "--spill-dir {} does not exist or is not a directory",
+                        dir.display()
+                    ));
+                    return exit::USAGE;
+                }
+                dir.to_path_buf()
+            }
+            None => artifact
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .unwrap_or_else(|| Path::new("."))
+                .to_path_buf(),
+        };
+        Some(brygge_ir::Storage::Spill(dir))
+    } else {
+        None
     };
-    let parsed = brygge_ir::from_bytes(&bytes);
+
+    // RFC 015 D-4: a streaming, single-pass read — never the whole artifact loaded into one buffer the
+    // way `std::fs::read` + `from_bytes` used to (fish-shell: 9.3 GiB peak before this).
+    let parsed = brygge_ir::from_file(artifact);
+    if let Err(brygge_ir::Error::Io(msg)) = &parsed {
+        output::stderr(&format!("cannot read {}: {msg}", artifact.display()));
+        return exit::FAILURE;
+    }
     let mut checks: Vec<(&'static str, CheckOutcome)> = Vec::with_capacity(CHECK_NAMES.len());
     let ir_opt = match &parsed {
         Ok(decoded) => {
@@ -1470,12 +1501,15 @@ pub fn run_verify(artifact: &Path, against_source: Option<&Path>, format: Format
     }
     let internal_pass = !checks.iter().any(|(_, o)| o.is_fail());
 
-    let against = match (against_source, ir_opt) {
-        (Some(src), Some(ir)) => run_against_source(ir, src),
-        (Some(_), None) => AgainstSourceOutcome::NotChecked(
+    let against = match (against_source, ir_opt, &storage) {
+        (Some(src), Some(ir), Some(storage)) => run_against_source(ir, src, storage),
+        (Some(_), None, _) => AgainstSourceOutcome::NotChecked(
             "the artifact failed to decode; there is nothing to re-derive against".to_string(),
         ),
-        (None, _) => AgainstSourceOutcome::NotRun,
+        (None, _, _) => AgainstSourceOutcome::NotRun,
+        // `storage` is `Some` exactly when `against_source` is `Some` (built together, above) — this
+        // arm is unreachable, kept only so the match stays exhaustive without a wildcard.
+        (Some(_), Some(_), None) => unreachable!("storage is set whenever against_source is"),
     };
     let verdict = Verdict::from(internal_pass, &against);
 

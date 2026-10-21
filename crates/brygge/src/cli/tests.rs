@@ -322,6 +322,58 @@ fn verify_forms() {
 }
 
 #[test]
+fn verify_spill_dir_parses_and_requires_against_source() {
+    match parse(&v(&[
+        "verify",
+        "x.ir",
+        "--against-source",
+        "/repo",
+        "--spill-dir",
+        "/tmp/spill",
+    ]))
+    .unwrap()
+    {
+        Command::Verify { spill_dir, .. } => {
+            assert_eq!(spill_dir, Some(PathBuf::from("/tmp/spill")));
+        }
+        other => panic!("got {other:?}"),
+    }
+    match parse(&v(&["verify", "x.ir", "--against-source", "/repo"])).unwrap() {
+        Command::Verify { spill_dir, .. } => assert_eq!(spill_dir, None, "off by default"),
+        other => panic!("got {other:?}"),
+    }
+    assert!(
+        parse(&v(&["verify", "x.ir", "--spill-dir", "/tmp/spill"])).is_err(),
+        "--spill-dir without --against-source is meaningless"
+    );
+    assert!(
+        parse(&v(&[
+            "verify",
+            "x.ir",
+            "--against-source",
+            "/repo",
+            "--spill-dir",
+            "/a",
+            "--spill-dir",
+            "/b",
+        ]))
+        .is_err(),
+        "--spill-dir given more than once"
+    );
+    assert!(
+        parse(&v(&[
+            "verify",
+            "x.ir",
+            "--against-source",
+            "/repo",
+            "--spill-dir"
+        ]))
+        .is_err(),
+        "--spill-dir needs a value"
+    );
+}
+
+#[test]
 fn inspect_forms() {
     match parse(&v(&["inspect", "a.ir"])).unwrap() {
         Command::Inspect {

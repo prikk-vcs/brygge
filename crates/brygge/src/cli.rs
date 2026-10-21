@@ -74,12 +74,17 @@ pub enum Command {
         /// Output format.
         format: Format,
     },
-    /// `verify <artifact> [--against-source <source>] [--format …]`
+    /// `verify <artifact> [--against-source <source>] [--spill-dir <DIR>] [--format …]`
     Verify {
         /// The IR artifact to check.
         artifact: PathBuf,
         /// If given, additionally re-derive from this source and confirm correspondence (VF-2).
         against_source: Option<PathBuf>,
+        /// Where `--against-source`'s re-decode keeps file content while decoding, instead of in
+        /// memory (RFC 015 D-4, as `decode`'s own `--spill-dir`). Must already exist and be a
+        /// directory; `None` means the artifact's own directory. Meaningless, and rejected, without
+        /// `--against-source`.
+        spill_dir: Option<PathBuf>,
         /// Output format.
         format: Format,
     },
@@ -96,7 +101,7 @@ brygge — carry version-control history into an intermediate representation (IR
 USAGE:
   brygge decode <git|hg|svn|cvs> <source> --out <artifact> [--infer-renames | --reconstruct-refs] [--spill-dir <DIR>] [--format human|machine]
   brygge inspect <artifact> [--atoms] [--format human|machine]
-  brygge verify <artifact> [--against-source <source>] [--format human|machine]
+  brygge verify <artifact> [--against-source <source> [--spill-dir <DIR>]] [--format human|machine]
   brygge --version | --help | <command> --help
 
 COMMANDS:
@@ -112,7 +117,9 @@ COMMANDS:
            listing: epistemic status, source ids, derived parameters, and the loss boundary
   verify   the honesty checks any reader can run with no source (always); with --against-source, also
            re-derive from the source and confirm correspondence — the two results are reported
-           separately, never merged
+           separately, never merged. The re-derive's own file content is kept on disk the same way
+           decode's is; --spill-dir <DIR> chooses where (it must already exist, and only applies with
+           --against-source); the default is the artifact's own directory
 
 VOCABULARY: artifact, source, stated, derived, dropped, flagged, refused, Unverifiable.";
 
@@ -357,6 +364,8 @@ fn parse_verify(args: &[String]) -> Result<Command, String> {
     let mut artifact: Option<PathBuf> = None;
     let mut against_source: Option<PathBuf> = None;
     let mut against_source_seen = false;
+    let mut spill_dir: Option<PathBuf> = None;
+    let mut spill_dir_seen = false;
     let mut format = Format::Human;
     let mut format_seen = false;
     while let Some(arg) = it.next() {
@@ -370,6 +379,13 @@ fn parse_verify(args: &[String]) -> Result<Command, String> {
                 }
                 against_source_seen = true;
                 against_source = Some(need_value(&mut it, "--against-source", "verify")?);
+            }
+            "--spill-dir" => {
+                if spill_dir_seen {
+                    return Err(usage_error("verify", "--spill-dir given more than once"));
+                }
+                spill_dir_seen = true;
+                spill_dir = Some(need_value(&mut it, "--spill-dir", "verify")?);
             }
             "--format" => {
                 if format_seen {
@@ -393,9 +409,16 @@ fn parse_verify(args: &[String]) -> Result<Command, String> {
         }
     }
     let artifact = artifact.ok_or_else(|| usage_error("verify", "verify needs an <artifact>"))?;
+    if spill_dir.is_some() && against_source.is_none() {
+        return Err(usage_error(
+            "verify",
+            "--spill-dir only applies with --against-source",
+        ));
+    }
     Ok(Command::Verify {
         artifact,
         against_source,
+        spill_dir,
         format,
     })
 }

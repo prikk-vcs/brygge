@@ -77,7 +77,13 @@ fn run(cmd: Command) -> i32 {
         Command::Verify {
             artifact,
             against_source,
+            spill_dir,
             format,
-        } => commands::run_verify(&artifact, against_source.as_deref(), format),
+        } => commands::run_verify(
+            &artifact,
+            against_source.as_deref(),
+            spill_dir.as_deref(),
+            format,
+        ),
     }
 }

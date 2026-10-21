@@ -29,7 +29,7 @@ pub mod model;
 pub mod status;
 pub mod version;
 
-pub use artifact::{Decoded, from_bytes, to_bytes};
+pub use artifact::{Decoded, from_bytes, from_file, read_from, to_bytes};
 pub use builder::{AtomDraft, IrBuilder};
 pub use content::{BlobId, ContentStore, Storage};
 pub use honesty::{FidelityReport, summary};
@@ -88,6 +88,10 @@ pub enum Error {
     /// file — a disk-full condition included. Never a panic: the caller's own I/O failed, not
     /// brygge-ir's encoding.
     Io(String),
+    /// A blob read from an artifact-backed [`content::ContentStore`] (RFC 015 D-4), after the streaming
+    /// reader's own pass verified it, no longer matches its content address: something modified the
+    /// artifact while it was open. The caller is never handed the changed bytes.
+    ArtifactChanged(String),
 }
 
 impl Error {
@@ -128,6 +132,9 @@ impl std::fmt::Display for Error {
             Self::NonCanonical(m) => write!(f, "brygge-ir artifact is not in canonical form: {m}"),
             Self::Invariant(m) => write!(f, "brygge-ir invariant violated: {m}"),
             Self::Io(m) => write!(f, "writing a brygge-ir artifact failed: {m}"),
+            Self::ArtifactChanged(m) => {
+                write!(f, "the artifact changed while it was being read: {m}")
+            }
         }
     }
 }
