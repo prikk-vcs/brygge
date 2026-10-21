@@ -132,9 +132,33 @@ fn an_index_entry_past_the_end_of_a_truncated_spill_file_is_a_typed_error_not_a_
         backing: Backing::File {
             file: RefCell::new(file),
             index,
+            dir: dir.clone(),
         },
     };
     assert!(s.get(&id).is_err());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_write_error_on_the_spill_file_names_its_directory() {
+    let dir = scratch_dir("write-error-names-dir");
+    let path = dir.join("read-only");
+    std::fs::write(&path, b"").unwrap();
+    // Opened read-only: a write through it fails, and the error must name `dir`, not just repeat the
+    // raw OS message (RFC 015 D-3a: "a typed Io error, naming the spill directory").
+    let file = std::fs::OpenOptions::new().read(true).open(&path).unwrap();
+    let mut s = ContentStore {
+        backing: Backing::File {
+            file: RefCell::new(file),
+            index: BTreeMap::new(),
+            dir: dir.clone(),
+        },
+    };
+    let err = s.insert(b"content".to_vec()).unwrap_err();
+    assert!(
+        format!("{err}").contains(&dir.display().to_string()),
+        "{err}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 

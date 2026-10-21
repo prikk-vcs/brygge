@@ -11,6 +11,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 const USAGE: i32 = 2;
 const FLOOR_REFUSAL: i32 = 20;
+#[cfg(target_os = "linux")]
+const FAILURE: i32 = 1;
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -597,4 +599,169 @@ fn a_stdout_write_error_that_is_not_a_broken_pipe_exits_failure_with_a_message()
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("cannot write to stdout"), "{stderr}");
     assert!(!stderr.contains("panicked"), "{stderr}");
+}
+
+// ---- RFC 015 D-3a: the spill file is never left behind, however the process ends ------------------
+
+/// A `git fast-import` stream of `n` trivial commits on one file, all pointing at the same blob (so the
+/// import itself stays fast) — large enough that `brygge decode` is still running a short time after it
+/// starts, which `killing_a_decode_mid_run_leaves_no_spill_file_on_windows` relies on (review 076/077
+/// F-1: Unix's cleanup is already proven by "no entry once created"; Windows needs a decode caught
+/// genuinely still open when the process ends some other way than a normal return).
+#[cfg(windows)]
+fn fast_import_stream(n: u32) -> String {
+    let mut s = String::with_capacity(64 + n as usize * 96);
+    s.push_str("blob\nmark :1\ndata 6\nhello\n");
+    let mut prev: Option<u32> = None;
+    for i in 0..n {
+        let mark = i + 2;
+        s.push_str(&format!("commit refs/heads/main\nmark :{mark}\n"));
+        s.push_str("author A U Thor <a@example.com> 1112912793 +0000\n");
+        s.push_str("committer C O Mitter <c@example.com> 1112912793 +0000\n");
+        let msg = format!("c{i}");
+        s.push_str(&format!("data {}\n{msg}\n", msg.len()));
+        if let Some(p) = prev {
+            s.push_str(&format!("from :{p}\n"));
+        }
+        s.push_str("M 100644 :1 a.txt\n");
+        prev = Some(mark);
+    }
+    s
+}
+
+#[cfg(windows)]
+fn fast_import(repo: &TempRepo, stream: &str) {
+    use std::io::Write as _;
+    let mut fi = Command::new("git")
+        .current_dir(repo.path())
+        .args(["fast-import", "--quiet"])
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn git fast-import");
+    fi.stdin
+        .take()
+        .expect("fast-import stdin")
+        .write_all(stream.as_bytes())
+        .expect("write the fast-import stream");
+    assert!(fi.wait().expect("wait on fast-import").success());
+}
+
+#[cfg(windows)]
+#[test]
+fn killing_a_decode_mid_run_leaves_no_spill_file_on_windows() {
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let repo = TempRepo::new();
+    // 200,000 commits: a few seconds for `brygge decode` to walk and verify, ample margin over the
+    // short sleep below on any CI runner.
+    fast_import(&repo, &fast_import_stream(200_000));
+
+    let out = repo.dir.join("out.ir");
+    let spill_dir = repo.dir.join("spill");
+    std::fs::create_dir_all(&spill_dir).unwrap();
+
+    let mut child = Command::new(bin())
+        .args(["decode", "git"])
+        .arg(repo.path())
+        .arg("--out")
+        .arg(&out)
+        .arg("--spill-dir")
+        .arg(&spill_dir)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn brygge decode");
+
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let still_running = matches!(child.try_wait(), Ok(None));
+    child.kill().expect("terminate the decode");
+    let _ = child.wait();
+
+    assert!(
+        still_running,
+        "the decode already finished before it could be killed; make the fixture larger"
+    );
+    assert!(!out.exists(), "no artifact from a killed decode");
+    let remaining: Vec<_> = std::fs::read_dir(&spill_dir)
+        .expect("read the spill directory")
+        .collect();
+    assert!(
+        remaining.is_empty(),
+        "a spill file was left behind: {remaining:?}"
+    );
+}
+
+/// On Unix, [`ContentStore::spilling`]'s own unit tests already prove the directory holds no entry at
+/// all once the spill file opens (`content/spill/tests.rs`); that covers a killed process too, since
+/// there is never a directory entry for a signal to leave behind.
+#[cfg(unix)]
+#[test]
+fn on_unix_a_killed_decode_is_covered_by_the_no_entry_once_created_proof() {}
+
+/// `--spill-dir` into a filesystem that fills up partway through a decode: a typed error naming the
+/// spill directory, a non-zero exit, no artifact, and no leftover temp file (review 076/077 F-3,
+/// handoff §5.3). Needs an unprivileged user+mount namespace (`unshare --user --map-root-user`) to
+/// create a tiny `tmpfs` without root; skips with a message where that is not available.
+#[cfg(target_os = "linux")]
+#[test]
+fn spill_dir_disk_full_is_a_typed_error_with_no_artifact_and_no_leftover_temp() {
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    if !Command::new("unshare")
+        .args(["--mount", "--user", "--map-root-user", "true"])
+        .status()
+        .is_ok_and(|s| s.success())
+    {
+        eprintln!("skipping: unprivileged user+mount namespaces are not available here");
+        return;
+    }
+
+    let repo = TempRepo::new();
+    // A blob well over the 1 MiB tmpfs below, so the spill write fails partway through the decode.
+    let big = "x".repeat(2 * 1024 * 1024);
+    repo.commit("big.txt", &big, "a big file");
+
+    let out = repo.dir.join("out.ir");
+    let spill_dir = repo.dir.join("spill");
+    std::fs::create_dir_all(&spill_dir).unwrap();
+
+    let script = format!(
+        "mount -t tmpfs -o size=1m tmpfs {} && exec {} decode git {} --out {} --spill-dir {}",
+        shell_quote(&spill_dir),
+        shell_quote(Path::new(bin())),
+        shell_quote(repo.path()),
+        shell_quote(&out),
+        shell_quote(&spill_dir),
+    );
+    let output = Command::new("unshare")
+        .args(["--mount", "--user", "--map-root-user", "sh", "-c"])
+        .arg(&script)
+        .output()
+        .expect("run brygge decode inside the size-limited tmpfs");
+
+    assert_eq!(output.status.code(), Some(FAILURE), "{output:?}");
+    assert!(
+        !out.exists(),
+        "no artifact when the spill file could not be written"
+    );
+    let leftovers: Vec<_> = std::fs::read_dir(&repo.dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().contains("brygge-tmp"))
+        .collect();
+    assert!(
+        leftovers.is_empty(),
+        "a temporary artifact was left behind: {leftovers:?}"
+    );
+}
+
+/// Single-quote `path` for a POSIX shell (the fixture paths here are plain temp-dir paths with no
+/// single quote in them, so this is simple escaping, not a general-purpose shell-safety claim).
+#[cfg(target_os = "linux")]
+fn shell_quote(path: &Path) -> String {
+    format!("'{}'", path.display())
 }

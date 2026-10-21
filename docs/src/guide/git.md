@@ -9,6 +9,13 @@ repository recorded it. Before the run it states: *"Git: content, history and me
 source recorded them. Renames are inferred only with --infer-renames, and are then marked derived.
 Authorship is Unverifiable."*
 
+## Memory while decoding
+
+brygge keeps file content on disk while decoding, not in memory: a large repository needs free disk
+space of roughly the artifact's own size, not the memory that content would otherwise take.
+`--spill-dir <DIR>` chooses where; the default is `--out`'s own directory. A RAM-backed directory
+(`tmpfs`) moves the memory cost rather than removing it. The option never changes the artifact.
+
 ## What brygge carries
 
 - Every commit reachable from a branch (`refs/heads/*`) or a tag (`refs/tags/*`), as a stated atom that

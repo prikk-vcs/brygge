@@ -13,7 +13,7 @@
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
@@ -78,6 +78,9 @@ enum Backing {
     File {
         file: RefCell<std::fs::File>,
         index: BTreeMap<BlobId, (u64, u64)>,
+        /// The spill file's directory (RFC 015 D-3a), kept only to name it in a write/read error —
+        /// never read back from, and never part of equality or any other observable behavior.
+        dir: PathBuf,
     },
 }
 
@@ -126,6 +129,7 @@ impl ContentStore {
             backing: Backing::File {
                 file: RefCell::new(file),
                 index: BTreeMap::new(),
+                dir: dir.to_path_buf(),
             },
         })
     }
@@ -153,11 +157,17 @@ impl ContentStore {
             Backing::Memory(blobs) => {
                 blobs.entry(id).or_insert(bytes);
             }
-            Backing::File { file, index } => {
+            Backing::File { file, index, dir } => {
                 if let std::collections::btree_map::Entry::Vacant(e) = index.entry(id) {
                     let mut f = file.borrow_mut();
-                    let offset = f.seek(SeekFrom::End(0)).map_err(Error::io)?;
-                    f.write_all(&bytes).map_err(Error::io)?;
+                    let name = |e: std::io::Error| {
+                        Error::io_msg(format!(
+                            "cannot write to the spill file in {}: {e}",
+                            dir.display()
+                        ))
+                    };
+                    let offset = f.seek(SeekFrom::End(0)).map_err(name)?;
+                    f.write_all(&bytes).map_err(name)?;
                     e.insert((offset, bytes.len() as u64));
                 }
             }
@@ -173,15 +183,21 @@ impl ContentStore {
     pub fn get(&self, id: &BlobId) -> Result<Option<Vec<u8>>> {
         match &self.backing {
             Backing::Memory(blobs) => Ok(blobs.get(id).cloned()),
-            Backing::File { file, index } => {
+            Backing::File { file, index, dir } => {
                 let Some(&(offset, len)) = index.get(id) else {
                     return Ok(None);
                 };
                 let mut f = file.borrow_mut();
-                f.seek(SeekFrom::Start(offset)).map_err(Error::io)?;
+                let name = |e: std::io::Error| {
+                    Error::io_msg(format!(
+                        "cannot read the spill file in {}: {e}",
+                        dir.display()
+                    ))
+                };
+                f.seek(SeekFrom::Start(offset)).map_err(name)?;
                 let mut buf =
                     vec![0u8; usize::try_from(len).map_err(|e| Error::io_msg(e.to_string()))?];
-                f.read_exact(&mut buf).map_err(Error::io)?;
+                f.read_exact(&mut buf).map_err(name)?;
                 Ok(Some(buf))
             }
         }

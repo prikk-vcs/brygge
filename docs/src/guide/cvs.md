@@ -4,6 +4,13 @@ brygge imports a CVS repository's **main line** (the trunk, plus — while a ven
 revisions `cvs import` put there, since that is what a plain `cvs checkout` gives you). With
 `--reconstruct-refs` it also imports the **branches cut from the main line**, each with its own history.
 
+## Memory while decoding
+
+brygge keeps file content on disk while decoding, not in memory: a large repository needs free disk
+space of roughly the artifact's own size, not the memory that content would otherwise take.
+`--spill-dir <DIR>` chooses where; the default is `--out`'s own directory. A RAM-backed directory
+(`tmpfs`) moves the memory cost rather than removing it. The option never changes the artifact.
+
 ## What brygge carries
 
 - The main line's full per-file content and history, reconstructed into changesets (every changeset atom
