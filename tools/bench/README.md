@@ -528,3 +528,74 @@ read on demand.
   219–680 B/atom.
 - Naive `drop()` does not reclaim most of a large `Ir`'s memory on this machine's allocator — D-2/D-3's
   design should avoid ever fully materializing content, not rely on freeing it after the fact.
+
+## Result — RFC 015 (batches W, S and V)
+
+The baseline column below reproduces "RFC 015 D-1: where the peak goes" above (brygge `0.4.0` @
+`799b025`), unchanged. The 0.5.0 column is the final state after all three implementation batches:
+P1/P3 (decode) from request 052's own A/B (batch S, commit `975030f`); P4/P5/P6 (`verify`/`inspect`/
+`--against-source`) from request 053's own A/B (batch V, commit `4a87792`). Batch W's own intermediate
+numbers (before S's disk-backed store existed) are in request 050; they are not repeated here, since
+P1/P3's 0.4.0→0.5.0 column already carries their effect through to the final state. All MiB, 1 MiB =
+1,048,576 B.
+
+| Target | Phase | 0.4.0 (`799b025`) | 0.5.0 | Δ |
+|---|---|---:|---:|---|
+| `fish-shell` | P1 (decode, library) | 9,620 | 5,031 | −48% |
+| `fish-shell` | P3 (`decode`, full CLI) | 18,676 | **410** | −98% |
+| `fish-shell` | P4 (`verify`) | 9,325 | **64** | −99% |
+| `fish-shell` | P5 (`inspect`) | 9,326 | **64** | −99% |
+| `fish-shell` | P6 (`verify --against-source`) | 18,932 | **472** | −98% |
+| `tortoisehg-thg` | P1 | 3,485 | 1,838 | −47% |
+| `tortoisehg-thg` | P3 | 6,813 | **172** | −97% |
+| `tortoisehg-thg` | P4 | 3,395 | **45** | −99% |
+| `tortoisehg-thg` | P5 | 3,395 | **45** | −99% |
+| `tortoisehg-thg` | P6 | 6,868 | **201** | −97% |
+| `cvs-revs-5000` (× content, 528 MiB) | P1 | 2,215 (4.20×, D-1's own ratio) | 1,228 (2.33×) | −45% |
+| `cvs-revs-5000` | P3 | 3,292 (6.2×, 3,292 ÷ 528) | **698 (1.3×, 698 ÷ 528)** | −79% |
+| `cvs-revs-5000` | P4 | 1,344 | **245** | −82% |
+| `cvs-revs-5000` | P5 | 1,344 | **245** | −82% |
+| `cvs-revs-5000` | P6 | 3,513 | **897** | −74% |
+| `svn-dump-20000` | P1 | 139.5 | 118.0 | −15% |
+| `svn-dump-20000` | P3 | 243.4 | 118.1 | −51% |
+| `svn-dump-20000` | P4 | 112.8 | 32.4 | −71% |
+| `svn-dump-20000` | P5 | 112.8 | 32.4 | −71% |
+| `svn-dump-20000` | P6 | 232.5 | *not measured in request 053* | |
+| `git-commits-20000` | P1 | 99.9 | 77.8 | −22% |
+| `git-commits-20000` | P3 | 100.0 | 100.3 | floor-dominated, no change |
+| `git-commits-20000` | P4 | 37.9 | 30.9 | −18% |
+| `git-commits-20000` | P5 | 37.8 | 31.2 | −18% |
+| `git-commits-20000` | P6 | 129.6 | *not measured in request 053* | |
+
+**Artifacts are byte-identical** at every step (W, S-1, S-2, V each proved this independently, against
+every bench corpus and all nine real-corpus entries). **What remains uncompacted:** the metadata (every
+target's P4/P5 floor above is still roughly its artifact's metadata size, held fully in memory — RFC
+015 did not touch this) and the spill's own disk cost (decoding now needs free disk space of about the
+artifact's size, in `--spill-dir` or the output directory, which was not a cost before this work).
+
+**Decode time** (full `brygge decode`, ms; batch S's own before/after, `S-1`-only binary → `S-2`,
+request 052 F-2 — this baseline is already post-batch-W, not 0.4.0, since batch S did not change
+decode's wall-clock path relative to W and this is the only decode-time A/B actually measured):
+
+| Target | before (`S-1`) | after (`S-2`, `9e87cfe`) | Δ |
+|---|---:|---:|---|
+| `fish-shell` | 38,807 | 39,412 | +1.6% (noise) |
+| `tortoisehg-thg` (real corpus) | 64,988 | 64,557 | −0.7% |
+| `cvs-revs` (bench) | 23 | 23 | 0% |
+| `svn-dump` (bench) | 5 | 5 | 0% |
+| `git-commits` (bench) | 13 | 13 | 0% |
+
+No row slowed by more than 2%, well inside run-to-run noise at these scales (request 052's own
+assessment, not re-litigated here).
+
+**`verify`/`inspect` time** (ms; batch V's own before/after, pre-streaming-reader → `4a87792`, request
+053 §3 — svn-dump/git-commits P4/P5 and all P6 times were reported only qualitatively there, "no row
+slower", not as exact figures, so they are not repeated as numbers here):
+
+| Target | Phase | before | after | Δ |
+|---|---|---:|---:|---|
+| `fish-shell` | P4 | 8,721 | 4,107 | −53% |
+| `fish-shell` | P5 | 8,803 | 4,057 | −54% |
+| `tortoisehg-thg` | P4 | 2,556 | 1,603 | −37% |
+| `tortoisehg-thg` | P5 | 2,959 | 1,603 | −46% |
+

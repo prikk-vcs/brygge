@@ -7,7 +7,7 @@ increments were.
 ## 0. First, commit the architect's files on their own
 
 Commit as "RFC 015 accepted (Scale at real size, 0.5.0); 0.6.0 planned; handoff":
-- `rfcs/accepted/015-scale-at-real-size.md` (moved from `proposed/`);
+- `rfcs/done/015-scale-at-real-size.md` (moved from `proposed/`);
 - `rfcs/handoffs/015-scale-at-real-size/`;
 - `rfcs/README.md`;
 - `ROADMAP.md`.

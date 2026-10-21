@@ -48,12 +48,12 @@ is written by the architect and reviewed/approved per `GOVERNANCE.md`.
 
 ## State
 
-**brygge 0.4.0 is released (2026-10-20). Since 0.1.0 (2026-09-24), all four sources on the gradient decode into IR contract
+**brygge 0.5.0 is released (2026-10-21). Since 0.1.0 (2026-09-24), all four sources on the gradient decode into IR contract
 `0.2.0` (RFC 011).** The RFCs that 0.1.0 implements are in `done/`. RFC 010 stays accepted: its first
 increment (the input ceilings) shipped in 0.1.0, increments 3, 3b and 5 in 0.2.0, and increments 2 and 4
 (streaming) are deferred by measurement — its revisit trigger fired in 0.4.0's real-world validation
 (RFC 014 D-4), and the next theme plans it. RFC 013 (Source reach) is done in 0.3.0. RFC 014 (Hardening)
-is done in 0.4.0.
+is done in 0.4.0. RFC 015 (Scale at real size) and RFC 016 (Arch Linux packaging) are done in 0.5.0.
 Per the lifecycle policy, **the folder an RFC lives in is the source of truth for its state**. This
 table is the index the policy asks each project to keep, grouped by state as RFC 000 recommends. Update it
 in the same commit that moves an RFC between folders.
@@ -64,8 +64,6 @@ in the same commit that moves an RFC between folders.
 |---|---|---|
 | [010](accepted/010-bounded-memory-and-streaming.md) | Bounded memory & streaming (increment 1 shipped in 0.1.0; increments 3, 3b and 5 in 0.2.0; increments 2 and 4 deferred by measurement) | `handoffs/010-bounded-memory-and-streaming/` |
 | [012](accepted/012-release-automation.md) | Release automation: CI on Linux, macOS and Windows; tag-triggered, owner-approved publication (crates.io trusted publishing); binaries with provenance; GitHub release from the CHANGELOG | `handoffs/012-release-automation/` |
-| [015](accepted/015-scale-at-real-size.md) | Scale at real size (0.5.0): a streaming artifact writer, a disk-backed content store (with `--spill-dir`), a streaming reader; peak memory tracks metadata, not total content; artifacts byte-identical | `handoffs/015-scale-at-real-size/` |
-| [016](accepted/016-arch-linux-packaging.md) | Arch Linux packaging: `brygge` (source) and `brygge-bin` on the AUR, rendered, built and checked in an Arch container, and pushed by `release.yml` | `handoffs/016-arch-linux-packaging/` |
 | [017](accepted/017-extensibility.md) | Extensibility: the IR as the extension point (an encoder guide, an unsupported reference IR → Git encoder), external encoder plugins (`brygge encode <target>`), and honest transforms with the next contract revision | `handoffs/017-extensibility/` (after 0.5.0) |
 
 ### Done
@@ -84,6 +82,8 @@ in the same commit that moves an RFC between folders.
 | [011](done/011-ir-contract-recut.md) | IR contract re-cut before the first release (supersedes parts of 001/002/003; contract `0.2.0`). Implemented (0.1.0) | `handoffs/011-ir-contract-recut/` |
 | [013](done/013-source-reach.md) | Source reach (0.3.0): hashed Mercurial store paths, SVN delta dumps (svndiff0), CVS branch history | `handoffs/013-source-reach/` |
 | [014](done/014-hardening.md) | Hardening (0.4.0): mutation tests of every untrusted parser on stable Rust (quick in every test run, deep on parser or dependency changes and at each cut, under a memory cap); real-world validation on public repositories | `handoffs/014-hardening/` |
+| [015](done/015-scale-at-real-size.md) | Scale at real size (0.5.0): a streaming artifact writer, a disk-backed content store (with `--spill-dir`), a streaming reader; peak memory tracks metadata, not total content; artifacts byte-identical | `handoffs/015-scale-at-real-size/` |
+| [016](done/016-arch-linux-packaging.md) | Arch Linux packaging (0.5.0): `brygge` (source) and `brygge-bin` on the AUR, rendered, built and checked in an Arch container, and pushed by `release.yml` | `handoffs/016-arch-linux-packaging/` |
 
 ### Proposed
 

@@ -1,7 +1,8 @@
 # RFC 015 — Scale at real size (0.5.0): memory that does not grow with a history's total content
 
-**Status.** **Accepted (2026-10-20)** by the owner, with two additions (recorded in OQ-1 and OQ-2). Handoffs:
-`rfcs/handoffs/015-scale-at-real-size/`. Proposed (2026-10-20) by the architect.
+**Status.** **Done (2026-10-21): implemented in 0.5.0.** **Accepted (2026-10-20)** by the owner, with two
+additions (recorded in OQ-1 and OQ-2). Handoffs: `rfcs/handoffs/015-scale-at-real-size/`. Proposed
+(2026-10-20) by the architect.
 
 ## Summary
 

@@ -1,6 +1,7 @@
 # RFC 016 — Arch Linux packaging: `brygge` and `brygge-bin` on the AUR, published by the release workflow
 
-**Status.** **Accepted (2026-10-21)** by the owner ("Yes"). The rulings:
+**Status.** **Done (2026-10-21): implemented in 0.5.0.** **Accepted (2026-10-21)** by the owner ("Yes"). The
+rulings:
 - **OQ-1: the owner's own AUR account (`nabbisen`).** The owner sets the key as a secret in the GitHub Actions
   `release` environment. RR-aur-key's blast radius is therefore every package `nabbisen` maintains: a stated,
   deliberate trade.

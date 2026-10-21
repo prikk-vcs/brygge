@@ -62,5 +62,5 @@ review request. **Target:** fish-shell's `brygge decode` peak (P3), from 18.7 Gi
 
 ## 6. Review request
 
-`.git-exclude/review-requests/050-streaming-writer.md`. Commit with the batch the architect's corrections now in the tree: `docs/src/brygge-03-threat-model-v0.1.md` (RR-total-memory, and v0.8's summary: about 4× content, 18.7 GiB) and `rfcs/accepted/015-scale-at-real-size.md`, plus this handoff. A topic branch is not required (nothing is CI-only);
+`.git-exclude/review-requests/050-streaming-writer.md`. Commit with the batch the architect's corrections now in the tree: `docs/src/brygge-03-threat-model-v0.1.md` (RR-total-memory, and v0.8's summary: about 4× content, 18.7 GiB) and `rfcs/done/015-scale-at-real-size.md`, plus this handoff. A topic branch is not required (nothing is CI-only);
 commit and push to `main` after approval. Then batch S.

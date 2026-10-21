@@ -8,7 +8,7 @@
 ## 0. First, commit the architect's files on their own
 
 Commit as "RFC 016 accepted (Arch Linux packaging); handoff":
-- `rfcs/accepted/016-arch-linux-packaging.md`;
+- `rfcs/done/016-arch-linux-packaging.md`;
 - `rfcs/handoffs/016-arch-linux-packaging/`;
 - `rfcs/README.md`;
 - `ROADMAP.md`.

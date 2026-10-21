@@ -5,12 +5,14 @@ map: what brygge is, the state at handover, the invariants you must never regres
 lives, how to build and gate it, and the prioritized backlog. Everything it references is in this
 repository; nothing load-bearing lives only in someone's head.
 
-**Date of handover:** 2026-09-12. **Updated for the 0.4.0 release, 2026-10-20.** **State:** brygge
+**Date of handover:** 2026-09-12. **Updated for the 0.5.0 release, 2026-10-21.** **State:** brygge
 **0.1.0 is released**: the decode → IR half for all four named sources, on IR contract **0.2.0**.
 **0.1.1** added Windows support and the release workflow (RFC 012), **0.2.0** bounds long Git and
 CVS histories (RFC 010), **0.3.0** reaches SVN delta dumps, Mercurial's hashed store paths and CVS branch
-history (RFC 013), and **0.4.0** mutation-tests every untrusted parser and validates brygge against real
-public repositories of every source kind (RFC 014). All gates
+history (RFC 013), **0.4.0** mutation-tests every untrusted parser and validates brygge against real
+public repositories of every source kind (RFC 014), and **0.5.0** keeps a decode's content on disk and
+streams the artifact writer and reader, so peak memory tracks a history's metadata rather than its total
+content, and publishes `brygge`/`brygge-bin` to the AUR (RFC 015, RFC 016). All gates
 are green, and CI enforces them on the declared MSRV. The encode → prikk half waits on prikk's import
 foundations (see §8).
 
@@ -239,13 +241,32 @@ the team inherits the reasoning, not just the TODO. `ROADMAP.md` is authoritativ
 14. **Done:** the scheduled advisory check renamed **Advisory watch**, documented as brygge's only
     scheduled job — every other job is triggered (RFC 014 D-7).
 
+**0.5.0 — Scale at real size, and the AUR** (RFC 015 and RFC 016, done; handoffs in
+`rfcs/handoffs/015-scale-at-real-size/` and `rfcs/handoffs/016-arch-linux-packaging/`):
+15. **Done:** measured where a real decode's peak actually goes, phase by phase, on the real corpus (RFC
+    015 D-1).
+16. **Done:** a streaming artifact writer (`artifact::write_to`) — `brygge decode` no longer holds the
+    whole encoded artifact beside the decoded `Ir` (RFC 015 D-2).
+17. **Done:** a disk-backed content store (`ContentStore::spilling`, a `Storage` choice threaded through
+    every decoder's `decode_with_storage`) and `--spill-dir`; decoding keeps file content on disk, not in
+    memory. The CVS decoder's own extra content copy (review 074) was fixed alongside it (RFC 015 D-3).
+18. **Done:** a streaming artifact reader (`artifact::read_from`/`from_file`) — `verify` and `inspect`
+    read in one hashed pass, re-checking every blob read later against its content address, and
+    `verify --spill-dir` for `--against-source`'s re-decode (RFC 015 D-4).
+19. **Done:** Arch Linux packages, `brygge` (built from source) and `brygge-bin` (the release's attested
+    binary), rendered, built and checked in a pinned Arch container, and pushed to the AUR by
+    `release.yml` after each release (RFC 016).
+20. **Result:** fish-shell's (23,496 commits) `brygge decode` peak fell from about 18.7 GiB to about 410
+    MiB, and `brygge verify` from about 9.1 GiB to about 64 MiB; artifacts stayed byte-identical
+    throughout. Full measurements in `tools/bench/README.md`.
+
 **Deferred by explicit owner decision:**
-15. **A TUI:** deferred, *not* rejected (2026-09-12). If pursued, the standing architect recommendation is a
+21. **A TUI:** deferred, *not* rejected (2026-09-12). If pursued, the standing architect recommendation is a
     **separate `brygge-tui` crate over `brygge-ir`** (never in the decode binary), designed to make
     derived/dropped/refused *more* visible, not less. Draft an RFC first.
 
 **Track B — encode → prikk:**
-16. **RFC 008 (prikk encoder).** prikk decides its import design, and brygge informs it proactively
+22. **RFC 008 (prikk encoder).** prikk decides its import design, and brygge informs it proactively
     (ROADMAP Track B).
     - prikk ruled OQ-1…OQ-3 on 2026-09-13: the importer signs, and an adopted maintainer seals.
     - prikk ruled UD-4 on 2026-09-23. The importer is prikk's own import command.
@@ -266,7 +287,7 @@ the team inherits the reasoning, not just the TODO. `ROADMAP.md` is authoritativ
   streams: RFC 010 increments 2 and 4 are deferred by measurement.
 - **No progress reporting or cancellation.** Interrupting a decode is safe (the artifact write is atomic),
   but it produces nothing.
-- The threat model is the living document, revisited every release (v0.3 for 0.1.0, v0.4 for 0.1.1, v0.5 for 0.2.0, v0.6 for 0.3.0, v0.7 for 0.3.1, v0.8 for 0.4.0).
+- The threat model is the living document, revisited every release (v0.3 for 0.1.0, v0.4 for 0.1.1, v0.5 for 0.2.0, v0.6 for 0.3.0, v0.7 for 0.3.1, v0.8 for 0.4.0, v0.9 for 0.5.0).
 
 ---
 

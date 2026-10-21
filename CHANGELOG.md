@@ -8,11 +8,28 @@ Every handoff adds its own entry in its own commit.
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-10-21
+
+**Scale at real size: brygge now decodes and verifies large repositories in a fraction of the memory.**
+File content is kept on disk while decoding, and artifacts are written and read as a stream, so memory
+follows a repository's history rather than its content. For fish-shell (23,496 commits), `brygge decode`
+fell from about 18.7 GiB to about 410 MiB, and `brygge verify` from about 9.1 GiB to about 64 MiB.
+Artifacts are byte-identical to 0.4.0's. Decoding now needs free disk space of about the artifact's size,
+in the output's directory or in `--spill-dir`. **Also:** Arch Linux packages on the AUR, `brygge` (built
+from source) and `brygge-bin` (the release's binary), published by the release workflow. **Breaking, for
+the library only:** `brygge-ir`'s blob access is owned and fallible. Install with
+`cargo install --locked brygge`, from the AUR, or download a binary from the GitHub release.
+
+The detailed changes that made up 0.5.0 follow.
+
 ### Added
 
 - `brygge-ir`: `artifact::write_to`, a streaming artifact writer; `to_bytes` is built on it.
 - `brygge-ir`: `ContentStore::spilling`, a disk-backed content store for decoding at scale without
   holding every blob in memory at once (RFC 015 D-3).
+- `brygge-ir`: a `Storage` type (`Memory` or `Spill`), and each decoder's `decode_with_storage`, so a
+  caller chooses where a decode's content lives; `decode` stays the one-line, memory-backed shorthand.
+  The choice never changes the output, so it is never recorded in the IR or its provenance (RFC 015 D-3).
 - `brygge decode --spill-dir <DIR>`: where to keep file content on disk while decoding, instead of in
   memory. `decode` always spills; the default is the output artifact's own directory. The option never
   changes the artifact.
