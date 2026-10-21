@@ -18,6 +18,8 @@ Every handoff adds its own entry in its own commit.
   changes the artifact.
 - `brygge-ir`: `artifact::read_from`/`from_file`, a streaming artifact reader (RFC 015 D-4); `brygge
   verify --spill-dir <DIR>`, the same rule as `decode`'s own, for `--against-source`'s re-decode.
+- Arch Linux packages: `brygge` (built from source) and `brygge-bin` (the release's attested binary) on
+  the AUR, published by the release workflow after each release (RFC 016).
 
 ### Changed
 

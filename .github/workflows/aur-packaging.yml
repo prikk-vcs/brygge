@@ -1,0 +1,60 @@
+name: AUR packaging
+
+# RFC 016 D-3: the AUR templates and the renderer are checked only when they change, never on a schedule
+# (GOVERNANCE — triggered, never periodic). This renders a test version with fake, synthetic assets and
+# checksums (no real binary, no network beyond the render's own local fixture), then runs
+# `makepkg --printsrcinfo` and `namcap` on both PKGBUILDs in the same pinned container release.yml's
+# `aur` job uses. No package is built here and nothing is pushed anywhere — see tools/aur-in-container.sh
+# ("render-check" mode).
+
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - "packaging/aur/**"
+      - "tools/aur-render.sh"
+      - "tools/aur-in-container.sh"
+      - ".github/workflows/aur-packaging.yml"
+      - ".github/workflows/release.yml"
+  pull_request:
+    paths:
+      - "packaging/aur/**"
+      - "tools/aur-render.sh"
+      - "tools/aur-in-container.sh"
+      - ".github/workflows/aur-packaging.yml"
+      - ".github/workflows/release.yml"
+
+permissions:
+  contents: read
+
+env:
+  # Pinned by digest (RFC 016 D-2), not `archlinux:base-devel`: a tag can move, a digest cannot. Refreshed
+  # only by hand (fetched from the registry, cited in the review request); never by a scheduled job.
+  AUR_CONTAINER: "archlinux:base-devel@sha256:0ccc8b2e55c0c26a6e501e892cc6b1cdea7cfdf77e432941320148b4dabd2bff"
+
+jobs:
+  render-and-lint:
+    name: render · makepkg --printsrcinfo · namcap
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Render a test version (synthetic assets, no real binary)
+        run: |
+          set -euo pipefail
+          work=$(mktemp -d)
+          mkdir -p "$work/assets" "$work/src" "$work/out"
+          echo "fake x86_64 binary (CI per-change check, not a real release)" >"$work/assets/brygge-x86_64-unknown-linux-gnu.tar.gz"
+          echo "fake aarch64 binary (CI per-change check, not a real release)" >"$work/assets/brygge-aarch64-unknown-linux-gnu.tar.gz"
+          ( cd "$work/assets" && sha256sum brygge-x86_64-unknown-linux-gnu.tar.gz >brygge-x86_64-unknown-linux-gnu.tar.gz.sha256 )
+          ( cd "$work/assets" && sha256sum brygge-aarch64-unknown-linux-gnu.tar.gz >brygge-aarch64-unknown-linux-gnu.tar.gz.sha256 )
+          # A stand-in tag archive: this tree's own source, not a real GitHub tag (none exists at 9.9.9).
+          git archive --prefix=brygge-9.9.9/ -o "$work/src/9.9.9.tar.gz" HEAD
+          BRYGGE_TEST_TAG_ARCHIVE_BASE="file://$work/src" tools/aur-render.sh 9.9.9 "$work/assets" "$work/out"
+          echo "AUR_RENDER_OUT=$work/out" >>"$GITHUB_ENV"
+      - name: makepkg --printsrcinfo and namcap, in the pinned container (no build, no push)
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -v "$AUR_RENDER_OUT:/aur-out" \
+            -v "$PWD/tools/aur-in-container.sh:/aur-in-container.sh:ro" \
+            "$AUR_CONTAINER" bash /aur-in-container.sh render-check /aur-out

@@ -21,7 +21,8 @@ Do these once, before the first automated release. Each is reversible in the sam
      branch `main`; `main` is needed for re-runs dispatched from the Actions tab. This setting is part of
      the security design: a dispatch runs the release tools of the commit it was dispatched from, and this
      rule means that commit can only be `main` or a release tag.
-   - Add no secrets. The workflow needs none.
+   - Add no secrets of its own for this step — crates.io trusted publishing needs none. RFC 016 (below)
+     adds the workflow's first stored secret, the AUR SSH key, to this same environment.
 2. **Trust the workflow on crates.io.** For each of the six crates (`brygge-ir`, `brygge-decode-cvs`,
    `brygge-decode-git`, `brygge-decode-hg`, `brygge-decode-svn`, `brygge`): crates.io → the crate →
    *Settings → Trusted Publishing → Add* → GitHub, with:
@@ -34,6 +35,15 @@ Do these once, before the first automated release. Each is reversible in the sam
    stored anywhere.
 3. **Account safety:** two-factor authentication on the GitHub and crates.io accounts that hold these
    rights.
+4. **AUR** (RFC 016; `brygge` and `brygge-bin`, published by the `aur` job after each release):
+   1. Generate a key pair for this purpose only: `ssh-keygen -t ed25519 -C "brygge release workflow" -f aur_brygge`.
+   2. Add the **public** key (`aur_brygge.pub`) to the `nabbisen` AUR account: My Account → *SSH Public
+      Key*.
+   3. Add the **private** key (`aur_brygge`) as the secret **`AUR_SSH_PRIVATE_KEY`** in the GitHub
+      `release` environment (the same one crates.io trusted publishing uses).
+   4. Delete the local private key file afterwards — it lives only in the secret.
+   5. If the key is ever suspected leaked: remove it from the AUR account first, then replace the secret.
+      Its blast radius is every package the `nabbisen` AUR account maintains (RFC 016 OQ-1, RR-aur-key).
 
 ## Cutting a release
 
@@ -57,18 +67,29 @@ Do these once, before the first automated release. Each is reversible in the sam
    - publishes the crates that are not yet on crates.io, in dependency order;
    - installs `brygge` from crates.io and smoke-tests it;
    - checks the published crates are byte-identical to the tag;
-   - creates the GitHub release, with the binaries, their checksums and their provenance attestations.
-6. **The architect** checks the run, verifies the release page, and records the release.
+   - creates the GitHub release, with the binaries, their checksums and their provenance attestations;
+   - renders, builds and lints `brygge` and `brygge-bin` in a pinned Arch Linux container, verifying each
+     binary's attestation first, and pushes both to the AUR (RFC 016).
+6. **The architect** checks the run, verifies the release page and the AUR packages, and records the
+   release.
 
 **A failed attempt.** If the run fails *before* `publish to crates.io` (the tag was wrong, a gate
 failed), nothing was published. The architect may then delete the tag and re-create it on the fixed
 commit, with the owner's go-ahead (`git push --delete origin X.Y.Z`). Once any crate of a version is
 published, its tag is never moved or deleted (`GOVERNANCE.md`).
 
+**If only the `aur` job fails,** the crates and the GitHub release are already published and stay
+published: the run still fails (never a quiet green), but `outcome` reports it distinctly, as "released;
+AUR not updated". The architect re-runs `aur` alone: *Run workflow* with the same `tag` and `aur_only:
+true`, after fixing the cause. The same path, with a `pkgrel` input, is RFC 016 D-3's packaging-only fix
+(a PKGBUILD change with no new brygge release); `dry_run: true` stops before `git push`, to prove the job
+without touching the AUR.
+
 **Re-running.**
 - *Actions → Release → Run workflow* with the same `tag`. It is safe: crates already published are
   skipped.
-- It stops without changing anything if the GitHub release already exists.
+- It stops without changing anything if the GitHub release already exists (`aur_only` is the exception:
+  it never touches crates.io or the GitHub release, only the `aur` job).
 - A release of an older tag is never marked "Latest": only a version higher than every release already on
   GitHub is (`tools/release-latest.sh`).
 - The inputs `binaries: false` and `note` are for releases whose binaries cannot or should not be built;

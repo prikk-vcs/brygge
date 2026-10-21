@@ -42,23 +42,42 @@ on:
         type: string
         required: false
         default: ""
+      aur_only:
+        description: "RFC 016: run only the `aur` job, against an existing release. Dispatching is the architect's call (GOVERNANCE)."
+        type: boolean
+        required: false
+        default: false
+      pkgrel:
+        description: "RFC 016 D-3: with aur_only, a packaging-only fix's pkgrel (the brygge version is unchanged). Empty: pkgrel 1 (a normal release)."
+        type: string
+        required: false
+        default: ""
+      dry_run:
+        description: "RFC 016: stop the aur job before `git push`, so it can be proven without touching the AUR."
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
+
+env:
+  # The tag being released: the pushed tag, or the dispatch input. It reaches scripts only through here.
+  TAG: ${{ inputs.tag || github.ref_name }}
+  # RFC 016: aur_only skips every job but `aur`, against a release that already exists.
+  AUR_ONLY: ${{ github.event_name == 'workflow_dispatch' && inputs.aur_only == true }}
 
 # One run per tag at a time; a second is queued, never run beside the first.
 concurrency:
   group: release-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
-env:
-  # The tag being released: the pushed tag, or the dispatch input. It reaches scripts only through here.
-  TAG: ${{ inputs.tag || github.ref_name }}
-
 jobs:
   # ---- 1. verify: is this tag releasable? (no credential beyond a read-only token) --------------------
   verify:
     name: verify the tag
+    # RFC 016: skipped for an aur_only dispatch, which runs only the `aur` job against an existing release.
+    if: ${{ env.AUR_ONLY != 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -107,6 +126,9 @@ jobs:
   gates:
     name: gates
     needs: verify
+    # RFC 016: explicit, like build's below — a custom `if:` on a job replaces the default `success()`
+    # gate rather than adding to it, so aur_only must be checked here too, not assumed from verify's skip.
+    if: ${{ env.AUR_ONLY != 'true' }}
     permissions:
       contents: read
     uses: ./.github/workflows/ci.yml
@@ -119,7 +141,7 @@ jobs:
   build:
     name: build (${{ matrix.target }})
     needs: verify
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.binaries }}
+    if: ${{ env.AUR_ONLY != 'true' && (github.event_name != 'workflow_dispatch' || inputs.binaries) }}
     strategy:
       fail-fast: false
       matrix:
@@ -374,7 +396,120 @@ jobs:
           fi
           gh release create "$TAG" --verify-tag --latest="$LATEST" --title "$TAG" --notes-file "$RUNNER_TEMP/notes.md" "${files[@]}"
 
-  # ---- 7. outcome: the run is green only when the release was made ------------------------------------
+  # ---- 7. aur: brygge and brygge-bin on the AUR (RFC 016) -----------------------------------------------
+  # Runs after `github-release` (the normal path), or stands alone against an already-published release
+  # (the aur_only dispatch — RFC 016 D-3's packaging-only fix, or a retry after this job alone failed:
+  # "released; AUR not updated" below). The `release` environment is where the AUR SSH key lives
+  # (RFC 016 D-2/D-4); this is brygge's first stored secret (crates.io uses trusted publishing, no secret).
+  aur:
+    name: AUR packages
+    needs: github-release
+    if: ${{ !cancelled() && (env.AUR_ONLY == 'true' || needs.github-release.result == 'success') }}
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions:
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      # RFC 016 D-3: a packaging-only fix's pkgrel, via the aur_only dispatch. Empty on a normal release:
+      # tools/aur-render.sh then defaults to pkgrel 1.
+      AUR_PKGREL: ${{ inputs.pkgrel }}
+      DRY_RUN: ${{ inputs.dry_run == true }}
+      # Pinned by digest (RFC 016 D-2): fetched from the registry and cited in the review request;
+      # refreshed only by hand, matching .github/workflows/aur-packaging.yml's own pin.
+      AUR_CONTAINER: "archlinux:base-devel@sha256:0ccc8b2e55c0c26a6e501e892cc6b1cdea7cfdf77e432941320148b4dabd2bff"
+    steps:
+      - name: Check out the release tools and the AUR packaging files (this workflow's own commit)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: release-tools
+          sparse-checkout: |
+            tools
+            packaging
+          persist-credentials: false
+      - name: Download the release's Linux binaries and their checksums
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          gh release download "$TAG" --repo "$GH_REPO" --dir dist \
+            --pattern 'brygge-x86_64-unknown-linux-gnu.tar.gz*' \
+            --pattern 'brygge-aarch64-unknown-linux-gnu.tar.gz*'
+      # The AUR never carries a binary the release did not attest to (RFC 016 D-1): verified before
+      # rendering, let alone building or pushing anything.
+      - name: Verify each binary's attestation
+        run: |
+          set -euo pipefail
+          for f in dist/brygge-x86_64-unknown-linux-gnu.tar.gz dist/brygge-aarch64-unknown-linux-gnu.tar.gz; do
+            gh attestation verify "$f" --repo "$GH_REPO"
+          done
+      - name: Render both PKGBUILDs
+        working-directory: release-tools
+        run: ./tools/aur-render.sh "$TAG" "$GITHUB_WORKSPACE/dist" "$GITHUB_WORKSPACE/rendered"
+      # makepkg refuses to run as root; tools/aur-in-container.sh creates an unprivileged user inside the
+      # container itself (RFC 016: "makepkg refuses to run as root"). `build` mode installs each
+      # package's build dependencies, runs makepkg --cleanbuild (brygge's own check() runs), and namcap on
+      # the built package, for both packages. Nothing is pushed by this step.
+      - name: Build each package and lint it with namcap, in the pinned container
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE/rendered:/aur-out" \
+            -v "$GITHUB_WORKSPACE/release-tools/tools/aur-in-container.sh:/aur-in-container.sh:ro" \
+            "$AUR_CONTAINER" bash /aur-in-container.sh build /aur-out
+      - name: Write the AUR SSH key
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          umask 177
+          key="$RUNNER_TEMP/aur_ssh_key"
+          printf '%s\n' "$AUR_SSH_PRIVATE_KEY" >"$key"
+          echo "AUR_SSH_KEY_PATH=$key" >>"$GITHUB_ENV"
+      # The AUR host key is pinned (release-tools/packaging/aur/known_hosts: Arch's own infrastructure
+      # repository, cited in the review request) — never ssh-keyscan at run time, never
+      # StrictHostKeyChecking=no. Only if both packages built and passed namcap above (the job already
+      # stopped before this step otherwise) are they pushed — as one commit each, "Update to X.Y.Z"
+      # (or RFC 016 D-3's "Packaging fix, X.Y.Z-N" when AUR_PKGREL is set). dry_run stops before the push,
+      # so the mechanism can be proven without touching the AUR (RFC 016's own proof requirement).
+      - name: Push the rendered packages to the AUR
+        env:
+          GIT_SSH_COMMAND: "ssh -i ${{ env.AUR_SSH_KEY_PATH }} -o IdentitiesOnly=yes -o UserKnownHostsFile=${{ github.workspace }}/release-tools/packaging/aur/known_hosts -o StrictHostKeyChecking=yes"
+        run: |
+          set -euo pipefail
+          if [ -n "$AUR_PKGREL" ]; then
+            commit_msg="Packaging fix, $TAG-$AUR_PKGREL"
+          else
+            commit_msg="Update to $TAG"
+          fi
+          work=$(mktemp -d)
+          for pkg in brygge brygge-bin; do
+            git clone "ssh://aur@aur.archlinux.org/$pkg.git" "$work/$pkg"
+            cp "rendered/$pkg/PKGBUILD" "rendered/$pkg/.SRCINFO" "$work/$pkg/"
+            (
+              cd "$work/$pkg"
+              export GIT_AUTHOR_NAME="brygge release workflow" GIT_AUTHOR_EMAIL="noreply@users.noreply.github.com"
+              export GIT_COMMITTER_NAME="$GIT_AUTHOR_NAME" GIT_COMMITTER_EMAIL="$GIT_AUTHOR_EMAIL"
+              git add PKGBUILD .SRCINFO
+              if git diff --cached --quiet; then
+                echo "$pkg: no change; nothing to push"
+                exit 0
+              fi
+              git commit -q -m "$commit_msg"
+              if [ "$DRY_RUN" = true ]; then
+                echo "$pkg: dry run; would push now: $commit_msg"
+              else
+                git push
+                echo "$pkg: pushed: $commit_msg"
+              fi
+            )
+          done
+      - name: Remove the AUR SSH key
+        if: always()
+        run: rm -f "$AUR_SSH_KEY_PATH"
+
+  # ---- 8. outcome: the run is green only when the release was made ------------------------------------
   # A skipped job is not a failure, so without this a run in which nothing was released could end green. This
   # job runs whatever happened before it, and fails the run unless every job did what it was for: the
   # verification, the gates, the publication, the check of what was published and the GitHub release all
@@ -382,7 +517,7 @@ jobs:
   # through `env:` and needs no checkout.
   outcome:
     name: outcome
-    needs: [verify, gates, build, publish-crates, verify-published, github-release]
+    needs: [verify, gates, build, publish-crates, verify-published, github-release, aur]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     permissions:
@@ -394,7 +529,12 @@ jobs:
       RESULT_PUBLISH: ${{ needs.publish-crates.result }}
       RESULT_VERIFY_PUBLISHED: ${{ needs.verify-published.result }}
       RESULT_RELEASE: ${{ needs.github-release.result }}
+      RESULT_AUR: ${{ needs.aur.result }}
     steps:
+      # RFC 016: an aur_only dispatch runs nothing but `aur` (every other job above is 'skipped' by
+      # design, not a failure) — judged on `aur` alone. Otherwise, a release with AUR failure is "released;
+      # AUR not updated": still a failed run (never quietly green), but a distinct message from "nothing
+      # was released", since the crates and the GitHub release really did publish.
       - name: The release was made, or the run fails
         run: |
           echo "verify the tag:                  $RESULT_VERIFY"
@@ -403,6 +543,17 @@ jobs:
           echo "publish to crates.io:            $RESULT_PUBLISH"
           echo "verify what was published:       $RESULT_VERIFY_PUBLISHED"
           echo "GitHub release:                  $RESULT_RELEASE"
+          echo "AUR packages:                    $RESULT_AUR"
+
+          if [ "$AUR_ONLY" = true ]; then
+            if [ "$RESULT_AUR" = success ]; then
+              echo "the AUR packages were updated (aur_only)"
+              exit 0
+            fi
+            echo "::error::the AUR packages were not updated"
+            exit 1
+          fi
+
           ok=true
           for r in "$RESULT_VERIFY" "$RESULT_GATES" "$RESULT_PUBLISH" "$RESULT_VERIFY_PUBLISHED" "$RESULT_RELEASE"; do
             [ "$r" = success ] || ok=false
@@ -414,4 +565,8 @@ jobs:
             echo "::error::the release was not made: at least one job did not do its work (see the results above)"
             exit 1
           fi
-          echo "the release was made"
+          if [ "$RESULT_AUR" != success ]; then
+            echo "::error::released; AUR not updated"
+            exit 1
+          fi
+          echo "the release was made, and the AUR packages were updated"
