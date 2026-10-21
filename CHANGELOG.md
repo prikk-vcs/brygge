@@ -29,8 +29,11 @@ Every handoff adds its own entry in its own commit.
   CVS no longer holds every revision's content through changeset reconstruction (`cvs-revs`: 3.3× →
   about 1.3× content). Artifacts are byte-identical.
 - **`brygge verify` and `inspect` read an artifact in one streaming pass, holding only the metadata and
-  an index, instead of loading the whole artifact and a second copy of every blob into memory.** Every
-  blob read later is re-checked against its content address. The verdicts are unchanged.
+  an index, instead of loading the whole artifact and a second copy of every blob into memory
+  (fish-shell `verify`/`inspect`: about 9.1 GiB → about 64 MiB; `verify --against-source`: about 14.0
+  GiB → about 472 MiB; TortoiseHg: about 3.3 GiB → about 45 MiB, about 5.1 GiB → about 201 MiB
+  against-source).** Every blob read later is re-checked against its content address. The verdicts are
+  unchanged.
 
 ### Breaking
 
