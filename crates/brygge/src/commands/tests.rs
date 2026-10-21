@@ -38,6 +38,15 @@ impl Drop for TempRepo {
 
 impl TempRepo {
     fn new() -> Self {
+        let r = Self::new_plain();
+        r.git(&["init", "-q", "--initial-branch=main"]);
+        r
+    }
+
+    /// A fresh temporary directory with no `git init` — for sources (CVS: a plain directory of `,v`
+    /// files) that have no real dependency on git, so their tests run with no `git` on `PATH` (review
+    /// 082 F-4).
+    fn new_plain() -> Self {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -48,9 +57,7 @@ impl TempRepo {
             std::process::id()
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        let r = Self { dir };
-        r.git(&["init", "-q", "--initial-branch=main"]);
-        r
+        Self { dir }
     }
 
     fn path(&self) -> &Path {
@@ -2016,7 +2023,8 @@ desc\n@@\n\n\n\
 }
 
 fn cvs_repo() -> TempRepo {
-    TempRepo::new()
+    // A CVS fixture is a plain directory of `,v` files — no `git init` needed (review 082 F-4).
+    TempRepo::new_plain()
 }
 
 fn write_vfile(repo: &TempRepo, rel: &str, bytes: &[u8]) {

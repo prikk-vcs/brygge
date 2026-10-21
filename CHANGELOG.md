@@ -60,6 +60,11 @@ are refused, and `brygge … | head` no longer panics. **To note:** a large repo
 about 2–4× its content (fish-shell, 23,496 commits: about 9.6 GiB). Reducing that is the next release's
 theme. Install with `cargo install --locked brygge`, or download a binary from the GitHub release.
 
+**Correction (2026-10-21):** the memory figure above understated a full decode. The 9.6 GiB was the decoding
+step alone. The `brygge decode` that users run, which also writes the artifact, peaked at about **18.7 GiB**
+for fish-shell, about 4× its content. Work for the next release reduces this (RFC 015, measured in
+`tools/bench/README.md`).
+
 The detailed changes that made up 0.4.0 follow.
 
 ### Added

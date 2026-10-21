@@ -1,4 +1,4 @@
-# Maintainer: nabbisen <nabbisen@reflerd.com>
+# Maintainer: nabbisen <19984221+nabbisen@users.noreply.github.com>
 #
 # Rendered from this template by tools/aur-render.sh (RFC 016 D-1): edit the template, not a rendered
 # PKGBUILD. Only the version, pkgrel and the source checksum below are filled in; everything else is the
@@ -19,6 +19,13 @@ license=('Apache-2.0')
 # (the Arch Wiki's own note); stating them here is the fix, not a justified exception.
 depends=('glibc' 'gcc-libs')
 makedepends=('cargo')
+# Review 082 F-5: check() runs the full workspace suite, which genuinely spawns these real tools (not a
+# false dependency, each one builds and inspects a real repository of its own kind in a decoder's own
+# tests) — git (brygge-decode-git's suite, and brygge's own CLI integration tests), mercurial
+# (brygge-decode-hg's suite), subversion (brygge-decode-svn's suite: svnadmin/svnlook/svnmucc/svnrdump/svn,
+# all in this one package), cvs (brygge-decode-cvs's own fixture builder). The CI container installs
+# exactly this list, read from .SRCINFO, so it builds the way a real AUR user's makepkg does.
+checkdepends=('git' 'mercurial' 'subversion' 'cvs')
 optdepends=('subversion: decode a local SVN repository (dump files need nothing)')
 source=("$pkgname-$pkgver.tar.gz::https://github.com/prikk-vcs/brygge/archive/refs/tags/$pkgver.tar.gz")
 sha256sums=('@SHA256_SRC@')

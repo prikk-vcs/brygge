@@ -486,7 +486,7 @@ jobs:
             cp "rendered/$pkg/PKGBUILD" "rendered/$pkg/.SRCINFO" "$work/$pkg/"
             (
               cd "$work/$pkg"
-              export GIT_AUTHOR_NAME="brygge release workflow" GIT_AUTHOR_EMAIL="noreply@users.noreply.github.com"
+              export GIT_AUTHOR_NAME="nabbisen" GIT_AUTHOR_EMAIL="19984221+nabbisen@users.noreply.github.com"
               export GIT_COMMITTER_NAME="$GIT_AUTHOR_NAME" GIT_COMMITTER_EMAIL="$GIT_AUTHOR_EMAIL"
               git add PKGBUILD .SRCINFO
               if git diff --cached --quiet; then
