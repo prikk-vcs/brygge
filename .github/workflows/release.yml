@@ -462,7 +462,45 @@ jobs:
             -v "$GITHUB_WORKSPACE/rendered:/aur-out" \
             -v "$GITHUB_WORKSPACE/release-tools/tools/aur-in-container.sh:/aur-in-container.sh:ro" \
             "$AUR_CONTAINER" bash /aur-in-container.sh build /aur-out
+      # Review 080 F-1: cloned anonymously over HTTPS (the AUR serves this read-only, no credential), with
+      # the push URL switched to SSH only for the later push step — so a dry run proves this step, the
+      # build and the lint above with no secret involved at all, and can run before AUR_SSH_PRIVATE_KEY
+      # even exists. Each package's commit ("Update to X.Y.Z", or RFC 016 D-3's "Packaging fix,
+      # X.Y.Z-N" when AUR_PKGREL is set) is made here too; a marker file records whether there was a
+      # change to push, read by the push/dry-run steps below.
+      - name: Clone the AUR repositories (HTTPS, anonymous) and prepare each commit
+        run: |
+          set -euo pipefail
+          if [ -n "$AUR_PKGREL" ]; then
+            commit_msg="Packaging fix, $TAG-$AUR_PKGREL"
+          else
+            commit_msg="Update to $TAG"
+          fi
+          echo "AUR_COMMIT_MSG=$commit_msg" >>"$GITHUB_ENV"
+          work="$RUNNER_TEMP/aur-repos"
+          mkdir -p "$work"
+          echo "AUR_WORK=$work" >>"$GITHUB_ENV"
+          for pkg in brygge brygge-bin; do
+            git clone "https://aur.archlinux.org/$pkg.git" "$work/$pkg"
+            git -C "$work/$pkg" remote set-url --push origin "ssh://aur@aur.archlinux.org/$pkg.git"
+            cp "rendered/$pkg/PKGBUILD" "rendered/$pkg/.SRCINFO" "$work/$pkg/"
+            (
+              cd "$work/$pkg"
+              export GIT_AUTHOR_NAME="brygge release workflow" GIT_AUTHOR_EMAIL="noreply@users.noreply.github.com"
+              export GIT_COMMITTER_NAME="$GIT_AUTHOR_NAME" GIT_COMMITTER_EMAIL="$GIT_AUTHOR_EMAIL"
+              git add PKGBUILD .SRCINFO
+              if git diff --cached --quiet; then
+                echo "$pkg: no change; nothing to push"
+              else
+                git commit -q -m "$commit_msg"
+                touch "$work/$pkg.pushable"
+                echo "$pkg: committed: $commit_msg"
+              fi
+            )
+          done
+      # Only now, and only for a real (non-dry) run, does the secret exist on disk at all.
       - name: Write the AUR SSH key
+        if: ${{ env.DRY_RUN != 'true' }}
         env:
           AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
         run: |
@@ -473,41 +511,26 @@ jobs:
           echo "AUR_SSH_KEY_PATH=$key" >>"$GITHUB_ENV"
       # The AUR host key is pinned (release-tools/packaging/aur/known_hosts: Arch's own infrastructure
       # repository, cited in the review request) — never ssh-keyscan at run time, never
-      # StrictHostKeyChecking=no. Only if both packages built and passed namcap above (the job already
-      # stopped before this step otherwise) are they pushed — as one commit each, "Update to X.Y.Z"
-      # (or RFC 016 D-3's "Packaging fix, X.Y.Z-N" when AUR_PKGREL is set). dry_run stops before the push,
-      # so the mechanism can be proven without touching the AUR (RFC 016's own proof requirement).
+      # StrictHostKeyChecking=no.
       - name: Push the rendered packages to the AUR
+        if: ${{ env.DRY_RUN != 'true' }}
         env:
           GIT_SSH_COMMAND: "ssh -i ${{ env.AUR_SSH_KEY_PATH }} -o IdentitiesOnly=yes -o UserKnownHostsFile=${{ github.workspace }}/release-tools/packaging/aur/known_hosts -o StrictHostKeyChecking=yes"
         run: |
           set -euo pipefail
-          if [ -n "$AUR_PKGREL" ]; then
-            commit_msg="Packaging fix, $TAG-$AUR_PKGREL"
-          else
-            commit_msg="Update to $TAG"
-          fi
-          work=$(mktemp -d)
           for pkg in brygge brygge-bin; do
-            git clone "ssh://aur@aur.archlinux.org/$pkg.git" "$work/$pkg"
-            cp "rendered/$pkg/PKGBUILD" "rendered/$pkg/.SRCINFO" "$work/$pkg/"
-            (
-              cd "$work/$pkg"
-              export GIT_AUTHOR_NAME="brygge release workflow" GIT_AUTHOR_EMAIL="noreply@users.noreply.github.com"
-              export GIT_COMMITTER_NAME="$GIT_AUTHOR_NAME" GIT_COMMITTER_EMAIL="$GIT_AUTHOR_EMAIL"
-              git add PKGBUILD .SRCINFO
-              if git diff --cached --quiet; then
-                echo "$pkg: no change; nothing to push"
-                exit 0
-              fi
-              git commit -q -m "$commit_msg"
-              if [ "$DRY_RUN" = true ]; then
-                echo "$pkg: dry run; would push now: $commit_msg"
-              else
-                git push
-                echo "$pkg: pushed: $commit_msg"
-              fi
-            )
+            if [ -f "$AUR_WORK/$pkg.pushable" ]; then
+              git -C "$AUR_WORK/$pkg" push
+              echo "$pkg: pushed: $AUR_COMMIT_MSG"
+            fi
+          done
+      - name: Log the dry run (nothing above pushed anything)
+        if: ${{ env.DRY_RUN == 'true' }}
+        run: |
+          for pkg in brygge brygge-bin; do
+            if [ -f "$AUR_WORK/$pkg.pushable" ]; then
+              echo "$pkg: dry run; would push now: $AUR_COMMIT_MSG"
+            fi
           done
       - name: Remove the AUR SSH key
         if: always()
