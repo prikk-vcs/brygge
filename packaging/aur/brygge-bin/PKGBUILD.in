@@ -18,6 +18,17 @@ license=('Apache-2.0')
 # namcap: a prebuilt binary's glibc/libgcc linkage is an error here (no makedepends implies it, unlike
 # the source package) unless stated explicitly.
 depends=('glibc' 'gcc-libs')
+# Review 084 D-2: this binary is the release's own attested file (gh attestation verify, in release.yml's
+# `aur` job, before this is ever rendered) — makepkg's default strip/debug options would split debug data
+# out of it and rewrite it, so the installed /usr/bin/brygge would no longer be the exact bytes that were
+# verified. There is nothing to usefully split from a prebuilt release binary anyway. `brygge` (the other
+# package here, built from source) keeps makepkg's normal stripping and debug package, which is correct
+# for a from-source build — see its own template's namcap note on brygge-debug, which this package no
+# longer produces at all, so there's nothing here to flag.
+# namcap flags "ELF file (usr/bin/brygge) is unstripped" as a direct, expected consequence of !strip — a
+# justified exception (not a bug), the same way the glibc/libgcc note above is: the binary must stay the
+# exact attested bytes, never rewritten by a build step.
+options=('!strip' '!debug')
 provides=('brygge')
 conflicts=('brygge')
 # $CARCH, not a literal "x86_64"/"aarch64" (namcap), matches both this array's own arch and the Linux

@@ -27,6 +27,12 @@ makedepends=('cargo')
 # exactly this list, read from .SRCINFO, so it builds the way a real AUR user's makepkg does.
 checkdepends=('git' 'mercurial' 'subversion' 'cvs')
 optdepends=('subversion: decode a local SVN repository (dump files need nothing)')
+# namcap, on the built brygge-debug package alone, flags its build-id symlink
+# (usr/lib/debug/.build-id/…) as pointing to a non-existing ../../../../bin/brygge: the target is real,
+# it just lives in the main brygge package, which namcap does not see when it inspects brygge-debug in
+# isolation. Justified exception, not a bug (review 082/request 054). This package keeps makepkg's normal
+# strip/debug options, unlike brygge-bin (review 084 D-2): a from-source build's own debug data is useful
+# to split out, where a prebuilt release binary's isn't.
 source=("$pkgname-$pkgver.tar.gz::https://github.com/prikk-vcs/brygge/archive/refs/tags/$pkgver.tar.gz")
 sha256sums=('@SHA256_SRC@')
 

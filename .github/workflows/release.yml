@@ -66,6 +66,9 @@ env:
   TAG: ${{ inputs.tag || github.ref_name }}
   # RFC 016: aur_only skips every job but `aur`, against a release that already exists.
   AUR_ONLY: ${{ github.event_name == 'workflow_dispatch' && inputs.aur_only == true }}
+  # RFC 016 review 084 D-1: `outcome` reads this directly (global env, unlike the job-level `if:` that
+  # cannot read `env` — see verify's own note below) so it never claims a dry run pushed anything.
+  DRY_RUN: ${{ inputs.dry_run == true }}
 
 # One run per tag at a time; a second is queued, never run beside the first.
 concurrency:
@@ -419,7 +422,6 @@ jobs:
       # RFC 016 D-3: a packaging-only fix's pkgrel, via the aur_only dispatch. Empty on a normal release:
       # tools/aur-render.sh then defaults to pkgrel 1.
       AUR_PKGREL: ${{ inputs.pkgrel }}
-      DRY_RUN: ${{ inputs.dry_run == true }}
       # Pinned by digest (RFC 016 D-2): fetched from the registry and cited in the review request;
       # refreshed only by hand, matching .github/workflows/aur-packaging.yml's own pin.
       AUR_CONTAINER: "archlinux:base-devel@sha256:0ccc8b2e55c0c26a6e501e892cc6b1cdea7cfdf77e432941320148b4dabd2bff"
@@ -454,14 +456,17 @@ jobs:
       # makepkg refuses to run as root; tools/aur-in-container.sh creates an unprivileged user inside the
       # container itself (RFC 016: "makepkg refuses to run as root"). `build` mode installs each
       # package's build dependencies, runs makepkg --cleanbuild (brygge's own check() runs), and namcap on
-      # the built package, for both packages. Nothing is pushed by this step.
+      # the built package, for both packages. For brygge-bin, it also checks the installed binary against
+      # the attested release tarball byte for byte (review 084 D-2) — `dist` (verified above) is mounted
+      # read-only so the script can compare against it. Nothing is pushed by this step.
       - name: Build each package and lint it with namcap, in the pinned container
         run: |
           set -euo pipefail
           docker run --rm \
             -v "$GITHUB_WORKSPACE/rendered:/aur-out" \
+            -v "$GITHUB_WORKSPACE/dist:/aur-dist:ro" \
             -v "$GITHUB_WORKSPACE/release-tools/tools/aur-in-container.sh:/aur-in-container.sh:ro" \
-            "$AUR_CONTAINER" bash /aur-in-container.sh build /aur-out
+            "$AUR_CONTAINER" bash /aur-in-container.sh build /aur-out /aur-dist
       # Review 080 F-1: cloned anonymously over HTTPS (the AUR serves this read-only, no credential), with
       # the push URL switched to SSH only for the later push step — so a dry run proves this step, the
       # build and the lint above with no secret involved at all, and can run before AUR_SSH_PRIVATE_KEY
@@ -574,7 +579,11 @@ jobs:
 
           if [ "$AUR_ONLY" = true ]; then
             if [ "$RESULT_AUR" = success ]; then
-              echo "the AUR packages were updated (aur_only)"
+              if [ "$DRY_RUN" = true ]; then
+                echo "dry run: the AUR packages were built and checked; nothing was pushed"
+              else
+                echo "the AUR packages were updated (aur_only)"
+              fi
               exit 0
             fi
             echo "::error::the AUR packages were not updated"
@@ -596,4 +605,8 @@ jobs:
             echo "::error::released; AUR not updated"
             exit 1
           fi
-          echo "the release was made, and the AUR packages were updated"
+          if [ "$DRY_RUN" = true ]; then
+            echo "the release was made; dry run: the AUR packages were built and checked; nothing was pushed"
+          else
+            echo "the release was made, and the AUR packages were updated"
+          fi
