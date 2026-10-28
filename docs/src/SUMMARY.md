@@ -13,6 +13,7 @@
 
 - [IR artifact format (contract 0.2.0)](reference/ir-artifact-format.md)
 - [Machine-readable output](reference/machine-output.md)
+- [Writing an encoder](reference/writing-an-encoder.md)
 
 # Design
 

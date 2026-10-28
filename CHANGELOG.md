@@ -8,6 +8,14 @@ Every handoff adds its own entry in its own commit.
 
 ## [Unreleased]
 
+**Breaking:** `brygge-ir`: `artifact::Decoded` gains `digest`, the artifact digest the reader verified.
+
+**Added:**
+- An encoder author's guide (`docs/src/reference/writing-an-encoder.md`): how to build an encoder for
+  any target on the IR alone, and the honesty rules it must keep (RFC 017).
+- `examples/encode-git`: an unsupported example encoder from the IR to Git, through `git fast-import`. It
+  is not part of brygge, and is never released (RFC 017).
+
 ## [0.5.0] — 2026-10-21
 
 **Scale at real size: brygge now decodes and verifies large repositories in a fraction of the memory.**

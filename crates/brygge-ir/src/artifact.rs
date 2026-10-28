@@ -38,6 +38,10 @@ pub struct Decoded {
     pub ir: Ir,
     /// How many non-critical fields with an id this build does not recognize were skipped.
     pub skipped_non_critical_fields: u64,
+    /// The artifact's own integrity digest, as checked by the reader (RFC 017 D-2). Not re-read from a
+    /// fixed file offset — that would bypass the reader's own verification — but the exact digest the
+    /// reader already computed and compared against the stored one before returning.
+    pub digest: [u8; 32],
 }
 
 /// Serialize `ir` to a self-contained artifact (contract [`version::CURRENT`]), streaming the blob
@@ -228,6 +232,7 @@ pub fn from_bytes(bytes: &[u8]) -> Result<Decoded> {
         ir,
         skipped_non_critical_fields: mr.skipped_non_critical_fields()
             + r.skipped_non_critical_fields(),
+        digest: stored_digest,
     })
 }
 
@@ -297,6 +302,7 @@ pub fn read_from<R: Read + Seek + std::fmt::Debug + 'static>(mut r: R) -> Result
             Ok(Decoded {
                 ir: body.ir,
                 skipped_non_critical_fields: body.skipped,
+                digest: stored_digest,
             })
         }
         // Parsed cleanly, but bytes remain after the last blob: the same digest-first precedence as a

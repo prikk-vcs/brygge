@@ -175,6 +175,24 @@ fn write_to_equals_to_bytes_and_from_bytes_accepts_it() {
     }
 }
 
+/// RFC 017 D-2: [`Decoded::digest`] is the digest the reader actually checked, not a value read back
+/// from a fixed offset (which would bypass the reader's own verification) — proved by comparing it
+/// against the bytes stored at the artifact's own digest offset, located independently via
+/// [`locate_sections`]. `from_bytes` and `read_from` must agree.
+#[test]
+fn decoded_digest_equals_the_digest_stored_at_the_artifacts_header() {
+    let ir = build_rich();
+    let bytes = to_bytes(&ir);
+    let (digest_start, meta_start, _) = locate_sections(&bytes);
+    let stored: [u8; 32] = bytes[digest_start..meta_start].try_into().unwrap();
+
+    let via_from_bytes = from_bytes(&bytes).unwrap();
+    assert_eq!(via_from_bytes.digest, stored);
+
+    let via_read_from = read_from(std::io::Cursor::new(bytes)).unwrap();
+    assert_eq!(via_read_from.digest, stored);
+}
+
 /// RFC 015 D-4: [`read_from`] over an in-memory `Cursor` must agree with [`from_bytes`] on every
 /// artifact `write_to` can produce — the same bytes, the same `Ir`, whichever reader is used.
 #[test]

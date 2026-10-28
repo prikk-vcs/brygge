@@ -1,0 +1,35 @@
+[package]
+name        = "brygge-encode-git-example"
+description = "An unsupported example encoder from brygge's IR to Git, through a `git fast-import` stream. It is not part of brygge, is never released, and exists only to show that an encoder can be built on brygge-ir alone (RFC 017 D-1/D-2, PU-3)."
+publish     = false
+
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+authors.workspace      = true
+repository.workspace   = true
+
+[[bin]]
+name = "brygge-encode-git-example"
+path = "src/main.rs"
+
+[lib]
+name = "brygge_encode_git_example"
+path = "src/lib.rs"
+
+[dependencies]
+# The isolation proof (PU-3, RFC 017 D-1/D-2): an encoder built on the IR alone, no decoder, no Git
+# library, no third-party crate at all.
+brygge-ir = { workspace = true }
+
+[dev-dependencies]
+# Test-only, to build fixture artifacts to round-trip (path-only — this crate is `publish = false`
+# itself, and none of these are published through it; see `tools/check-release-dev-deps.sh`).
+brygge-decode-git = { workspace = true }
+brygge-decode-hg  = { workspace = true }
+brygge-decode-svn = { workspace = true }
+brygge-decode-cvs = { workspace = true }
+
+[lints]
+workspace = true

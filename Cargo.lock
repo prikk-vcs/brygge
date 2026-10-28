@@ -122,6 +122,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "brygge-encode-git-example"
+version = "0.5.0"
+dependencies = [
+ "brygge-decode-cvs",
+ "brygge-decode-git",
+ "brygge-decode-hg",
+ "brygge-decode-svn",
+ "brygge-ir",
+]
+
+[[package]]
 name = "brygge-ir"
 version = "0.5.0"
 dependencies = [
