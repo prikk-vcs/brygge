@@ -70,6 +70,17 @@ it. An encoder's job is to carry that distinction into the target, not to flatte
   it invented (for example `committer, commit-time-zone`), and never writes that trailer when nothing was
   supplied.
 
+- **Mark a value you had to *change*, even when the IR did carry it — distinctly from one you
+  invented.** A target's own syntax can force a change on a value the IR stated in full: Git's
+  line-oriented identity syntax cannot carry a literal newline, an angle bracket, a NUL, or non-UTF-8
+  bytes, so `examples/encode-git` folds, strips, or replaces them to write the line at all. That is not
+  invention — the IR carried a real value — but it is not exactly what the source said either, so it gets
+  its own trailer, `Encoded-altered: <field> (<why>)`, never folded into `Encoded-supplied:`:
+
+  ```text
+  Encoded-altered: author-name (not UTF-8, replaced), author-email (newline folded)
+  ```
+
 - **Report the loss boundary and flags.** `ir.loss.dropped` names every class of thing the decoder
   explicitly chose not to carry, and why; `ir.flags` names conditions that need the user's attention
   (a convention violation, a confidence floor). `brygge_ir::summary` turns both, plus the derived counts,

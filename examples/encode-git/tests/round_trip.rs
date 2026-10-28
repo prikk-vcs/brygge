@@ -532,6 +532,154 @@ fn a_cvs_fixture_encodes_and_fast_imports_with_derived_trailers() {
     fast_import(&stream);
 }
 
+// ---- review 091 F-1/F-3: `Encoded-altered`, and a declared message encoding (hand-built IRs, no
+// decoder needed — these exercise `encode()` directly against values no real source fixture
+// conveniently produces) -------------------------------------------------------------------------------
+
+/// A one-atom, one-ref `Ir`, built directly with `IrBuilder` (not through a decoder), so the author
+/// identity and message can be set to exactly what a test needs.
+fn minimal_ir(author: brygge_ir::Identity, message: brygge_ir::Text) -> brygge_ir::Ir {
+    use brygge_ir::{
+        AtomDraft, EpistemicStatus, ImportProvenance, IrBuilder, MetadataClaims, PathOp, RefKind,
+        RefRecord, SourceIdentity, SourceKind, Time,
+    };
+
+    let source = |atom_id: &[u8]| SourceIdentity {
+        kind: SourceKind::Git,
+        repo_id: Vec::new(),
+        atom_id: atom_id.to_vec(),
+        signatures: Vec::new(),
+        extras: Vec::new(),
+    };
+    let provenance = ImportProvenance {
+        source: source(b"repo"),
+        brygge_version: "0.0.0".to_string(),
+        decoder: "test".to_string(),
+        decoder_version: "0.0.0".to_string(),
+        params: std::collections::BTreeMap::new(),
+    };
+    let mut builder = IrBuilder::new(provenance);
+    let blob = builder.add_blob(b"hello\n".to_vec()).unwrap();
+    let atom_id = builder
+        .add_atom(AtomDraft {
+            parents: Vec::new(),
+            ops: vec![PathOp::Add {
+                path: "readme.txt".to_string(),
+                blob,
+                mode: 0o100_644,
+                status: EpistemicStatus::Stated,
+            }],
+            copies: Vec::new(),
+            metadata: MetadataClaims {
+                author: Some(author),
+                author_time: Some(Time {
+                    seconds: 1_700_000_000,
+                    offset_minutes: Some(0),
+                }),
+                committer: None,
+                commit_time: None,
+                message: Some(message),
+            },
+            source: source(b"r1"),
+            status: EpistemicStatus::Stated,
+        })
+        .unwrap();
+    builder
+        .add_ref(RefRecord {
+            name: "main".to_string(),
+            kind: RefKind::Branch,
+            target: atom_id,
+            status: EpistemicStatus::Stated,
+            source: None,
+            annotation: None,
+        })
+        .unwrap();
+    builder.finish().unwrap()
+}
+
+#[test]
+fn an_altered_identity_gets_its_own_trailer_and_fast_import_accepts_it() {
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let author = brygge_ir::Identity {
+        name: brygge_ir::Text {
+            bytes: vec![0xff, 0xfe], // not UTF-8
+            encoding: None,
+        },
+        email: Some(brygge_ir::Text::utf8("a<b>@example.com")), // angle brackets
+    };
+    let ir = minimal_ir(author, brygge_ir::Text::utf8("a message"));
+    let artifact = write_artifact(&ir);
+    let stream = scratch_dir("altered-stream").join("stream.txt");
+    let encoded = run_encoder(&artifact, &stream);
+    assert!(
+        encoded.status.success(),
+        "encoder failed: {}",
+        String::from_utf8_lossy(&encoded.stderr)
+    );
+    let text = std::fs::read_to_string(&stream).unwrap();
+    assert!(
+        text.contains("Encoded-altered: author-name (not UTF-8, replaced), author-email (angle bracket removed)"),
+        "{text}"
+    );
+    assert!(text.contains("author unknown <ab@example.com>"), "{text}");
+
+    let target = fast_import(&stream);
+    let author_line = target.git(&["log", "-1", "--format=%an <%ae>", "main"]);
+    assert_eq!(author_line, "unknown <ab@example.com>");
+}
+
+#[test]
+fn a_declared_message_encoding_is_written_and_preserved_byte_for_byte() {
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    // "café" in ISO-8859-1/latin-1: 0xe9 is not valid UTF-8 on its own.
+    let message_bytes = b"caf\xe9 test\n".to_vec();
+    let message = brygge_ir::Text {
+        bytes: message_bytes.clone(),
+        encoding: Some("ISO-8859-1".to_string()),
+    };
+    let author = brygge_ir::Identity {
+        name: brygge_ir::Text::utf8("A U Thor"),
+        email: Some(brygge_ir::Text::utf8("a@example.com")),
+    };
+    let ir = minimal_ir(author, message);
+    let artifact = write_artifact(&ir);
+    let stream = scratch_dir("encoding-stream").join("stream.txt");
+    let encoded = run_encoder(&artifact, &stream);
+    assert!(
+        encoded.status.success(),
+        "encoder failed: {}",
+        String::from_utf8_lossy(&encoded.stderr)
+    );
+    let stream_bytes = std::fs::read(&stream).unwrap();
+    let text = String::from_utf8_lossy(&stream_bytes);
+    assert!(text.contains("encoding ISO-8859-1\n"), "{text}");
+
+    let target = fast_import(&stream);
+    let raw = target.git(&["cat-file", "commit", "main"]);
+    // `git cat-file commit` already prints the object's raw bytes (lossily re-decoded as UTF-8 by
+    // `TempRepo::git`'s own `from_utf8_lossy`, but the header line proves the bytes reached the object
+    // store unconverted): `encoding ISO-8859-1` is a genuine header line Git itself wrote back out.
+    assert!(raw.contains("encoding ISO-8859-1"), "{raw}");
+    let raw_bytes = Command::new("git")
+        .current_dir(target.path())
+        .args(["cat-file", "commit", "main"])
+        .output()
+        .unwrap()
+        .stdout;
+    assert!(
+        raw_bytes
+            .windows(message_bytes.len())
+            .any(|w| w == message_bytes.as_slice()),
+        "the message's original (non-UTF-8) bytes must reach the object unchanged: {raw_bytes:?}"
+    );
+}
+
 // ---- Refusals (proof item 3) -----------------------------------------------------------------------
 
 #[test]

@@ -20,15 +20,17 @@ fn a_gitlink_mode_is_refused_by_name_not_coerced() {
 }
 
 #[test]
-fn a_present_identity_needs_nothing_supplied() {
+fn a_present_identity_needs_nothing_supplied_or_altered() {
     let identity = Identity {
         name: Text::utf8("A U Thor"),
         email: Some(Text::utf8("a@example.com")),
     };
     let mut supplied = Supplied::default();
-    let line = identity_line(Some(&identity), &mut supplied, "author");
+    let mut altered = Altered::default();
+    let line = identity_line(Some(&identity), &mut supplied, &mut altered, "author");
     assert_eq!(line, "A U Thor <a@example.com>");
     assert!(supplied.trailer().is_none());
+    assert!(altered.trailer().is_none());
 }
 
 #[test]
@@ -38,28 +40,193 @@ fn a_missing_email_is_supplied_as_empty_and_marked() {
         email: None,
     };
     let mut supplied = Supplied::default();
-    let line = identity_line(Some(&identity), &mut supplied, "author");
+    let mut altered = Altered::default();
+    let line = identity_line(Some(&identity), &mut supplied, &mut altered, "author");
     assert_eq!(line, "A U Thor <>");
     assert_eq!(supplied.trailer().unwrap(), "Encoded-supplied: author");
+    assert!(altered.trailer().is_none());
 }
 
 #[test]
 fn a_missing_identity_entirely_is_supplied_and_marked() {
     let mut supplied = Supplied::default();
-    let line = identity_line(None, &mut supplied, "committer");
+    let mut altered = Altered::default();
+    let line = identity_line(None, &mut supplied, &mut altered, "committer");
     assert_eq!(line, "unknown <>");
     assert_eq!(supplied.trailer().unwrap(), "Encoded-supplied: committer");
+    assert!(altered.trailer().is_none());
 }
 
+// ---- review 091 F-1: a value the IR *carries*, changed to fit Git, is `Encoded-altered`, never silent
+// and never folded into `Encoded-supplied:` ----------------------------------------------------------
+
 #[test]
-fn a_newline_in_a_name_is_folded_to_a_space() {
+fn a_newline_in_a_name_is_folded_to_a_space_and_marked_altered() {
     let identity = Identity {
         name: Text::utf8("A U\nThor"),
         email: Some(Text::utf8("a@example.com")),
     };
     let mut supplied = Supplied::default();
-    let line = identity_line(Some(&identity), &mut supplied, "author");
+    let mut altered = Altered::default();
+    let line = identity_line(Some(&identity), &mut supplied, &mut altered, "author");
     assert_eq!(line, "A U Thor <a@example.com>");
+    assert!(supplied.trailer().is_none());
+    assert_eq!(
+        altered.trailer().unwrap(),
+        "Encoded-altered: author-name (newline folded)"
+    );
+}
+
+#[test]
+fn a_non_utf8_name_is_replaced_with_unknown_and_marked_altered() {
+    let identity = Identity {
+        name: Text {
+            bytes: vec![0xff, 0xfe],
+            encoding: None,
+        },
+        email: Some(Text::utf8("a@example.com")),
+    };
+    let mut supplied = Supplied::default();
+    let mut altered = Altered::default();
+    let line = identity_line(Some(&identity), &mut supplied, &mut altered, "author");
+    assert_eq!(line, "unknown <a@example.com>");
+    assert!(supplied.trailer().is_none());
+    assert_eq!(
+        altered.trailer().unwrap(),
+        "Encoded-altered: author-name (not UTF-8, replaced)"
+    );
+}
+
+#[test]
+fn a_non_utf8_email_is_replaced_with_empty_and_marked_altered() {
+    let identity = Identity {
+        name: Text::utf8("A U Thor"),
+        email: Some(Text {
+            bytes: vec![0xff, 0xfe],
+            encoding: None,
+        }),
+    };
+    let mut supplied = Supplied::default();
+    let mut altered = Altered::default();
+    let line = identity_line(Some(&identity), &mut supplied, &mut altered, "committer");
+    assert_eq!(line, "A U Thor <>");
+    assert!(supplied.trailer().is_none());
+    assert_eq!(
+        altered.trailer().unwrap(),
+        "Encoded-altered: committer-email (not UTF-8, replaced)"
+    );
+}
+
+#[test]
+fn angle_brackets_in_an_email_are_removed_and_marked_altered() {
+    let identity = Identity {
+        name: Text::utf8("A U Thor"),
+        email: Some(Text::utf8("a<b>@example.com")),
+    };
+    let mut supplied = Supplied::default();
+    let mut altered = Altered::default();
+    let line = identity_line(Some(&identity), &mut supplied, &mut altered, "author");
+    assert_eq!(line, "A U Thor <ab@example.com>");
+    assert_eq!(
+        altered.trailer().unwrap(),
+        "Encoded-altered: author-email (angle bracket removed)"
+    );
+}
+
+#[test]
+fn a_nul_in_a_name_is_removed_and_marked_altered() {
+    let identity = Identity {
+        name: Text::utf8("A U\0Thor"),
+        email: Some(Text::utf8("a@example.com")),
+    };
+    let mut supplied = Supplied::default();
+    let mut altered = Altered::default();
+    let line = identity_line(Some(&identity), &mut supplied, &mut altered, "author");
+    assert_eq!(line, "A UThor <a@example.com>");
+    assert_eq!(
+        altered.trailer().unwrap(),
+        "Encoded-altered: author-name (NUL removed)"
+    );
+}
+
+#[test]
+fn multiple_alterations_on_one_field_are_combined_in_one_reason() {
+    let identity = Identity {
+        name: Text::utf8("A\nU <Thor>"),
+        email: Some(Text::utf8("a@example.com")),
+    };
+    let mut supplied = Supplied::default();
+    let mut altered = Altered::default();
+    let _ = identity_line(Some(&identity), &mut supplied, &mut altered, "author");
+    assert_eq!(
+        altered.trailer().unwrap(),
+        "Encoded-altered: author-name (newline folded, angle bracket removed)"
+    );
+}
+
+#[test]
+fn two_refs_of_different_kinds_with_the_same_name_are_refused() {
+    use brygge_ir::{
+        AtomDraft, ImportProvenance, IrBuilder, MetadataClaims, SourceIdentity, SourceKind,
+    };
+
+    let source = |atom_id: &[u8]| SourceIdentity {
+        kind: SourceKind::Hg,
+        repo_id: Vec::new(),
+        atom_id: atom_id.to_vec(),
+        signatures: Vec::new(),
+        extras: Vec::new(),
+    };
+    let provenance = ImportProvenance {
+        source: source(b"repo"),
+        brygge_version: "0.0.0".to_string(),
+        decoder: "test".to_string(),
+        decoder_version: "0.0.0".to_string(),
+        params: BTreeMap::new(),
+    };
+    let mut builder = IrBuilder::new(provenance);
+    let atom_id = builder
+        .add_atom(AtomDraft {
+            parents: Vec::new(),
+            ops: Vec::new(),
+            copies: Vec::new(),
+            metadata: MetadataClaims::default(),
+            source: source(b"r1"),
+            status: EpistemicStatus::Stated,
+        })
+        .unwrap();
+    builder
+        .add_ref(RefRecord {
+            name: "stable".to_string(),
+            kind: RefKind::NamedBranch,
+            target: atom_id,
+            status: EpistemicStatus::Stated,
+            source: None,
+            annotation: None,
+        })
+        .unwrap();
+    builder
+        .add_ref(RefRecord {
+            name: "stable".to_string(),
+            kind: RefKind::Bookmark,
+            target: atom_id,
+            status: EpistemicStatus::Stated,
+            source: None,
+            annotation: None,
+        })
+        .unwrap();
+    let ir = builder.finish().unwrap();
+
+    let mut out = Vec::new();
+    let err = encode(&ir, [0u8; 32], &mut out).unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("refs/heads/stable"), "{msg}");
+    assert!(msg.contains("NamedBranch"), "{msg}");
+    assert!(msg.contains("Bookmark"), "{msg}");
+    assert!(
+        out.is_empty(),
+        "nothing should have been written before the refusal: {out:?}"
+    );
 }
 
 #[test]

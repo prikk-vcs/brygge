@@ -83,24 +83,55 @@ impl Supplied {
     }
 }
 
+/// Everything this program *altered* about a value the IR does carry, to fit Git's format — distinct
+/// from [`Supplied`] (review 091 F-1): a value the IR does not carry, and this program invents, is
+/// `Encoded-supplied`; a value the IR *does* carry, and this program had to change to write at all, is
+/// `Encoded-altered`, naming the field and why. Never silent — the honesty rule ("never invent a value
+/// the IR does not carry") extends to "never silently change one it does".
+#[derive(Debug, Default)]
+struct Altered(Vec<String>);
+
+impl Altered {
+    fn mark(&mut self, field: &str, why: &str) {
+        self.0.push(format!("{field} ({why})"));
+    }
+
+    fn trailer(&self) -> Option<String> {
+        if self.0.is_empty() {
+            None
+        } else {
+            Some(format!("Encoded-altered: {}", self.0.join(", ")))
+        }
+    }
+}
+
 /// `name <email>`, Git's identity-line shape. `email` is `<>` — empty, but present — when the IR has
 /// none; an absent `<email>` is not valid Git author/committer/tagger syntax.
 fn identity_line(
     identity: Option<&Identity>,
     supplied: &mut Supplied,
+    altered: &mut Altered,
     field: &'static str,
 ) -> String {
     let Some(identity) = identity else {
         supplied.mark(field);
         return "unknown <>".to_string();
     };
-    let name = identity
-        .name
-        .as_utf8()
-        .map(sanitize_line)
-        .unwrap_or_else(|| "unknown".to_string());
+    let name = match identity.name.as_utf8() {
+        Some(s) => sanitize_identity_part(s, &format!("{field}-name"), altered),
+        None => {
+            altered.mark(&format!("{field}-name"), "not UTF-8, replaced");
+            "unknown".to_string()
+        }
+    };
     let email = match &identity.email {
-        Some(email) => email.as_utf8().map(sanitize_line).unwrap_or_default(),
+        Some(email) => match email.as_utf8() {
+            Some(s) => sanitize_identity_part(s, &format!("{field}-email"), altered),
+            None => {
+                altered.mark(&format!("{field}-email"), "not UTF-8, replaced");
+                String::new()
+            }
+        },
         None => {
             supplied.mark(field);
             String::new()
@@ -130,10 +161,39 @@ fn when(
     format!("{} {sign}{:02}{:02}", time.seconds, abs / 60, abs % 60)
 }
 
-/// Git identity/message lines cannot carry a raw LF (it would be read as the end of the line); fold
-/// one into a space rather than silently truncating or refusing a value that is otherwise fine.
-fn sanitize_line(s: &str) -> String {
-    s.replace(['\n', '\r'], " ")
+/// Removes or folds everything Git's identity-line syntax cannot carry — a literal LF/CR (the
+/// line-oriented format would read it as ending the line) is folded to a space; `<`/`>` (which would
+/// make the identity line unparseable, or parse as a different person) and a NUL are removed — and
+/// marks each change `Encoded-altered` (review 091 F-1): this is a change to a value the IR *did*
+/// carry, not a value this program invented, so it gets its own trailer, not `Encoded-supplied`.
+fn sanitize_identity_part(value: &str, field: &str, altered: &mut Altered) -> String {
+    let mut reasons: Vec<&'static str> = Vec::new();
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '\n' | '\r' => {
+                if !reasons.contains(&"newline folded") {
+                    reasons.push("newline folded");
+                }
+                out.push(' ');
+            }
+            '<' | '>' => {
+                if !reasons.contains(&"angle bracket removed") {
+                    reasons.push("angle bracket removed");
+                }
+            }
+            '\0' => {
+                if !reasons.contains(&"NUL removed") {
+                    reasons.push("NUL removed");
+                }
+            }
+            _ => out.push(ch),
+        }
+    }
+    if !reasons.is_empty() {
+        altered.mark(field, &reasons.join(", "));
+    }
+    out
 }
 
 /// A path as an unquoted fast-import token when safe, else a minimal C-style quoted string (RFC 017 D-1
@@ -204,6 +264,49 @@ fn derived_trailers(atom: &ChangeAtom) -> Vec<String> {
 /// the resulting repository.
 const SCRATCH_REF: &str = "refs/heads/brygge-encode-git-example-scratch";
 
+/// The Git ref an IR ref maps to, before any writing happens: `Tag` goes to `refs/tags/<name>`;
+/// `Branch`/`Bookmark`/`NamedBranch`/`Other` all flatten to `refs/heads/<name>` (the mapping table's own
+/// "all flattened to one namespace").
+fn git_ref_path(rf: &RefRecord) -> String {
+    match rf.kind {
+        RefKind::Tag => format!("refs/tags/{}", rf.name),
+        _ => format!("refs/heads/{}", rf.name),
+    }
+}
+
+/// `rf.kind`, named for an error message (not Git syntax).
+fn ref_kind_label(kind: &RefKind) -> String {
+    match kind {
+        RefKind::Branch => "Branch".to_string(),
+        RefKind::Tag => "Tag".to_string(),
+        RefKind::Bookmark => "Bookmark".to_string(),
+        RefKind::NamedBranch => "NamedBranch".to_string(),
+        RefKind::Other(label) => format!("Other({label})"),
+    }
+}
+
+/// Refuses, by name, when two IR refs would flatten to the same Git ref (review 091 F-2): branches,
+/// bookmarks, named branches and `Other` all share the `refs/heads/` namespace, so (for example) an hg
+/// named branch and a bookmark of the same name would otherwise both `reset` one Git ref, the second
+/// silently winning with no trace that the first ever existed. This program does not pick one, and does
+/// not rename either — it refuses, naming both.
+fn check_no_ref_collisions(refs: &[RefRecord]) -> Result<(), EncodeError> {
+    let mut seen: BTreeMap<String, (String, String)> = BTreeMap::new();
+    for rf in refs {
+        let path = git_ref_path(rf);
+        let label = ref_kind_label(&rf.kind);
+        if let Some((other_name, other_label)) = seen.get(&path) {
+            return Err(EncodeError::Content(format!(
+                "two IR refs both map to Git ref {path:?}: {other_name:?} ({other_label}) and {:?} \
+                 ({label})",
+                rf.name
+            )));
+        }
+        seen.insert(path, (rf.name.clone(), label));
+    }
+    Ok(())
+}
+
 /// Encodes `ir` as a `git fast-import` stream, writing it to `out`. `artifact_digest` becomes every
 /// commit's `Brygge-Artifact:` trailer.
 ///
@@ -220,6 +323,8 @@ pub fn encode<W: Write>(
     artifact_digest: [u8; 32],
     out: &mut W,
 ) -> Result<(), EncodeError> {
+    check_no_ref_collisions(&ir.refs)?;
+
     let mut next_mark: u64 = 1;
     let mut blob_marks: BTreeMap<BlobId, u64> = BTreeMap::new();
     let mut atom_marks: BTreeMap<AtomId, u64> = BTreeMap::new();
@@ -257,7 +362,13 @@ pub fn encode<W: Write>(
         }
 
         let mut supplied = Supplied::default();
-        let author_line = identity_line(atom.metadata.author.as_ref(), &mut supplied, "author");
+        let mut altered = Altered::default();
+        let author_line = identity_line(
+            atom.metadata.author.as_ref(),
+            &mut supplied,
+            &mut altered,
+            "author",
+        );
         let author_when = when(
             atom.metadata.author_time,
             &mut supplied,
@@ -276,7 +387,7 @@ pub fn encode<W: Write>(
                 }
                 (committer, commit_time) => {
                     let committer_line = if committer.is_some() {
-                        identity_line(committer.as_ref(), &mut supplied, "committer")
+                        identity_line(committer.as_ref(), &mut supplied, &mut altered, "committer")
                     } else {
                         supplied.mark("committer");
                         author_line.clone()
@@ -307,6 +418,9 @@ pub fn encode<W: Write>(
         if let Some(line) = supplied.trailer() {
             trailers.push(line);
         }
+        if let Some(line) = altered.trailer() {
+            trailers.push(line);
+        }
         trailers.extend(derived_trailers(atom));
         trailers.push(format!("Brygge-Artifact: sha256:{digest_hex}"));
 
@@ -325,6 +439,17 @@ pub fn encode<W: Write>(
         writeln!(out, "mark :{mark}")?;
         writeln!(out, "author {author_line} {author_when}")?;
         writeln!(out, "committer {committer_line} {committer_when}")?;
+        // The message's own declared encoding (review 091 F-3), when the source stated one
+        // (`Text.encoding`), is written as `git-fast-import(1)`'s own `encoding` command: the bytes
+        // below reach Git exactly as the source gave them, tagged with what they are, never re-encoded.
+        if let Some(encoding) = atom
+            .metadata
+            .message
+            .as_ref()
+            .and_then(|t| t.encoding.as_deref())
+        {
+            writeln!(out, "encoding {encoding}")?;
+        }
         writeln!(out, "data {}", body.len())?;
         out.write_all(&body)?;
         writeln!(out)?;
@@ -397,13 +522,35 @@ fn write_ref<W: Write>(out: &mut W, rf: &RefRecord, mark: u64) -> Result<(), Enc
     match (&rf.kind, &rf.annotation) {
         (RefKind::Tag, Some(annotation)) => {
             let mut supplied = Supplied::default();
-            let tagger_line = identity_line(annotation.tagger.as_ref(), &mut supplied, "tagger");
+            let mut altered = Altered::default();
+            let tagger_line = identity_line(
+                annotation.tagger.as_ref(),
+                &mut supplied,
+                &mut altered,
+                "tagger",
+            );
             let tagger_when = when(annotation.time, &mut supplied, "tag-time", "tag-time-zone");
-            let message = annotation
+            let mut message = annotation
                 .message
                 .as_ref()
                 .map(|t| t.bytes.clone())
                 .unwrap_or_default();
+            // The same honesty rules as a commit message (review 091 F-1: "the same applies to the
+            // tagger") — supplied/altered trailers, when either applies, after one blank line.
+            let mut trailers = Vec::new();
+            if let Some(line) = supplied.trailer() {
+                trailers.push(line);
+            }
+            if let Some(line) = altered.trailer() {
+                trailers.push(line);
+            }
+            if !trailers.is_empty() {
+                if !message.ends_with(b"\n") {
+                    message.push(b'\n');
+                }
+                message.push(b'\n');
+                message.extend(trailers.join("\n").into_bytes());
+            }
             writeln!(out, "tag {}", rf.name)?;
             writeln!(out, "from :{mark}")?;
             writeln!(out, "tagger {tagger_line} {tagger_when}")?;

@@ -41,10 +41,14 @@ mapping below, and the honesty rules it follows, are this program's own, not bry
 | ...when absent (the IR's one-claim rule: no distinct committer means the source drew no distinction) | the author's own claim, supplied as the committer and marked `Encoded-supplied: committer, commit-time` |
 | A missing time zone | supplied as `+0000`, marked `Encoded-supplied: …-time-zone` |
 | A missing email | supplied as `<>` (empty, but present — Git requires the brackets), marked `Encoded-supplied: …` |
+| A name/email that is not UTF-8 | replaced (`unknown`, or empty) and marked `Encoded-altered: <field>-name/-email (not UTF-8, replaced)` — a change to a value the IR *did* carry, not an invented one |
+| A name/email containing a literal LF/CR, `<`, `>`, or NUL | folded to a space (LF/CR) or removed (`<`/`>`/NUL) and marked `Encoded-altered: <field>-name/-email (<why>)` |
 | `metadata.message` | the commit message, followed by one blank line and this program's own trailers (below) |
-| `RefKind::Tag` with an `Annotation` | `tag <name>` (an annotated tag object), `tagger`/`data` from the annotation, supplying and marking whatever the annotation itself left absent |
+| `metadata.message`'s declared `Text.encoding`, when the source stated one | `encoding <name>` (`git-fast-import(1)`'s own command), before `data` — the message's bytes reach Git exactly as the source gave them, never re-encoded |
+| A marked `CopyRecord` | not written — Git has no copy operation distinct from a plain add; the atom's own literal ops (what the source actually recorded) already carry the resulting content |
+| `RefKind::Tag` with an `Annotation` | `tag <name>` (an annotated tag object), `tagger`/`data` from the annotation, supplying and marking whatever the annotation itself left absent, with the same `Encoded-supplied:`/`Encoded-altered:` trailers as a commit, appended to the tag message when either applies |
 | `RefKind::Tag` with no `Annotation` | `reset refs/tags/<name>` (a lightweight tag) |
-| `RefKind::Branch`/`Bookmark`/`NamedBranch`/`Other` | `reset refs/heads/<name>` — all flattened to one namespace; this program does not invent a second namespace per source ref-kind (a known limitation) |
+| `RefKind::Branch`/`Bookmark`/`NamedBranch`/`Other` | `reset refs/heads/<name>` — all flattened to one namespace; this program does not invent a second namespace per source ref-kind (a known limitation). Two IR refs that would flatten to the same Git ref are refused, by name, rather than one silently overwriting the other. |
 
 Every commit is written under one scratch ref (`refs/heads/brygge-encode-git-example-scratch`) so that an
 interior commit never needs to know, up front, which real branch will eventually contain it — the DAG
@@ -58,6 +62,9 @@ Every commit message gets, after one blank line:
 - `Encoded-by: brygge-encode-git-example (an unsupported example; not part of brygge)` — always.
 - `Encoded-supplied: <fields>` — only when this program invented a value the IR did not carry (see the
   mapping table above), naming exactly what.
+- `Encoded-altered: <field> (<why>)` — only when this program had to change a value the IR *did* carry to
+  write it at all (not UTF-8, a literal newline, an angle bracket, a NUL — see the mapping table above),
+  naming the field and why. Distinct from `Encoded-supplied:`: this is a change, not an invention.
 - `Brygge-Derived: <scope> <kind> <params>` — one per `Derived` assertion the commit carries (the atom
   itself, or one of its path operations, scoped `atom` or `op:<path>`), naming the derivation's kind and
   its exact parameters. Never present on a fully `Stated` atom.
@@ -68,9 +75,18 @@ Every commit message gets, after one blank line:
 
 - It writes no submodule/gitlink entry (mode `0o160000` is refused, by name, like any other mode it does
   not recognize) — the IR carries no submodule concept to write one from in the first place.
-- It does not sanitize or transcode message/identity text beyond folding a literal newline to a space
-  (Git's own line-oriented format cannot represent one); non-UTF-8 tag messages are not supported (`git
-  fast-import` itself requires UTF-8 there).
+- It writes no `CopyRecord`: Git has no copy operation distinct from a plain add, and the atom's own
+  literal ops (what the source actually recorded) already reproduce the resulting content, so nothing is
+  lost by not writing one separately.
+- It refuses, by name, rather than silently merging, two IR refs that would flatten to the same Git ref —
+  branches, bookmarks, named branches, and `Other` all share the `refs/heads/` namespace, so (for example)
+  an hg named branch and a bookmark of the same name are refused, naming both, instead of letting the
+  second's `reset` silently win over the first.
+- **Non-UTF-8 tag messages are not supported:** `git-fast-import(1)`'s `tag` command has no `encoding`
+  directive (only `commit` does — see the mapping table above), and states that a tag message "must be
+  encoded in UTF-8, as fast-import does not permit other encodings to be specified." A **commit**
+  message's own declared encoding (`Text.encoding`) is written with `encoding`, so it reaches Git
+  unchanged even when it is not UTF-8; a tag's annotation message has no equivalent.
 - It does not validate ref names against Git's naming rules before writing them; an invalid name fails
   inside `git fast-import`, not inside this program.
 
