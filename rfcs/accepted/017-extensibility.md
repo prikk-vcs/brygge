@@ -1,6 +1,7 @@
 # RFC 017 — Extensibility: the IR as the extension point, external encoders, and honest transforms
 
-**Status.** **Accepted (2026-10-21)** by the owner ("Accepted."). No separate answers to OQ-1…OQ-4 were given, so they
+**Status.** **Accepted (2026-10-21)**; two stale lines corrected by the architect on 2026-10-29 (Part C is in
+0.7.0, per OQ-3; D-3's calling convention stated once) by the owner ("Accepted."). No separate answers to OQ-1…OQ-4 were given, so they
 are recorded as the recommendations (as for RFCs 011 and 013), and the owner can object:
 - **OQ-1:** plugins are found on `PATH` only;
 - **OQ-2:** the reference encoder lives in this repository, `publish = false`, labelled unsupported, and tested;
@@ -27,7 +28,7 @@ prikk now. Instead, we may be able to offer flexible extensibility as plugins or
   - **Part B:** external encoder plugins (`brygge encode <target>` → `brygge-encode-<target>` on `PATH`), in the
     style of git and cargo subcommands;
   - **Part C:** honest **transforms** (middlewares, IR → IR), which **must record themselves** in the artifact. That
-    needs a contract revision, so it is designed with 0.6.0's compact artifacts (RFC 015 OQ-1).
+    needs a contract revision, so it is designed with compact artifacts (RFC 015 OQ-1), in 0.7.0 (OQ-3).
 - **Ruled out: in-process plugins.**
   - dynamic libraries need `unsafe` and an ABI Rust does not have;
   - WebAssembly needs a heavy runtime;
@@ -82,7 +83,8 @@ prikk now. Instead, we may be able to offer flexible extensibility as plugins or
 
 ### D-3 — Part B: external encoder plugins
 
-- **`brygge encode <target> <artifact> [-- <plugin arguments>]`.**
+- **`brygge encode <target> <artifact> [-- <plugin arguments>]`.** brygge runs the plugin as
+  `brygge-encode-<target> --artifact <artifact> [<plugin arguments>…]` (the contract below).
   - A built-in target (`prikk`, once RFC 008 lands) is used first.
   - Otherwise brygge runs **`brygge-encode-<target>`**, found **on `PATH` only**: never in the current directory,
     and never in a source repository.
@@ -117,7 +119,7 @@ prikk now. Instead, we may be able to offer flexible extensibility as plugins or
     **first** artifact of the chain where it can (re-decoding, and replaying the transforms if they are installed
     and deterministic), and otherwise answers `not-checked: transformed`. It never "corresponds" silently.
 - **Scheduling:** this is a **contract change** (0.2.0 → 0.3.0), so it is designed **together with compact
-  artifacts** (RFC 015 OQ-1), and the contract changes **once**. Its RFC is the 0.6.0 contract RFC, widened, or a
+  artifacts** (RFC 015 OQ-1), and the contract changes **once**. Its RFC is the 0.7.0 contract RFC (OQ-3), widened, or a
   sibling written at the same time.
 - **Until then, no transform stage exists.** Users must not hand-edit artifacts; the digest stops that anyway.
 

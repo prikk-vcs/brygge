@@ -64,7 +64,7 @@ in the same commit that moves an RFC between folders.
 |---|---|---|
 | [010](accepted/010-bounded-memory-and-streaming.md) | Bounded memory & streaming (increment 1 shipped in 0.1.0; increments 3, 3b and 5 in 0.2.0; increments 2 and 4 deferred by measurement) | `handoffs/010-bounded-memory-and-streaming/` |
 | [012](accepted/012-release-automation.md) | Release automation: CI on Linux, macOS and Windows; tag-triggered, owner-approved publication (crates.io trusted publishing); binaries with provenance; GitHub release from the CHANGELOG | `handoffs/012-release-automation/` |
-| [017](accepted/017-extensibility.md) | Extensibility: the IR as the extension point (an encoder guide, an unsupported reference IR → Git encoder), external encoder plugins (`brygge encode <target>`), and honest transforms with the next contract revision | `handoffs/017-extensibility/` (after 0.5.0) |
+| [017](accepted/017-extensibility.md) | Extensibility: the IR as the extension point (an encoder guide, an unsupported reference IR → Git encoder), external encoder plugins (`brygge encode <target>`), and honest transforms with the next contract revision | `handoffs/017-extensibility/` |
 
 ### Done
 
