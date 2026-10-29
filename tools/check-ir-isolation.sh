@@ -3,6 +3,11 @@
 # CR-12.1): brygge-ir is the light core a target links, and it must never gain a decoder or any other
 # dependency without an architect review. Fails if brygge-ir's normal dependency closure differs from
 # crates/brygge-ir/allowed-dependencies.txt.
+#
+# Runs with `--target all` (review 092): brygge ships aarch64 binaries for Linux and macOS, and some
+# dependencies (e.g. `libc`, pulled in by `cpufeatures` only off x86/x86_64) are architecture-conditional.
+# `--target all` checks every platform's closure at once, from any single runner, so this script's result
+# does not depend on which architecture it happens to run on.
 # Usage: tools/check-ir-isolation.sh
 set -euo pipefail
 
@@ -10,7 +15,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 allowlist="crates/brygge-ir/allowed-dependencies.txt"
 
-actual=$(cargo tree -p brygge-ir -e normal --prefix none --format '{p}' \
+actual=$(cargo tree -p brygge-ir -e normal --target all --prefix none --format '{p}' \
     | sed -E 's/^([a-zA-Z0-9_-]+) .*/\1/' \
     | sort -u)
 expected=$(grep -v '^#' "$allowlist" | grep -v '^\s*$' | sort -u)

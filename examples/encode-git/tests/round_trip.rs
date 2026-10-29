@@ -764,6 +764,8 @@ fn the_crate_depends_on_brygge_ir_alone() {
             "brygge-encode-git-example",
             "-e",
             "normal",
+            "--target",
+            "all",
             "--prefix",
             "none",
             "--format",
@@ -781,15 +783,10 @@ fn the_crate_depends_on_brygge_ir_alone() {
         .lines()
         .map(|l| l.split_whitespace().next().unwrap_or(l).to_string())
         .collect();
-    // `cpufeatures` (via `sha2`, in `brygge-ir`'s own closure) depends on `libc` only off x86/x86_64 —
-    // confirmed with `cargo tree --target aarch64-unknown-linux-gnu`/`aarch64-apple-darwin`, both of
-    // which add it; `x86_64-unknown-linux-gnu`/`-pc-windows-gnu` do not. `tools/check-ir-isolation.sh`
-    // itself never sees this: CI runs it on one x86_64 runner only. This test runs on every platform in
-    // the matrix, so it allows exactly that one, known, architecture-conditional extra — anything else
-    // still fails.
-    if !cfg!(any(target_arch = "x86_64", target_arch = "x86")) {
-        actual.retain(|d| d != "libc");
-    }
+    // `--target all` above already covers every platform's closure (including `libc`, which
+    // `cpufeatures` pulls in only off x86/x86_64) in one run, matching `brygge-ir`'s own
+    // `allowed-dependencies.txt` and `tools/check-ir-isolation.sh` (review 092). No per-arch exception
+    // needed, or possible to drift from the script.
     actual.sort();
     actual.dedup();
 

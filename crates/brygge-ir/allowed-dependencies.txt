@@ -10,5 +10,8 @@ cpufeatures
 crypto-common
 digest
 generic-array
+# libc: cpufeatures -> libc, on non-x86/x86_64 targets only (e.g. aarch64). Present in the closure under
+# `--target all`, which this file's generator now checks (review 092).
+libc
 sha2
 typenum
