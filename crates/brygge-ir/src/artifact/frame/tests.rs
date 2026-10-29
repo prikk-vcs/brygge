@@ -63,15 +63,17 @@ fn deflate_short_or_overlong_output_is_refused() {
 
 #[test]
 fn a_one_gib_deflate_bomb_streams_within_bounds() {
-    // Review 099 R-1: ~1 MiB of DEFLATE-compressed zeros claiming to inflate to 1 GiB (well within
-    // DEFLATE's own 1032x expansion bound: 1 GiB / 1032 is about 1 MiB) must stream through with a
-    // bounded output buffer, never allocating anything near 1 GiB.
-    let raw = vec![0u8; 1 << 30];
+    // Review 099 R-1, at 4 MiB rather than the 1 GiB the name still recalls (review 100's own
+    // follow-up: even much less than 1 GiB does not fit `mutation.yml`'s deep-sweep memory cap on the
+    // CI runner this actually runs on — see `artifact::tests`' sibling test for the fuller account).
+    // DEFLATE-compressed zeros claiming to inflate to 4 MiB (well within DEFLATE's own 1032x expansion
+    // bound) must stream through with a bounded output buffer, never allocating anything near 4 MiB.
+    let raw = vec![0u8; 4 * 1024 * 1024];
     let (codec, stored) = compress_frame(&raw);
     assert_eq!(codec, Codec::Deflate);
     assert!(
-        stored.len() < (1 << 21),
-        "a run of zeros compresses far below 2 MiB"
+        stored.len() < (1 << 13),
+        "a run of zeros compresses far below 8 KiB"
     );
     let mut total = 0u64;
     let mut max_chunk = 0usize;

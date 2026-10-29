@@ -1501,20 +1501,20 @@ fn reset_peak_rss() -> bool {
     std::fs::write("/proc/self/clear_refs", "5").is_ok()
 }
 
-/// Review 099 R-1's own proof, at a size chosen to fit `mutation.yml`'s own `ulimit -v 2000000`
-/// deep-sweep cap comfortably even run alongside three other tests (`--test-threads=4`; a literal
-/// 1 GiB, as review 099 first wrote this test, does not: confirmed by reproducing the deep sweep's own
-/// `ulimit`/thread-count locally — 128 MiB keeps the same ~1000×+ ratio shape (DEFLATE's own maximum)
-/// with headroom to spare): an artifact of about 128 KiB whose blob table and single frame hold
-/// 128 MiB of a single repeated byte (a real DEFLATE stream — 128 MiB / 1032 is about 128 KiB stored)
-/// streams through `read_from` (via `from_file`, over a real file) with a peak well below the 128 MiB
-/// the old, whole-buffer inflate would have allocated — bounded instead by a small multiple of the
-/// 64 KiB inflate buffer — and fails only on the content address (the table's id is deliberately
-/// wrong, so the pass must finish inflating and hashing the whole claim, within that bound, before it
-/// is refused).
+/// Review 099 R-1's own proof, at 4 MiB rather than the 1 GiB review 099 first wrote: a literal 1 GiB
+/// does not fit `mutation.yml`'s own `ulimit -v 2000000` deep-sweep cap, run alongside three other
+/// tests (`--test-threads=4`) — nor, it turned out, does 128 MiB, on the CI runner this actually runs
+/// on (its headroom under the cap is tighter than the machine this was first sized on). 4 MiB keeps
+/// the same ~1000×+ ratio shape DEFLATE's own maximum expansion allows, with ample headroom either
+/// way: an artifact of a few KiB whose blob table and single frame hold 4 MiB of a single repeated
+/// byte (a real DEFLATE stream — 4 MiB / 1032 is a few KiB stored) streams through `read_from` (via
+/// `from_file`, over a real file) with a peak well below the 4 MiB the old, whole-buffer inflate would
+/// have allocated — bounded instead by a small multiple of the 64 KiB inflate buffer — and fails only
+/// on the content address (the table's id is deliberately wrong, so the pass must finish inflating and
+/// hashing the whole claim, within that bound, before it is refused).
 #[test]
 fn a_one_gib_deflate_bomb_streams_through_read_from_within_a_bounded_peak() {
-    const BOMB_LEN: usize = 128 * 1024 * 1024;
+    const BOMB_LEN: usize = 4 * 1024 * 1024;
     // Built and dropped one `BOMB_LEN` buffer at a time throughout (never two at once): this test's
     // own *construction* cost must itself stay well under the deep sweep's own memory cap.
     let mut b = IrBuilder::new(provenance());
