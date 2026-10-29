@@ -5,14 +5,17 @@ map: what brygge is, the state at handover, the invariants you must never regres
 lives, how to build and gate it, and the prioritized backlog. Everything it references is in this
 repository; nothing load-bearing lives only in someone's head.
 
-**Date of handover:** 2026-09-12. **Updated for the 0.5.0 release, 2026-10-21.** **State:** brygge
+**Date of handover:** 2026-09-12. **Updated for the 0.6.0 release, 2026-10-29.** **State:** brygge
 **0.1.0 is released**: the decode → IR half for all four named sources, on IR contract **0.2.0**.
 **0.1.1** added Windows support and the release workflow (RFC 012), **0.2.0** bounds long Git and
 CVS histories (RFC 010), **0.3.0** reaches SVN delta dumps, Mercurial's hashed store paths and CVS branch
 history (RFC 013), **0.4.0** mutation-tests every untrusted parser and validates brygge against real
-public repositories of every source kind (RFC 014), and **0.5.0** keeps a decode's content on disk and
+public repositories of every source kind (RFC 014), **0.5.0** keeps a decode's content on disk and
 streams the artifact writer and reader, so peak memory tracks a history's metadata rather than its total
-content, and publishes `brygge`/`brygge-bin` to the AUR (RFC 015, RFC 016). All gates
+content, and publishes `brygge`/`brygge-bin` to the AUR (RFC 015, RFC 016), and **0.6.0** turns the IR into
+the official extension point: an encoder author's guide, an unsupported reference encoder from IR to Git
+(`examples/encode-git`), and external encoder plugins run with `brygge encode <target>` (RFC 017 Parts A
+and B; Part C, transforms, follows in 0.7.0). All gates
 are green, and CI enforces them on the declared MSRV. The encode → prikk half waits on prikk's import
 foundations (see §8).
 
@@ -34,8 +37,8 @@ where told. The governing upstream contract is prikk **RFC 113** (History import
 |---|---|
 | **Decode → IR (Track A)** | **Released in 0.1.0** for all four sources: Git, Mercurial, Subversion, CVS (main line). See `CHANGELOG.md` and the user guides in `docs/src/guide/`. |
 | **IR contract** | **0.2.0** (RFC 011, which replaced the pre-release 1.0.0 freeze). Tagged fields with a critical bit, a strict canonical form, a digest over the stored bytes; published in `docs/src/reference/ir-artifact-format.md`. |
-| **CLI** | `brygge decode <git\|hg\|svn\|cvs> <source> --out <artifact>`, `inspect <artifact> [--atoms]`, `verify <artifact> [--against-source <source>]`; human and versioned machine output (`docs/src/reference/machine-output.md`); CL-08 exit classes. |
-| **Encode → prikk (Track B)** | **Not started past design.** prikk ruled OQ-1…OQ-3 (2026-09-13) and UD-4 (2026-09-23); the encoder waits on prikk building UD-1 and UD-2 (RFC 008; see §8). |
+| **CLI** | `brygge decode <git\|hg\|svn\|cvs> <source> --out <artifact>`, `inspect <artifact> [--atoms]`, `verify <artifact> [--against-source <source>]`, `encode <target> <artifact> [-- <plugin args>]` / `encode --list` (RFC 017 D-3, an external plugin found on `PATH` only); human and versioned machine output (`docs/src/reference/machine-output.md`); CL-08 exit classes. |
+| **Encode → prikk (Track B)** | **Not started past design.** prikk ruled OQ-1…OQ-3 (2026-09-13) and UD-4 (2026-09-23); the encoder waits on prikk building UD-1 and UD-2 (RFC 008; see §8). `brygge encode` (RFC 017 D-3) runs an *external* plugin only; `encode prikk` is reserved and stays unavailable until this lands. |
 | **Gates** | fmt · clippy `-D warnings` · test · `cargo deny` · `cargo audit` · `tools/check-ir-isolation.sh` · `tools/check-links.sh` · `tools/test-release-tools.sh`, all `--locked`, on the default toolchain **and** on MSRV 1.87; CI-enforced (§7). CI runs fmt, clippy and test on Linux x86_64, Linux arm64, macOS (Apple Silicon) and Windows (RFC 012 D-9). |
 | **Toolchain** | Rust 2024, MSRV **1.87** (raised from 1.85 for the ruzstd security fix, RUSTSEC-2026-0344; enforced by CI). |
 | **Third-party deps** | `sha2` (core); `gix` (Git); `flate2`, `ruzstd` and `sha1-checked` (hg); `sha2` (CVS). SVN adds `md-5` and `sha1-checked` (dump checksums). |
@@ -260,13 +263,25 @@ the team inherits the reasoning, not just the TODO. `ROADMAP.md` is authoritativ
     MiB, and `brygge verify` from about 9.1 GiB to about 64 MiB; artifacts stayed byte-identical
     throughout. Full measurements in `tools/bench/README.md`.
 
+**0.6.0 — Extensibility** (RFC 017 Parts A and B, done; handoffs in `rfcs/handoffs/017-extensibility/`):
+21. **Done (batch G):** an encoder author's guide (`docs/src/reference/writing-an-encoder.md`) and an
+    **unsupported**, labelled reference encoder from IR to Git (`examples/encode-git`, `git fast-import`),
+    the isolation proof for PU-3; `artifact::Decoded` gains `digest`, the artifact digest the reader
+    already verified (RFC 017 D-1, D-2).
+22. **Done (batch E):** `brygge encode <target> <artifact>`, running an external plugin
+    (`brygge-encode-<target>`) found on `PATH` only, never the bare name; the artifact is verified first
+    and the plugin never runs on a failed verdict; `brygge encode --list` (RFC 017 D-3).
+23. **Done:** `brygge-ir`'s own isolation check now covers every target (`cargo tree --target all`),
+    closing a gap where `libc` (through `cpufeatures`, from `sha2`, on non-x86 targets) was absent from
+    `allowed-dependencies.txt` and unchecked by a single-runner check (found during the 0.6.0 cut).
+
 **Deferred by explicit owner decision:**
-21. **A TUI:** deferred, *not* rejected (2026-09-12). If pursued, the standing architect recommendation is a
+24. **A TUI:** deferred, *not* rejected (2026-09-12). If pursued, the standing architect recommendation is a
     **separate `brygge-tui` crate over `brygge-ir`** (never in the decode binary), designed to make
     derived/dropped/refused *more* visible, not less. Draft an RFC first.
 
 **Track B — encode → prikk:**
-22. **RFC 008 (prikk encoder).** prikk decides its import design, and brygge informs it proactively
+25. **RFC 008 (prikk encoder).** prikk decides its import design, and brygge informs it proactively
     (ROADMAP Track B).
     - prikk ruled OQ-1…OQ-3 on 2026-09-13: the importer signs, and an adopted maintainer seals.
     - prikk ruled UD-4 on 2026-09-23. The importer is prikk's own import command.
@@ -275,7 +290,8 @@ the team inherits the reasoning, not just the TODO. `ROADMAP.md` is authoritativ
 
 ## 9. Known limits (set expectations honestly)
 
-- **No encode yet.** 0.1.0 is decode + inspect + verify (§8, Track B).
+- **No built-in encoder yet.** 0.1.0 is decode + inspect + verify (§8, Track B); 0.6.0 adds `brygge encode
+  <target>`, which only runs an external plugin found on `PATH` — brygge itself still supports none.
 - **CVS is lossy by nature** (SRC-C3): the changeset is brygge's reconstruction, and every atom is
   `Derived`. Changeset-level `verify --against-source` is *not offered*, because there is no source
   changeset to check against; only per-file content and deterministic reproduction are. Branch history is
@@ -287,7 +303,7 @@ the team inherits the reasoning, not just the TODO. `ROADMAP.md` is authoritativ
   streams: RFC 010 increments 2 and 4 are deferred by measurement.
 - **No progress reporting or cancellation.** Interrupting a decode is safe (the artifact write is atomic),
   but it produces nothing.
-- The threat model is the living document, revisited every release (v0.3 for 0.1.0, v0.4 for 0.1.1, v0.5 for 0.2.0, v0.6 for 0.3.0, v0.7 for 0.3.1, v0.8 for 0.4.0, v0.9 for 0.5.0).
+- The threat model is the living document, revisited every release (v0.3 for 0.1.0, v0.4 for 0.1.1, v0.5 for 0.2.0, v0.6 for 0.3.0, v0.7 for 0.3.1, v0.8 for 0.4.0, v0.9 for 0.5.0, v0.10 for 0.6.0).
 
 ---
 

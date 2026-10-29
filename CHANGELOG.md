@@ -8,9 +8,22 @@ Every handoff adds its own entry in its own commit.
 
 ## [Unreleased]
 
-**Breaking:** `brygge-ir`: `artifact::Decoded` gains `digest`, the artifact digest the reader verified.
+## [0.6.0] — 2026-10-29
 
-**Added:**
+**Extensibility: build your own encoder on brygge's IR, and run it as `brygge encode <target>`.** A new guide
+shows how to write an encoder for any target system from a brygge artifact alone, and the honesty rules it
+must keep: every value it supplies or alters is marked, and brygge's derivations are carried or disclosed.
+`brygge encode <target> <artifact>` runs an external plugin, `brygge-encode-<target>`, found on `PATH` only.
+brygge verifies the artifact first, refuses to hand on one that fails, and says plainly that the plugin is
+not part of brygge. An unsupported example encoder from the IR to Git, through `git fast-import`, is in the
+repository (`examples/encode-git`); it is never released. brygge itself supports no third-party encoder.
+**Breaking, for the library only:** `brygge-ir`'s `artifact::Decoded` gains `digest`. Install with
+`cargo install --locked brygge`, or download a binary from the GitHub release.
+
+The detailed changes that made up 0.6.0 follow.
+
+### Added
+
 - An encoder author's guide (`docs/src/reference/writing-an-encoder.md`): how to build an encoder for
   any target on the IR alone, and the honesty rules it must keep (RFC 017).
 - `examples/encode-git`: an unsupported example encoder from the IR to Git, through `git fast-import`. It
@@ -19,9 +32,14 @@ Every handoff adds its own entry in its own commit.
   on `PATH` only. brygge verifies the artifact first, refuses to run the plugin if it fails, and labels
   the plugin as not part of brygge. `brygge encode --list` shows the plugins found (RFC 017).
 
-**Changed:**
+### Changed
+
 - `encode prikk` is reserved for the built-in prikk encoder, and still reports that it is not available
   yet.
+
+### Breaking
+
+- `brygge-ir`: `artifact::Decoded` gains `digest`, the artifact digest the reader verified.
 
 ## [0.5.0] — 2026-10-21
 
