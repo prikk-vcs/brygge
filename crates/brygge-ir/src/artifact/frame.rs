@@ -104,6 +104,53 @@ pub(super) fn check_frame_bounds(codec: Codec, stored_len: u64, raw_len: u64) ->
     Ok(())
 }
 
+/// Builds a raw DEFLATE stream (RFC 1951, no zlib wrapper) that inflates to exactly `raw_len` zero
+/// bytes, without ever materializing `raw_len` bytes of input (review 101 F-1: a bomb test proving the
+/// *reader* never does that must not do it itself, in its own construction, either — the prior sizing
+/// at 4 MiB existed only because review 100's test built its claim from a real `vec![0u8; BOMB_LEN]`).
+/// Feeds [`STREAM_CHUNK`]-sized chunks of zeros through `miniz_oxide::deflate::stream::deflate`
+/// directly (`MZFlush::None` for every chunk but the last, `MZFlush::Finish` once none remain — the
+/// same call-repeatedly-until-`StreamEnd` shape [`inflate_deflate_streamed`] uses, mirrored for
+/// compression), one chunk held at a time; the returned, compressed bytes are themselves small (a few
+/// hundred KiB for 256 MiB of zeros). Crate-private, test-only; adds no public API.
+#[cfg(test)]
+pub(super) fn deflate_zeros_streamed(raw_len: u64) -> Vec<u8> {
+    use miniz_oxide::deflate::CompressionLevel;
+    use miniz_oxide::deflate::core::CompressorOxide;
+    use miniz_oxide::deflate::stream::deflate as mz_deflate;
+    use miniz_oxide::{DataFormat, MZFlush, MZStatus};
+
+    let mut compressor =
+        CompressorOxide::with_format_and_level(DataFormat::Raw, CompressionLevel::DefaultLevel);
+    let zeros = [0u8; STREAM_CHUNK];
+    let mut out_buf = [0u8; STREAM_CHUNK];
+    let mut out = Vec::new();
+    let mut remaining = raw_len;
+    let guard_max = (raw_len / STREAM_CHUNK as u64).saturating_add(4096);
+    for _ in 0..guard_max {
+        let n = remaining.min(STREAM_CHUNK as u64) as usize;
+        let flush = if remaining <= STREAM_CHUNK as u64 {
+            MZFlush::Finish
+        } else {
+            MZFlush::None
+        };
+        let input = zeros
+            .get(..n)
+            .unwrap_or_else(|| panic!("n ({n}) exceeds the {STREAM_CHUNK}-byte zero chunk"));
+        let res = mz_deflate(&mut compressor, input, &mut out_buf, flush);
+        out.extend_from_slice(out_buf.get(..res.bytes_written).unwrap_or_else(|| {
+            panic!("deflate stream wrote past its own {STREAM_CHUNK}-byte output buffer")
+        }));
+        remaining -= res.bytes_consumed as u64;
+        match res.status {
+            Ok(MZStatus::StreamEnd) => return out,
+            Ok(MZStatus::Ok) => continue,
+            other => panic!("deflate stream error building the test bomb: {other:?}"),
+        }
+    }
+    panic!("deflate_zeros_streamed did not finish within a bounded number of calls");
+}
+
 /// Inflate `stored` (`codec`-aware, bounds already checked by the caller via
 /// [`check_frame_bounds`] — this function trusts `raw_len` only to the extent that bound allows,
 /// never allocating more than [`STREAM_CHUNK`] for its own output buffer regardless of what `raw_len`

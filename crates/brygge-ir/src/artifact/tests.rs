@@ -1501,24 +1501,28 @@ fn reset_peak_rss() -> bool {
     std::fs::write("/proc/self/clear_refs", "5").is_ok()
 }
 
-/// Review 099 R-1's own proof, at 4 MiB rather than the 1 GiB review 099 first wrote: a literal 1 GiB
-/// does not fit `mutation.yml`'s own `ulimit -v 2000000` deep-sweep cap, run alongside three other
-/// tests (`--test-threads=4`) — nor, it turned out, does 128 MiB, on the CI runner this actually runs
-/// on (its headroom under the cap is tighter than the machine this was first sized on). 4 MiB keeps
-/// the same ~1000×+ ratio shape DEFLATE's own maximum expansion allows, with ample headroom either
-/// way: an artifact of a few KiB whose blob table and single frame hold 4 MiB of a single repeated
-/// byte (a real DEFLATE stream — 4 MiB / 1032 is a few KiB stored) streams through `read_from` (via
-/// `from_file`, over a real file) with a peak well below the 4 MiB the old, whole-buffer inflate would
-/// have allocated — bounded instead by a small multiple of the 64 KiB inflate buffer — and fails only
-/// on the content address (the table's id is deliberately wrong, so the pass must finish inflating and
-/// hashing the whole claim, within that bound, before it is refused).
+/// Review 099 R-1's own proof. Review 101 F-1: review 100's resize to 4 MiB (to fit `mutation.yml`'s
+/// own `ulimit -v 2000000` deep-sweep cap) let this test pass code review 099 itself found broken — a
+/// whole-buffer inflate that allocates `raw_len` up front also fits comfortably under 4 MiB (well under
+/// the 16 MiB bound below), so a test at that size proved nothing about the bug it exists to catch.
+/// Back to a size that bug cannot survive, 256 MiB — built here without ever materializing it: the
+/// frame's compressed bytes come from `frame::deflate_zeros_streamed` (64 KiB chunks of zeros through
+/// `miniz_oxide`'s own streaming compressor, one chunk held at a time), and the digest's content pass
+/// hashes the same 256 MiB of zeros the same way, a chunk at a time. An artifact of a few hundred KiB
+/// (that real DEFLATE stream) whose single frame claims 256 MiB streams through `read_from` (via
+/// `from_file`, over a real file) with a peak well below the 256 MiB the old, whole-buffer inflate
+/// would have allocated — bounded instead by a small multiple of the 64 KiB inflate buffer — and fails
+/// only on the content address (the table's id is deliberately wrong, so the pass must finish inflating
+/// and hashing the whole claim, within that bound, before it is refused).
 #[test]
 fn a_one_gib_deflate_bomb_streams_through_read_from_within_a_bounded_peak() {
-    const BOMB_LEN: usize = 4 * 1024 * 1024;
-    // Built and dropped one `BOMB_LEN` buffer at a time throughout (never two at once): this test's
-    // own *construction* cost must itself stay well under the deep sweep's own memory cap.
+    const RAW_LEN: u64 = 256 * 1024 * 1024;
+
     let mut b = IrBuilder::new(provenance());
-    let real_id = b.add_blob(vec![0u8; BOMB_LEN]).unwrap(); // moved in, not cloned
+    // The real blob stays small: nothing else depends on its size, only that it is some real content
+    // `real_id` legitimately names — the content-address mismatch below comes from the big blob's frame
+    // simply being a different, much larger payload, not from any particular byte value chosen for it.
+    let real_id = b.add_blob(b"small".to_vec()).unwrap();
     b.add_atom(AtomDraft {
         parents: vec![],
         ops: vec![PathOp::Add {
@@ -1541,16 +1545,17 @@ fn a_one_gib_deflate_bomb_streams_through_read_from_within_a_bounded_peak() {
     .unwrap();
     let ir = b.finish().unwrap();
     let meta_bytes = ir.encode_metadata();
-    drop(ir); // frees the content store's `BOMB_LEN` buffer, before the next one below
+    drop(ir);
 
     // Hand-built from the logical components directly (not by patching `to_bytes`'s own output): the
     // table keeps the *real* id (`store_order`'s own, matching the IR's blob reference, so the
-    // store-order check passes), but the frame's actual content (`wrong_content`, same length, still a
-    // real — highly compressible — DEFLATE stream, but different bytes) is not that id's — so the
-    // content check, reached only after everything else passes, is the one that fails, only once the
-    // whole claim has been inflated and hashed. The digest is computed over this same (real-id,
-    // wrong-content) combination, so the pass reaches that far rather than failing on the digest.
-    let wrong_content = vec![0xffu8; BOMB_LEN];
+    // store-order check passes), but the frame's actual content (256 MiB of zeros, a real — highly
+    // compressible — DEFLATE stream) is not that id's — so the content check, reached only after
+    // everything else passes, is the one that fails, only once the whole claim has been inflated and
+    // hashed. The digest is computed over this same (real-id, big-content) combination, so the pass
+    // reaches that far rather than failing on the digest.
+    let stored = frame::deflate_zeros_streamed(RAW_LEN);
+
     let mut version = CanonWriter::new();
     version.uvarint(0);
     version.uvarint(3);
@@ -1561,8 +1566,14 @@ fn a_one_gib_deflate_bomb_streams_through_read_from_within_a_bounded_peak() {
     hasher.update(&meta_bytes);
     hasher.update(canon::uvarint_value(1)); // one blob
     hasher.update(real_id.as_bytes());
-    hasher.update(canon::uvarint_value(wrong_content.len() as u64));
-    hasher.update(&wrong_content);
+    hasher.update(canon::uvarint_value(RAW_LEN));
+    let zero_chunk = [0u8; 64 * 1024];
+    let mut remaining = RAW_LEN;
+    while remaining > 0 {
+        let n = remaining.min(zero_chunk.len() as u64) as usize;
+        hasher.update(&zero_chunk[..n]);
+        remaining -= n as u64;
+    }
     let digest: [u8; 32] = hasher.finalize().into();
 
     let mut bytes = MAGIC.to_vec();
@@ -1578,10 +1589,10 @@ fn a_one_gib_deflate_bomb_streams_through_read_from_within_a_bounded_peak() {
     .unwrap();
     bytes.extend_from_slice(&canon::uvarint_value(1));
     bytes.extend_from_slice(real_id.as_bytes());
-    bytes.extend_from_slice(&canon::uvarint_value(wrong_content.len() as u64));
+    bytes.extend_from_slice(&canon::uvarint_value(RAW_LEN));
     bytes.extend_from_slice(&canon::uvarint_value(1)); // one blob frame
-    write_one_frame(&mut bytes, &wrong_content, false).unwrap();
-    drop(wrong_content); // frees its `BOMB_LEN`; `bytes` now holds only the (small) compressed frame
+    write_frame_body(&mut bytes, frame::Codec::Deflate, RAW_LEN, &stored).unwrap();
+    drop(stored); // `bytes` now holds only the (small) compressed frame
 
     let dir = scratch_dir("deflate-bomb");
     let path = dir.join("artifact");
@@ -1614,7 +1625,7 @@ fn a_one_gib_deflate_bomb_streams_through_read_from_within_a_bounded_peak() {
         let delta = after.saturating_sub(before);
         assert!(
             delta < 16 * 1024,
-            "read_from's own peak grew by {delta} KiB above baseline, inflating a 1 GiB claim; \
+            "read_from's own peak grew by {delta} KiB above baseline, inflating a 256 MiB claim; \
              expected well under 16 MiB"
         );
     }

@@ -63,27 +63,27 @@ fn deflate_short_or_overlong_output_is_refused() {
 
 #[test]
 fn a_one_gib_deflate_bomb_streams_within_bounds() {
-    // Review 099 R-1, at 4 MiB rather than the 1 GiB the name still recalls (review 100's own
-    // follow-up: even much less than 1 GiB does not fit `mutation.yml`'s deep-sweep memory cap on the
-    // CI runner this actually runs on — see `artifact::tests`' sibling test for the fuller account).
-    // DEFLATE-compressed zeros claiming to inflate to 4 MiB (well within DEFLATE's own 1032x expansion
-    // bound) must stream through with a bounded output buffer, never allocating anything near 4 MiB.
-    let raw = vec![0u8; 4 * 1024 * 1024];
-    let (codec, stored) = compress_frame(&raw);
-    assert_eq!(codec, Codec::Deflate);
+    // Review 101 F-1: review 100's resize to 4 MiB (to fit `mutation.yml`'s deep-sweep cap) let this
+    // test pass code that review 099 itself found broken — a whole-buffer inflate that allocates
+    // `raw_len` up front also fits comfortably under 4 MiB, so a test at that size proves nothing about
+    // the bug it exists to catch. Back to a size that bug cannot survive, 256 MiB — built here without
+    // ever materializing it: `deflate_zeros_streamed` streams the claim's compressed bytes directly, one
+    // 64 KiB chunk of zeros at a time, through `miniz_oxide`'s own streaming compressor.
+    const RAW_LEN: u64 = 256 * 1024 * 1024;
+    let stored = deflate_zeros_streamed(RAW_LEN);
     assert!(
-        stored.len() < (1 << 13),
-        "a run of zeros compresses far below 8 KiB"
+        stored.len() < (1 << 20),
+        "a run of zeros compresses far below 1 MiB"
     );
     let mut total = 0u64;
     let mut max_chunk = 0usize;
-    inflate_streamed(codec, &stored, raw.len() as u64, |chunk| {
+    inflate_streamed(Codec::Deflate, &stored, RAW_LEN, |chunk| {
         total += chunk.len() as u64;
         max_chunk = max_chunk.max(chunk.len());
         Ok(())
     })
     .unwrap();
-    assert_eq!(total, raw.len() as u64);
+    assert_eq!(total, RAW_LEN);
     assert!(max_chunk <= STREAM_CHUNK);
 }
 
