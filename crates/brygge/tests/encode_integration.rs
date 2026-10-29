@@ -10,8 +10,11 @@
 //! - `brygge-encode-git-example` (`examples/encode-git`): the real reference encoder, used once as the
 //!   actual plugin a user would run, to prove `encode` invokes it exactly as running it directly would.
 //!
-//! Both skip (with a "skipping: ... not built" message) if a `cargo test -p brygge` alone, without
-//! `--workspace`, has not built them.
+//! Both are workspace-built binaries, not a system tool whose absence is legitimate (like `git`, which
+//! these tests do skip for): if either is missing, the test that needs it **fails**, naming the fix
+//! (`cargo test --workspace`), rather than silently reporting `ok` for a test that never ran (review 093
+//! R-1/R-2). A bare `cargo test -p brygge`, without `--workspace`, does not build either one and so fails
+//! these tests on purpose; CI, the MSRV job and the AUR `check()` all run `--workspace`.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
 
@@ -57,18 +60,25 @@ fn exe_name(name: &str) -> String {
     }
 }
 
-/// The path to a sibling workspace binary, or `None` if it has not been built (a bare `cargo test -p
-/// brygge`, without `--workspace`, never builds it).
-fn sibling_bin(name: &str) -> Option<PathBuf> {
+/// The path to a sibling workspace binary — **fails the test** (never skips) if it was not built: unlike
+/// a system tool such as `git`, this is a binary brygge's own build is supposed to produce, and Cargo
+/// builds a package's binaries for `cargo test --workspace` only when that package has an integration
+/// test of its own (review 093 R-1) — both `tools/encode-test-plugin` and `examples/encode-git` do, for
+/// exactly this reason.
+fn sibling_bin(name: &str) -> PathBuf {
     let path = workspace_bin_dir().join(exe_name(name));
-    path.is_file().then_some(path)
+    assert!(
+        path.is_file(),
+        "{name} was not built: build the workspace: `cargo test --workspace`"
+    );
+    path
 }
 
-fn test_plugin_bin() -> Option<PathBuf> {
+fn test_plugin_bin() -> PathBuf {
     sibling_bin("brygge-encode-test-plugin")
 }
 
-fn git_example_bin() -> Option<PathBuf> {
+fn git_example_bin() -> PathBuf {
     sibling_bin("brygge-encode-git-example")
 }
 
@@ -210,12 +220,7 @@ fn not_found_names_the_target_and_points_at_list() {
 
 #[test]
 fn an_empty_and_a_relative_path_entry_are_skipped() {
-    let Some(plugin) = test_plugin_bin() else {
-        eprintln!(
-            "skipping: brygge-encode-test-plugin not built (run `cargo build --workspace` first)"
-        );
-        return;
-    };
+    let plugin = test_plugin_bin();
     let scratch = temp_dir("relpath");
     // A decoy at the relative path, resolved against the child's current directory — must never be
     // found, since a relative PATH entry is always skipped.
@@ -254,12 +259,7 @@ fn a_non_executable_file_is_skipped_and_the_search_continues() {
         eprintln!("skipping: this test's premise (a non-executable regular file) is Unix-only");
         return;
     }
-    let Some(plugin) = test_plugin_bin() else {
-        eprintln!(
-            "skipping: brygge-encode-test-plugin not built (run `cargo build --workspace` first)"
-        );
-        return;
-    };
+    let plugin = test_plugin_bin();
     let scratch = temp_dir("nonexec");
     let a = scratch.0.join("a");
     std::fs::create_dir_all(&a).unwrap();
@@ -308,12 +308,7 @@ fn a_non_executable_file_alone_is_not_found() {
 
 #[test]
 fn two_directories_with_the_plugin_the_first_runs_and_list_shows_the_second_shadowed() {
-    let Some(plugin) = test_plugin_bin() else {
-        eprintln!(
-            "skipping: brygge-encode-test-plugin not built (run `cargo build --workspace` first)"
-        );
-        return;
-    };
+    let plugin = test_plugin_bin();
     let scratch = temp_dir("shadow");
     let a = scratch.0.join("a");
     std::fs::create_dir_all(&a).unwrap();
@@ -388,12 +383,7 @@ fn percent_decode(s: &str) -> String {
 
 #[test]
 fn a_corrupted_artifact_is_refused_and_the_plugin_never_runs() {
-    let Some(plugin) = test_plugin_bin() else {
-        eprintln!(
-            "skipping: brygge-encode-test-plugin not built (run `cargo build --workspace` first)"
-        );
-        return;
-    };
+    let plugin = test_plugin_bin();
     let scratch = temp_dir("verify-first");
     install_plugin(&scratch.0, "foo", &plugin);
     let Some(artifact) = make_artifact(&scratch.0) else {
@@ -425,12 +415,7 @@ fn a_corrupted_artifact_is_refused_and_the_plugin_never_runs() {
 
 #[test]
 fn exit_codes_pass_through_unchanged() {
-    let Some(plugin) = test_plugin_bin() else {
-        eprintln!(
-            "skipping: brygge-encode-test-plugin not built (run `cargo build --workspace` first)"
-        );
-        return;
-    };
+    let plugin = test_plugin_bin();
     let scratch = temp_dir("exit-codes");
     install_plugin(&scratch.0, "foo", &plugin);
     let Some(artifact) = make_artifact(&scratch.0) else {
@@ -454,12 +439,7 @@ fn exit_codes_pass_through_unchanged() {
 #[cfg(unix)]
 #[test]
 fn a_self_killed_plugin_exits_1_with_the_signal_named() {
-    let Some(plugin) = test_plugin_bin() else {
-        eprintln!(
-            "skipping: brygge-encode-test-plugin not built (run `cargo build --workspace` first)"
-        );
-        return;
-    };
+    let plugin = test_plugin_bin();
     let scratch = temp_dir("signal");
     install_plugin(&scratch.0, "foo", &plugin);
     let Some(artifact) = make_artifact(&scratch.0) else {
@@ -481,12 +461,7 @@ fn a_self_killed_plugin_exits_1_with_the_signal_named() {
 
 #[test]
 fn arguments_reach_the_plugin_verbatim_with_no_shell() {
-    let Some(plugin) = test_plugin_bin() else {
-        eprintln!(
-            "skipping: brygge-encode-test-plugin not built (run `cargo build --workspace` first)"
-        );
-        return;
-    };
+    let plugin = test_plugin_bin();
     let scratch = temp_dir("argv");
     install_plugin(&scratch.0, "foo", &plugin);
     let Some(artifact) = make_artifact(&scratch.0) else {
@@ -523,12 +498,7 @@ fn the_git_example_runs_as_a_plugin_exactly_as_it_runs_directly() {
         eprintln!("skipping: git not on PATH");
         return;
     }
-    let Some(example) = git_example_bin() else {
-        eprintln!(
-            "skipping: brygge-encode-git-example not built (run `cargo build --workspace` first)"
-        );
-        return;
-    };
+    let example = git_example_bin();
     let scratch = temp_dir("git-example-plugin");
     install_plugin(&scratch.0, "git-example", &example);
     let Some(artifact) = make_artifact(&scratch.0) else {
