@@ -349,16 +349,39 @@ fn two_directories_with_the_plugin_the_first_runs_and_list_shows_the_second_shad
     assert!(list_output.status.success());
     let stdout = String::from_utf8_lossy(&list_output.stdout);
     assert!(stdout.contains("encode_list_version=1"), "{stdout}");
-    assert!(
-        stdout.contains(&format!(
-            "encoder.0.path={}",
-            a_plugin.display().to_string().replace(':', "%3A")
-        )) || stdout.contains(&format!("encoder.0.path={}", a_plugin.display())),
-        "{stdout}"
+    let path_line = stdout
+        .lines()
+        .find(|l| l.starts_with("encoder.0.path="))
+        .unwrap_or_else(|| panic!("no encoder.0.path line: {stdout}"));
+    let decoded = percent_decode(path_line.trim_start_matches("encoder.0.path="));
+    assert_eq!(
+        decoded,
+        a_plugin.display().to_string(),
+        "encoder.0 must be the first (unshadowed) PATH directory's plugin: {stdout}"
     );
     assert!(stdout.contains("encoder.0.shadowed=false"), "{stdout}");
     assert!(stdout.contains("encoder.1.shadowed=true"), "{stdout}");
     let _ = b_plugin;
+}
+
+/// Percent-decodes a machine-format value (`display::machine_value`'s inverse): every `%XX` becomes that
+/// byte, everything else passes through. Assumes (as this test's values do) the result is valid UTF-8.
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(byte) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
+                out.push(byte);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8(out).expect("valid UTF-8")
 }
 
 // ---- verify first (proof item 3) --------------------------------------------------------------------

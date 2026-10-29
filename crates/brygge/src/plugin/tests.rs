@@ -40,7 +40,9 @@ fn write_runnable(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
     path
 }
 
-/// Writes a file with no execute bit (Unix) at `dir/name`.
+/// Writes a file with no execute bit (Unix) at `dir/name`. Unix-only: its only caller,
+/// `find_in_skips_a_non_executable_file`, is (the property it tests does not exist elsewhere).
+#[cfg(unix)]
 fn write_non_executable(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
     let path = dir.join(name);
     std::fs::write(&path, b"not executable\n").unwrap();
@@ -59,9 +61,16 @@ fn plugin_name(target: &str) -> String {
 #[test]
 fn path_dirs_from_skips_empty_and_relative_entries() {
     let sep = if cfg!(windows) { ';' } else { ':' };
-    let value = format!("{sep}relative{sep}/absolute/one{sep}{sep}also/relative");
+    // An absolute path needs a drive prefix on Windows (`/absolute/one` has a root but no prefix, so
+    // `Path::is_absolute` is false for it there) — unlike Unix, where it already is absolute.
+    let absolute = if cfg!(windows) {
+        r"C:\absolute\one"
+    } else {
+        "/absolute/one"
+    };
+    let value = format!("{sep}relative{sep}{absolute}{sep}{sep}also/relative");
     let dirs = path_dirs_from(Some(std::ffi::OsStr::new(&value)));
-    assert_eq!(dirs, vec![std::path::PathBuf::from("/absolute/one")]);
+    assert_eq!(dirs, vec![std::path::PathBuf::from(absolute)]);
 }
 
 #[test]
@@ -70,10 +79,12 @@ fn path_dirs_from_none_is_empty() {
 }
 
 #[test]
-fn find_in_returns_the_first_runnable_match_in_path_order() {
+fn find_in_skips_a_plugin_shaped_directory() {
+    // A directory of the expected name is not a file on any platform, unlike an unset execute bit
+    // (Unix-only — see `find_in_skips_a_non_executable_file`, below).
     let a = temp_dir();
     let b = temp_dir();
-    write_non_executable(&a.0, &plugin_name("foo")); // skipped: not runnable
+    std::fs::create_dir_all(a.0.join(plugin_name("foo"))).unwrap();
     let b_plugin = write_runnable(&b.0, &plugin_name("foo"));
     let found = find_in("foo", &[a.0.clone(), b.0.clone()]);
     assert_eq!(found, Some(b_plugin));
