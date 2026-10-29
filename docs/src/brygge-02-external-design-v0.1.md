@@ -90,10 +90,7 @@ The command surface makes the **decode/encode separation** visible and the **hon
   - By default it prints the **fidelity report**: exactly what `decode` printed, reconstructed from the artifact alone (FS-02, HO-4).
   - `--atoms` adds the reviewer's detail: each atom's **epistemic status** (stated vs derived, IR-2), its opaque source identifiers (IR-3), its derived records with their parameters, and the loss boundary (IR-4). This is the advanced view; the default stays small for newcomers.
   - Read-only.
-- **CL-03 — `encode` is not part of the surface until Track B1.**
-  - The prikk encoder is designed to conform to prikk's import foundations once they exist (ROADMAP Track B).
-  - No placeholder command is listed in help. An `encode` invocation is an unknown command whose message says the encoder is not available yet.
-  - The design intent stands: a target is a `<target-kind>` value implemented against the IR alone (PU-3, IR-5), writing its own fidelity record (FS-01).
+- **CL-03 — `encode` runs external encoder plugins; `encode prikk` is Track B1's.** `brygge encode <target>` runs `brygge-encode-<target>`, found on `PATH` only, after verifying the artifact, and labels it as not part of brygge (RFC 017 D-3). The target `prikk` is reserved for the built-in encoder, which follows prikk's import foundations (Track B1).
 - **CL-04 — `brygge verify <artifact> [--against-source <source>]`** — the two checkable meanings of "faithful", kept visibly separate (VF-4):
   - **Always:** the VF-3 checks any reader can run without the source.
     - Every derived record is well-formed and carries its parameters.

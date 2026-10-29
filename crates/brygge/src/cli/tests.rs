@@ -392,10 +392,142 @@ fn inspect_forms() {
 }
 
 #[test]
-fn encode_is_a_usage_error_with_its_own_message() {
+fn encode_prikk_is_reserved_with_its_own_message() {
     let err = parse(&v(&["encode", "prikk"])).unwrap_err();
-    assert!(err.contains("'encode' is not available yet"), "{err}");
+    assert!(err.contains("'encode prikk' is not available yet"), "{err}");
     assert!(err.contains("ROADMAP"), "{err}");
+    // Reserved even with trailing arguments: it never reaches the artifact/format parsing below.
+    let err2 = parse(&v(&["encode", "prikk", "out.ir"])).unwrap_err();
+    assert_eq!(err, err2);
+}
+
+#[test]
+fn encode_needs_a_target_and_an_artifact() {
+    assert!(parse(&v(&["encode"])).is_err());
+    assert!(parse(&v(&["encode", "git-example"])).is_err());
+}
+
+#[test]
+fn encode_basic() {
+    let c = parse(&v(&["encode", "git-example", "out.ir"])).unwrap();
+    assert_eq!(
+        c,
+        Command::Encode {
+            target: "git-example".to_string(),
+            artifact: PathBuf::from("out.ir"),
+            plugin_args: vec![],
+            format: Format::Human,
+        }
+    );
+}
+
+#[test]
+fn encode_with_format_and_plugin_args() {
+    let c = parse(&v(&[
+        "encode",
+        "git-example",
+        "out.ir",
+        "--format",
+        "machine",
+        "--",
+        "--out",
+        "result.txt",
+        "-x",
+    ]))
+    .unwrap();
+    assert_eq!(
+        c,
+        Command::Encode {
+            target: "git-example".to_string(),
+            artifact: PathBuf::from("out.ir"),
+            plugin_args: vec![
+                "--out".to_string(),
+                "result.txt".to_string(),
+                "-x".to_string()
+            ],
+            format: Format::Machine,
+        }
+    );
+}
+
+#[test]
+fn encode_without_dashdash_has_no_plugin_args() {
+    let c = parse(&v(&["encode", "git-example", "out.ir"])).unwrap();
+    match c {
+        Command::Encode { plugin_args, .. } => assert!(plugin_args.is_empty()),
+        other => panic!("got {other:?}"),
+    }
+}
+
+#[test]
+fn encode_extra_positional_without_dashdash_is_a_usage_error() {
+    let err = parse(&v(&["encode", "git-example", "out.ir", "extra"])).unwrap_err();
+    assert!(err.contains("plugin arguments must follow --"), "{err}");
+}
+
+#[test]
+fn encode_rejects_invalid_targets() {
+    let too_long = "x".repeat(65);
+    for bad in ["../x", "A", "x/y", "", too_long.as_str()] {
+        assert!(
+            parse(&v(&["encode", bad, "out.ir"])).is_err(),
+            "expected target {bad:?} to be rejected"
+        );
+    }
+}
+
+#[test]
+fn encode_accepts_valid_targets() {
+    for good in ["git-example", "a", "a1", "git2", "a-b-c"] {
+        assert!(parse(&v(&["encode", good, "out.ir"])).is_ok(), "{good}");
+    }
+}
+
+#[test]
+fn encode_list_default() {
+    assert_eq!(
+        parse(&v(&["encode", "--list"])).unwrap(),
+        Command::EncodeList {
+            format: Format::Human
+        }
+    );
+}
+
+#[test]
+fn encode_list_with_format() {
+    assert_eq!(
+        parse(&v(&["encode", "--list", "--format", "machine"])).unwrap(),
+        Command::EncodeList {
+            format: Format::Machine
+        }
+    );
+}
+
+#[test]
+fn encode_list_rejects_extra_arguments() {
+    assert!(parse(&v(&["encode", "--list", "extra"])).is_err());
+}
+
+#[test]
+fn encode_help() {
+    assert_eq!(parse(&v(&["encode", "--help"])).unwrap(), Command::Help);
+    assert_eq!(
+        parse(&v(&["encode", "--list", "--help"])).unwrap(),
+        Command::Help
+    );
+}
+
+#[test]
+fn is_valid_target_matches_the_regex() {
+    assert!(is_valid_target("a"));
+    assert!(is_valid_target("a0-b9"));
+    assert!(!is_valid_target(""));
+    assert!(!is_valid_target("A"));
+    assert!(!is_valid_target("-a"));
+    assert!(!is_valid_target("a/b"));
+    assert!(!is_valid_target("a."));
+    assert!(!is_valid_target(&"a".repeat(65)));
+    assert!(is_valid_target(&"a".repeat(64)));
 }
 
 #[test]

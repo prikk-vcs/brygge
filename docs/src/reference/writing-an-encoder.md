@@ -113,7 +113,44 @@ container yourself. The full wire format, if you ever do need to parse it direct
 
 ## 5. Running as a `brygge encode` plugin
 
-<!-- See batch E (RFC 017 D-3): this section is written once that lands. -->
+`brygge encode <target> <artifact> [-- <plugin arguments>…]` runs your encoder as an external plugin
+(RFC 017 D-3), found on `PATH` — brygge does not ship one, does not register one, and does not know
+anything about it beyond the convention below.
+
+- **The binary name is `brygge-encode-<target>`.** On Unix, any executable regular file of that name on
+  `PATH`; on Windows, `brygge-encode-<target>.exe` specifically — **never `.bat` or `.cmd`**, which run
+  through `cmd.exe` and its own argument-splitting rules, not the exact bytes brygge spawns with. brygge
+  resolves the path itself and spawns it directly: never the bare name, so the current directory and a
+  source repository are never where it looks (`PATH` only, in order, skipping empty and relative
+  entries — not even the directory brygge itself runs from).
+- **The target name is `[a-z0-9][a-z0-9-]*`, at most 64 bytes.** Anything else is a usage error before
+  any lookup happens. **`prikk` is reserved** for the built-in encoder (Track B1, RFC 008) and is never
+  looked up on `PATH`, even if a `brygge-encode-prikk` exists there.
+- **The arguments you receive:** `brygge-encode-<target> --artifact <artifact> [<plugin arguments>…]`.
+  `<plugin arguments>` are exactly what the user wrote after `--`, verbatim, in order — brygge runs no
+  shell, so there is no quoting or expansion to account for.
+- **Your stdin, stdout and stderr are the user's**, inherited and untouched. Whatever you print to stdout
+  is the user's output; brygge writes nothing there itself while you run.
+- **brygge verifies the artifact before it ever starts you** (OQ-4): the same checks `brygge verify
+  <artifact>` runs (never `--against-source`). If the verdict is not a clean `pass`, brygge prints that
+  report instead and exits with `verify`'s own exit code (50 for a failed check; 1 for an unreadable
+  file, an unsupported contract, or a pre-release artifact) — **you are never started at all.** If you
+  read the artifact yourself through `brygge-ir`, you get the same checks over again (including
+  `ArtifactChanged` if it changes under you); if you parse the bytes yourself, you get nothing from
+  brygge — the guarantee in §1 is `brygge-ir`'s, not the file's.
+- **A banner brackets your run, on stderr, not yours to print:** before you start, brygge names you and
+  your resolved path and states you are not part of it; after you end, it states your exit code (or, on
+  Unix, the signal that killed you). Because brygge's own failures (a bad or reserved target, not found,
+  a failed verify) all happen *before* that banner, a user who sees it knows the exit code that follows
+  is yours, not brygge's.
+- **Your own exit code is passed straight through** — brygge's process exits with it unchanged. If a
+  signal kills you (Unix), brygge exits `1` and names the signal. If brygge cannot even start you (a
+  permission error, a race where the file vanished), that is brygge's own failure: exit `1`, with the OS
+  error and the path.
+- **`brygge encode --list [--format human|machine]`** shows every `brygge-encode-*` plugin found this
+  way, in `PATH` order, so a user can see what is actually reachable; one hidden by an earlier `PATH`
+  directory's plugin of the same target is marked shadowed — the machine form is in
+  [Machine-readable output](machine-output.md).
 
 ## 6. What brygge does not do for you
 

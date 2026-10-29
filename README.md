@@ -45,6 +45,10 @@ brygge inspect out.ir --atoms    # + atoms, their status, source ids, the loss b
 # Check it:
 brygge verify out.ir                                   # the honesty checks; no source needed
 brygge verify out.ir --against-source /path/to/repo     # + re-derive and compare
+
+# Run an external encoder plugin on it (see below):
+brygge encode <target> out.ir -- [plugin arguments]
+brygge encode --list
 ```
 
 Add `--format machine` to any of these for stable, line-oriented output a script or CI can read.
@@ -132,5 +136,7 @@ not apply to). The machine output is specified in
   backlog, and how to build and gate), then
   [`GOVERNANCE.md`](docs/src/development/handoffs/GOVERNANCE.md) (who decides what) and
   [`ROADMAP.md`](ROADMAP.md).
-- **`encode` is not in brygge yet.** The prikk encoder (RFC 008) waits on prikk's import foundations
-  (`ROADMAP.md`, Track B); this release is decode + inspect + verify.
+- **`encode` runs external encoder plugins only** (`brygge-encode-<target>`, found on `PATH`); brygge
+  supports none of them itself — see [`docs/src/reference/writing-an-encoder.md`](docs/src/reference/writing-an-encoder.md)
+  if you want to build one. `encode prikk` is reserved for the built-in encoder (RFC 008), which still
+  waits on prikk's import foundations (`ROADMAP.md`, Track B).

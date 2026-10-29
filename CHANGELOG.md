@@ -15,6 +15,13 @@ Every handoff adds its own entry in its own commit.
   any target on the IR alone, and the honesty rules it must keep (RFC 017).
 - `examples/encode-git`: an unsupported example encoder from the IR to Git, through `git fast-import`. It
   is not part of brygge, and is never released (RFC 017).
+- `brygge encode <target> <artifact>`: runs an external encoder plugin, `brygge-encode-<target>`, found
+  on `PATH` only. brygge verifies the artifact first, refuses to run the plugin if it fails, and labels
+  the plugin as not part of brygge. `brygge encode --list` shows the plugins found (RFC 017).
+
+**Changed:**
+- `encode prikk` is reserved for the built-in prikk encoder, and still reports that it is not available
+  yet.
 
 ## [0.5.0] — 2026-10-21
 

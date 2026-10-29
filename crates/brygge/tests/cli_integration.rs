@@ -187,14 +187,50 @@ fn an_inapplicable_option_exits_2_with_the_exact_message() {
 }
 
 #[test]
-fn encode_exits_2_with_its_own_message() {
+fn encode_with_no_target_is_a_usage_error() {
     let output = Command::new(bin())
         .arg("encode")
         .output()
         .expect("run brygge encode");
     assert_eq!(output.status.code(), Some(USAGE));
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("'encode' is not available yet"), "{stderr}");
+    assert!(stderr.contains("encode needs a target"), "{stderr}");
+}
+
+#[test]
+fn encode_prikk_exits_2_with_its_own_message_even_with_a_plugin_on_path() {
+    // `prikk` is reserved (RFC 017 D-3): never looked up on PATH, even when a real
+    // `brygge-encode-prikk` is there.
+    let dir = std::env::temp_dir().join(format!(
+        "brygge-cli-itest-prikk-path-{}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let plugin_name = if cfg!(windows) {
+        "brygge-encode-prikk.exe"
+    } else {
+        "brygge-encode-prikk"
+    };
+    let plugin_path = dir.join(plugin_name);
+    std::fs::write(&plugin_path, b"").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&plugin_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let output = Command::new(bin())
+        .args(["encode", "prikk", "out.ir"])
+        .env("PATH", &dir)
+        .output()
+        .expect("run brygge encode prikk");
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(output.status.code(), Some(USAGE));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("'encode prikk' is not available yet"),
+        "{stderr}"
+    );
 }
 
 #[test]
@@ -213,8 +249,8 @@ fn help_lists_only_existing_commands() {
         "the removed verb must not be listed"
     );
     assert!(
-        !stdout.contains("encode"),
-        "no placeholder for a command that does not exist yet (review 003 R-4, CL-03/CL-06)"
+        stdout.contains("encode"),
+        "encode is a real command now (RFC 017 D-3), not a placeholder"
     );
 }
 

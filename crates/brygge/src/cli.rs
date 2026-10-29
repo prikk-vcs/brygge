@@ -88,10 +88,53 @@ pub enum Command {
         /// Output format.
         format: Format,
     },
+    /// `encode <target> <artifact> [--format …] [-- <plugin arguments>…]` (RFC 017 D-3).
+    Encode {
+        /// The plugin's target name (`[a-z0-9][a-z0-9-]*`, at most 64 bytes; never `prikk`, reserved).
+        target: String,
+        /// The IR artifact to encode.
+        artifact: PathBuf,
+        /// Everything after `--`, verbatim, passed to the plugin unchanged.
+        plugin_args: Vec<String>,
+        /// Output format, for the verify-first report and the banner (OQ-4).
+        format: Format,
+    },
+    /// `encode --list [--format …]` (RFC 017 D-3).
+    EncodeList {
+        /// Output format.
+        format: Format,
+    },
     /// `--version`.
     Version,
     /// `--help`, `<command> --help`, or no arguments.
     Help,
+}
+
+/// The target name reserved for the built-in encoder (Track B1, RFC 008): never looked up on `PATH`.
+pub const PRIKK_TARGET: &str = "prikk";
+
+/// Today's message for `encode prikk` (kept until Track B1 lands): a usage error, not a lookup failure.
+pub const PRIKK_NOT_AVAILABLE: &str = "'encode prikk' is not available yet: the prikk encoder follows \
+                                        prikk's import foundations (see ROADMAP)";
+
+/// Whether `target` is a valid `encode` target name: `[a-z0-9][a-z0-9-]*`, at most 64 bytes. Shared by
+/// argument parsing and by `encode --list`'s filter over `PATH` (a plugin file whose suffix is not a
+/// valid target is not listed).
+#[must_use]
+pub fn is_valid_target(target: &str) -> bool {
+    if target.is_empty() || target.len() > 64 {
+        return false;
+    }
+    let mut bytes = target.bytes();
+    let Some(first) = bytes.next() else {
+        return false;
+    };
+    if !first.is_ascii_lowercase() && !first.is_ascii_digit() {
+        return false;
+    }
+    target
+        .bytes()
+        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 
 /// The top-level usage text. Lists only commands that exist (CL-06).
@@ -102,6 +145,8 @@ USAGE:
   brygge decode <git|hg|svn|cvs> <source> --out <artifact> [--infer-renames | --reconstruct-refs] [--spill-dir <DIR>] [--format human|machine]
   brygge inspect <artifact> [--atoms] [--format human|machine]
   brygge verify <artifact> [--against-source <source> [--spill-dir <DIR>]] [--format human|machine]
+  brygge encode <target> <artifact> [--format human|machine] [-- <plugin arguments>…]
+  brygge encode --list [--format human|machine]
   brygge --version | --help | <command> --help
 
 COMMANDS:
@@ -120,6 +165,15 @@ COMMANDS:
            separately, never merged. The re-derive's own file content is kept on disk the same way
            decode's is; --spill-dir <DIR> chooses where (it must already exist, and only applies with
            --against-source); the default is the artifact's own directory
+  encode   run an external encoder plugin, `brygge-encode-<target>`, found on PATH only — never the
+           bare name, never the current directory. brygge verifies the artifact first
+           (the same checks as `verify`, without --against-source) and refuses to run the plugin on
+           anything but a clean pass, exiting with verify's own code. Arguments after -- are passed to
+           the plugin verbatim, with no shell. The plugin is not part of brygge, and its stdout is the
+           user's output, untouched. `encode --list` shows every brygge-encode-* plugin found on PATH,
+           in PATH order, marking one shadowed by an earlier directory's plugin of the same target.
+           `encode prikk` is reserved for the built-in encoder (Track B1): not available yet, and never
+           looked up on PATH
 
 VOCABULARY: artifact, source, stated, derived, dropped, flagged, refused, Unverifiable.";
 
@@ -147,11 +201,7 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
         "decode" => parse_decode(args.get(1..).unwrap_or(&[])),
         "inspect" => parse_inspect(args.get(1..).unwrap_or(&[])),
         "verify" => parse_verify(args.get(1..).unwrap_or(&[])),
-        "encode" => Err(
-            "'encode' is not available yet: the prikk encoder follows prikk's import foundations \
-             (see ROADMAP)"
-                .to_string(),
-        ),
+        "encode" => parse_encode(args.get(1..).unwrap_or(&[])),
         other => Err(format!(
             "unknown command '{other}'\n\nrun `brygge --help` for usage"
         )),
@@ -421,6 +471,112 @@ fn parse_verify(args: &[String]) -> Result<Command, String> {
         spill_dir,
         format,
     })
+}
+
+fn parse_encode(args: &[String]) -> Result<Command, String> {
+    if wants_help(args) {
+        return Ok(Command::Help);
+    }
+    let mut it = args.iter();
+    let Some(first) = it.next() else {
+        return Err(usage_error(
+            "encode",
+            "encode needs a target: encode <target> <artifact> [-- <plugin arguments>...] (see \
+             encode --list)",
+        ));
+    };
+    if first == "--list" {
+        return parse_encode_list(args.get(1..).unwrap_or(&[]));
+    }
+    if first.starts_with('-') {
+        return Err(usage_error("encode", format!("unknown flag '{first}'")));
+    }
+    let target = first.clone();
+    if target == PRIKK_TARGET {
+        return Err(PRIKK_NOT_AVAILABLE.to_string());
+    }
+    if !is_valid_target(&target) {
+        return Err(usage_error(
+            "encode",
+            format!(
+                "target '{target}' is not valid: it must match [a-z0-9][a-z0-9-]*, at most 64 bytes"
+            ),
+        ));
+    }
+    let mut artifact: Option<PathBuf> = None;
+    let mut plugin_args: Vec<String> = Vec::new();
+    let mut format = Format::Human;
+    let mut format_seen = false;
+    let mut saw_dashdash = false;
+    while let Some(arg) = it.next() {
+        if saw_dashdash {
+            plugin_args.push(arg.clone());
+            continue;
+        }
+        match arg.as_str() {
+            "--" => saw_dashdash = true,
+            "--format" => {
+                if format_seen {
+                    return Err(usage_error("encode", "--format given more than once"));
+                }
+                format_seen = true;
+                format = parse_format(&mut it, "encode")?;
+            }
+            other if other.starts_with('-') => {
+                return Err(usage_error("encode", format!("unknown flag '{other}'")));
+            }
+            other => {
+                if artifact.is_some() {
+                    return Err(usage_error(
+                        "encode",
+                        format!(
+                            "unexpected extra argument '{other}' (plugin arguments must follow --)"
+                        ),
+                    ));
+                }
+                artifact = Some(PathBuf::from(other));
+            }
+        }
+    }
+    let artifact = artifact.ok_or_else(|| {
+        usage_error(
+            "encode",
+            "encode needs an <artifact>: encode <target> <artifact>",
+        )
+    })?;
+    Ok(Command::Encode {
+        target,
+        artifact,
+        plugin_args,
+        format,
+    })
+}
+
+fn parse_encode_list(args: &[String]) -> Result<Command, String> {
+    if wants_help(args) {
+        return Ok(Command::Help);
+    }
+    let mut it = args.iter();
+    let mut format = Format::Human;
+    let mut format_seen = false;
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--format" => {
+                if format_seen {
+                    return Err(usage_error("encode", "--format given more than once"));
+                }
+                format_seen = true;
+                format = parse_format(&mut it, "encode")?;
+            }
+            other => {
+                return Err(usage_error(
+                    "encode",
+                    format!("unexpected argument '{other}'"),
+                ));
+            }
+        }
+    }
+    Ok(Command::EncodeList { format })
 }
 
 #[cfg(test)]

@@ -1,12 +1,14 @@
 //! The brygge command-line tool: carry version-control history into an intermediate representation.
 //!
-//! The three-verb surface (external design v0.3 CL-01…CL-08, handoff `cli-and-verify-handoff-v2.md`):
-//! `decode` (git, hg, svn, cvs), `inspect` (the fidelity report, `--atoms` for the reviewer's detail), and
-//! `verify` (always the internal honesty checks; `--against-source` additionally re-derives and compares,
-//! VF-2). `encode` is not part of the surface until prikk's import foundations exist (Track B1). The IR
-//! core and `verify`'s internal checks link no decoder (RFC 009 D-1); `decode` and
-//! `verify --against-source` wire in the four decoder crates. Every string that can originate in a source
-//! repository is neutralized before it reaches stdout or stderr (`display`, CR-19).
+//! The command surface (external design v0.3 CL-01…CL-08, handoff `cli-and-verify-handoff-v2.md`):
+//! `decode` (git, hg, svn, cvs), `inspect` (the fidelity report, `--atoms` for the reviewer's detail),
+//! `verify` (always the internal honesty checks; `--against-source` additionally re-derives and
+//! compares, VF-2), and `encode <target>` (RFC 017 D-3): runs an external encoder plugin,
+//! `brygge-encode-<target>`, found on `PATH` only — never brygge's own; `encode prikk` is reserved for
+//! the built-in encoder, which still waits on prikk's import foundations (Track B1). The IR core and
+//! `verify`'s internal checks link no decoder (RFC 009 D-1); `decode` and `verify --against-source` wire
+//! in the four decoder crates. Every string that can originate in a source repository is neutralized
+//! before it reaches stdout or stderr (`display`, CR-19).
 //!
 //! `print!`/`println!`/`eprint!`/`eprintln!` are denied outside tests: every write goes through
 //! [`output::stdout`]/[`output::stderr`] instead, so a reader that closes the pipe early (`brygge … |
@@ -18,6 +20,7 @@ mod commands;
 mod display;
 mod exit;
 mod output;
+mod plugin;
 
 use cli::Command;
 
@@ -85,5 +88,12 @@ fn run(cmd: Command) -> i32 {
             spill_dir.as_deref(),
             format,
         ),
+        Command::Encode {
+            target,
+            artifact,
+            plugin_args,
+            format,
+        } => commands::run_encode(&target, &artifact, &plugin_args, format),
+        Command::EncodeList { format } => commands::run_encode_list(format),
     }
 }

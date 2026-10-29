@@ -50,6 +50,8 @@ brygge release and of the IR contract**.
 | `report_version` | the fidelity report: the lines `decode` and `inspect` print (§3.1) | `3` |
 | `inspect_version` | the per-atom listing `inspect --atoms` appends (§3.2) | `4` |
 | `verify_version` | `verify`'s lines (§3.3) | `4` |
+| `encode_list_version` | `encode --list`'s lines (§3.4) | `1` |
+| `encode_version` | `encode`'s own banner and exit lines (§3.5) | `1` |
 
 **The rule (normative):**
 - A version is **bumped** whenever any key or value domain of the output it governs changes:
@@ -142,6 +144,46 @@ The seven `verify.check.<name>` lines always appear, in the order above, each fo
 when it did not pass. `not-run` (for `verify.against_source`) means "not requested"; `not-checked` means
 "requested or due, but could not run". `verify.result` is always last.
 
+### 3.4 `encode --list` (governed by `encode_list_version`)
+
+| Key | Value | Enc. |
+|---|---|---|
+| `encode_list_version` | `1` | |
+| `encoder.N.target` | the plugin's target name | ● |
+| `encoder.N.path` | its resolved, absolute path | ● |
+| `encoder.N.shadowed` | `true` if an earlier `PATH` directory already has a plugin of this target (brygge would never run this one); else `false` | |
+
+Plugins appear in `PATH` order (and, within one directory, by target name — a directory listing's own
+order is unspecified). On stdout, like every other command's result; `encode --list` runs no plugin, so
+nothing competes for stdout the way `encode <target>` itself does (§3.5).
+
+### 3.5 `encode <target>` (governed by `encode_version`)
+
+`encode <target>`'s own status — unlike every other command's machine output — goes to **stderr, not
+stdout**: stdout is the plugin's, inherited and untouched, for the whole run. Nothing about the plugin's
+own output is in this contract; only brygge's own banner (printed once, before the plugin starts) and
+the line after it ends are.
+
+**If the mandatory verify-first check (OQ-4) does not pass,** the plugin never starts, and brygge prints
+`verify`'s own lines (§3.3) to stderr instead of this section — look for `verify_version`, not
+`encode_version`, to tell the two apart.
+
+**Otherwise, before the plugin starts:**
+
+| Key | Value | Enc. |
+|---|---|---|
+| `encode_version` | `1` | |
+| `encode.target` | the target name | ● |
+| `encode.plugin_path` | the plugin's resolved, absolute path | ● |
+| `encode.banner` | always `not_part_of_brygge` | |
+
+**After the plugin ends,** exactly one of:
+
+| Key | Value | Enc. |
+|---|---|---|
+| `encode.exit_code` | the plugin's own exit code (brygge's own process exits with the same code) | |
+| `encode.signal` | Unix only: the signal number that killed the plugin (brygge's own process then exits `1`) | |
+
 ## 4. Exit codes
 
 The exit code carries the outcome class, so a gate can branch without parsing output.
@@ -158,6 +200,11 @@ The exit code carries the outcome class, so a gate can branch without parsing ou
 | `2` | usage error: bad arguments, or an option given to a source kind it does not apply to | any command |
 
 When several classes apply to one `decode`, `30` takes precedence over `10`.
+
+**`encode <target>`'s own exit code is not in this table:** if its mandatory verify-first check does not
+pass, it exits with `verify`'s own code above; otherwise it exits with the plugin's own code, unchanged
+(or `1`, naming the signal, if the plugin was killed by one). A bad or reserved target, or a target not
+found on `PATH`, is `2`.
 
 ## 5. Examples
 

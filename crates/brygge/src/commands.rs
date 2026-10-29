@@ -22,6 +22,7 @@ use crate::cli::{Format, SourceKind};
 use crate::display;
 use crate::exit;
 use crate::output;
+use crate::plugin;
 
 const VERIFY_VERSION: u32 = 4;
 const INSPECT_VERSION: u32 = 4;
@@ -1429,6 +1430,67 @@ impl Verdict {
     }
 }
 
+/// Every internal check (never `--against-source`), and whether they all passed. Shared by `verify`
+/// itself and by [`verify_internal_report`] (`encode`'s mandatory verify-first gate, OQ-4), so the two
+/// can never see a different set of checks for the same artifact.
+fn compute_internal_checks(
+    parsed: &Result<Decoded, brygge_ir::Error>,
+) -> (Vec<(&'static str, CheckOutcome)>, bool) {
+    let mut checks: Vec<(&'static str, CheckOutcome)> = Vec::with_capacity(CHECK_NAMES.len());
+    let ir_opt = match parsed {
+        Ok(decoded) => {
+            checks.push(("integrity", CheckOutcome::Pass));
+            Some(&decoded.ir)
+        }
+        Err(e) => {
+            checks.push(("integrity", CheckOutcome::Fail(e.to_string())));
+            None
+        }
+    };
+    if let Some(ir) = ir_opt {
+        checks.push(("structure", check_structure(ir)));
+        checks.push(("replay", check_replay(ir)));
+        checks.push(("derivations", check_derivations(ir)));
+        checks.push(("source-invariants", check_source_invariants(ir)));
+        checks.push(("provenance", check_provenance(ir)));
+        checks.push(("loss-boundary", check_loss_boundary(ir)));
+    } else {
+        for name in &CHECK_NAMES[1..] {
+            checks.push((
+                name,
+                CheckOutcome::NotChecked(
+                    "the artifact failed to decode; this check cannot run".to_string(),
+                ),
+            ));
+        }
+    }
+    let internal_pass = !checks.iter().any(|(_, o)| o.is_fail());
+    (checks, internal_pass)
+}
+
+/// Runs every internal check (never `--against-source`) and renders the report, without writing it
+/// anywhere: `encode`'s verify-first gate (OQ-4) prints this to stderr itself (brygge's own stdout is
+/// reserved for the plugin it may go on to run), never to stdout the way the standalone `verify` command
+/// does. An unreadable artifact short-circuits exactly as `verify` itself does, before any check runs.
+pub(crate) fn verify_internal_report(artifact: &Path, format: Format) -> (String, i32) {
+    let parsed = brygge_ir::from_file(artifact);
+    if let Err(brygge_ir::Error::Io(msg)) = &parsed {
+        return (
+            format!("cannot read {}: {msg}\n", artifact.display()),
+            exit::FAILURE,
+        );
+    }
+    let (checks, internal_pass) = compute_internal_checks(&parsed);
+    let against = AgainstSourceOutcome::NotRun;
+    let verdict = Verdict::from(internal_pass, &against);
+    let skipped = parsed
+        .as_ref()
+        .map_or(0, |decoded| decoded.skipped_non_critical_fields);
+    let rendered =
+        format_verify_report(format, &checks, internal_pass, &against, &verdict, skipped);
+    (rendered, verdict.exit_code())
+}
+
 /// `verify <artifact> [--against-source <source>] [--spill-dir <DIR>]` (CL-04, CR-02): the internal
 /// checks always run; each can fail. With `--against-source`, additionally re-derive and report the two
 /// results separately (VF-4) — the re-decode spills file content to `spill_dir` (or, by default, the
@@ -1471,35 +1533,8 @@ pub fn run_verify(
         output::stderr(&format!("cannot read {}: {msg}", artifact.display()));
         return exit::FAILURE;
     }
-    let mut checks: Vec<(&'static str, CheckOutcome)> = Vec::with_capacity(CHECK_NAMES.len());
-    let ir_opt = match &parsed {
-        Ok(decoded) => {
-            checks.push(("integrity", CheckOutcome::Pass));
-            Some(&decoded.ir)
-        }
-        Err(e) => {
-            checks.push(("integrity", CheckOutcome::Fail(e.to_string())));
-            None
-        }
-    };
-    if let Some(ir) = ir_opt {
-        checks.push(("structure", check_structure(ir)));
-        checks.push(("replay", check_replay(ir)));
-        checks.push(("derivations", check_derivations(ir)));
-        checks.push(("source-invariants", check_source_invariants(ir)));
-        checks.push(("provenance", check_provenance(ir)));
-        checks.push(("loss-boundary", check_loss_boundary(ir)));
-    } else {
-        for name in &CHECK_NAMES[1..] {
-            checks.push((
-                name,
-                CheckOutcome::NotChecked(
-                    "the artifact failed to decode; this check cannot run".to_string(),
-                ),
-            ));
-        }
-    }
-    let internal_pass = !checks.iter().any(|(_, o)| o.is_fail());
+    let (checks, internal_pass) = compute_internal_checks(&parsed);
+    let ir_opt = parsed.as_ref().ok().map(|decoded| &decoded.ir);
 
     let against = match (against_source, ir_opt, &storage) {
         (Some(src), Some(ir), Some(storage)) => run_against_source(ir, src, storage),
@@ -1587,6 +1622,27 @@ fn render_verify(
     verdict: &Verdict,
     skipped_non_critical_fields: u64,
 ) -> Option<i32> {
+    let rendered = format_verify_report(
+        format,
+        checks,
+        internal_pass,
+        against,
+        verdict,
+        skipped_non_critical_fields,
+    );
+    output::stdout(&rendered)
+}
+
+/// The body of [`render_verify`], as a string — shared with [`verify_internal_report`], which writes it
+/// to stderr instead of stdout.
+fn format_verify_report(
+    format: Format,
+    checks: &[(&'static str, CheckOutcome)],
+    internal_pass: bool,
+    against: &AgainstSourceOutcome,
+    verdict: &Verdict,
+    skipped_non_critical_fields: u64,
+) -> String {
     let mut s = String::new();
     match format {
         Format::Machine => {
@@ -1641,7 +1697,145 @@ fn render_verify(
             let _ = writeln!(s, "{}", verdict.human_line());
         }
     }
-    output::stdout(&s)
+    s
+}
+
+// ---- encode (RFC 017 D-3) --------------------------------------------------------------------------
+
+const ENCODE_LIST_VERSION: u32 = 1;
+const ENCODE_VERSION: u32 = 1;
+
+/// `encode --list [--format …]`: every `brygge-encode-*` plugin [`plugin::list`] finds on `PATH`.
+pub fn run_encode_list(format: Format) -> i32 {
+    let plugins = plugin::list();
+    let rendered = match format {
+        Format::Human => render_encode_list_human(&plugins),
+        Format::Machine => render_encode_list_machine(&plugins),
+    };
+    if let Some(code) = output::stdout(&rendered) {
+        return code;
+    }
+    exit::CLEAN
+}
+
+fn render_encode_list_human(plugins: &[plugin::Listed]) -> String {
+    let mut s = String::new();
+    if plugins.is_empty() {
+        let _ = writeln!(s, "no brygge-encode-* plugins found on PATH");
+        return s;
+    }
+    for p in plugins {
+        let _ = write!(s, "{}  {}", p.target, p.path.display());
+        if p.shadowed {
+            let _ = write!(s, "  (shadowed)");
+        }
+        let _ = writeln!(s);
+    }
+    s
+}
+
+fn render_encode_list_machine(plugins: &[plugin::Listed]) -> String {
+    let mut s = String::new();
+    let _ = writeln!(s, "encode_list_version={ENCODE_LIST_VERSION}");
+    for (i, p) in plugins.iter().enumerate() {
+        let _ = writeln!(
+            s,
+            "encoder.{i}.target={}",
+            display::machine_value(&p.target)
+        );
+        let _ = writeln!(
+            s,
+            "encoder.{i}.path={}",
+            display::machine_value(&p.path.display().to_string())
+        );
+        let _ = writeln!(s, "encoder.{i}.shadowed={}", p.shadowed);
+    }
+    s
+}
+
+/// The mandatory stderr banner, printed before the plugin runs (RFC 017 D-3 §4): always, in both
+/// formats, and in the machine format as a versioned key=value block — brygge's own stdout is reserved
+/// for the plugin it is about to run, so unlike every other command's machine output, `encode`'s own
+/// status lines (this banner, and [`encode_exit_text`]/[`encode_signal_text`] after) go to stderr, keyed
+/// and versioned the same way so a script can still read them without parsing prose.
+fn encode_banner_text(format: Format, target: &str, path: &Path) -> String {
+    match format {
+        Format::Human => format!(
+            "encoding with the external plugin `brygge-encode-{target}` (`{}`): not part of brygge; \
+             brygge verified the artifact, not the plugin's output",
+            path.display()
+        ),
+        Format::Machine => format!(
+            "encode_version={ENCODE_VERSION}\nencode.target={}\nencode.plugin_path={}\n\
+             encode.banner=not_part_of_brygge",
+            display::machine_value(target),
+            display::machine_value(&path.display().to_string()),
+        ),
+    }
+}
+
+fn encode_exit_text(format: Format, target: &str, code: i32) -> String {
+    match format {
+        Format::Human => format!("`brygge-encode-{target}` exited with {code}"),
+        Format::Machine => format!("encode.exit_code={code}"),
+    }
+}
+
+fn encode_signal_text(format: Format, target: &str, signal: i32) -> String {
+    match format {
+        Format::Human => match plugin::signal_name(signal) {
+            Some(name) => {
+                format!("`brygge-encode-{target}` was killed by signal {signal} ({name})")
+            }
+            None => format!("`brygge-encode-{target}` was killed by signal {signal}"),
+        },
+        Format::Machine => format!("encode.signal={signal}"),
+    }
+}
+
+/// `encode <target> <artifact> [-- <plugin arguments>…]` (RFC 017 D-3, OQ-1/OQ-4). Resolves
+/// `brygge-encode-<target>` on `PATH` ([`plugin::find`] — never the bare name), verifies the artifact
+/// first and refuses to run the plugin on anything but a clean `pass` (exiting with `verify`'s own exit
+/// code), then spawns the plugin with the mandatory banner. The plugin's stdin/stdout/stderr are
+/// inherited: its own stdout is the user's output, never touched by brygge.
+pub fn run_encode(target: &str, artifact: &Path, plugin_args: &[String], format: Format) -> i32 {
+    let Some(path) = plugin::find(target) else {
+        output::stderr(&format!(
+            "no encoder for '{target}': brygge-encode-{target} is not on PATH (see `brygge encode \
+             --list`)"
+        ));
+        return exit::USAGE;
+    };
+
+    let (report, code) = verify_internal_report(artifact, format);
+    if code != exit::CLEAN {
+        output::stderr(&report);
+        return code;
+    }
+
+    output::stderr(&encode_banner_text(format, target, &path));
+
+    let mut argv: Vec<std::ffi::OsString> =
+        vec!["--artifact".into(), artifact.as_os_str().to_os_string()];
+    argv.extend(plugin_args.iter().map(std::ffi::OsString::from));
+
+    match plugin::run(&path, &argv) {
+        plugin::Ran::Exited(code) => {
+            output::stderr(&encode_exit_text(format, target, code));
+            code
+        }
+        plugin::Ran::Signaled(signal) => {
+            output::stderr(&encode_signal_text(format, target, signal));
+            exit::FAILURE
+        }
+        plugin::Ran::CannotStart(e) => {
+            output::stderr(&format!(
+                "cannot start brygge-encode-{target} ({}): {e}",
+                path.display()
+            ));
+            exit::FAILURE
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1651,3 +1845,6 @@ mod tests;
 
 #[cfg(test)]
 mod mutation;
+
+#[cfg(test)]
+mod encode_tests;
