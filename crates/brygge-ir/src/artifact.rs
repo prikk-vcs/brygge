@@ -146,26 +146,7 @@ fn write_to_inner<W: Write + Seek>(ir: &Ir, out: &mut W, force_stored: bool) -> 
     let frame_lens = frame::canonical_frame_raw_lens(lens.iter().copied());
     out.write_all(&canon::uvarint_value(frame_lens.len() as u64))
         .map_err(Error::io)?;
-    let mut blob_ids = order.iter();
-    for &flen in &frame_lens {
-        // One frame's raw bytes in memory at a time (RFC 015 D-3, RFC 018 §4): at most 1 MiB of packed
-        // small blobs, or one large blob of its own.
-        let mut buf = Vec::new();
-        let mut collected = 0u64;
-        while collected < flen {
-            let id = blob_ids.next().ok_or_else(|| {
-                Error::Invariant("the frame packing plan ran out of blobs".to_string())
-            })?;
-            let bytes = ir
-                .content
-                .get(id)?
-                .ok_or_else(|| Error::Invariant(format!("blob {id} indexed but not readable")))?;
-            hasher.update(&bytes);
-            collected += bytes.len() as u64;
-            buf.extend_from_slice(&bytes);
-        }
-        write_one_frame(out, &buf, force_stored)?;
-    }
+    write_blob_frames(out, ir, &order, &frame_lens, &mut hasher, force_stored)?;
 
     let digest: [u8; 32] = hasher.finalize().into();
     let end = out.stream_position().map_err(Error::io)?;
@@ -204,14 +185,147 @@ fn write_one_frame<W: Write>(out: &mut W, raw: &[u8], force_stored: bool) -> Res
     } else {
         frame::compress_frame(raw)
     };
+    write_frame_body(out, codec, raw.len() as u64, &stored)
+}
+
+/// Write one frame's header and stored bytes, given an already-compressed `(codec, stored)` pair —
+/// the part [`write_one_frame`] and [`write_blob_frames`]'s parallel path share.
+fn write_frame_body<W: Write>(
+    out: &mut W,
+    codec: frame::Codec,
+    raw_len: u64,
+    stored: &[u8],
+) -> Result<()> {
     out.write_all(&canon::uvarint_value(codec.to_u64()))
         .map_err(Error::io)?;
-    out.write_all(&canon::uvarint_value(raw.len() as u64))
+    out.write_all(&canon::uvarint_value(raw_len))
         .map_err(Error::io)?;
     out.write_all(&canon::uvarint_value(stored.len() as u64))
         .map_err(Error::io)?;
-    out.write_all(&stored).map_err(Error::io)?;
+    out.write_all(stored).map_err(Error::io)?;
     Ok(())
+}
+
+/// The cap on raw bytes read from `ir.content` and held in memory at once while writing blob frames
+/// (review 099 R-6): bounded, not unlimited, so parallel compression still respects RFC 015 D-3's
+/// spirit (never the artifact's whole content at once) — just a wider window than one frame, wide
+/// enough to give every worker real work.
+const PARALLEL_WINDOW: u64 = 64 * 1024 * 1024;
+
+/// Write every blob frame the plan (`frame_lens`) describes, reading blobs from `ir.content` in
+/// `order` and compressing up to [`PARALLEL_WINDOW`] worth of them at a time, across up to
+/// `available_parallelism().min(8)` threads (review 099 R-6: DEFLATE at level 6 is real, serial CPU
+/// work over every byte written; a repository with gigabytes of blob content pays for that many times
+/// over unless the frames are compressed in parallel). Each frame is still compressed entirely on its
+/// own (never split across workers) and written in exactly the order [`frame::canonical_frame_raw_lens`]
+/// gives — the same bytes a fully serial writer would produce, just produced faster. A frame whose own
+/// raw length already exceeds the window is compressed alone, after whatever is queued ahead of it.
+fn write_blob_frames<W: Write>(
+    out: &mut W,
+    ir: &Ir,
+    order: &[BlobId],
+    frame_lens: &[u64],
+    hasher: &mut Sha256,
+    force_stored: bool,
+) -> Result<()> {
+    let workers = std::thread::available_parallelism()
+        .map(std::num::NonZeroUsize::get)
+        .unwrap_or(1)
+        .min(8);
+
+    let mut blob_ids = order.iter();
+    let mut pending: Vec<Vec<u8>> = Vec::new();
+    let mut pending_total: u64 = 0;
+
+    for &flen in frame_lens {
+        // One frame's raw bytes, assembled here (RFC 015 D-3, RFC 018 §4): at most 1 MiB of packed
+        // small blobs, or one large blob of its own.
+        let mut buf = Vec::new();
+        let mut collected = 0u64;
+        while collected < flen {
+            let id = blob_ids.next().ok_or_else(|| {
+                Error::Invariant("the frame packing plan ran out of blobs".to_string())
+            })?;
+            let bytes = ir
+                .content
+                .get(id)?
+                .ok_or_else(|| Error::Invariant(format!("blob {id} indexed but not readable")))?;
+            hasher.update(&bytes);
+            collected += bytes.len() as u64;
+            buf.extend_from_slice(&bytes);
+        }
+
+        let buf_len = buf.len() as u64;
+        if buf_len >= PARALLEL_WINDOW {
+            flush_pending(out, &mut pending, force_stored, workers)?;
+            pending_total = 0;
+            write_one_frame(out, &buf, force_stored)?;
+            continue;
+        }
+        if pending_total + buf_len > PARALLEL_WINDOW && !pending.is_empty() {
+            flush_pending(out, &mut pending, force_stored, workers)?;
+            pending_total = 0;
+        }
+        pending_total += buf_len;
+        pending.push(buf);
+    }
+    flush_pending(out, &mut pending, force_stored, workers)
+}
+
+/// Compress every buffer in `pending` (in parallel, deterministically — see
+/// [`compress_many_parallel`]) and write each resulting frame, in order, then clear `pending`.
+fn flush_pending<W: Write>(
+    out: &mut W,
+    pending: &mut Vec<Vec<u8>>,
+    force_stored: bool,
+    workers: usize,
+) -> Result<()> {
+    if pending.is_empty() {
+        return Ok(());
+    }
+    let compressed = if force_stored {
+        pending
+            .iter()
+            .map(|b| (frame::Codec::Stored, b.clone()))
+            .collect()
+    } else {
+        compress_many_parallel(pending, workers)
+    };
+    for (raw, (codec, stored)) in pending.iter().zip(compressed.iter()) {
+        write_frame_body(out, *codec, raw.len() as u64, stored)?;
+    }
+    pending.clear();
+    Ok(())
+}
+
+/// Compress every buffer in `buffers`, each entirely on its own thread's work (never split across
+/// workers), across up to `workers` threads — deterministic and byte-identical to compressing every
+/// buffer serially, in the same order: `std::thread::scope` blocks until every worker finishes, each
+/// worker owns a disjoint, contiguous slice of both the input and the output (no shared mutable state,
+/// no lock), and the result is assembled back in the original index order regardless of which worker
+/// finished which chunk first or when.
+fn compress_many_parallel(buffers: &[Vec<u8>], workers: usize) -> Vec<(frame::Codec, Vec<u8>)> {
+    let n = buffers.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    let workers = workers.clamp(1, n);
+    let chunk_size = n.div_ceil(workers);
+    let mut results: Vec<(frame::Codec, Vec<u8>)> =
+        (0..n).map(|_| (frame::Codec::Stored, Vec::new())).collect();
+    std::thread::scope(|scope| {
+        for (bufs, outs) in buffers
+            .chunks(chunk_size)
+            .zip(results.chunks_mut(chunk_size))
+        {
+            scope.spawn(move || {
+                for (buf, slot) in bufs.iter().zip(outs.iter_mut()) {
+                    *slot = frame::compress_frame(buf);
+                }
+            });
+        }
+    });
+    results
 }
 
 /// Serialize `ir` to a self-contained artifact (contract [`version::CURRENT`]). Built on [`write_to`]
@@ -391,12 +505,122 @@ fn from_bytes_v2(
     })
 }
 
+/// Checks a metadata frame's `raw_len` against RFC 018 D-1's fixed-chunking rule — **before** it is
+/// inflated (review 099 R-1): every frame but the last must be exactly [`frame::FRAME_CAP`] (1 MiB);
+/// the last (`index + 1 == nframes`) at most that. `nframes` is already known (it is read before any
+/// frame), so "which is last" needs no lookahead.
+fn check_meta_frame_plan(index: u64, nframes: u64, raw_len: u64) -> Result<()> {
+    let is_last = index + 1 == nframes;
+    let ok = if is_last {
+        raw_len <= frame::FRAME_CAP
+    } else {
+        raw_len == frame::FRAME_CAP
+    };
+    if ok {
+        Ok(())
+    } else {
+        Err(Error::NonCanonical(format!(
+            "metadata frame {index} of {nframes}: raw_len {raw_len} does not match the fixed 1 MiB \
+             chunking rule"
+        )))
+    }
+}
+
+/// Walks a blob frame's decompressed bytes against the blob boundaries the blob table already
+/// declared, hashing each blob's own bytes as they stream past (never holding more than the current
+/// blob's running hash state — RFC 015 D-4's bound, carried over compression) and remembering which
+/// table positions, if any, do not match their declared id. Checked only **after** the whole artifact's
+/// digest has matched (review 099 R-1/precedence: a content mismatch is a structural finding, deferred
+/// the same way every other one here is — the pass must finish hashing everything first).
+struct BlobBoundaryWalker<'a> {
+    table_ids: &'a [BlobId],
+    table_lens: &'a [u64],
+    end: usize,
+    current: usize,
+    remaining: u64,
+    hasher: Sha256,
+    mismatches: Vec<usize>,
+}
+
+impl<'a> BlobBoundaryWalker<'a> {
+    fn new(table_ids: &'a [BlobId], table_lens: &'a [u64], range: std::ops::Range<usize>) -> Self {
+        let mut w = Self {
+            table_ids,
+            table_lens,
+            end: range.end.min(table_lens.len()),
+            current: range.start,
+            remaining: 0,
+            hasher: Sha256::new(),
+            mismatches: Vec::new(),
+        };
+        w.start_current();
+        w
+    }
+
+    fn start_current(&mut self) {
+        self.remaining = self.table_lens.get(self.current).copied().unwrap_or(0);
+        self.hasher = Sha256::new();
+    }
+
+    fn finish_current(&mut self) {
+        let digest: [u8; 32] = std::mem::replace(&mut self.hasher, Sha256::new())
+            .finalize()
+            .into();
+        if self
+            .table_ids
+            .get(self.current)
+            .is_some_and(|id| id.0 != digest)
+        {
+            self.mismatches.push(self.current);
+        }
+        self.current += 1;
+        if self.current < self.end {
+            self.start_current();
+        }
+    }
+
+    fn feed(&mut self, mut chunk: &[u8]) {
+        loop {
+            while self.current < self.end && self.remaining == 0 {
+                self.finish_current();
+            }
+            if chunk.is_empty() || self.current >= self.end {
+                return;
+            }
+            let take = (self.remaining as usize).min(chunk.len());
+            let Some((head, tail)) = chunk.split_at_checked(take) else {
+                return;
+            };
+            self.hasher.update(head);
+            self.remaining = self.remaining.saturating_sub(take as u64);
+            chunk = tail;
+        }
+    }
+
+    /// Called once this frame's own bytes are exhausted: finish any blob(s) that end exactly at the
+    /// frame's own end (including a trailing empty blob), and return the mismatches found.
+    fn finish(mut self) -> Vec<usize> {
+        while self.current < self.end && self.remaining == 0 {
+            self.finish_current();
+        }
+        self.mismatches
+    }
+}
+
 /// [`from_bytes`] over a **contract 0.3.0** artifact (RFC 018 D-1): reconstructs the logical stream by
 /// inflating every frame (a failure here is immediate — "a frame that does not inflate", the format
 /// page's one exception to the digest-first rule, since there is no logical stream left to hash), then
 /// hashes that reconstruction exactly as [`write_to`] does and compares it with `stored_digest` **before
 /// trusting any of its structure** — matching [`from_bytes_v2`]'s own precedence. Only once the digest
 /// matches are the packing rules, the blob table's order, and each blob's content address checked.
+///
+/// **Review 099 R-1:** every frame's `raw_len` is checked against the packing plan *before* it is
+/// inflated (the blob table is read first, so the plan is known before the first blob frame), and every
+/// inflate streams through a fixed 64 KiB buffer ([`frame::inflate_streamed`]) rather than allocating a
+/// buffer sized by the frame's own claim — `from_bytes`'s own contract still materializes every blob's
+/// real bytes in the end (it returns a fully in-memory `Ir`), so this does not bound its *total* memory
+/// to the artifact's size the way [`read_from`] does; it bounds *each frame's own inflate* to 64 KiB,
+/// and refuses a plan-inconsistent frame before wasting an inflate on it at all.
 fn from_bytes_v3(
     version_bytes: &[u8],
     stored_digest: [u8; 32],
@@ -404,52 +628,79 @@ fn from_bytes_v3(
     found: ContractVersion,
 ) -> Result<Decoded> {
     let mut r = CanonReader::new(rest);
+    let mut hasher = Sha256::new();
+    hasher.update(version_bytes);
 
     let nframes_meta = r.uvarint()?;
     let mut meta_bytes = Vec::new();
-    let mut observed_meta_lens =
-        Vec::with_capacity(usize::try_from(nframes_meta).unwrap_or(0).min(1 << 20));
-    for _ in 0..nframes_meta {
-        let (raw, raw_len) = read_and_inflate_frame(&mut r)?;
-        observed_meta_lens.push(raw_len);
-        meta_bytes.extend_from_slice(&raw);
+    for i in 0..nframes_meta {
+        let codec = frame::Codec::from_u64(r.uvarint()?)?;
+        let raw_len = r.uvarint()?;
+        check_meta_frame_plan(i, nframes_meta, raw_len)?;
+        let stored_len = r.uvarint_len()?;
+        let stored = r.raw(stored_len)?;
+        frame::check_frame_bounds(codec, stored.len() as u64, raw_len)?;
+        frame::inflate_streamed(codec, stored, raw_len, |chunk| {
+            meta_bytes.extend_from_slice(chunk);
+            Ok(())
+        })?;
     }
     let meta_len = meta_bytes.len() as u64;
+    hasher.update(canon::uvarint_value(meta_len));
+    hasher.update(&meta_bytes);
 
     let nblobs = r.uvarint()?;
+    hasher.update(canon::uvarint_value(nblobs));
     let mut table_ids = Vec::with_capacity(usize::try_from(nblobs).unwrap_or(0).min(1 << 20));
     let mut table_lens = Vec::with_capacity(usize::try_from(nblobs).unwrap_or(0).min(1 << 20));
     for _ in 0..nblobs {
         let id = BlobId(r.raw32()?);
         let len = r.uvarint()?;
+        hasher.update(id.as_bytes());
+        hasher.update(canon::uvarint_value(len));
         table_ids.push(id);
         table_lens.push(len);
     }
 
+    // Each blob frame's own decompressed bytes, kept (one `Vec` per frame) until the digest and every
+    // structural check pass — `from_bytes`'s own contract returns a fully in-memory `Ir`, so it must
+    // materialize every blob's real bytes somewhere; keeping them here, produced by the one bounded
+    // (64 KiB at a time) inflate the verifying pass already did, means no byte is ever inflated twice.
+    let plan = frame::canonical_frame_plan(&table_lens);
     let nframes_blob = r.uvarint()?;
-    let mut blob_bytes = Vec::new();
-    let mut observed_blob_lens =
-        Vec::with_capacity(usize::try_from(nframes_blob).unwrap_or(0).min(1 << 20));
-    for _ in 0..nframes_blob {
-        let (raw, raw_len) = read_and_inflate_frame(&mut r)?;
-        observed_blob_lens.push(raw_len);
-        blob_bytes.extend_from_slice(&raw);
+    if nframes_blob != plan.len() as u64 {
+        return Err(Error::NonCanonical(format!(
+            "{nframes_blob} blob frame(s), the packing rule expects {}",
+            plan.len()
+        )));
+    }
+    let mut mismatches = Vec::new();
+    let mut frame_buffers: Vec<(std::ops::Range<usize>, Vec<u8>)> = Vec::new();
+    for (frame_index, (expected_raw_len, range)) in plan.into_iter().enumerate() {
+        let codec = frame::Codec::from_u64(r.uvarint()?)?;
+        let raw_len = r.uvarint()?;
+        if raw_len != expected_raw_len {
+            return Err(Error::NonCanonical(format!(
+                "blob frame {frame_index}: raw_len {raw_len} does not match the packing rule's \
+                 {expected_raw_len}"
+            )));
+        }
+        let stored_len = r.uvarint_len()?;
+        let stored = r.raw(stored_len)?;
+        frame::check_frame_bounds(codec, stored.len() as u64, raw_len)?;
+        let mut walker = BlobBoundaryWalker::new(&table_ids, &table_lens, range.clone());
+        let mut buf = Vec::new();
+        frame::inflate_streamed(codec, stored, raw_len, |chunk| {
+            hasher.update(chunk);
+            walker.feed(chunk);
+            buf.extend_from_slice(chunk);
+            Ok(())
+        })?;
+        mismatches.extend(walker.finish());
+        frame_buffers.push((range, buf));
     }
     let trailing = !r.is_empty();
 
-    // The digest, over exactly the logical stream `write_to` hashed: version, then meta_len + metadata,
-    // then the blob table, then every blob's raw bytes in table order. Computed before any of the
-    // structural checks below are trusted (today's digest-first precedence).
-    let mut hasher = Sha256::new();
-    hasher.update(version_bytes);
-    hasher.update(canon::uvarint_value(meta_len));
-    hasher.update(&meta_bytes);
-    hasher.update(canon::uvarint_value(nblobs));
-    for (id, len) in table_ids.iter().zip(table_lens.iter()) {
-        hasher.update(id.as_bytes());
-        hasher.update(canon::uvarint_value(*len));
-    }
-    hasher.update(&blob_bytes);
     let computed: [u8; 32] = hasher.finalize().into();
     if computed != stored_digest {
         return Err(Error::DigestMismatch);
@@ -458,16 +709,6 @@ fn from_bytes_v3(
     if trailing {
         return Err(Error::NonCanonical(
             "trailing bytes after blob store".to_string(),
-        ));
-    }
-    if observed_meta_lens != frame::fixed_chunk_lens(meta_len) {
-        return Err(Error::NonCanonical(
-            "metadata frames do not match the fixed 1 MiB chunking rule".to_string(),
-        ));
-    }
-    if observed_blob_lens != frame::canonical_frame_raw_lens(table_lens.iter().copied()) {
-        return Err(Error::NonCanonical(
-            "blob frames do not match the packing rule".to_string(),
         ));
     }
 
@@ -484,21 +725,26 @@ fn from_bytes_v3(
             "blob table is not in store order".to_string(),
         ));
     }
+    if !mismatches.is_empty() {
+        return Err(Error::Decode(
+            "blob content does not match its id".to_string(),
+        ));
+    }
 
-    let mut offset: usize = 0;
-    for (id, len) in table_ids.iter().zip(table_lens.iter()) {
-        let len = usize::try_from(*len)
-            .map_err(|_| Error::Decode("blob length too large".to_string()))?;
-        let slice = blob_bytes.get(offset..offset + len).ok_or_else(|| {
-            Error::Decode("blob content shorter than the table declares".to_string())
-        })?;
-        if BlobId::of(slice) != *id {
-            return Err(Error::Decode(
-                "blob content does not match its id".to_string(),
-            ));
+    // Every blob's content was hashed against its declared id above (no mismatch, checked just before
+    // this point) — safe to insert now, slicing each blob's own bytes out of the frame buffer that
+    // produced them, in store order.
+    for (range, buf) in frame_buffers {
+        let mut offset: usize = 0;
+        for i in range {
+            let len = usize::try_from(*table_lens.get(i).unwrap_or(&0))
+                .map_err(|_| Error::Decode("blob length too large".to_string()))?;
+            let slice = buf.get(offset..offset + len).ok_or_else(|| {
+                Error::Invariant("blob frame shorter than its own blobs".to_string())
+            })?;
+            ir.content.insert(slice.to_vec())?;
+            offset += len;
         }
-        ir.content.insert(slice.to_vec())?;
-        offset += len;
     }
 
     check_structure(&ir)?;
@@ -509,18 +755,6 @@ fn from_bytes_v3(
         contract: found,
         digest: stored_digest,
     })
-}
-
-/// Read one frame's header and stored bytes from `r`, inflate it (bounded, [`frame::inflate_exact`]),
-/// and return its raw bytes alongside the declared `raw_len` (kept separately so a caller can check the
-/// observed frame-length sequence against the packing rules without re-deriving it from `raw.len()`).
-fn read_and_inflate_frame(r: &mut CanonReader<'_>) -> Result<(Vec<u8>, u64)> {
-    let codec = frame::Codec::from_u64(r.uvarint()?)?;
-    let raw_len = r.uvarint()?;
-    let stored_len = r.uvarint_len()?;
-    let stored = r.raw(stored_len)?;
-    let raw = frame::inflate_exact(codec, stored, raw_len)?;
-    Ok((raw, raw_len))
 }
 
 /// Parse an artifact by reading `r` forward exactly once (RFC 015 D-4): every byte past the stored
@@ -695,14 +929,16 @@ fn read_body_v2<R: Read>(sr: &mut sequential::SeqReader<R>) -> Result<BodyV2> {
 }
 
 /// [`read_from`] over a **contract 0.3.0** artifact (RFC 018 D-1): streams forward exactly once,
-/// inflating each frame transiently to feed the logical-stream digest (a metadata frame's bytes are
-/// kept — metadata has always been held whole — but a blob frame's decompressed bytes are hashed and
-/// then dropped; only its `FrameLoc` and each blob's `(frame, offset, length)` are kept). So the pass's
-/// own memory is bounded by one frame at a time, not the artifact's total content — RFC 015 D-4's bound,
-/// carried over compression (one open question this batch leaves for review: a single very large blob's
-/// own frame is still inflated whole by [`frame::inflate_exact`], rather than in chunks through the
-/// hash, since `miniz_oxide`'s safe chunked/windowed inflate was judged too large a hand-rolled surface
-/// to add correctly in this batch — see the review request).
+/// inflating each frame through a fixed 64 KiB buffer ([`frame::inflate_streamed`]) to feed the
+/// logical-stream digest — metadata's bytes are kept (metadata has always been held whole, and each of
+/// its frames is capped at 1 MiB by the fixed-chunking rule, checked before it is inflated); a blob
+/// frame's decompressed bytes are hashed, chunk by chunk, against both the overall digest and whichever
+/// blob(s) the chunk belongs to ([`BlobBoundaryWalker`]), and then dropped — only the frame's own
+/// `FrameLoc` and each blob's `(frame, offset, length)` are kept. So the pass's own memory is bounded by
+/// 64 KiB of inflate output at a time, not by any frame's declared size, however large (review 099 R-1 —
+/// the gap this closes: a `raw_len` is checked against the packing plan, known from the blob table read
+/// before it, *before* that frame is inflated at all, and no allocation anywhere in this pass is sized
+/// by an unchecked `raw_len`).
 fn read_from_v3<R: Read + Seek + std::fmt::Debug + 'static>(
     mut sr: sequential::SeqReader<R>,
     version_bytes: &[u8],
@@ -714,12 +950,21 @@ fn read_from_v3<R: Read + Seek + std::fmt::Debug + 'static>(
 
     let nframes_meta = sr.uvarint_raw()?;
     let mut meta_bytes = Vec::new();
-    let mut observed_meta_lens =
-        Vec::with_capacity(usize::try_from(nframes_meta).unwrap_or(0).min(1 << 20));
-    for _ in 0..nframes_meta {
-        let (raw, raw_len) = read_and_inflate_frame_streaming(&mut sr)?;
-        observed_meta_lens.push(raw_len);
-        meta_bytes.extend_from_slice(&raw);
+    for i in 0..nframes_meta {
+        let codec = frame::Codec::from_u64(sr.uvarint_raw()?)?;
+        let raw_len = sr.uvarint_raw()?;
+        check_meta_frame_plan(i, nframes_meta, raw_len)?;
+        let stored_len = sr.uvarint_len_raw()?;
+        let stored = sr.raw(
+            usize::try_from(stored_len)
+                .map_err(|_| Error::Decode("frame too large".to_string()))?,
+            "metadata frame",
+        )?;
+        frame::check_frame_bounds(codec, stored.len() as u64, raw_len)?;
+        frame::inflate_streamed(codec, &stored, raw_len, |chunk| {
+            meta_bytes.extend_from_slice(chunk);
+            Ok(())
+        })?;
     }
     let meta_len = meta_bytes.len() as u64;
     hasher.update(canon::uvarint_value(meta_len));
@@ -741,14 +986,26 @@ fn read_from_v3<R: Read + Seek + std::fmt::Debug + 'static>(
         table_lens.push(len);
     }
 
+    let plan = frame::canonical_frame_plan(&table_lens);
     let nframes_blob = sr.uvarint_raw()?;
-    let mut frames: Vec<FrameLoc> =
-        Vec::with_capacity(usize::try_from(nframes_blob).unwrap_or(0).min(1 << 20));
-    let mut observed_blob_lens =
-        Vec::with_capacity(usize::try_from(nframes_blob).unwrap_or(0).min(1 << 20));
-    for _ in 0..nframes_blob {
+    if nframes_blob != plan.len() as u64 {
+        return Err(Error::NonCanonical(format!(
+            "{nframes_blob} blob frame(s), the packing rule expects {}",
+            plan.len()
+        )));
+    }
+    let mut frames: Vec<FrameLoc> = Vec::with_capacity(plan.len());
+    let mut index: BTreeMap<BlobId, (usize, u64, u64)> = BTreeMap::new();
+    let mut mismatches = Vec::new();
+    for (frame_index, (expected_raw_len, range)) in plan.into_iter().enumerate() {
         let codec = frame::Codec::from_u64(sr.uvarint_raw()?)?;
         let raw_len = sr.uvarint_raw()?;
+        if raw_len != expected_raw_len {
+            return Err(Error::NonCanonical(format!(
+                "blob frame {frame_index}: raw_len {raw_len} does not match the packing rule's \
+                 {expected_raw_len}"
+            )));
+        }
         let stored_len = sr.uvarint_len_raw()?;
         let stored_offset = sr.position();
         let stored = sr.raw(
@@ -756,15 +1013,29 @@ fn read_from_v3<R: Read + Seek + std::fmt::Debug + 'static>(
                 .map_err(|_| Error::Decode("frame too large".to_string()))?,
             "blob frame",
         )?;
-        let raw = frame::inflate_exact(codec, &stored, raw_len)?;
-        hasher.update(&raw);
-        observed_blob_lens.push(raw_len);
+        frame::check_frame_bounds(codec, stored.len() as u64, raw_len)?;
+        let mut walker = BlobBoundaryWalker::new(&table_ids, &table_lens, range.clone());
+        frame::inflate_streamed(codec, &stored, raw_len, |chunk| {
+            hasher.update(chunk);
+            walker.feed(chunk);
+            Ok(())
+        })?;
+        mismatches.extend(walker.finish());
         frames.push(FrameLoc {
             stored_offset,
             codec,
             raw_len,
             stored_len,
         });
+        let mut offset_in_frame = 0u64;
+        for i in range {
+            let id = *table_ids
+                .get(i)
+                .ok_or_else(|| Error::Invariant("blob table index out of range".to_string()))?;
+            let len = *table_lens.get(i).unwrap_or(&0);
+            index.insert(id, (frame_index, offset_in_frame, len));
+            offset_in_frame += len;
+        }
     }
 
     let trailing = !sr.at_end();
@@ -775,16 +1046,6 @@ fn read_from_v3<R: Read + Seek + std::fmt::Debug + 'static>(
     if trailing {
         return Err(Error::NonCanonical(
             "trailing bytes after blob store".to_string(),
-        ));
-    }
-    if observed_meta_lens != frame::fixed_chunk_lens(meta_len) {
-        return Err(Error::NonCanonical(
-            "metadata frames do not match the fixed 1 MiB chunking rule".to_string(),
-        ));
-    }
-    if observed_blob_lens != frame::canonical_frame_raw_lens(table_lens.iter().copied()) {
-        return Err(Error::NonCanonical(
-            "blob frames do not match the packing rule".to_string(),
         ));
     }
 
@@ -800,24 +1061,10 @@ fn read_from_v3<R: Read + Seek + std::fmt::Debug + 'static>(
             "blob table is not in store order".to_string(),
         ));
     }
-
-    // Each blob's (frame, offset-in-the-frame's-raw-bytes, length), assigned by replaying the same
-    // packing plan the frames were just checked against — the frame boundaries and the blob boundaries
-    // coincide exactly, by that same check.
-    let mut index: BTreeMap<BlobId, (usize, u64, u64)> = BTreeMap::new();
-    let mut frame_index = 0usize;
-    let mut offset_in_frame = 0u64;
-    for (id, &len) in table_ids.iter().zip(table_lens.iter()) {
-        let frame_raw_len = frames
-            .get(frame_index)
-            .ok_or_else(|| Error::Invariant("blob table ran past the blob frames".to_string()))?
-            .raw_len;
-        if offset_in_frame >= frame_raw_len {
-            frame_index += 1;
-            offset_in_frame = 0;
-        }
-        index.insert(*id, (frame_index, offset_in_frame, len));
-        offset_in_frame += len;
+    if !mismatches.is_empty() {
+        return Err(Error::Decode(
+            "blob content does not match its id".to_string(),
+        ));
     }
 
     let skipped = mr.skipped_non_critical_fields();
@@ -830,22 +1077,6 @@ fn read_from_v3<R: Read + Seek + std::fmt::Debug + 'static>(
         contract: found,
         digest: stored_digest,
     })
-}
-
-/// As [`read_and_inflate_frame`], reading from the sequential, unhashed [`sequential::SeqReader`]
-/// instead of a [`CanonReader`] (RFC 018's streaming path).
-fn read_and_inflate_frame_streaming<R: Read>(
-    sr: &mut sequential::SeqReader<R>,
-) -> Result<(Vec<u8>, u64)> {
-    let codec = frame::Codec::from_u64(sr.uvarint_raw()?)?;
-    let raw_len = sr.uvarint_raw()?;
-    let stored_len = sr.uvarint_len_raw()?;
-    let stored = sr.raw(
-        usize::try_from(stored_len).map_err(|_| Error::Decode("frame too large".to_string()))?,
-        "metadata frame",
-    )?;
-    let raw = frame::inflate_exact(codec, &stored, raw_len)?;
-    Ok((raw, raw_len))
 }
 
 /// [`read_from`], over a real file (RFC 015 D-4) — the entry point `verify`/`inspect` use: the file is

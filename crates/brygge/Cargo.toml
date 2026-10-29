@@ -28,6 +28,12 @@ brygge-mutate = { path = "../../tools/mutate" }
 # body — brygge-ir's own algorithm, duplicated here since `brygge-ir::canon` is crate-private). Already
 # linked transitively via `brygge-ir`; this is a dev-dependency only, dropped on publish.
 sha2 = { workspace = true }
+# Test-only (review 099 R-2): parsing a contract-0.3.0 artifact exactly as `ir-artifact-format.md`
+# describes it, to resign a mutated one — `brygge-ir::artifact`'s own frame codec is crate-private, so
+# this is an independent reimplementation against the published page (a check that the page suffices,
+# PU-3), not a reuse of brygge-ir's internals. Already linked transitively via `brygge-ir`; no new
+# crate, and dropped on publish.
+miniz_oxide = { workspace = true }
 
 [lints]
 workspace = true

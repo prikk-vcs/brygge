@@ -427,9 +427,12 @@ fn resign_v3_metadata_only(full: &[u8], mutated_meta_bytes: &[u8]) -> Vec<u8> {
         let raw_len = tr.uvarint().unwrap();
         let stored_len = tr.uvarint_len().unwrap();
         let stored = tr.raw(stored_len).unwrap();
-        blob_bytes.extend_from_slice(
-            &crate::artifact::frame::inflate_exact(codec, stored, raw_len).unwrap(),
-        );
+        crate::artifact::frame::check_frame_bounds(codec, stored.len() as u64, raw_len).unwrap();
+        crate::artifact::frame::inflate_streamed(codec, stored, raw_len, |chunk| {
+            blob_bytes.extend_from_slice(chunk);
+            Ok(())
+        })
+        .unwrap();
     }
 
     let mut hasher = Sha256::new();
@@ -461,6 +464,200 @@ fn resign_v3_metadata_only(full: &[u8], mutated_meta_bytes: &[u8]) -> Vec<u8> {
     out
 }
 
+/// `full`'s three logical sections, each already unwrapped from its on-disk framing: the metadata's
+/// own inflated bytes, the blob table's raw bytes **as they sit on the wire** (`uvarint(count) ‖
+/// (id32 ‖ uvarint(len))*` — the table is never compressed, so this is already exactly its logical-
+/// stream contribution, no re-framing needed to use it again), and every blob's raw bytes, inflated
+/// and concatenated in table order.
+struct Decomposed {
+    version_bytes: Vec<u8>,
+    meta_bytes: Vec<u8>,
+    table_bytes: Vec<u8>,
+    blob_bytes: Vec<u8>,
+}
+
+fn decompose(full: &[u8]) -> Decomposed {
+    let (prefix, rest) = split_header(full);
+    let version_bytes = prefix.get(9..).unwrap_or(&[]).to_vec();
+    let mut r = crate::canon::CanonReader::new(&rest);
+
+    let nframes_meta = r.uvarint().unwrap();
+    let mut meta_bytes = Vec::new();
+    for _ in 0..nframes_meta {
+        let codec = crate::artifact::frame::Codec::from_u64(r.uvarint().unwrap()).unwrap();
+        let raw_len = r.uvarint().unwrap();
+        let stored_len = r.uvarint_len().unwrap();
+        let stored = r.raw(stored_len).unwrap();
+        crate::artifact::frame::check_frame_bounds(codec, stored.len() as u64, raw_len).unwrap();
+        crate::artifact::frame::inflate_streamed(codec, stored, raw_len, |chunk| {
+            meta_bytes.extend_from_slice(chunk);
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    let table_start = rest.len() - r.remaining();
+    let nblobs = r.uvarint().unwrap();
+    let mut lens = Vec::with_capacity(nblobs as usize);
+    for _ in 0..nblobs {
+        r.raw32().unwrap();
+        lens.push(r.uvarint().unwrap());
+    }
+    let table_end = rest.len() - r.remaining();
+    let table_bytes = rest.get(table_start..table_end).unwrap().to_vec();
+
+    let nframes_blob = r.uvarint().unwrap();
+    let mut blob_bytes = Vec::new();
+    for _ in 0..nframes_blob {
+        let codec = crate::artifact::frame::Codec::from_u64(r.uvarint().unwrap()).unwrap();
+        let raw_len = r.uvarint().unwrap();
+        let stored_len = r.uvarint_len().unwrap();
+        let stored = r.raw(stored_len).unwrap();
+        crate::artifact::frame::check_frame_bounds(codec, stored.len() as u64, raw_len).unwrap();
+        crate::artifact::frame::inflate_streamed(codec, stored, raw_len, |chunk| {
+            blob_bytes.extend_from_slice(chunk);
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    Decomposed {
+        version_bytes,
+        meta_bytes,
+        table_bytes,
+        blob_bytes,
+    }
+}
+
+/// Reassemble `(meta_bytes, table_bytes, blob_bytes)` — any of which may have been mutated — into a
+/// structurally well-formed contract-0.3.0 artifact: exactly one metadata frame and one blob frame,
+/// each `Codec::Stored`, holding exactly the bytes given, and `table_bytes` copied verbatim (it was
+/// never framed). This does not try to preserve the *original* packing (today's writer might have used
+/// several frames) — a single frame each is still a valid container shape, and what it holds is free to
+/// disagree with `table_bytes`'s own declared lengths after a mutation; that disagreement is exactly
+/// what the packing/order/content checks exist to catch, never a panic or an overclaim regardless of
+/// which specific check ends up catching it (RFC 018 §6.6's redefined property, checked by `check` as
+/// everywhere else in this module).
+fn reassemble_v3(
+    version_bytes: &[u8],
+    meta_bytes: &[u8],
+    table_bytes: &[u8],
+    blob_bytes: &[u8],
+) -> Vec<u8> {
+    let mut hasher = Sha256::new();
+    hasher.update(version_bytes);
+    hasher.update(crate::canon::uvarint_value(meta_bytes.len() as u64));
+    hasher.update(meta_bytes);
+    hasher.update(table_bytes);
+    hasher.update(blob_bytes);
+    let digest: [u8; 32] = hasher.finalize().into();
+
+    let mut out = Vec::new();
+    out.extend_from_slice(b"BRYGGEIR");
+    out.push(2);
+    out.extend_from_slice(version_bytes);
+    out.extend_from_slice(&digest);
+    out.extend_from_slice(&crate::canon::uvarint_value(1)); // one metadata frame
+    out.extend_from_slice(&crate::canon::uvarint_value(0)); // codec: stored
+    out.extend_from_slice(&crate::canon::uvarint_value(meta_bytes.len() as u64));
+    out.extend_from_slice(&crate::canon::uvarint_value(meta_bytes.len() as u64));
+    out.extend_from_slice(meta_bytes);
+    out.extend_from_slice(table_bytes);
+    out.extend_from_slice(&crate::canon::uvarint_value(1)); // one blob frame
+    out.extend_from_slice(&crate::canon::uvarint_value(0)); // codec: stored
+    out.extend_from_slice(&crate::canon::uvarint_value(blob_bytes.len() as u64));
+    out.extend_from_slice(&crate::canon::uvarint_value(blob_bytes.len() as u64));
+    out.extend_from_slice(blob_bytes);
+    out
+}
+
+/// The blob table's own leading `uvarint(count)` — an interesting position every table-mutating seed
+/// can locate without re-implementing the rest of the format: it is always the table section's first
+/// field.
+fn table_count_position(table_bytes: &[u8]) -> InterestingPosition {
+    let mut r = crate::canon::CanonReader::new(table_bytes);
+    let before = r.remaining();
+    let _ = r.uvarint();
+    let len = before - r.remaining();
+    InterestingPosition {
+        offset: 0,
+        encoding: Encoding::Uvarint { len },
+        ceiling: Some((table_bytes.len() - len) as u64),
+    }
+}
+
+#[test]
+fn from_bytes_on_a_resigned_mutated_logical_table_never_panics_and_never_overclaims() {
+    let full_a = to_bytes(&richer_ir());
+    let full_b = to_bytes(&simple_ir());
+    let decomposed = [decompose(&full_a), decompose(&full_b)];
+    let pos_a = table_count_position(&decomposed[0].table_bytes);
+    let pos_b = table_count_position(&decomposed[1].table_bytes);
+    let positions_a = [pos_a];
+    let positions_b = [pos_b];
+    let specs = [
+        Seed::new(&decomposed[0].table_bytes, &positions_a),
+        Seed::new(&decomposed[1].table_bytes, &positions_b),
+    ];
+    harness::run(
+        env!("CARGO_MANIFEST_DIR"),
+        "from_bytes_on_a_resigned_mutated_logical_table_never_panics_and_never_overclaims",
+        &specs,
+        QUICK_ITERATIONS,
+        DEEP_FACTOR,
+        TIME_BUDGET,
+        |seed_index, mutated_table| {
+            let d = decomposed
+                .get(seed_index)
+                .expect("the harness never passes an out-of-range seed index");
+            let full = reassemble_v3(
+                &d.version_bytes,
+                &d.meta_bytes,
+                mutated_table,
+                &d.blob_bytes,
+            );
+            match check_equivalent(&full) {
+                Ok(decoded) => check(full.len(), &decoded),
+                Err(outcome) => outcome,
+            }
+        },
+    );
+}
+
+#[test]
+fn from_bytes_on_a_resigned_mutated_logical_blob_bytes_never_panics_and_never_overclaims() {
+    let full_a = to_bytes(&richer_ir());
+    let full_b = to_bytes(&simple_ir());
+    let decomposed = [decompose(&full_a), decompose(&full_b)];
+    let specs = [
+        Seed::generic(&decomposed[0].blob_bytes),
+        Seed::generic(&decomposed[1].blob_bytes),
+    ];
+    harness::run(
+        env!("CARGO_MANIFEST_DIR"),
+        "from_bytes_on_a_resigned_mutated_logical_blob_bytes_never_panics_and_never_overclaims",
+        &specs,
+        QUICK_ITERATIONS,
+        DEEP_FACTOR,
+        TIME_BUDGET,
+        |seed_index, mutated_blob_bytes| {
+            let d = decomposed
+                .get(seed_index)
+                .expect("the harness never passes an out-of-range seed index");
+            let full = reassemble_v3(
+                &d.version_bytes,
+                &d.meta_bytes,
+                &d.table_bytes,
+                mutated_blob_bytes,
+            );
+            match check_equivalent(&full) {
+                Ok(decoded) => check(full.len(), &decoded),
+                Err(outcome) => outcome,
+            }
+        },
+    );
+}
+
 /// The metadata bytes alone, extracted from a real artifact's own frames (so the seed the harness
 /// mutates is exactly what `Ir::decode_metadata` will see).
 fn extract_meta_bytes(full: &[u8]) -> Vec<u8> {
@@ -473,9 +670,12 @@ fn extract_meta_bytes(full: &[u8]) -> Vec<u8> {
         let raw_len = r.uvarint().unwrap();
         let stored_len = r.uvarint_len().unwrap();
         let stored = r.raw(stored_len).unwrap();
-        out.extend_from_slice(
-            &crate::artifact::frame::inflate_exact(codec, stored, raw_len).unwrap(),
-        );
+        crate::artifact::frame::check_frame_bounds(codec, stored.len() as u64, raw_len).unwrap();
+        crate::artifact::frame::inflate_streamed(codec, stored, raw_len, |chunk| {
+            out.extend_from_slice(chunk);
+            Ok(())
+        })
+        .unwrap();
     }
     out
 }

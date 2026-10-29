@@ -69,6 +69,7 @@ dependencies = [
  "brygge-decode-svn",
  "brygge-ir",
  "brygge-mutate",
+ "miniz_oxide",
  "sha2",
 ]
 

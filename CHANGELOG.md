@@ -8,9 +8,10 @@ Every handoff adds its own entry in its own commit.
 
 ## [Unreleased]
 
-**Breaking:** Artifacts are IR contract 0.3.0: compressed, with blobs grouped by path (about 7× smaller on
-a measured repository). brygge 0.6.0 and earlier cannot read them. The artifact digest is now taken over
-the uncompressed content, so it does not depend on how the artifact was compressed (RFC 018).
+**Breaking:** Artifacts are IR contract 0.3.0: compressed, with blobs grouped by path (4.6× to 7.5×
+smaller on the measured repositories — eza, TortoiseHg, fish-shell — most for histories of small files).
+brygge 0.6.0 and earlier cannot read them. The artifact digest is now taken over the uncompressed
+content, so it does not depend on how the artifact was compressed (RFC 018).
 
 **Breaking:** `brygge-ir`: `version::CURRENT` is 0.3.0; `artifact::Decoded` gains `contract`; `brygge-ir`
 depends on `miniz_oxide`.

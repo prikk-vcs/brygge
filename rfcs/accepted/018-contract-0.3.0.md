@@ -54,6 +54,18 @@ still being built.
   - the metadata compresses about 2.6× (3.0 MB → 1.2 MB).
 - **The whole artifact,** with the metadata, comes to about 11.5 MB from 79.9 MB.
 - **For fish-shell,** that suggests about 0.7 GB. That is a projection; batch C measures it.
+- **Batch C's measurement (review 099):**
+
+  | | 0.2.0 | 0.3.0 | Ratio |
+  |---|---|---|---|
+  | eza | 79.9 MB | 10.7 MB | 7.45× |
+  | TortoiseHg | 1.76 GB | 336 MB | 5.23× |
+  | fish-shell | 4.91 GB | 1.06 GB | 4.64× |
+
+  - **The cause of the spread is DEFLATE's 32 KiB window.** Grouping helps a file only when its earlier version
+    is within 32 KiB.
+  - In fish-shell, 60% of the content is in blobs over 1 MiB, and 19% in blobs of 64–256 KiB.
+  - **Recorded as a later contract candidate:** a larger-window codec, or deltas between versions of a path.
 - **DEFLATE also costs less time:**
   - decompressing all of eza's frames took 0.05 s;
   - compressing them took 0.55 s, against a decode that takes seconds.
@@ -273,7 +285,7 @@ codec  := 0 stored (bytes as they are) | 1 DEFLATE (RFC 1951, raw, no zlib heade
 
 ## Consequences
 
-- Artifacts are about 7× smaller, measured on one repository and projected for the rest. Their identity no
+- Artifacts are 4.6× to 7.5× smaller on the measured repositories, the most for histories of small files. Their identity no
   longer depends on the codec.
 - Transforms become possible, and leave a record a reader can check: back to the decoder's original by digest,
   and back to the source by `--against-source`.

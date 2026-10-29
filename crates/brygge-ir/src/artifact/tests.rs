@@ -1480,3 +1480,332 @@ fn versions_outside_readable_are_refused() {
         }
     }
 }
+
+// ---- RFC 018, review 099 R-1: a decompression bomb must never reach an allocation it could abuse ----
+
+fn peak_rss_kib() -> Option<u64> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    for line in status.lines() {
+        if let Some(rest) = line.strip_prefix("VmHWM:") {
+            return rest.split_whitespace().next()?.parse().ok();
+        }
+    }
+    None
+}
+
+/// Best effort (Linux only, and not guaranteed to be writable under every sandbox): resets the
+/// kernel's own peak-RSS mark, so a `VmHWM` read afterwards reflects what runs next, not whatever
+/// came before it (the same technique `tools/bench` already uses). Returns `false` when unavailable,
+/// so a caller can skip rather than fail.
+fn reset_peak_rss() -> bool {
+    std::fs::write("/proc/self/clear_refs", "5").is_ok()
+}
+
+/// Review 099 R-1's own proof: an artifact of about 1 MiB whose blob table and single frame hold 1 GiB
+/// of zeros (a real DEFLATE stream — 1 GiB / 1032 is about 1 MiB stored) streams through `read_from`
+/// (via `from_file`, over a real file) with a peak well below the 1 GiB the old, whole-buffer inflate
+/// would have allocated — bounded instead by a small multiple of the 64 KiB inflate buffer — and fails
+/// only on the content address (the table's id is deliberately wrong, so the pass must finish inflating
+/// and hashing the whole gigabyte, within that bound, before it is refused).
+#[test]
+fn a_one_gib_deflate_bomb_streams_through_read_from_within_a_bounded_peak() {
+    let raw = vec![0u8; 1 << 30];
+    // Same length, still a real (highly compressible) DEFLATE stream, but a different id — the table
+    // keeps the *real* id (matching the IR's own blob reference, so the store-order check passes); the
+    // frame's actual bytes are this, so the mismatch is found only once the whole gigabyte has been
+    // inflated and hashed.
+    let wrong_content = vec![0xffu8; 1 << 30];
+
+    let mut b = IrBuilder::new(provenance());
+    let blob = b.add_blob(raw.clone()).unwrap();
+    b.add_atom(AtomDraft {
+        parents: vec![],
+        ops: vec![PathOp::Add {
+            path: "big".into(),
+            blob,
+            mode: 0o100_644,
+            status: EpistemicStatus::Stated,
+        }],
+        copies: vec![],
+        metadata: MetadataClaims::default(),
+        source: SourceIdentity {
+            kind: SourceKind::Git,
+            repo_id: b"repo".to_vec(),
+            atom_id: b"c1".to_vec(),
+            signatures: Vec::new(),
+            extras: Vec::new(),
+        },
+        status: EpistemicStatus::Stated,
+    })
+    .unwrap();
+    let ir = b.finish().unwrap();
+
+    // Hand-built from the logical components directly (not by patching `to_bytes`'s own output): the
+    // table keeps the *real* id (`store_order`'s own, matching the IR's blob reference, so the
+    // store-order check passes), but the frame's actual content is `wrong_content` — so the content
+    // check, reached only after everything else passes, is the one that fails, only once the whole
+    // gigabyte has been inflated and hashed. The digest is computed over this same (real-id,
+    // wrong-content) combination, so the pass reaches that far rather than failing on the digest.
+    let real_id = BlobId::of(&raw);
+    let mut version = CanonWriter::new();
+    version.uvarint(0);
+    version.uvarint(3);
+    version.uvarint(0);
+    let meta_bytes = ir.encode_metadata();
+    let mut hasher = Sha256::new();
+    hasher.update(version.as_bytes());
+    hasher.update(canon::uvarint_value(meta_bytes.len() as u64));
+    hasher.update(&meta_bytes);
+    hasher.update(canon::uvarint_value(1)); // one blob
+    hasher.update(real_id.as_bytes());
+    hasher.update(canon::uvarint_value(wrong_content.len() as u64));
+    hasher.update(&wrong_content);
+    let digest: [u8; 32] = hasher.finalize().into();
+
+    let mut bytes = MAGIC.to_vec();
+    bytes.push(FORMAT);
+    bytes.extend_from_slice(version.as_bytes());
+    bytes.extend_from_slice(&digest);
+    write_frames(
+        &mut bytes,
+        &meta_bytes,
+        &frame::fixed_chunk_lens(meta_bytes.len() as u64),
+        false,
+    )
+    .unwrap();
+    bytes.extend_from_slice(&canon::uvarint_value(1));
+    bytes.extend_from_slice(real_id.as_bytes());
+    bytes.extend_from_slice(&canon::uvarint_value(wrong_content.len() as u64));
+    bytes.extend_from_slice(&canon::uvarint_value(1)); // one blob frame
+    write_one_frame(&mut bytes, &wrong_content, false).unwrap();
+
+    let dir = scratch_dir("deflate-bomb");
+    let path = dir.join("artifact");
+    std::fs::write(&path, &bytes).unwrap();
+
+    if !reset_peak_rss() {
+        eprintln!("skipping: /proc/self/clear_refs is not writable here");
+        let _ = std::fs::remove_dir_all(&dir);
+        return;
+    }
+    let before = peak_rss_kib();
+    let err = from_file(&path).unwrap_err();
+    let after = peak_rss_kib();
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert!(
+        matches!(err, Error::Decode(ref m) if m.contains("does not match its id")),
+        "expected a content-address refusal, got {err:?}"
+    );
+    if let (Some(before), Some(after)) = (before, after) {
+        let delta = after.saturating_sub(before);
+        assert!(
+            delta < 16 * 1024,
+            "read_from's own peak grew by {delta} KiB above baseline, inflating a 1 GiB claim; \
+             expected well under 16 MiB"
+        );
+    }
+}
+
+/// Review 099 R-1: a blob frame whose `raw_len` does not match the packing plan is refused — the
+/// specific "does not match the packing rule" `NonCanonical` — *before* its stored bytes are read at
+/// all: the artifact is truncated right where those bytes would start, so reaching for them would give
+/// a different, truncation-shaped error instead.
+#[test]
+fn a_frame_whose_raw_len_disagrees_with_the_plan_is_refused_before_its_stored_bytes_are_read() {
+    let ir = build();
+
+    // Rebuilt by hand (rather than mutating `to_bytes`'s output in place) so the corrupted header's
+    // raw_len is at a known offset, with no stored bytes at all following it — if the plan check ran
+    // only after an attempt to read those (missing) bytes, this would give a truncation error instead
+    // of the specific packing-rule one.
+    let order = store_order(&ir);
+    let lens: Vec<u64> = order
+        .iter()
+        .map(|id| ir.content.get(id).unwrap().unwrap().len() as u64)
+        .collect();
+    let bytes_by_id: Vec<Vec<u8>> = order
+        .iter()
+        .map(|id| ir.content.get(id).unwrap().unwrap())
+        .collect();
+    let total: u64 = lens.iter().sum();
+
+    let mut version = CanonWriter::new();
+    version.uvarint(0);
+    version.uvarint(3);
+    version.uvarint(0);
+    let meta_bytes = ir.encode_metadata();
+    let mut hasher = Sha256::new();
+    hasher.update(version.as_bytes());
+    hasher.update(canon::uvarint_value(meta_bytes.len() as u64));
+    hasher.update(&meta_bytes);
+    hasher.update(canon::uvarint_value(order.len() as u64));
+    for (id, len) in order.iter().zip(lens.iter()) {
+        hasher.update(id.as_bytes());
+        hasher.update(canon::uvarint_value(*len));
+    }
+    for bytes in &bytes_by_id {
+        hasher.update(bytes);
+    }
+    let digest: [u8; 32] = hasher.finalize().into();
+
+    let mut out = MAGIC.to_vec();
+    out.push(FORMAT);
+    out.extend_from_slice(version.as_bytes());
+    out.extend_from_slice(&digest);
+    write_frames(
+        &mut out,
+        &meta_bytes,
+        &frame::fixed_chunk_lens(meta_bytes.len() as u64),
+        false,
+    )
+    .unwrap();
+    out.extend_from_slice(&canon::uvarint_value(order.len() as u64));
+    for (id, len) in order.iter().zip(lens.iter()) {
+        out.extend_from_slice(id.as_bytes());
+        out.extend_from_slice(&canon::uvarint_value(*len));
+    }
+    // One blob frame, header only: codec 0 (stored), a `raw_len`/`stored_len` that disagree with the
+    // plan (`total`) by claiming one byte more — then stop. No stored bytes follow at all.
+    out.extend_from_slice(&canon::uvarint_value(1));
+    out.extend_from_slice(&canon::uvarint_value(0));
+    out.extend_from_slice(&canon::uvarint_value(total + 1));
+    out.extend_from_slice(&canon::uvarint_value(total + 1));
+
+    match from_bytes(&out) {
+        Err(Error::NonCanonical(m)) => assert!(
+            m.contains("does not match the packing rule"),
+            "expected the packing-rule refusal, got: {m}"
+        ),
+        other => panic!("expected NonCanonical (packing rule), got {other:?}"),
+    }
+}
+
+// ---- RFC 018, review 099 R-6: parallel frame compression is byte-identical to the serial writer -----
+
+/// Many small blobs (well past the 64 MiB parallel window, so `write_blob_frames` must flush and
+/// resume more than once) and a few large, each-their-own-frame blobs — exercising both the parallel
+/// (packed, ≤1 MiB) and solo (>1 MiB) paths in one `Ir`.
+fn many_frame_ir() -> Ir {
+    let mut b = IrBuilder::new(provenance());
+    let mut ops = Vec::new();
+    // Enough 200 KiB blobs to need several 64 MiB windows (80 × 200 KiB ≈ 15.6 MiB — kept small enough
+    // for a fast test while still crossing more than one packed frame boundary; the window-crossing
+    // logic itself is exercised by `PARALLEL_WINDOW`-sized accounting, not by the absolute byte count).
+    for i in 0..80 {
+        let mut content = format!("blob {i} of many, ").into_bytes();
+        content.resize(200 * 1024, b'.');
+        let blob = b.add_blob(content).unwrap();
+        ops.push(PathOp::Add {
+            path: format!("file-{i:03}"),
+            blob,
+            mode: 0o100_644,
+            status: EpistemicStatus::Stated,
+        });
+    }
+    for i in 0..3 {
+        let content = vec![i as u8; 2 * 1024 * 1024]; // > 1 MiB: its own frame
+        let blob = b.add_blob(content).unwrap();
+        ops.push(PathOp::Add {
+            path: format!("large-{i}"),
+            blob,
+            mode: 0o100_644,
+            status: EpistemicStatus::Stated,
+        });
+    }
+    b.add_atom(AtomDraft {
+        parents: vec![],
+        ops,
+        copies: vec![],
+        metadata: MetadataClaims::default(),
+        source: SourceIdentity {
+            kind: SourceKind::Git,
+            repo_id: b"repo".to_vec(),
+            atom_id: b"c1".to_vec(),
+            signatures: Vec::new(),
+            extras: Vec::new(),
+        },
+        status: EpistemicStatus::Stated,
+    })
+    .unwrap();
+    b.finish().unwrap()
+}
+
+#[test]
+fn parallel_blob_frame_compression_is_byte_identical_to_the_serial_writer() {
+    let ir = many_frame_ir();
+    let order = store_order(&ir);
+    let lens: Vec<u64> = order
+        .iter()
+        .map(|id| ir.content.get(id).unwrap().unwrap().len() as u64)
+        .collect();
+    let frame_lens = frame::canonical_frame_raw_lens(lens.iter().copied());
+    assert!(
+        frame_lens.len() > 4,
+        "this fixture should need several frames"
+    );
+
+    // The real writer (parallel): `write_blob_frames`, via `write_to`/`to_bytes`.
+    let parallel = to_bytes(&ir);
+
+    // A purely serial re-implementation of the same blob-frame loop, kept independent of
+    // `write_blob_frames` on purpose (so a bug shared by both would not cancel out): one frame's raw
+    // bytes assembled, compressed, and written, one at a time, exactly as the pre-R-6 writer did.
+    let mut version = CanonWriter::new();
+    version.uvarint(0);
+    version.uvarint(3);
+    version.uvarint(0);
+    let meta_bytes = ir.encode_metadata();
+    let mut hasher = Sha256::new();
+    hasher.update(version.as_bytes());
+    hasher.update(canon::uvarint_value(meta_bytes.len() as u64));
+    hasher.update(&meta_bytes);
+    hasher.update(canon::uvarint_value(order.len() as u64));
+    for (id, len) in order.iter().zip(lens.iter()) {
+        hasher.update(id.as_bytes());
+        hasher.update(canon::uvarint_value(*len));
+    }
+    let mut blob_iter = order.iter();
+    let mut blob_frame_bytes = Vec::new();
+    blob_frame_bytes.extend_from_slice(&canon::uvarint_value(frame_lens.len() as u64));
+    for &flen in &frame_lens {
+        let mut buf = Vec::new();
+        let mut collected = 0u64;
+        while collected < flen {
+            let id = blob_iter.next().unwrap();
+            let bytes = ir.content.get(id).unwrap().unwrap();
+            hasher.update(&bytes);
+            collected += bytes.len() as u64;
+            buf.extend_from_slice(&bytes);
+        }
+        write_one_frame(&mut blob_frame_bytes, &buf, false).unwrap();
+    }
+    let digest: [u8; 32] = hasher.finalize().into();
+
+    let mut serial = MAGIC.to_vec();
+    serial.push(FORMAT);
+    serial.extend_from_slice(version.as_bytes());
+    serial.extend_from_slice(&digest);
+    write_frames(
+        &mut serial,
+        &meta_bytes,
+        &frame::fixed_chunk_lens(meta_bytes.len() as u64),
+        false,
+    )
+    .unwrap();
+    serial.extend_from_slice(&canon::uvarint_value(order.len() as u64));
+    for (id, len) in order.iter().zip(lens.iter()) {
+        serial.extend_from_slice(id.as_bytes());
+        serial.extend_from_slice(&canon::uvarint_value(*len));
+    }
+    serial.extend_from_slice(&blob_frame_bytes);
+
+    assert_eq!(
+        parallel, serial,
+        "the parallel writer's bytes differ from an independent serial re-implementation"
+    );
+
+    // And, of course, still a valid, equal-IR artifact either way.
+    let decoded = from_bytes(&parallel).unwrap();
+    assert_eq!(decoded.ir, ir);
+}

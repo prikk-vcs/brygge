@@ -3124,3 +3124,62 @@ fn against_source_with_a_missing_path_is_not_checked_with_the_same_wording() {
         }
     }
 }
+
+// ---- RFC 018, review 099 R-4: this build still verifies a 0.2.0 artifact against its real source ----
+
+/// `crates/brygge/tests/data/contract-0.2.0-simple-repo.ir`: a **contract 0.2.0** artifact (RFC 018
+/// D-7: this build writes only 0.3.0, but still reads 0.2.0), decoded by the 0.6.0 release's own
+/// `brygge` (commit `2f1e659`) from exactly the fixture below — two commits, `a.txt` changed once, the
+/// same pinned author/committer identity and date `TempRepo::git` always uses, so rebuilding this same
+/// repository here reproduces the *exact* history that artifact records. Frozen rather than regenerated
+/// by this build (which could not write contract 0.2.0 even if asked): it is the one artifact in this
+/// crate's own tests that proves `verify --against-source` still works on the contract this build no
+/// longer writes.
+#[test]
+fn verify_against_source_corresponds_on_a_0_2_0_artifact() {
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let r = TempRepo::new();
+    r.commit("a.txt", "cli-0.2.0-fixture one\n", "c1");
+    r.commit("a.txt", "cli-0.2.0-fixture two\n", "c2");
+
+    let fixture =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/contract-0.2.0-simple-repo.ir");
+    let bytes = std::fs::read(&fixture).unwrap();
+    assert_eq!(
+        &bytes[9..12],
+        &[0u8, 2, 0],
+        "the fixture is contract 0.2.0 (major 0, minor 2, patch 0)"
+    );
+
+    assert_eq!(
+        run_verify(&fixture, Some(r.path()), None, Format::Human),
+        exit::CLEAN,
+        "verify --against-source corresponds on a 0.2.0 artifact, against the repository it was \
+         decoded from (review 099 R-4)"
+    );
+}
+
+/// Review 099 R-4 ("small"): `examples/encode-git`'s own test plugin-interface binary accepts a
+/// contract-0.2.0 artifact too (the CHANGELOG's "brygge still reads contract 0.2.0 artifacts" line
+/// covers `encode`, not only `inspect`/`verify`) — `encode` hands either contract to the plugin
+/// unchanged, since it works from the decoded `Ir`, never the artifact's own bytes.
+#[test]
+fn encode_accepts_a_0_2_0_artifact() {
+    let fixture =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/contract-0.2.0-simple-repo.ir");
+    let decoded = brygge_ir::from_file(&fixture).expect("the 0.2.0 fixture decodes");
+    assert_eq!(decoded.contract, brygge_ir::ContractVersion::new(0, 2, 0));
+    // `encode`'s own mandatory verify-first gate (OQ-4): the exact function it calls before handing an
+    // artifact to a plugin. Proving it passes, and exits clean, on this 0.2.0 fixture is the
+    // contract-acceptance claim `encode` makes — the plugin step itself is `examples/encode-git`'s own
+    // concern (its round-trip suite), not duplicated here.
+    let (_, exit_code) = verify_internal_report(&fixture, Format::Human);
+    assert_eq!(
+        exit_code,
+        exit::CLEAN,
+        "a 0.2.0 artifact's internal checks must pass before `encode` would run a plugin on it"
+    );
+}
