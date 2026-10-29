@@ -172,10 +172,11 @@ codec  := 0 stored (bytes as they are) | 1 DEFLATE (RFC 1951, raw, no zlib heade
   - **The losses can be enumerated from the artifact alone:** every `Transform` drop names its step, and the
     drops without a step are the decoder's own.
 - **A new `EpistemicStatus` variant 2, `Transformed { step: uvarint, changed: list<text>, prior: EpistemicStatus }`,**
-  on an atom or a ref that a transform changed:
+  on an atom, an op or a ref that a transform changed (ops added at the batch T handoff, so that replaced content
+  never passes for stated):
   - `step` indexes the chain;
-  - `changed` names the parts it changed (`author`, `committer`, `message`, `ops`, `copies`, `name`, `target`,
-    `annotation`);
+  - `changed` names the parts it changed, from a closed vocabulary (for example `author`, `message`, `ops`;
+    `blob`, `path`; `name`, `target`);
   - **`prior` keeps the status it had before,** so an earlier `Derived` is never erased.
 
   This refines RFC 017 D-4's "a `Transformed` derivation kind". A derivation kind would replace the prior
