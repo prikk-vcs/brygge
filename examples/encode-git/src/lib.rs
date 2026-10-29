@@ -4,17 +4,20 @@
 //! buildable on `brygge-ir` alone (PU-3) — see `cargo tree -p brygge-encode-git-example`, which shows
 //! only `brygge-ir`'s own dependency closure, no Git library at all.
 //!
-//! Every commit's message gets four trailers (`trailers`): `Encoded-by`, `Encoded-supplied` (when
+//! Every commit's message gets these trailers (`trailers`): `Encoded-by`, `Encoded-supplied` (when
 //! anything was invented to satisfy Git's format), `Brygge-Derived` (one per `Derived` assertion this
-//! commit carries), and `Brygge-Artifact` (the artifact's own digest, so the target records what it was
-//! built from). See `README.md` for the full IR→Git mapping and the honesty rules this follows (the
-//! encoder author's guide, `docs/src/reference/writing-an-encoder.md`, states the rules in general).
+//! commit carries), `Brygge-Transformed` (one per `Transformed` layer this commit's atom or one of its
+//! ops carries — RFC 018 D-5, batch T), and `Brygge-Artifact` (the artifact's own digest, so the target
+//! records what it was built from). See `README.md` for the full IR→Git mapping and the honesty rules
+//! this follows (the encoder author's guide, `docs/src/reference/writing-an-encoder.md`, states the
+//! rules in general).
 
 use std::collections::BTreeMap;
 use std::io::Write;
 
 use brygge_ir::{
-    AtomId, BlobId, ChangeAtom, EpistemicStatus, Identity, Ir, PathOp, RefKind, RefRecord, Time,
+    AtomId, BlobId, ChangeAtom, ChangedPart, EpistemicStatus, Identity, Ir, PathOp, RefKind,
+    RefRecord, Time, TransformRecord,
 };
 
 /// The label every trailer, `--help`, and `README.md` carry (RFC 017 D-1 §2's "the labelling").
@@ -234,14 +237,49 @@ fn derived_trailer(scope: &str, status: &EpistemicStatus) -> Option<String> {
     ))
 }
 
-/// Builds every `Brygge-Derived:` line for one atom: the atom's own status, then each op's, each in
-/// canonical (path) order — RFC 017 D-1 §2's "op-level derivations in a form you choose and document".
-/// Scope is `atom` for the atom itself, or `op:<path>` for one of its path operations.
-fn derived_trailers(atom: &ChangeAtom) -> Vec<String> {
-    let mut out = Vec::new();
-    if let Some(line) = derived_trailer("atom", &atom.status) {
-        out.push(line);
+/// One trailer line per layer of `status`'s own chain, outermost first (RFC 018 D-5, batch T): a
+/// `Transformed` layer gets `Brygge-Transformed: <scope> <step> <name> <version> (<changed>)`, naming
+/// the record `transforms[step]` points at (`name`/`version` default to `"?"` if `step` is somehow out
+/// of range — never reached for an artifact that already passed `brygge verify`, which `encode` always
+/// runs first, but this program does not panic on it either way); its `prior` — itself `Transformed` or
+/// `Derived` (or `Stated`, the base case with no line of its own) — is walked the same way, so a
+/// multi-step chain gets one line per layer. A `Derived` status with no `Transformed` wrapping it at all
+/// reuses the existing [`derived_trailer`] line unchanged — this is strictly additive over it.
+fn status_chain_trailers(
+    scope: &str,
+    status: &EpistemicStatus,
+    transforms: &[TransformRecord],
+) -> Vec<String> {
+    match status {
+        EpistemicStatus::Transformed {
+            step,
+            changed,
+            prior,
+        } => {
+            let parts: Vec<&str> = changed.iter().map(ChangedPart::as_str).collect();
+            let (name, version) = usize::try_from(*step)
+                .ok()
+                .and_then(|i| transforms.get(i))
+                .map(|t| (t.name.as_str(), t.version.as_str()))
+                .unwrap_or(("?", "?"));
+            let mut out = vec![format!(
+                "Brygge-Transformed: {scope} {step} {name} {version} ({})",
+                parts.join(",")
+            )];
+            out.extend(status_chain_trailers(scope, prior, transforms));
+            out
+        }
+        EpistemicStatus::Derived(_) => derived_trailer(scope, status).into_iter().collect(),
+        EpistemicStatus::Stated => Vec::new(),
     }
+}
+
+/// Builds every `Brygge-Derived:`/`Brygge-Transformed:` line for one atom: the atom's own status, then
+/// each op's, each in canonical (path) order — RFC 017 D-1 §2's "op-level derivations in a form you
+/// choose and document", extended by RFC 018 D-5 to the same op-level transform marks. Scope is `atom`
+/// for the atom itself, or `op:<path>` for one of its path operations.
+fn status_trailers(atom: &ChangeAtom, transforms: &[TransformRecord]) -> Vec<String> {
+    let mut out = status_chain_trailers("atom", &atom.status, transforms);
     for op in &atom.ops {
         let (path, status) = match op {
             PathOp::Add { path, status, .. }
@@ -249,9 +287,11 @@ fn derived_trailers(atom: &ChangeAtom) -> Vec<String> {
             | PathOp::Delete { path, status, .. }
             | PathOp::Replace { path, status, .. } => (path, status),
         };
-        if let Some(line) = derived_trailer(&format!("op:{path}"), status) {
-            out.push(line);
-        }
+        out.extend(status_chain_trailers(
+            &format!("op:{path}"),
+            status,
+            transforms,
+        ));
     }
     out
 }
@@ -305,6 +345,29 @@ fn check_no_ref_collisions(refs: &[RefRecord]) -> Result<(), EncodeError> {
         seen.insert(path, (rf.name.clone(), label));
     }
     Ok(())
+}
+
+/// Lists the whole transform chain to stderr, **once per encode run** — never once per atom, even
+/// though many atoms' own `Brygge-Transformed:` trailers may each name one of these same steps (RFC 018
+/// D-5, batch T; `docs/src/reference/writing-an-encoder.md` §3's "report the chain to the user" rule). A
+/// no-op when `transforms` is empty (every artifact brygge itself writes today — RFC 018 D-5: brygge
+/// writes no transformed artifact yet).
+pub fn report_transform_chain(transforms: &[TransformRecord]) {
+    if transforms.is_empty() {
+        return;
+    }
+    eprintln!(
+        "transform chain ({} record(s); this program re-ran none of them):",
+        transforms.len()
+    );
+    for (k, t) in transforms.iter().enumerate() {
+        eprintln!(
+            "  {k}. {} {} — consumed sha256:{}",
+            t.name,
+            t.version,
+            to_hex(&t.consumed)
+        );
+    }
 }
 
 /// Encodes `ir` as a `git fast-import` stream, writing it to `out`. `artifact_digest` becomes every
@@ -410,7 +473,7 @@ pub fn encode<W: Write>(
         if let Some(line) = altered.trailer() {
             trailers.push(line);
         }
-        trailers.extend(derived_trailers(atom));
+        trailers.extend(status_trailers(atom, &ir.transforms));
         trailers.push(format!("Brygge-Artifact: sha256:{digest_hex}"));
 
         let mut body = message;
@@ -499,7 +562,7 @@ pub fn encode<W: Write>(
                     rf.name
                 )));
             };
-            write_ref(out, rf, mark)?;
+            write_ref(out, rf, mark, &ir.transforms)?;
         }
         writeln!(out, "reset {SCRATCH_REF}")?;
     }
@@ -507,7 +570,40 @@ pub fn encode<W: Write>(
     Ok(())
 }
 
-fn write_ref<W: Write>(out: &mut W, rf: &RefRecord, mark: u64) -> Result<(), EncodeError> {
+/// A transformed ref (RFC 018 D-5, batch T) with no message of its own to carry a trailer in (a
+/// lightweight tag, a branch, a bookmark, a named branch, or `Other`): printed to stderr instead, once
+/// per such ref — the same note-to-stderr fallback `docs/src/reference/writing-an-encoder.md` §3
+/// describes generally for a target with nowhere else to put a mark. A no-op when `lines` is empty
+/// (the ref's own status was never `Transformed` at all; see [`write_ref`]'s own guard).
+fn report_ref_transform_to_stderr(rf: &RefRecord, lines: &[String]) {
+    if lines.is_empty() {
+        return;
+    }
+    eprintln!(
+        "note: ref {:?} has no message of its own to carry its own transform mark(s); printing them \
+         here instead:",
+        rf.name
+    );
+    for line in lines {
+        eprintln!("  {line}");
+    }
+}
+
+fn write_ref<W: Write>(
+    out: &mut W,
+    rf: &RefRecord,
+    mark: u64,
+    transforms: &[TransformRecord],
+) -> Result<(), EncodeError> {
+    // RFC 018 D-5: only when the ref's own status is itself `Transformed` (never for a plain `Derived`
+    // ref status, which this program has never carried a trailer for — adding that is not this
+    // feature's job) does this walk its chain at all; `status_chain_trailers` then also carries
+    // whatever `Derived`/further-`Transformed` `prior` the chain bottoms out through.
+    let transform_lines = if matches!(rf.status, EpistemicStatus::Transformed { .. }) {
+        status_chain_trailers(&format!("ref:{}", rf.name), &rf.status, transforms)
+    } else {
+        Vec::new()
+    };
     match (&rf.kind, &rf.annotation) {
         (RefKind::Tag, Some(annotation)) => {
             let mut supplied = Supplied::default();
@@ -525,7 +621,9 @@ fn write_ref<W: Write>(out: &mut W, rf: &RefRecord, mark: u64) -> Result<(), Enc
                 .map(|t| t.bytes.clone())
                 .unwrap_or_default();
             // The same honesty rules as a commit message (review 091 F-1: "the same applies to the
-            // tagger") — supplied/altered trailers, when either applies, after one blank line.
+            // tagger") — supplied/altered trailers, when either applies, after one blank line. An
+            // annotated tag has its own message, so its transform mark(s) (if any) go here too, same
+            // mechanism as a commit (RFC 018 D-5) — never the stderr fallback above.
             let mut trailers = Vec::new();
             if let Some(line) = supplied.trailer() {
                 trailers.push(line);
@@ -533,6 +631,7 @@ fn write_ref<W: Write>(out: &mut W, rf: &RefRecord, mark: u64) -> Result<(), Enc
             if let Some(line) = altered.trailer() {
                 trailers.push(line);
             }
+            trailers.extend(transform_lines);
             if !trailers.is_empty() {
                 if !message.ends_with(b"\n") {
                     message.push(b'\n');
@@ -548,6 +647,7 @@ fn write_ref<W: Write>(out: &mut W, rf: &RefRecord, mark: u64) -> Result<(), Enc
             writeln!(out)?;
         }
         (RefKind::Tag, None) => {
+            report_ref_transform_to_stderr(rf, &transform_lines);
             writeln!(out, "reset refs/tags/{}", rf.name)?;
             writeln!(out, "from :{mark}")?;
         }
@@ -555,6 +655,7 @@ fn write_ref<W: Write>(out: &mut W, rf: &RefRecord, mark: u64) -> Result<(), Enc
             // Branch, Bookmark, NamedBranch, and any `Other` kind are all flattened to `refs/heads/*`
             // (RFC 017 D-1 §2: "branches with reset") — this example does not invent a second
             // namespace per source ref-kind. Documented as a known limitation in README.md.
+            report_ref_transform_to_stderr(rf, &transform_lines);
             writeln!(out, "reset refs/heads/{}", rf.name)?;
             writeln!(out, "from :{mark}")?;
         }

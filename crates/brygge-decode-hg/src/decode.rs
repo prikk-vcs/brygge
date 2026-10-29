@@ -893,11 +893,13 @@ fn loss_boundary(
             class: LossClass::Representation,
             what: "revlog physical layout and delta chains".to_string(),
             reason: "representation not assertion; the logical revisions are preserved".to_string(),
+            step: None,
         },
         DropRecord {
             class: LossClass::Representation,
             what: "dirstate and working copy".to_string(),
             reason: "local state, not history".to_string(),
+            step: None,
         },
     ];
     if store.join("phaseroots").exists() {
@@ -905,6 +907,7 @@ fn loss_boundary(
             class: LossClass::Representation,
             what: "phases (public/draft/secret)".to_string(),
             reason: "local workflow state, not history".to_string(),
+            step: None,
         });
     }
     if store.join("obsstore").exists() {
@@ -913,6 +916,7 @@ fn loss_boundary(
             what: "obsolescence markers".to_string(),
             reason: "advisory metadata about rewritten changesets; never promoted to ancestry"
                 .to_string(),
+            step: None,
         });
     }
     if not_published > 0 {
@@ -922,6 +926,7 @@ fn loss_boundary(
             reason: "not published by the source repository (phase), so not imported: brygge \
                      imports what the repository would publish"
                 .to_string(),
+            step: None,
         });
     }
     if hidden > 0 {
@@ -931,6 +936,7 @@ fn loss_boundary(
             reason: "rewritten or pruned by the source's own history editing (obsolescence \
                      markers); not part of the published history"
                 .to_string(),
+            step: None,
         });
     }
     if unresolved_copies > 0 {
@@ -941,6 +947,7 @@ fn loss_boundary(
                 "the stated copy source could not be placed on an imported changeset; the copy is \
                      omitted rather than placed on a guess"
                     .to_string(),
+            step: None,
         });
     }
     if copy_on_existing_path > 0 {
@@ -951,6 +958,7 @@ fn loss_boundary(
                      IR's copy model, which carries a copy's destination as an Add; the literal Modify \
                      is carried, the copy relationship is not"
                 .to_string(),
+                step: None,
         });
     }
     if unresolved_bookmarks > 0 {
@@ -960,6 +968,7 @@ fn loss_boundary(
             reason: "the bookmark names a changeset that is not published (secret, hidden) or not \
                      present"
                 .to_string(),
+            step: None,
         });
     }
     if unrepresentable_offsets > 0 {
@@ -970,6 +979,7 @@ fn loss_boundary(
                      16-bit minutes-east representation; the time itself is still carried, the offset \
                      is absent"
                 .to_string(),
+                step: None,
         });
     }
     LossBoundary { dropped }

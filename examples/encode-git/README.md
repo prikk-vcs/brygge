@@ -68,8 +68,22 @@ Every commit message gets, after one blank line:
 - `Brygge-Derived: <scope> <kind> <params>` — one per `Derived` assertion the commit carries (the atom
   itself, or one of its path operations, scoped `atom` or `op:<path>`), naming the derivation's kind and
   its exact parameters. Never present on a fully `Stated` atom.
+- `Brygge-Transformed: <scope> <step> <name> <version> (<changed>)` — one per `Transformed` layer the
+  commit's atom or one of its path operations carries (RFC 018 D-5, batch T), scoped `atom` or
+  `op:<path>` like `Brygge-Derived:` above, naming the transform step's own index, name, and version, and
+  the comma-separated part(s) it changed. A multi-step chain gets one line per layer, newest (outermost)
+  first; whatever the chain's own base turns out to be — `Stated` (no further line) or `Derived` (its own
+  `Brygge-Derived:` line, same as above) — comes last. Never present on a status with no transform mark
+  at all. A **ref**'s own `Transformed` mark has nowhere to go in this table at all (a lightweight tag, a
+  branch, a bookmark, a named branch, or `Other` carries no message): it is printed to stderr instead,
+  once per such ref; an **annotated tag**'s own mark, scoped `ref:<name>`, goes into its annotation
+  message by this same mechanism, since it does have one.
 - `Brygge-Artifact: sha256:<digest>` — the artifact's own integrity digest (RFC 017 D-2's addition to
   `brygge_ir::artifact::Decoded`), so the resulting repository records exactly what it was built from.
+
+The whole transform chain (RFC 018 D-5) — every step's own index, name, version, and the digest of the
+artifact it read — is also printed to stderr once per run, regardless of how many commits' own trailers
+name one of its steps.
 
 ## What this program does not do
 

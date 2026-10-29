@@ -26,7 +26,8 @@ use sha2::{Digest, Sha256};
 
 use crate::canon::{self, CanonReader, CanonWriter};
 use crate::content::{BlobId, ContentStore};
-use crate::model::{AtomId, Ir, PathOp};
+use crate::model::{AtomId, ChangedPart, Ir, LossClass, PathOp};
+use crate::status::EpistemicStatus;
 use crate::version::{self, ContractVersion};
 use crate::{Error, Result};
 
@@ -93,54 +94,30 @@ fn write_to_inner<W: Write + Seek>(ir: &Ir, out: &mut W, force_stored: bool) -> 
     version.uvarint(u64::from(version::CURRENT.patch));
     out.write_all(version.as_bytes()).map_err(Error::io)?;
 
-    // The digest covers the *logical* stream (RFC 018 D-3): version, then the metadata's raw bytes,
-    // then the blob table, then every blob's raw bytes in store order — never a frame header or a
-    // compressed byte, so it never depends on how the content was compressed.
     let mut hasher = Sha256::new();
-    hasher.update(version.as_bytes());
     let digest_offset = out.stream_position().map_err(Error::io)?;
     out.write_all(&[0u8; 32]).map_err(Error::io)?;
 
-    let meta_bytes = ir.encode_metadata();
-    let meta_len = meta_bytes.len() as u64;
-    hasher.update(canon::uvarint_value(meta_len));
-    hasher.update(&meta_bytes);
+    // The digest covers the *logical* stream (RFC 018 D-3): version, then the metadata's raw bytes,
+    // then the blob table, then every blob's raw bytes in store order — never a frame header or a
+    // compressed byte, so it never depends on how the content was compressed. Hashed by
+    // `hash_header_and_table`/`hashed_blob_bytes`, the exact two functions [`digest_of`] also calls, so
+    // the two can never diverge on what counts toward the digest.
+    let (meta_bytes, order, lens) = hash_header_and_table(ir, version.as_bytes(), &mut hasher)?;
+
     write_frames(
         out,
         &meta_bytes,
-        &frame::fixed_chunk_lens(meta_len),
+        &frame::fixed_chunk_lens(meta_bytes.len() as u64),
         force_stored,
     )?;
 
-    let order = store_order(ir);
-    if order.len() != ir.content.len() {
-        // store_order only names a blob some op actually references (RFC 018 D-2); a blob present in
-        // `ir.content` but named by none is an orphan — the same bug `check_structure`'s read-side
-        // check exists to catch, caught here instead, before it is ever written (RFC 011 §2.5).
-        return Err(Error::Invariant(
-            match ir.content.ids().find(|id| !order.contains(id)) {
-                Some(orphan) => {
-                    format!("blob {orphan} is stored but referenced by no operation (orphan)")
-                }
-                None => "a blob is stored but referenced by no operation (orphan)".to_string(),
-            },
-        ));
-    }
-    let count_bytes = canon::uvarint_value(order.len() as u64);
-    hasher.update(&count_bytes);
-    out.write_all(&count_bytes).map_err(Error::io)?;
-    let mut lens = Vec::with_capacity(order.len());
-    for id in &order {
-        let len = ir
-            .content
-            .blob_len(id)
-            .ok_or_else(|| Error::Invariant(format!("blob {id} indexed but not readable")))?;
-        hasher.update(id.as_bytes());
+    out.write_all(&canon::uvarint_value(order.len() as u64))
+        .map_err(Error::io)?;
+    for (id, len) in order.iter().zip(lens.iter()) {
         out.write_all(id.as_bytes()).map_err(Error::io)?;
-        let len_bytes = canon::uvarint_value(len);
-        hasher.update(&len_bytes);
-        out.write_all(&len_bytes).map_err(Error::io)?;
-        lens.push(len);
+        out.write_all(&canon::uvarint_value(*len))
+            .map_err(Error::io)?;
     }
 
     let frame_lens = frame::canonical_frame_raw_lens(lens.iter().copied());
@@ -155,6 +132,94 @@ fn write_to_inner<W: Write + Seek>(ir: &Ir, out: &mut W, force_stored: bool) -> 
     out.write_all(&digest).map_err(Error::io)?;
     out.seek(SeekFrom::Start(end)).map_err(Error::io)?;
     Ok(())
+}
+
+/// `store_order(ir)`, plus each blob's own length (`ir.content.blob_len`, never a read of its bytes) —
+/// and the one check that belongs with computing it: every blob `ir.content` holds must be named by
+/// `order` (RFC 018 D-2's orphan check), since `store_order` only names a blob some op actually
+/// references. Pure; shared by [`write_to_inner`] and [`digest_of`], so an orphan is caught the same
+/// way, with the same message, regardless of which one is asking.
+fn store_order_and_lens(ir: &Ir) -> Result<(Vec<BlobId>, Vec<u64>)> {
+    let order = store_order(ir);
+    if order.len() != ir.content.len() {
+        return Err(Error::Invariant(
+            match ir.content.ids().find(|id| !order.contains(id)) {
+                Some(orphan) => {
+                    format!("blob {orphan} is stored but referenced by no operation (orphan)")
+                }
+                None => "a blob is stored but referenced by no operation (orphan)".to_string(),
+            },
+        ));
+    }
+    let mut lens = Vec::with_capacity(order.len());
+    for id in &order {
+        let len = ir
+            .content
+            .blob_len(id)
+            .ok_or_else(|| Error::Invariant(format!("blob {id} indexed but not readable")))?;
+        lens.push(len);
+    }
+    Ok((order, lens))
+}
+
+/// The D-3 logical-stream digest's own header-and-table hashing (RFC 018 D-3): `version_bytes`, then
+/// the metadata record, then the blob table — fed into `hasher` in exactly the order [`write_to`]
+/// writes them, and returned (`meta_bytes`, `order`, `lens`) so the caller can go on to write or hash
+/// what comes after (frames, for [`write_to_inner`]; every blob's own bytes, for [`digest_of`]) without
+/// re-deriving any of it. Shared by both, so they cannot diverge on what the header and table
+/// contribute to the digest.
+fn hash_header_and_table(
+    ir: &Ir,
+    version_bytes: &[u8],
+    hasher: &mut Sha256,
+) -> Result<(Vec<u8>, Vec<BlobId>, Vec<u64>)> {
+    hasher.update(version_bytes);
+    let meta_bytes = ir.encode_metadata();
+    hasher.update(canon::uvarint_value(meta_bytes.len() as u64));
+    hasher.update(&meta_bytes);
+
+    let (order, lens) = store_order_and_lens(ir)?;
+    hasher.update(canon::uvarint_value(order.len() as u64));
+    for (id, len) in order.iter().zip(lens.iter()) {
+        hasher.update(id.as_bytes());
+        hasher.update(canon::uvarint_value(*len));
+    }
+    Ok((meta_bytes, order, lens))
+}
+
+/// Read one blob's bytes and hash them into `hasher` (RFC 018 D-3's blob-content hashing step) —
+/// shared by [`write_blob_frames`]'s inner loop and [`digest_of`]'s own loop, so the two can never
+/// diverge on what a blob's bytes contribute to the digest.
+fn hashed_blob_bytes(ir: &Ir, id: &BlobId, hasher: &mut Sha256) -> Result<Vec<u8>> {
+    let bytes = ir
+        .content
+        .get(id)?
+        .ok_or_else(|| Error::Invariant(format!("blob {id} indexed but not readable")))?;
+    hasher.update(&bytes);
+    Ok(bytes)
+}
+
+/// The D-3 digest [`write_to`] would write for `ir`, without writing an artifact: streams the same
+/// logical stream ([`hash_header_and_table`], then every blob's own bytes via [`hashed_blob_bytes`],
+/// one blob held at a time, never the whole content store) into one hash and returns it. Batch T's own
+/// use (RFC 018 D-5): a transform step's own `TransformRecord::consumed` is the digest of the artifact
+/// it read, computed this way rather than by writing that artifact just to hash it back.
+///
+/// # Errors
+/// Whatever [`write_to`] would itself error on while computing the same digest (an orphan blob, an
+/// unreadable blob).
+pub fn digest_of(ir: &Ir) -> Result<[u8; 32]> {
+    let mut version = CanonWriter::new();
+    version.uvarint(u64::from(version::CURRENT.major));
+    version.uvarint(u64::from(version::CURRENT.minor));
+    version.uvarint(u64::from(version::CURRENT.patch));
+
+    let mut hasher = Sha256::new();
+    let (_meta_bytes, order, _lens) = hash_header_and_table(ir, version.as_bytes(), &mut hasher)?;
+    for id in &order {
+        hashed_blob_bytes(ir, id, &mut hasher)?; // dropped immediately: one blob at a time
+    }
+    Ok(hasher.finalize().into())
 }
 
 /// Write `bytes`, cut into `chunk_lens` (each a frame), as `uvarint(nframes) ‖ frame*`.
@@ -246,11 +311,7 @@ fn write_blob_frames<W: Write>(
             let id = blob_ids.next().ok_or_else(|| {
                 Error::Invariant("the frame packing plan ran out of blobs".to_string())
             })?;
-            let bytes = ir
-                .content
-                .get(id)?
-                .ok_or_else(|| Error::Invariant(format!("blob {id} indexed but not readable")))?;
-            hasher.update(&bytes);
+            let bytes = hashed_blob_bytes(ir, id, hasher)?;
             collected += bytes.len() as u64;
             buf.extend_from_slice(&bytes);
         }
@@ -494,7 +555,7 @@ fn from_bytes_v2(
         ));
     }
 
-    check_structure(&ir)?;
+    check_structure(&ir, found)?;
 
     Ok(Decoded {
         ir,
@@ -747,7 +808,7 @@ fn from_bytes_v3(
         }
     }
 
-    check_structure(&ir)?;
+    check_structure(&ir, found)?;
 
     Ok(Decoded {
         ir,
@@ -839,7 +900,7 @@ fn read_from_v2<R: Read + Seek + std::fmt::Debug + 'static>(
                 return Err(Error::DigestMismatch);
             }
             body.ir.content = ContentStore::from_artifact_source(sr.into_reader(), body.index);
-            check_structure(&body.ir)?;
+            check_structure(&body.ir, found)?;
             Ok(Decoded {
                 ir: body.ir,
                 skipped_non_critical_fields: body.skipped,
@@ -1069,7 +1130,7 @@ fn read_from_v3<R: Read + Seek + std::fmt::Debug + 'static>(
 
     let skipped = mr.skipped_non_critical_fields();
     ir.content = ContentStore::from_artifact_source_compact(sr.into_reader(), frames, index);
-    check_structure(&ir)?;
+    check_structure(&ir, found)?;
 
     Ok(Decoded {
         ir,
@@ -1091,8 +1152,10 @@ pub fn from_file(path: &std::path::Path) -> Result<Decoded> {
 
 /// The structural checks RFC 011 §2.5 asks a reader to enforce beyond each record's own shape: unique
 /// atom ids, canonical atom order, every parent/`from_atom` naming an earlier atom, every ref target
-/// known, and blob referential integrity in both directions (no missing blob, no orphan).
-fn check_structure(ir: &Ir) -> Result<()> {
+/// known, blob referential integrity in both directions (no missing blob, no orphan), and — RFC 018
+/// D-5 — the transform chain's own cross-record rules (step bounds, vocabulary, and that contract 0.2.0
+/// never carries any of it).
+fn check_structure(ir: &Ir, contract: ContractVersion) -> Result<()> {
     let ids: Vec<AtomId> = ir.atoms.iter().map(|a| a.id).collect();
     let mut position: BTreeMap<AtomId, usize> = BTreeMap::new();
     for (i, id) in ids.iter().enumerate() {
@@ -1167,6 +1230,163 @@ fn check_structure(ir: &Ir) -> Result<()> {
         }
     }
 
+    if contract.minor == 2 {
+        reject_transform_extensions(ir)?;
+    } else {
+        check_transform_chain(ir)?;
+    }
+
+    Ok(())
+}
+
+/// RFC 018 D-5: contract 0.2.0 has none of the batch-T extensions — `Ir` field 6 (`transforms`),
+/// `EpistemicStatus` variant 2 (`Transformed`), `LossClass` variant 3 (`Transform`), or `DropRecord`
+/// field 4 (`step`). The shared metadata decoder ([`Ir::decode_metadata`] and everything it calls) does
+/// not itself know which contract it is reading (RFC 011 §2.4's record decoders are contract-oblivious
+/// by design), so a 0.2.0 artifact that smuggles any of these in via hand-crafted bytes decodes to a
+/// structurally plausible `Ir` — this is the one place that must notice and refuse it.
+fn reject_transform_extensions(ir: &Ir) -> Result<()> {
+    if !ir.transforms.is_empty() {
+        return Err(Error::NonCanonical(
+            "contract 0.2.0 does not have Ir field 6 (transforms)".to_string(),
+        ));
+    }
+    for atom in &ir.atoms {
+        if matches!(atom.status, EpistemicStatus::Transformed { .. }) {
+            return Err(Error::NonCanonical(
+                "contract 0.2.0 does not have EpistemicStatus variant 2 (Transformed)".to_string(),
+            ));
+        }
+        for op in &atom.ops {
+            if matches!(op.status(), EpistemicStatus::Transformed { .. }) {
+                return Err(Error::NonCanonical(
+                    "contract 0.2.0 does not have EpistemicStatus variant 2 (Transformed)"
+                        .to_string(),
+                ));
+            }
+        }
+        for copy in &atom.copies {
+            if matches!(copy.status, EpistemicStatus::Transformed { .. }) {
+                return Err(Error::NonCanonical(
+                    "contract 0.2.0 does not have EpistemicStatus variant 2 (Transformed)"
+                        .to_string(),
+                ));
+            }
+        }
+    }
+    for rf in &ir.refs {
+        if matches!(rf.status, EpistemicStatus::Transformed { .. }) {
+            return Err(Error::NonCanonical(
+                "contract 0.2.0 does not have EpistemicStatus variant 2 (Transformed)".to_string(),
+            ));
+        }
+    }
+    for drop in &ir.loss.dropped {
+        if matches!(drop.class, LossClass::Transform) {
+            return Err(Error::NonCanonical(
+                "contract 0.2.0 does not have LossClass variant 3 (Transform)".to_string(),
+            ));
+        }
+        if drop.step.is_some() {
+            return Err(Error::NonCanonical(
+                "contract 0.2.0 does not have DropRecord field 4 (step)".to_string(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Which kind of record a status belongs to (RFC 018 D-5): sets which `changed` vocabulary applies,
+/// and — for [`StatusContext::Copy`] — that `Transformed` may not appear there at all (D-5 names only
+/// an atom's, an op's, and a ref's own status as valid locations).
+#[derive(Debug, Clone, Copy)]
+enum StatusContext {
+    Atom,
+    Op,
+    Ref,
+    Copy,
+}
+
+impl StatusContext {
+    fn vocab_ok(self, part: ChangedPart) -> bool {
+        match self {
+            Self::Atom => part.valid_on_atom(),
+            Self::Op => part.valid_on_op(),
+            Self::Ref => part.valid_on_ref(),
+            Self::Copy => false,
+        }
+    }
+}
+
+/// Walk one status's own `Transformed`/`prior` chain **iteratively** (RFC 018 D-5 explicitly asks for
+/// this, not recursion: the chain is already bounded to 64 at decode time, but this walk makes no
+/// assumption of its own about that), checking each layer's `step` against the chain's actual length and
+/// its `changed` against `context`'s vocabulary (or refusing outright, for [`StatusContext::Copy`], where
+/// `Transformed` is never a valid location at all).
+fn check_status_chain(
+    status: &EpistemicStatus,
+    context: StatusContext,
+    nsteps: usize,
+) -> Result<()> {
+    let mut current = status;
+    loop {
+        let EpistemicStatus::Transformed {
+            step,
+            changed,
+            prior,
+        } = current
+        else {
+            return Ok(());
+        };
+        if matches!(context, StatusContext::Copy) {
+            return Err(Error::NonCanonical(
+                "Transformed may not appear on a copy record's own status".to_string(),
+            ));
+        }
+        let step_usize = usize::try_from(*step).unwrap_or(usize::MAX);
+        if step_usize >= nsteps {
+            return Err(Error::NonCanonical(format!(
+                "a Transformed status's step {step} is not less than the chain's length {nsteps}"
+            )));
+        }
+        if changed.iter().any(|c| !context.vocab_ok(*c)) {
+            return Err(Error::Decode(
+                "a Transformed status's changed uses a part outside its vocabulary".to_string(),
+            ));
+        }
+        current = prior;
+    }
+}
+
+/// RFC 018 D-5's structural rules for a contract that has the transform chain (0.3.0 and later): every
+/// `Transformed`'s own step is in range and uses the right vocabulary for where it sits, `Transformed`
+/// never appears on a copy record, and every `Transform`-class drop's step is in range (its presence and
+/// correlation with `class` was already checked at decode time — [`crate::model`]'s own `DropRecord`
+/// decoder).
+fn check_transform_chain(ir: &Ir) -> Result<()> {
+    let nsteps = ir.transforms.len();
+    for atom in &ir.atoms {
+        check_status_chain(&atom.status, StatusContext::Atom, nsteps)?;
+        for op in &atom.ops {
+            check_status_chain(op.status(), StatusContext::Op, nsteps)?;
+        }
+        for copy in &atom.copies {
+            check_status_chain(&copy.status, StatusContext::Copy, nsteps)?;
+        }
+    }
+    for rf in &ir.refs {
+        check_status_chain(&rf.status, StatusContext::Ref, nsteps)?;
+    }
+    for drop in &ir.loss.dropped {
+        if let Some(step) = drop.step {
+            let step_usize = usize::try_from(step).unwrap_or(usize::MAX);
+            if step_usize >= nsteps {
+                return Err(Error::NonCanonical(format!(
+                    "a Transform drop's step {step} is not less than the chain's length {nsteps}"
+                )));
+            }
+        }
+    }
     Ok(())
 }
 

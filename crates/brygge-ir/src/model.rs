@@ -328,6 +328,8 @@ pub enum LossClass {
     AdvisoryUnreliable,
     /// Any other explicitly-recorded drop.
     Other,
+    /// A transform step dropped this (RFC 018 D-5) — `DropRecord::step` names which one.
+    Transform,
 }
 
 /// One recorded drop: what class, what was dropped, and why (`HO-2`).
@@ -339,6 +341,9 @@ pub struct DropRecord {
     pub what: String,
     /// Why it was safe to drop.
     pub reason: String,
+    /// Which transform step dropped this (RFC 018 D-5): required when `class` is
+    /// [`LossClass::Transform`], absent for every other class.
+    pub step: Option<u64>,
 }
 
 /// The boundary of loss for an import (`HO-2/IR-4`). The *derived* side of the boundary is computed from
@@ -411,6 +416,152 @@ pub struct Ir {
     pub flags: Vec<Flag>,
     /// The content store.
     pub content: ContentStore,
+    /// Transform records (RFC 018 D-5), oldest first; empty for a decoder's own artifact.
+    pub transforms: Vec<TransformRecord>,
+}
+
+/// One part of an atom's, an op's, or a ref's status a transform changed (RFC 018 D-5), from contract
+/// 0.3.0's closed vocabulary (`ir-artifact-format.md`). The Rust API, not a raw string, so a caller
+/// cannot misspell one; [`ChangedPart::as_str`]/[`ChangedPart::parse`] are the only way in or out of the
+/// wire's `list<text>` representation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChangedPart {
+    /// An atom's claimed author.
+    Author,
+    /// An atom's claimed author time.
+    AuthorTime,
+    /// An atom's claimed committer.
+    Committer,
+    /// An atom's claimed commit time.
+    CommitTime,
+    /// An atom's claimed message.
+    Message,
+    /// An atom's own path operations.
+    Ops,
+    /// An atom's own copy records.
+    Copies,
+    /// An op's content address.
+    Blob,
+    /// An op's file mode.
+    Mode,
+    /// An op's path.
+    Path,
+    /// A ref's annotation.
+    Annotation,
+    /// A ref's kind.
+    Kind,
+    /// A ref's name.
+    Name,
+    /// A ref's target atom.
+    Target,
+}
+
+impl ChangedPart {
+    /// The spelling this part is carried as on the wire (RFC 018 D-5's closed vocabulary).
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Author => "author",
+            Self::AuthorTime => "author-time",
+            Self::Committer => "committer",
+            Self::CommitTime => "commit-time",
+            Self::Message => "message",
+            Self::Ops => "ops",
+            Self::Copies => "copies",
+            Self::Blob => "blob",
+            Self::Mode => "mode",
+            Self::Path => "path",
+            Self::Annotation => "annotation",
+            Self::Kind => "kind",
+            Self::Name => "name",
+            Self::Target => "target",
+        }
+    }
+
+    /// Parse a wire spelling, `None` for anything outside the closed vocabulary.
+    #[must_use]
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "author" => Self::Author,
+            "author-time" => Self::AuthorTime,
+            "committer" => Self::Committer,
+            "commit-time" => Self::CommitTime,
+            "message" => Self::Message,
+            "ops" => Self::Ops,
+            "copies" => Self::Copies,
+            "blob" => Self::Blob,
+            "mode" => Self::Mode,
+            "path" => Self::Path,
+            "annotation" => Self::Annotation,
+            "kind" => Self::Kind,
+            "name" => Self::Name,
+            "target" => Self::Target,
+            _ => return None,
+        })
+    }
+
+    /// True on an atom's own status (RFC 018 D-5's atom vocabulary).
+    #[must_use]
+    pub fn valid_on_atom(&self) -> bool {
+        matches!(
+            self,
+            Self::Author
+                | Self::AuthorTime
+                | Self::Committer
+                | Self::CommitTime
+                | Self::Message
+                | Self::Ops
+                | Self::Copies
+        )
+    }
+
+    /// True on an op's own status (RFC 018 D-5's op vocabulary).
+    #[must_use]
+    pub fn valid_on_op(&self) -> bool {
+        matches!(self, Self::Blob | Self::Mode | Self::Path)
+    }
+
+    /// True on a ref's own status (RFC 018 D-5's ref vocabulary).
+    #[must_use]
+    pub fn valid_on_ref(&self) -> bool {
+        matches!(
+            self,
+            Self::Annotation | Self::Kind | Self::Name | Self::Target
+        )
+    }
+}
+
+/// The plugin-name grammar a [`TransformRecord::name`] must match (RFC 018 D-5): lowercase ASCII
+/// letters, digits and hyphens, starting with a letter or digit, at most 64 bytes.
+fn is_valid_transform_name(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    if bytes.is_empty() || bytes.len() > 64 {
+        return false;
+    }
+    let is_lower_alnum = |b: u8| b.is_ascii_lowercase() || b.is_ascii_digit();
+    match bytes.split_first() {
+        Some((&first, rest)) => {
+            is_lower_alnum(first) && rest.iter().all(|&b| is_lower_alnum(b) || b == b'-')
+        }
+        None => false,
+    }
+}
+
+/// One record of a transform program's own run over an artifact (RFC 018 D-5): what program, what
+/// version, with what parameters, over which artifact — named by [`TransformRecord::consumed`], the
+/// D-3 digest of the artifact this step read. [`Ir::transforms`] holds these oldest first; record *k*'s
+/// own output is implied — it is record *k + 1*'s `consumed`, or, for the last record, the artifact's
+/// own digest.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransformRecord {
+    /// The transform's own name (the plugin grammar: `[a-z0-9][a-z0-9-]*`, at most 64 bytes).
+    pub name: String,
+    /// The transform's version.
+    pub version: String,
+    /// Every parameter that governed this run, canonical/sorted.
+    pub params: BTreeMap<String, String>,
+    /// The D-3 digest of the artifact this step read.
+    pub consumed: [u8; 32],
 }
 
 // ---- canonical encode/decode (RFC 011 §2.1/§2.2/§2.4) --------------------------------------------
@@ -675,6 +826,16 @@ impl PathOp {
             | Self::Replace { path, .. } => path,
         }
     }
+    /// This op's own epistemic status (RFC 018 D-5: where a transform may mark it `Transformed`).
+    #[must_use]
+    pub fn status(&self) -> &EpistemicStatus {
+        match self {
+            Self::Add { status, .. }
+            | Self::Modify { status, .. }
+            | Self::Delete { status, .. }
+            | Self::Replace { status, .. } => status,
+        }
+    }
     fn encode(&self) -> Vec<u8> {
         let mut w = CanonWriter::new();
         let (variant, path, blob, mode, status) = match self {
@@ -731,7 +892,7 @@ impl PathOp {
                 Ok(true)
             }
             4 => {
-                status = Some(EpistemicStatus::decode(r)?);
+                status = Some(EpistemicStatus::decode(r, 0)?);
                 Ok(true)
             }
             _ => Ok(false),
@@ -811,7 +972,7 @@ impl CopyRecord {
                 Ok(true)
             }
             4 => {
-                status = Some(EpistemicStatus::decode(r)?);
+                status = Some(EpistemicStatus::decode(r, 0)?);
                 Ok(true)
             }
             _ => Ok(false),
@@ -1005,7 +1166,7 @@ impl ChangeAtom {
                 Ok(true)
             }
             7 => {
-                status = Some(EpistemicStatus::decode(r)?);
+                status = Some(EpistemicStatus::decode(r, 0)?);
                 Ok(true)
             }
             _ => Ok(false),
@@ -1176,7 +1337,7 @@ impl RefRecord {
                 Ok(true)
             }
             4 => {
-                status = Some(EpistemicStatus::decode(r)?);
+                status = Some(EpistemicStatus::decode(r, 0)?);
                 Ok(true)
             }
             5 => {
@@ -1216,6 +1377,7 @@ impl LossClass {
             Self::Representation => 0,
             Self::AdvisoryUnreliable => 1,
             Self::Other => 2,
+            Self::Transform => 3,
         }
     }
     fn encode(&self) -> Vec<u8> {
@@ -1231,6 +1393,7 @@ impl LossClass {
             0 => Self::Representation,
             1 => Self::AdvisoryUnreliable,
             2 => Self::Other,
+            3 => Self::Transform,
             o => return Err(Error::Decode(format!("unknown LossClass variant {o}"))),
         })
     }
@@ -1242,12 +1405,16 @@ impl DropRecord {
         rw.field(1, true, self.class.encode());
         rw.field(2, true, self.what.as_bytes().to_vec());
         rw.field(3, true, self.reason.as_bytes().to_vec());
+        if let Some(step) = self.step {
+            rw.field(4, true, crate::canon::uvarint_value(step));
+        }
         rw.into_bytes()
     }
     fn decode(r: &mut CanonReader) -> Result<Self, Error> {
         let mut class = None;
         let mut what = None;
         let mut reason = None;
+        let mut step = None;
         r.record_fields("DropRecord", |r, id, len| match id {
             1 => {
                 class = Some(LossClass::decode(r)?);
@@ -1261,18 +1428,36 @@ impl DropRecord {
                 reason = Some(r.text(len)?);
                 Ok(true)
             }
+            4 => {
+                step = Some(r.uvarint()?);
+                Ok(true)
+            }
             _ => Ok(false),
         })?;
+        let class = class
+            .ok_or_else(|| Error::NonCanonical("DropRecord missing field 1 (class)".to_string()))?;
+        match (class, step) {
+            (LossClass::Transform, None) => {
+                return Err(Error::NonCanonical(
+                    "DropRecord.class is Transform but field 4 (step) is missing".to_string(),
+                ));
+            }
+            (c, Some(_)) if c != LossClass::Transform => {
+                return Err(Error::NonCanonical(
+                    "DropRecord field 4 (step) is present but class is not Transform".to_string(),
+                ));
+            }
+            _ => {}
+        }
         Ok(Self {
-            class: class.ok_or_else(|| {
-                Error::NonCanonical("DropRecord missing field 1 (class)".to_string())
-            })?,
+            class,
             what: what.ok_or_else(|| {
                 Error::NonCanonical("DropRecord missing field 2 (what)".to_string())
             })?,
             reason: reason.ok_or_else(|| {
                 Error::NonCanonical("DropRecord missing field 3 (reason)".to_string())
             })?,
+            step,
         })
     }
 }
@@ -1351,6 +1536,78 @@ impl Flag {
             count,
             reason: reason
                 .ok_or_else(|| Error::NonCanonical("Flag missing field 4 (reason)".to_string()))?,
+        })
+    }
+}
+
+impl TransformRecord {
+    fn encode(&self) -> Vec<u8> {
+        let mut rw = RecordWriter::new();
+        rw.field(1, true, self.name.as_bytes().to_vec());
+        rw.field(2, true, self.version.as_bytes().to_vec());
+        if !self.params.is_empty() {
+            rw.field(
+                3,
+                true,
+                map_value(self.params.iter().map(|(k, v)| (k.as_str(), v.as_str()))),
+            );
+        }
+        rw.field(4, true, self.consumed.to_vec());
+        rw.into_bytes()
+    }
+    fn decode(r: &mut CanonReader) -> Result<Self, Error> {
+        let mut name = None;
+        let mut version = None;
+        let mut params = BTreeMap::new();
+        let mut consumed = None;
+        r.record_fields("TransformRecord", |r, id, len| match id {
+            1 => {
+                name = Some(r.text(len)?);
+                Ok(true)
+            }
+            2 => {
+                version = Some(r.text(len)?);
+                Ok(true)
+            }
+            3 => {
+                params = r.map()?;
+                if params.is_empty() {
+                    return Err(Error::NonCanonical(
+                        "TransformRecord.params encoded but empty".to_string(),
+                    ));
+                }
+                Ok(true)
+            }
+            4 => {
+                consumed = Some(r.raw32()?);
+                Ok(true)
+            }
+            _ => Ok(false),
+        })?;
+        let name = name.ok_or_else(|| {
+            Error::NonCanonical("TransformRecord missing field 1 (name)".to_string())
+        })?;
+        if !is_valid_transform_name(&name) {
+            return Err(Error::Decode(format!(
+                "TransformRecord.name {name:?} does not match the plugin grammar"
+            )));
+        }
+        let version = version.ok_or_else(|| {
+            Error::NonCanonical("TransformRecord missing field 2 (version)".to_string())
+        })?;
+        if version.is_empty() {
+            return Err(Error::NonCanonical(
+                "TransformRecord.version is empty".to_string(),
+            ));
+        }
+        let consumed = consumed.ok_or_else(|| {
+            Error::NonCanonical("TransformRecord missing field 4 (consumed)".to_string())
+        })?;
+        Ok(Self {
+            name,
+            version,
+            params,
+            consumed,
         })
     }
 }
@@ -1451,6 +1708,13 @@ impl Ir {
         if !self.flags.is_empty() {
             rw.field(5, true, list_value(self.flags.iter().map(Flag::encode)));
         }
+        if !self.transforms.is_empty() {
+            rw.field(
+                6,
+                true,
+                list_value(self.transforms.iter().map(TransformRecord::encode)),
+            );
+        }
         rw.into_bytes()
     }
 
@@ -1461,6 +1725,7 @@ impl Ir {
         let mut provenance = None;
         let mut dropped = Vec::new();
         let mut flags = Vec::new();
+        let mut transforms = Vec::new();
         r.record_fields("Ir", |r, id, _len| match id {
             1 => {
                 atoms = r.list(ChangeAtom::decode)?;
@@ -1486,6 +1751,16 @@ impl Ir {
                 non_empty_list("Ir.flags", &flags)?;
                 Ok(true)
             }
+            6 => {
+                transforms = r.list(TransformRecord::decode)?;
+                non_empty_list("Ir.transforms", &transforms)?;
+                if transforms.len() > 64 {
+                    return Err(Error::NonCanonical(
+                        "Ir.transforms holds more than 64 records".to_string(),
+                    ));
+                }
+                Ok(true)
+            }
             _ => Ok(false),
         })?;
         for (a, b) in refs.iter().zip(refs.iter().skip(1)) {
@@ -1498,11 +1773,12 @@ impl Ir {
             }
         }
         for (a, b) in dropped.iter().zip(dropped.iter().skip(1)) {
-            let ka = (a.class.variant(), &a.what);
-            let kb = (b.class.variant(), &b.what);
+            let ka = (a.class.variant(), a.step, &a.what);
+            let kb = (b.class.variant(), b.step, &b.what);
             if ka >= kb {
                 return Err(Error::NonCanonical(
-                    "Ir.dropped is not strictly ascending by (class variant, what)".to_string(),
+                    "Ir.dropped is not strictly ascending by (class variant, step, what)"
+                        .to_string(),
                 ));
             }
         }
@@ -1524,6 +1800,7 @@ impl Ir {
             loss: LossBoundary { dropped },
             flags,
             content: ContentStore::new(),
+            transforms,
         })
     }
 }

@@ -183,7 +183,9 @@ fn two_files_committed_together_cluster_into_one_derived_changeset() {
             assert!(d.confidence.is_some());
             assert!(d.params.contains_key("window_secs"));
         }
-        EpistemicStatus::Stated => panic!("a CVS atom must be Derived"),
+        EpistemicStatus::Stated | EpistemicStatus::Transformed { .. } => {
+            panic!("a CVS atom must be Derived")
+        }
     }
     // Both files are Adds, in one atom.
     let adds = ir.atoms[0]

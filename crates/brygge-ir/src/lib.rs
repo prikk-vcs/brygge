@@ -29,14 +29,14 @@ pub mod model;
 pub mod status;
 pub mod version;
 
-pub use artifact::{Decoded, from_bytes, from_file, read_from, to_bytes};
+pub use artifact::{Decoded, digest_of, from_bytes, from_file, read_from, to_bytes};
 pub use builder::{AtomDraft, IrBuilder};
 pub use content::{BlobId, ContentStore, Storage};
 pub use honesty::{FidelityReport, summary};
 pub use model::{
-    Annotation, AtomId, ChangeAtom, CopyRecord, DropRecord, Extra, Flag, FlagKind, Identity,
-    ImportProvenance, Ir, LossBoundary, LossClass, MetadataClaims, PathOp, RefKind, RefRecord,
-    Signature, SourceIdentity, SourceKind, Text, Time,
+    Annotation, AtomId, ChangeAtom, ChangedPart, CopyRecord, DropRecord, Extra, Flag, FlagKind,
+    Identity, ImportProvenance, Ir, LossBoundary, LossClass, MetadataClaims, PathOp, RefKind,
+    RefRecord, Signature, SourceIdentity, SourceKind, Text, Time, TransformRecord,
 };
 pub use status::{Derivation, DerivationKind, EpistemicStatus};
 pub use version::ContractVersion;

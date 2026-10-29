@@ -46,6 +46,24 @@ pub struct FidelityReport {
     /// [`Ir`], so [`summary`] leaves it at `0`; a reader that decoded an artifact sets it with
     /// [`FidelityReport::with_skipped_non_critical_fields`].
     pub skipped_non_critical_fields: u64,
+    /// Atoms a transform marked `Transformed`, grouped by step → count (RFC 018 D-5); empty for an
+    /// import with no transform chain.
+    pub transformed_atoms: BTreeMap<u64, u64>,
+    /// Refs a transform marked `Transformed`, grouped by step → count.
+    pub transformed_refs: BTreeMap<u64, u64>,
+    /// `Transform`-class drops, grouped by step → count.
+    pub transformed_drops: BTreeMap<u64, u64>,
+}
+
+/// Walk a status's own `Transformed`/`prior` chain, incrementing `counts[step]` once for every
+/// `Transformed` layer found (iteratively, not recursively — RFC 018 D-5: a chain nests no deeper than
+/// 64, already bounded at decode time, but this walk makes no assumption of its own about that bound).
+fn count_transformed_layers(status: &EpistemicStatus, counts: &mut BTreeMap<u64, u64>) {
+    let mut current = status;
+    while let EpistemicStatus::Transformed { step, prior, .. } = current {
+        *counts.entry(*step).or_insert(0) += 1;
+        current = prior;
+    }
 }
 
 /// Compute the fidelity report from an [`Ir`] (pure — `FS-02`).
@@ -57,10 +75,13 @@ pub fn summary(ir: &Ir) -> FidelityReport {
             *d.entry(der.kind.label().to_string()).or_insert(0) += 1;
         }
     };
+    let mut transformed_atoms: BTreeMap<u64, u64> = BTreeMap::new();
+    let mut transformed_refs: BTreeMap<u64, u64> = BTreeMap::new();
     for atom in &ir.atoms {
         note(&atom.status, &mut derived);
+        count_transformed_layers(&atom.status, &mut transformed_atoms);
         for op in &atom.ops {
-            note(op_status(op), &mut derived);
+            note(op.status(), &mut derived);
         }
         for copy in &atom.copies {
             note(&copy.status, &mut derived);
@@ -68,13 +89,18 @@ pub fn summary(ir: &Ir) -> FidelityReport {
     }
     for rf in &ir.refs {
         note(&rf.status, &mut derived);
+        count_transformed_layers(&rf.status, &mut transformed_refs);
     }
 
     let mut dropped: BTreeMap<String, u64> = BTreeMap::new();
+    let mut transformed_drops: BTreeMap<u64, u64> = BTreeMap::new();
     for drop in &ir.loss.dropped {
         *dropped
             .entry(class_label(drop.class).to_string())
             .or_insert(0) += 1;
+        if let Some(step) = drop.step {
+            *transformed_drops.entry(step).or_insert(0) += 1;
+        }
     }
 
     let mut flagged: BTreeMap<String, u64> = BTreeMap::new();
@@ -94,6 +120,9 @@ pub fn summary(ir: &Ir) -> FidelityReport {
         dropped,
         flagged,
         skipped_non_critical_fields: 0,
+        transformed_atoms,
+        transformed_refs,
+        transformed_drops,
     }
 }
 
@@ -137,6 +166,17 @@ impl FidelityReport {
         }
         for (kind, n) in &self.flagged {
             let _ = writeln!(s, "flagged.{}={n}", key_segment(kind));
+        }
+        // Shown only when the import has a transform chain (RFC 018 D-5) — a decoder's own report,
+        // with no chain, is byte-identical to before this field existed.
+        for (step, n) in &self.transformed_atoms {
+            let _ = writeln!(s, "transformed_atoms.{step}={n}");
+        }
+        for (step, n) in &self.transformed_refs {
+            let _ = writeln!(s, "transformed_refs.{step}={n}");
+        }
+        for (step, n) in &self.transformed_drops {
+            let _ = writeln!(s, "transformed_drops.{step}={n}");
         }
         s
     }
@@ -210,17 +250,27 @@ impl FidelityReport {
                 let _ = writeln!(s, "    {kind}: {n}");
             }
         }
+        // Shown only when the import has a transform chain (RFC 018 D-5) — a decoder's own report,
+        // with no chain, is byte-identical to before this section existed.
+        if !self.transformed_atoms.is_empty()
+            || !self.transformed_refs.is_empty()
+            || !self.transformed_drops.is_empty()
+        {
+            let _ = writeln!(
+                s,
+                "  transformed, per step (see `inspect` for each step's own name/version):"
+            );
+            for (step, n) in &self.transformed_atoms {
+                let _ = writeln!(s, "    step {step}: {n} atom(s)");
+            }
+            for (step, n) in &self.transformed_refs {
+                let _ = writeln!(s, "    step {step}: {n} ref(s)");
+            }
+            for (step, n) in &self.transformed_drops {
+                let _ = writeln!(s, "    step {step}: {n} drop(s)");
+            }
+        }
         s
-    }
-}
-
-fn op_status(op: &crate::model::PathOp) -> &EpistemicStatus {
-    use crate::model::PathOp::{Add, Delete, Modify, Replace};
-    match op {
-        Add { status, .. }
-        | Modify { status, .. }
-        | Delete { status, .. }
-        | Replace { status, .. } => status,
     }
 }
 
@@ -229,6 +279,7 @@ fn class_label(class: LossClass) -> &'static str {
         LossClass::Representation => "representation",
         LossClass::AdvisoryUnreliable => "advisory-unreliable",
         LossClass::Other => "other",
+        LossClass::Transform => "transform",
     }
 }
 

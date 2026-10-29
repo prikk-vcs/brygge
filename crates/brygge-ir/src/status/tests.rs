@@ -6,12 +6,12 @@ use std::collections::BTreeMap;
 
 use super::*;
 use crate::Error;
-use crate::canon::{CanonReader, RecordWriter};
+use crate::canon::{CanonReader, CanonWriter, RecordWriter};
 
 fn roundtrip(s: &EpistemicStatus) -> EpistemicStatus {
     let bytes = s.encode();
     let mut r = CanonReader::new(&bytes);
-    let out = EpistemicStatus::decode(&mut r).unwrap();
+    let out = EpistemicStatus::decode(&mut r, 0).unwrap();
     assert!(r.is_empty());
     out
 }
@@ -107,6 +107,166 @@ fn an_empty_params_map_encoded_is_rejected() {
     let bytes = rw.into_bytes();
     let mut r = CanonReader::new(&bytes);
     match Derivation::decode(&mut r) {
+        Err(Error::NonCanonical(_)) => {}
+        other => panic!("expected NonCanonical, got {other:?}"),
+    }
+}
+
+#[test]
+fn transformed_round_trips_over_stated() {
+    let s = EpistemicStatus::Transformed {
+        step: 0,
+        changed: vec![ChangedPart::Author, ChangedPart::Message],
+        prior: Box::new(EpistemicStatus::Stated),
+    };
+    assert_eq!(roundtrip(&s), s);
+}
+
+#[test]
+fn transformed_round_trips_nested_over_derived() {
+    let s = EpistemicStatus::Transformed {
+        step: 2,
+        changed: vec![ChangedPart::Ops],
+        prior: Box::new(EpistemicStatus::Transformed {
+            step: 0,
+            changed: vec![ChangedPart::Author],
+            prior: Box::new(EpistemicStatus::Derived(Derivation {
+                kind: DerivationKind::NormalizedMetadata,
+                by: "x".into(),
+                decoder_version: "0".into(),
+                params: BTreeMap::new(),
+                confidence: None,
+            })),
+        }),
+    };
+    assert_eq!(roundtrip(&s), s);
+}
+
+#[test]
+fn every_changed_part_round_trips_through_its_own_spelling() {
+    let parts = [
+        ChangedPart::Author,
+        ChangedPart::AuthorTime,
+        ChangedPart::Committer,
+        ChangedPart::CommitTime,
+        ChangedPart::Message,
+        ChangedPart::Ops,
+        ChangedPart::Copies,
+        ChangedPart::Blob,
+        ChangedPart::Mode,
+        ChangedPart::Path,
+        ChangedPart::Annotation,
+        ChangedPart::Kind,
+        ChangedPart::Name,
+        ChangedPart::Target,
+    ];
+    for part in parts {
+        assert_eq!(ChangedPart::parse(part.as_str()), Some(part));
+    }
+    assert_eq!(ChangedPart::parse("bogus"), None);
+}
+
+#[test]
+fn transformed_with_empty_changed_is_rejected() {
+    let mut w = CanonWriter::new();
+    w.uvarint(2);
+    let mut rw = RecordWriter::new();
+    rw.field(1, true, crate::canon::uvarint_value(0));
+    rw.field(3, true, EpistemicStatus::Stated.encode());
+    rw.finish_into(&mut w);
+    let bytes = w.into_bytes();
+    let mut r = CanonReader::new(&bytes);
+    match EpistemicStatus::decode(&mut r, 0) {
+        Err(Error::NonCanonical(_)) => {}
+        other => panic!("expected NonCanonical, got {other:?}"),
+    }
+}
+
+#[test]
+fn transformed_with_unordered_changed_is_rejected() {
+    let mut w = CanonWriter::new();
+    w.uvarint(2);
+    let mut rw = RecordWriter::new();
+    rw.field(1, true, crate::canon::uvarint_value(0));
+    rw.field(
+        2,
+        true,
+        crate::canon::list_value(
+            [ChangedPart::Ops, ChangedPart::Author]
+                .iter()
+                .map(|c| text_item(c.as_str())),
+        ),
+    );
+    rw.field(3, true, EpistemicStatus::Stated.encode());
+    rw.finish_into(&mut w);
+    let bytes = w.into_bytes();
+    let mut r = CanonReader::new(&bytes);
+    match EpistemicStatus::decode(&mut r, 0) {
+        Err(Error::NonCanonical(_)) => {}
+        other => panic!("expected NonCanonical, got {other:?}"),
+    }
+}
+
+#[test]
+fn transformed_with_an_unknown_changed_part_is_rejected() {
+    let mut w = CanonWriter::new();
+    w.uvarint(2);
+    let mut rw = RecordWriter::new();
+    rw.field(1, true, crate::canon::uvarint_value(0));
+    rw.field(
+        2,
+        true,
+        crate::canon::list_value(std::iter::once(text_item("frobnicate"))),
+    );
+    rw.field(3, true, EpistemicStatus::Stated.encode());
+    rw.finish_into(&mut w);
+    let bytes = w.into_bytes();
+    let mut r = CanonReader::new(&bytes);
+    match EpistemicStatus::decode(&mut r, 0) {
+        Err(Error::Decode(_)) => {}
+        other => panic!("expected Decode, got {other:?}"),
+    }
+}
+
+#[test]
+fn transformed_whose_prior_step_is_not_less_is_rejected() {
+    let mut w = CanonWriter::new();
+    w.uvarint(2);
+    let mut rw = RecordWriter::new();
+    rw.field(1, true, crate::canon::uvarint_value(1));
+    rw.field(
+        2,
+        true,
+        crate::canon::list_value(std::iter::once(text_item(ChangedPart::Author.as_str()))),
+    );
+    let prior = EpistemicStatus::Transformed {
+        step: 1,
+        changed: vec![ChangedPart::Message],
+        prior: Box::new(EpistemicStatus::Stated),
+    };
+    rw.field(3, true, prior.encode());
+    rw.finish_into(&mut w);
+    let bytes = w.into_bytes();
+    let mut r = CanonReader::new(&bytes);
+    match EpistemicStatus::decode(&mut r, 0) {
+        Err(Error::NonCanonical(_)) => {}
+        other => panic!("expected NonCanonical, got {other:?}"),
+    }
+}
+
+#[test]
+fn transformed_nested_past_64_priors_is_rejected() {
+    let mut status = EpistemicStatus::Stated;
+    for step in 0..65u64 {
+        status = EpistemicStatus::Transformed {
+            step,
+            changed: vec![ChangedPart::Author],
+            prior: Box::new(status),
+        };
+    }
+    let bytes = status.encode();
+    let mut r = CanonReader::new(&bytes);
+    match EpistemicStatus::decode(&mut r, 0) {
         Err(Error::NonCanonical(_)) => {}
         other => panic!("expected NonCanonical, got {other:?}"),
     }

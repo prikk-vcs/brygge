@@ -11,14 +11,33 @@ use std::collections::BTreeMap;
 
 use crate::Error;
 use crate::canon::{CanonReader, CanonWriter, RecordWriter};
+use crate::model::ChangedPart;
 
-/// Whether an assertion was stated by the source or derived by brygge.
+/// How deep a [`EpistemicStatus::Transformed`]'s `prior` chain may nest (RFC 018 D-5: at most 64
+/// transform records, so a legitimate chain never nests deeper than that). Enforced **during decode**,
+/// not only by the later, fuller check against the artifact's actual `transforms.len()` — an attacker
+/// cannot otherwise be made to pay for an unbounded recursive decode before that fuller check ever runs
+/// (the same care review 099 R-1 took with decompression).
+const MAX_TRANSFORMED_DEPTH: u32 = 64;
+
+/// Whether an assertion was stated by the source, derived by brygge, or changed by a transform.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EpistemicStatus {
     /// The source recorded this.
     Stated,
     /// A decoder or encoder inferred this; the record says how.
     Derived(Derivation),
+    /// A transform changed this (RFC 018 D-5): which step, what it changed, and the status this had
+    /// before that step.
+    Transformed {
+        /// The index into [`crate::model::Ir::transforms`] that made this change.
+        step: u64,
+        /// What this step changed, non-empty, strictly ascending, from the closed vocabulary
+        /// (`ir-artifact-format.md`).
+        changed: Vec<ChangedPart>,
+        /// The status this had before this step.
+        prior: Box<EpistemicStatus>,
+    },
 }
 
 /// The record of an inference: what kind, by whom, under which parameters, with what confidence
@@ -75,22 +94,123 @@ impl EpistemicStatus {
                 w.uvarint(1);
                 w.raw(&d.encode());
             }
+            Self::Transformed {
+                step,
+                changed,
+                prior,
+            } => {
+                w.uvarint(2);
+                let mut rw = RecordWriter::new();
+                rw.field(1, true, crate::canon::uvarint_value(*step));
+                rw.field(
+                    2,
+                    true,
+                    crate::canon::list_value(changed.iter().map(|c| text_item(c.as_str()))),
+                );
+                rw.field(3, true, prior.encode());
+                rw.finish_into(&mut w);
+            }
         }
         w.into_bytes()
     }
 
-    pub(crate) fn decode(r: &mut CanonReader) -> Result<Self, Error> {
+    /// Decode one status, from a `prior` chain already `depth` levels deep (0 for the outermost call —
+    /// every call site but [`Self::decode`]'s own recursion into `prior` passes 0): refuses a chain
+    /// nested past [`MAX_TRANSFORMED_DEPTH`] before recursing any further.
+    pub(crate) fn decode(r: &mut CanonReader, depth: u32) -> Result<Self, Error> {
         match r.uvarint()? {
             0 => {
                 r.record_fields("EpistemicStatus::Stated", |_, _, _| Ok(false))?;
                 Ok(Self::Stated)
             }
             1 => Ok(Self::Derived(Derivation::decode(r)?)),
+            2 => {
+                if depth >= MAX_TRANSFORMED_DEPTH {
+                    return Err(Error::NonCanonical(format!(
+                        "EpistemicStatus::Transformed nests more than {MAX_TRANSFORMED_DEPTH} \
+                         priors deep"
+                    )));
+                }
+                let mut step = None;
+                let mut changed: Vec<ChangedPart> = Vec::new();
+                let mut prior: Option<Box<EpistemicStatus>> = None;
+                r.record_fields("EpistemicStatus::Transformed", |r, id, _len| match id {
+                    1 => {
+                        step = Some(r.uvarint()?);
+                        Ok(true)
+                    }
+                    2 => {
+                        changed = r.list(|r| {
+                            let len = r.uvarint_len()?;
+                            let s = r.text(len)?;
+                            ChangedPart::parse(&s)
+                                .ok_or_else(|| Error::Decode(format!("unknown changed part {s:?}")))
+                        })?;
+                        Ok(true)
+                    }
+                    3 => {
+                        prior = Some(Box::new(Self::decode(r, depth + 1)?));
+                        Ok(true)
+                    }
+                    _ => Ok(false),
+                })?;
+                let step = step.ok_or_else(|| {
+                    Error::NonCanonical(
+                        "EpistemicStatus::Transformed missing field 1 (step)".to_string(),
+                    )
+                })?;
+                if changed.is_empty() {
+                    return Err(Error::NonCanonical(
+                        "EpistemicStatus::Transformed missing field 2 (changed), or it is empty"
+                            .to_string(),
+                    ));
+                }
+                for (a, b) in changed.iter().zip(changed.iter().skip(1)) {
+                    if a.as_str() >= b.as_str() {
+                        return Err(Error::NonCanonical(
+                            "EpistemicStatus::Transformed.changed is not strictly ascending"
+                                .to_string(),
+                        ));
+                    }
+                }
+                let prior = prior.ok_or_else(|| {
+                    Error::NonCanonical(
+                        "EpistemicStatus::Transformed missing field 3 (prior)".to_string(),
+                    )
+                })?;
+                if let Self::Transformed {
+                    step: prior_step, ..
+                } = prior.as_ref()
+                {
+                    if *prior_step >= step {
+                        return Err(Error::NonCanonical(
+                            "EpistemicStatus::Transformed's prior step is not strictly less than \
+                             its own"
+                                .to_string(),
+                        ));
+                    }
+                }
+                Ok(Self::Transformed {
+                    step,
+                    changed,
+                    prior,
+                })
+            }
             other => Err(Error::Decode(format!(
                 "unknown EpistemicStatus variant {other}"
             ))),
         }
     }
+}
+
+/// Encode one `list<text>` item: `uvarint(len) ‖ bytes` — self-delimiting, so [`CanonReader::list`]'s
+/// per-item reader can split them back apart (unlike [`crate::canon::list_value`]'s other callers, whose
+/// items are themselves records or fixed-size ids).
+fn text_item(s: &str) -> Vec<u8> {
+    let mut w = CanonWriter::new();
+    w.uvarint(s.len() as u64);
+    w.raw(s.as_bytes());
+    w.into_bytes()
 }
 
 impl Derivation {

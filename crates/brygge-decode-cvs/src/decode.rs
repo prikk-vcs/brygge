@@ -366,6 +366,7 @@ pub fn decode_with_storage(
             } else {
                 BRANCHES_NEED_REFS.to_string()
             },
+            step: None,
         });
     }
     if ref_stats.tags_not_reconstructed > 0 {
@@ -384,6 +385,7 @@ pub fn decode_with_storage(
             } else {
                 BRANCHES_NEED_REFS.to_string()
             },
+            step: None,
         });
     }
     builder.set_loss(boundary);
@@ -479,6 +481,7 @@ impl BranchStats {
             class: LossClass::Other,
             what,
             reason: reason.to_string(),
+            step: None,
         };
         if !reconstruct_refs {
             if self.excluded_revisions > 0 {
@@ -1226,11 +1229,13 @@ impl Loss {
                 what: "RCS ,v physical layout and delta encoding".to_string(),
                 reason: "representation not assertion; the logical revisions are preserved"
                     .to_string(),
+                step: None,
             },
             DropRecord {
                 class: LossClass::Representation,
                 what: "CVSROOT administrative files, locks, and working-copy state".to_string(),
                 reason: "configuration and local state, not history".to_string(),
+                step: None,
             },
         ];
         if self.has_expand {
@@ -1240,6 +1245,7 @@ impl Loss {
                 reason: "a working-copy transform; the stored (unexpanded) bytes are carried \
                          verbatim"
                     .to_string(),
+                step: None,
             });
         }
         LossBoundary { dropped }

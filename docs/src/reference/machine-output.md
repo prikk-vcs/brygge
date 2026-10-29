@@ -48,10 +48,10 @@ brygge release and of the IR contract**.
 | Version key | Governs | Current value |
 |---|---|---|
 | `report_version` | the fidelity report: the lines `decode` and `inspect` print (§3.1) | `3` |
-| `inspect_version` | the per-atom listing `inspect --atoms` appends (§3.2) | `4` |
-| `verify_version` | `verify`'s lines (§3.3) | `4` |
-| `encode_list_version` | `encode --list`'s lines (§3.4) | `1` |
-| `encode_version` | `encode`'s own banner and exit lines (§3.5) | `1` |
+| `inspect_version` | the transform-chain section (§3.2) and the per-atom listing `inspect --atoms` appends (§3.3) | `4` |
+| `verify_version` | `verify`'s lines (§3.4) | `4` |
+| `encode_list_version` | `encode --list`'s lines (§3.5) | `1` |
+| `encode_version` | `encode`'s own banner and exit lines (§3.6) | `1` |
 
 **The rule (normative):**
 - A version is **bumped** whenever any key or value domain of the output it governs changes:
@@ -83,10 +83,40 @@ artifact.
 | `content_bytes` | total bytes of those blobs | |
 | `skipped_non_critical_fields` | fields from a newer IR contract that this build skipped when reading the artifact (always printed; `0` when none, and always `0` from `decode`) | |
 | `derived.<kind>` | count of derived records of that kind, for each kind present. `<kind>` is one of `inferred_rename`, `reconstructed_changeset`, `reconstructed_branch`, `inferred_merge`, `normalized_metadata`, `other` | |
-| `dropped.<class>` | count of drop records of that class, for each class present. `<class>` is one of `representation`, `advisory_unreliable`, `other` | |
+| `dropped.<class>` | count of drop records of that class, for each class present. `<class>` is one of `representation`, `advisory_unreliable`, `other`, `transform` | |
 | `flagged.<kind>` | the summed `count` of flags of that kind, for each kind present. `<kind>` is one of `convention_violation`, `below_confidence_floor` | |
+| `transformed_atoms.<step>` | count of atoms a transform marked `Transformed` at that step, for each step present (RFC 018 D-5). Present only when the artifact has a non-empty transform chain | |
+| `transformed_refs.<step>` | as `transformed_atoms.<step>`, for refs | |
+| `transformed_drops.<step>` | as `transformed_atoms.<step>`, for `Transform`-class drops | |
 
-### 3.2 The atom listing — `inspect --atoms` (governed by `inspect_version`)
+### 3.2 The transform chain — `inspect` (governed by `inspect_version`)
+
+Printed right after §3.1's lines, for **any** `inspect <artifact>` call (RFC 018 D-5, batch T) —
+unlike §3.3, this section is not gated behind `--atoms`. It is omitted entirely when the artifact's
+transform chain (`Ir.transforms`) is empty, which is every artifact brygge itself writes today (RFC 018
+D-5: brygge writes no transformed artifact yet) — so a decoder's own `inspect` output is unchanged.
+
+| Key | Value | Enc. |
+|---|---|---|
+| `transforms` | the chain's length, `N` | |
+| `transform.<k>.name` | step `k`'s own transform name | ● |
+| `transform.<k>.version` | step `k`'s own transform version | ● |
+| `transform.<k>.consumed` | the D-3 digest (hex) of the artifact step `k` read | |
+| `transform.<k>.changed_atoms` | how many atoms carry a `Transformed` layer naming step `k`, anywhere in their status chain — an atom with a multi-step chain counts once at each step it actually names, not only its outermost one | |
+| `transform.<k>.changed_refs` | as `changed_atoms`, for refs | |
+| `transform.<k>.dropped` | how many `Transform`-class drops name step `k` | |
+
+Steps appear in chain order, `0` to `N - 1`. There is no `transform.<k>.params.*` key in this form — a
+step's own parameters are a human-form-only detail (`inspect --atoms`'s human rendering, under
+`show_params`); this machine form carries exactly the six keys above, every time.
+
+**This section carries no `inspect_version=` line of its own.** The key is printed once, together with
+§3.3's atom listing, whenever `--atoms` is given; when it is omitted, this section's keys still appear
+(if the chain is non-empty) but with no version line in that call's own output — a consumer pinning this
+section's schema reads the `inspect_version` value stated here (`4`) directly, or adds `--atoms` to see
+the line printed.
+
+### 3.3 The atom listing — `inspect --atoms` (governed by `inspect_version`)
 
 The listing is appended after §3.1's lines. It does not repeat `atoms`: every key appears once.
 
@@ -126,7 +156,7 @@ artifact order.
 including a message that is not UTF-8. (The human form of `inspect` shows control characters escaped, as
 all human output does.) An absent message and an empty one both print an empty value.
 
-### 3.3 `verify` (governed by `verify_version`)
+### 3.4 `verify` (governed by `verify_version`)
 
 | Key | Value | Enc. |
 |---|---|---|
@@ -136,16 +166,16 @@ all human output does.) An absent message and an empty one both print an empty v
 | `verify.check.<name>.detail` | printed right after its check's line, only when the check is not `pass`: why | ● |
 | `verify.authorship` | always `unverifiable` | |
 | `verify.internal` | `pass` if every check passed, else `fail` | |
-| `verify.against_source` | `not-run` (no `--against-source`); for Git, hg and SVN `corresponds` or `does-not-correspond`; for CVS `reproduces` or `does-not-reproduce`; or `not-checked` (requested but could not run) | |
+| `verify.against_source` | `not-run` (no `--against-source`); for Git, hg and SVN `corresponds` or `does-not-correspond`; for CVS `reproduces` or `does-not-reproduce`; `root-corresponds`/`root-reproduces` (RFC 018 D-5: the artifact has a non-empty transform chain, so only its chain's own *root* — `Ir.transforms[0].consumed` — was compared against a fresh decode, never the whole artifact); or `not-checked` (requested but could not run) | |
 | `verify.against_source.detail` | present only when `verify.against_source` is `does-not-correspond`, `does-not-reproduce` or `not-checked`: why | ● |
-| `verify.against_source.note` | present only when the source comparison succeeded with something worth noting (e.g. `svnadmin versions differ (<a> vs <b>); the history is identical`). A note never means failure | ● |
+| `verify.against_source.note` | present only when the source comparison succeeded with something worth noting (e.g. `svnadmin versions differ (<a> vs <b>); the history is identical`; or, for `root-corresponds`/`root-reproduces`, always: `<N> transform(s) after it were not re-run`). A note never means failure | ● |
 | `verify.result` | `pass`, `fail` (something that ran did not hold), or `incomplete` (a requested source comparison could not run, and nothing failed) | |
 
 The seven `verify.check.<name>` lines always appear, in the order above, each followed by its `.detail`
 when it did not pass. `not-run` (for `verify.against_source`) means "not requested"; `not-checked` means
 "requested or due, but could not run". `verify.result` is always last.
 
-### 3.4 `encode --list` (governed by `encode_list_version`)
+### 3.5 `encode --list` (governed by `encode_list_version`)
 
 | Key | Value | Enc. |
 |---|---|---|
@@ -156,9 +186,9 @@ when it did not pass. `not-run` (for `verify.against_source`) means "not request
 
 Plugins appear in `PATH` order (and, within one directory, by target name — a directory listing's own
 order is unspecified). On stdout, like every other command's result; `encode --list` runs no plugin, so
-nothing competes for stdout the way `encode <target>` itself does (§3.5).
+nothing competes for stdout the way `encode <target>` itself does (§3.6).
 
-### 3.5 `encode <target>` (governed by `encode_version`)
+### 3.6 `encode <target>` (governed by `encode_version`)
 
 `encode <target>`'s own status — unlike every other command's machine output — goes to **stderr, not
 stdout**: stdout is the plugin's, inherited and untouched, for the whole run. Nothing about the plugin's
@@ -166,7 +196,7 @@ own output is in this contract; only brygge's own banner (printed once, before t
 the line after it ends are.
 
 **If the mandatory verify-first check (OQ-4) does not pass,** the plugin never starts, and brygge prints
-`verify`'s own lines (§3.3) to stderr instead of this section — look for `verify_version`, not
+`verify`'s own lines (§3.4) to stderr instead of this section — look for `verify_version`, not
 `encode_version`, to tell the two apart.
 
 **Otherwise, before the plugin starts:**

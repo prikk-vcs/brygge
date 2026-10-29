@@ -120,6 +120,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             class: LossClass::Representation,
             what: "packfile layout, reflogs".into(),
             reason: "representation not assertion; reconstructible/local".into(),
+            step: None,
         }],
     });
 
@@ -137,6 +138,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let kind = match &atom.status {
             EpistemicStatus::Stated => "stated".to_string(),
             EpistemicStatus::Derived(d) => format!("derived:{}", d.kind.label()),
+            EpistemicStatus::Transformed { step, .. } => format!("transformed:{step}"),
         };
         let msg = atom
             .metadata

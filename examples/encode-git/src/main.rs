@@ -95,6 +95,10 @@ fn main() {
         std::process::exit(1);
     }
 
+    // RFC 018 D-5 (batch T): the whole transform chain, named once, regardless of how many atoms'
+    // trailers each name one of its steps.
+    brygge_encode_git_example::report_transform_chain(&decoded.ir.transforms);
+
     // RFC 017 D-1 §2: a reader of the target must be able to find what the IR said it did not carry.
     let report = brygge_ir::summary(&decoded.ir);
     eprint!("{}", report.render_human());

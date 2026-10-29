@@ -680,6 +680,136 @@ fn a_declared_message_encoding_is_written_and_preserved_byte_for_byte() {
     );
 }
 
+// ---- RFC 018 D-5 (batch T): a `Transformed` atom over a `Derived` prior ------------------------------
+
+/// A one-atom, one-ref `Ir`, built directly with `IrBuilder` like [`minimal_ir`], but with one
+/// `TransformRecord` (`add_transform`) and an atom status of `Transformed { step: 0, changed: [author],
+/// prior: Derived(ReconstructedChangeset) } }` — the `Derived` shape copied from the existing unit test
+/// `a_derived_status_renders_its_kind_and_params` (`src/tests.rs`), not invented fresh here.
+fn transformed_over_derived_ir() -> brygge_ir::Ir {
+    use brygge_ir::{
+        AtomDraft, ChangedPart, Derivation, DerivationKind, EpistemicStatus, Identity,
+        ImportProvenance, IrBuilder, MetadataClaims, PathOp, RefKind, RefRecord, SourceIdentity,
+        SourceKind, Text, Time, TransformRecord,
+    };
+
+    let source = |atom_id: &[u8]| SourceIdentity {
+        kind: SourceKind::Git,
+        repo_id: Vec::new(),
+        atom_id: atom_id.to_vec(),
+        signatures: Vec::new(),
+        extras: Vec::new(),
+    };
+    let provenance = ImportProvenance {
+        source: source(b"repo"),
+        brygge_version: "0.0.0".to_string(),
+        decoder: "test".to_string(),
+        decoder_version: "0.0.0".to_string(),
+        params: std::collections::BTreeMap::new(),
+    };
+    let mut builder = IrBuilder::new(provenance);
+
+    let step = builder.add_transform(TransformRecord {
+        name: "redact".to_string(),
+        version: "1.0.0".to_string(),
+        params: std::collections::BTreeMap::new(),
+        consumed: [0x11; 32],
+    });
+    assert_eq!(step, 0, "the chain's first record is step 0");
+
+    let mut derived_params = std::collections::BTreeMap::new();
+    derived_params.insert("window_secs".to_string(), "180".to_string());
+    let prior = EpistemicStatus::Derived(Derivation {
+        kind: DerivationKind::ReconstructedChangeset,
+        by: "brygge-decode-cvs".to_string(),
+        decoder_version: "0.5.0".to_string(),
+        params: derived_params,
+        confidence: None,
+    });
+
+    let blob = builder.add_blob(b"hello\n".to_vec()).unwrap();
+    let atom_id = builder
+        .add_atom(AtomDraft {
+            parents: Vec::new(),
+            ops: vec![PathOp::Add {
+                path: "readme.txt".to_string(),
+                blob,
+                mode: 0o100_644,
+                status: EpistemicStatus::Stated,
+            }],
+            copies: Vec::new(),
+            metadata: MetadataClaims {
+                author: Some(Identity {
+                    name: Text::utf8("A U Thor"),
+                    email: Some(Text::utf8("a@example.com")),
+                }),
+                author_time: Some(Time {
+                    seconds: 1_700_000_000,
+                    offset_minutes: Some(0),
+                }),
+                committer: None,
+                commit_time: None,
+                message: Some(Text::utf8("a message")),
+            },
+            source: source(b"r1"),
+            status: EpistemicStatus::Transformed {
+                step: step as u64,
+                changed: vec![ChangedPart::Author],
+                prior: Box::new(prior),
+            },
+        })
+        .unwrap();
+    builder
+        .add_ref(RefRecord {
+            name: "main".to_string(),
+            kind: RefKind::Branch,
+            target: atom_id,
+            status: EpistemicStatus::Stated,
+            source: None,
+            annotation: None,
+        })
+        .unwrap();
+    builder.finish().unwrap()
+}
+
+#[test]
+fn a_transformed_atom_gets_its_own_trailer_before_the_derived_prior_and_fast_import_accepts_it() {
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let ir = transformed_over_derived_ir();
+    let artifact = write_artifact(&ir);
+    let stream = scratch_dir("transformed-stream").join("stream.txt");
+
+    let encoded = run_encoder(&artifact, &stream);
+    assert!(
+        encoded.status.success(),
+        "encoder failed: {}",
+        String::from_utf8_lossy(&encoded.stderr)
+    );
+    // The whole chain is reported once per run (RFC 018 D-5), regardless of --atoms.
+    assert!(
+        String::from_utf8_lossy(&encoded.stderr).contains("redact"),
+        "{}",
+        String::from_utf8_lossy(&encoded.stderr)
+    );
+
+    let text = std::fs::read_to_string(&stream).unwrap();
+    let transformed_at = text
+        .find("Brygge-Transformed: atom 0 redact 1.0.0 (author)")
+        .unwrap_or_else(|| panic!("Brygge-Transformed trailer missing: {text}"));
+    let derived_at = text
+        .find("Brygge-Derived: atom reconstructed-changeset window_secs=180")
+        .unwrap_or_else(|| panic!("Brygge-Derived trailer (the prior) missing: {text}"));
+    assert!(
+        transformed_at < derived_at,
+        "the Transformed layer must come before its Derived prior: {text}"
+    );
+
+    fast_import(&stream);
+}
+
 // ---- Refusals (proof item 3) -----------------------------------------------------------------------
 
 #[test]

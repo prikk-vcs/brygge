@@ -14,6 +14,7 @@ use crate::cli::{Format, SourceKind};
 use brygge_ir::builder::{AtomDraft, IrBuilder};
 use brygge_ir::model::{
     DropRecord, Identity, ImportProvenance, LossBoundary, MetadataClaims, RefRecord,
+    TransformRecord,
 };
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -1381,6 +1382,7 @@ fn verify_loss_boundary_fails_on_an_empty_what() {
             class: LossClass::Representation,
             what: String::new(),
             reason: "something".into(),
+            step: None,
         }],
     });
     let ir = b.finish().unwrap();
@@ -2625,6 +2627,7 @@ fn machine_output_fixture() -> Ir {
             class: LossClass::AdvisoryUnreliable,
             what: "mergeinfo".into(),
             reason: "advisory".into(),
+            step: None,
         }],
     });
     b.add_flag(Flag {
@@ -3182,4 +3185,150 @@ fn encode_accepts_a_0_2_0_artifact() {
         exit::CLEAN,
         "a 0.2.0 artifact's internal checks must pass before `encode` would run a plugin on it"
     );
+}
+
+// ---- RFC 018 D-5, §8 item 4: `verify --against-source` on an artifact with a transform chain ----
+
+/// Wraps `ir`'s root atom's status in a single `Transformed` layer over whatever it already was, and
+/// appends one `TransformRecord` naming `consumed` as the artifact it read — the shape `--against-source`
+/// treats as "has a chain" (RFC 018 D-5). A minimal, hand-built stand-in for what batch P's own encoder
+/// would someday produce; this handoff adds no command that writes one.
+fn wrap_root_in_one_transform(mut ir: brygge_ir::Ir, consumed: [u8; 32]) -> brygge_ir::Ir {
+    ir.transforms.push(TransformRecord {
+        name: "rename-fixer".into(),
+        version: "1.0.0".into(),
+        params: BTreeMap::new(),
+        consumed,
+    });
+    let prior = ir.atoms[0].status.clone();
+    ir.atoms[0].status = EpistemicStatus::Transformed {
+        step: 0,
+        changed: vec![brygge_ir::model::ChangedPart::Author],
+        prior: Box::new(prior),
+    };
+    ir
+}
+
+#[test]
+fn verify_against_source_root_corresponds_forgery_and_wrong_consumed() {
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let repo = simple_repo("transform-fixture");
+    let out = tmp_ir_path("transform-root");
+    let code = run_decode(
+        SourceKind::Git,
+        repo.path(),
+        &out,
+        false,
+        false,
+        None,
+        Format::Machine,
+    );
+    assert!(
+        code == exit::CLEAN || code == exit::RECORDED_LOSS,
+        "unexpected exit {code}"
+    );
+    let consumed = brygge_ir::digest_of(&read_ir(&out).unwrap().ir).unwrap();
+
+    // A chain whose root really does correspond to a fresh decode: `root-corresponds`, same exit as
+    // plain `corresponds`.
+    let ir1 = wrap_root_in_one_transform(read_ir(&out).unwrap().ir, consumed);
+    let against = run_against_source(&ir1, repo.path(), &brygge_ir::Storage::Memory);
+    assert_eq!(against.machine_label(), "root-corresponds");
+    assert_eq!(Verdict::from(true, &against).machine_label(), "pass");
+    assert_eq!(Verdict::from(true, &against).exit_code(), exit::CLEAN);
+    assert!(
+        against
+            .note()
+            .is_some_and(|n| n.contains("1 transform(s) after it were not re-run")),
+        "{:?}",
+        against.note()
+    );
+
+    // The forgery: the same transformed root, with the chain record itself removed — now compared by
+    // whole-`Ir` equality (no chain, so the old path), and the status-wrapper difference it leaves
+    // behind is still a genuine mismatch, never a silent pass.
+    let mut forged = wrap_root_in_one_transform(read_ir(&out).unwrap().ir, consumed);
+    forged.transforms.clear();
+    let against = run_against_source(&forged, repo.path(), &brygge_ir::Storage::Memory);
+    assert_eq!(against.machine_label(), "does-not-correspond");
+
+    // A chain whose `consumed` names the wrong artifact: `does-not-correspond`, with the root detail.
+    let wrong = wrap_root_in_one_transform(read_ir(&out).unwrap().ir, [0u8; 32]);
+    let against = run_against_source(&wrong, repo.path(), &brygge_ir::Storage::Memory);
+    assert_eq!(against.machine_label(), "does-not-correspond");
+    assert_eq!(
+        against.detail(),
+        Some("the chain's root is not this source's decode")
+    );
+
+    let _ = std::fs::remove_file(&out);
+}
+
+#[test]
+fn verify_against_source_root_reproduces_for_cvs() {
+    let repo = cvs_repo();
+    write_vfile(
+        &repo,
+        "a.c",
+        &cvs_single_rev("alice", "2024.01.01.12.00.00", "add", "aaa\n"),
+    );
+    let out = repo.dir.join("out.ir");
+    let code = run_decode(
+        SourceKind::Cvs,
+        repo.path(),
+        &out,
+        false,
+        false,
+        None,
+        Format::Machine,
+    );
+    assert!(
+        code == exit::CLEAN || code == exit::RECORDED_LOSS,
+        "unexpected exit {code}"
+    );
+    let consumed = brygge_ir::digest_of(&read_ir(&out).unwrap().ir).unwrap();
+    let ir1 = wrap_root_in_one_transform(read_ir(&out).unwrap().ir, consumed);
+    let against = run_against_source(&ir1, repo.path(), &brygge_ir::Storage::Memory);
+    assert_eq!(against.machine_label(), "root-reproduces");
+    assert_eq!(Verdict::from(true, &against).machine_label(), "pass");
+}
+
+/// RFC 018 D-5 §5: `inspect`'s own transforms overview — shown regardless of `--atoms`, with each
+/// step's name/version/consumed digest and how many atoms/refs/drops it changed.
+#[test]
+fn inspect_shows_the_transform_chain_overview() {
+    let ir = wrap_root_in_one_transform(machine_output_fixture(), [0x11; 32]);
+
+    let human = render_transforms_human(&ir, false);
+    assert!(human.contains("transforms: 1"), "{human}");
+    assert!(
+        human.contains("0. rename-fixer 1.0.0 — consumed sha256:"),
+        "{human}"
+    );
+    assert!(human.contains("changed 1 atom(s)"), "{human}");
+    assert!(
+        !human.contains("      "),
+        "params are not shown without --atoms: {human}"
+    );
+
+    let with_params = render_transforms_human(&ir, true);
+    assert!(with_params.contains("transforms: 1"), "{with_params}");
+
+    let machine = render_transforms_machine(&ir);
+    assert!(machine.contains("transforms=1"), "{machine}");
+    assert!(
+        machine.contains("transform.0.name=rename-fixer"),
+        "{machine}"
+    );
+    assert!(machine.contains("transform.0.version=1.0.0"), "{machine}");
+    assert!(machine.contains("transform.0.changed_atoms=1"), "{machine}");
+    assert!(machine.contains("transform.0.changed_refs=0"), "{machine}");
+    assert!(machine.contains("transform.0.dropped=0"), "{machine}");
+
+    // A decoder's own report (no chain) is unchanged: neither renderer prints anything at all.
+    assert_eq!(render_transforms_human(&machine_output_fixture(), true), "");
+    assert_eq!(render_transforms_machine(&machine_output_fixture()), "");
 }

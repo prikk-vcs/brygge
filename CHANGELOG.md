@@ -18,6 +18,13 @@ depends on `miniz_oxide`.
 
 **Added:** `brygge_ir::artifact::store_order`: the blob order that reads each compressed frame once.
 
+**Added:** IR contract 0.3.0 can record transforms (programs that turn one artifact into another): a
+chain of records, each citing the digest of the artifact it read; a `Transformed` status that keeps the
+status before it; and a `Transform` loss. `inspect` shows the chain; `verify --against-source` checks its
+root against the source (`root-corresponds`). brygge itself writes no transformed artifact yet (RFC 018).
+
+**Added:** `brygge_ir::artifact::digest_of`: an IR's digest, without writing it.
+
 **Changed:** brygge still reads contract 0.2.0 artifacts (`inspect`, `verify`, `encode`), and writes only
 0.3.0. `inspect` shows the artifact's own contract version.
 

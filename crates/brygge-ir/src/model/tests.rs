@@ -330,6 +330,7 @@ fn drop_record_roundtrips() {
         class: LossClass::AdvisoryUnreliable,
         what: "svn:mergeinfo".into(),
         reason: "advisory, not authoritative".into(),
+        step: None,
     };
     let bytes = d.encode();
     let mut r = CanonReader::new(&bytes);
@@ -627,11 +628,13 @@ fn ir_dropped_out_of_order_is_rejected() {
             class: LossClass::Other,
             what: "z".into(),
             reason: "r".into(),
+            step: None,
         },
         DropRecord {
             class: LossClass::Other,
             what: "a".into(),
             reason: "r".into(),
+            step: None,
         },
     ];
     rw.field(

@@ -74,6 +74,17 @@ it. An encoder's job is to carry that distinction into the target, not to flatte
   Brygge-Derived: atom reconstructed-changeset window_secs=180,cluster_keys=author+message,date_rule=…
   ```
 
+- **Carry every `Transformed` mark, with its step, record name, version, and changed parts, and its
+  prior status — recursively, since `prior` can itself be `Transformed` or `Derived` — or say in the
+  target that it was dropped.** `EpistemicStatus::Transformed` (RFC 018 D-5) names which transform step
+  (`Ir.transforms[step]`) changed an atom's, an op's, or a ref's assertion, and what it changed
+  (`changed`); `prior` is what the assertion was *before* that step, which may itself need the same
+  treatment one or more layers down. If your target has nowhere to put a step's own name/version (no
+  trailer, no note, no custom field), say so in your own output, the same way you would for a dropped
+  `Derived` mark. Also **report the whole chain to the user, human-readably, once per run** — `inspect`
+  already does this for the artifact alone; your encoder's own run is the moment that chain actually
+  reaches a target, so say which steps ran and what each one's own `consumed` digest was.
+
 - **Never invent a value the IR does not carry.** A missing committer, a missing time zone, a missing
   email — if your target's format *requires* something the IR left absent (most targets require more
   structure than the IR promises, by design — see §5), you may supply a placeholder, but you must mark

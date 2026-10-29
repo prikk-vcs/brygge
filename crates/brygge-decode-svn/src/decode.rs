@@ -333,6 +333,7 @@ impl Loss {
             class: LossClass::Representation,
             what: "SVN physical storage and dumpstream framing".to_string(),
             reason: "representation not assertion; the logical revisions are preserved".to_string(),
+            step: None,
         }];
         if self.mergeinfo {
             dropped.push(DropRecord {
@@ -342,6 +343,7 @@ impl Loss {
                     "advisory merge tracking, frequently incomplete; never promoted to a merge \
                          parent"
                         .to_string(),
+                step: None,
             });
         }
         if self.workflow {
@@ -352,6 +354,7 @@ impl Loss {
                     "the stored normal-form bytes are carried verbatim; keyword/EOL expansion is \
                          a working-copy transform, not history"
                         .to_string(),
+                step: None,
             });
         }
         if self.custom {
@@ -362,6 +365,7 @@ impl Loss {
                     "not carried in this version (nothing consumes them, and the IR contract is \
                          not grown speculatively)"
                         .to_string(),
+                step: None,
             });
         }
         if self.empty_dirs > 0 {
@@ -372,6 +376,7 @@ impl Loss {
                     "the IR has no empty-directory entity (as Git/prikk); the directory carried \
                          no file"
                         .to_string(),
+                step: None,
             });
         }
         if self.deleted_or_moved_roots > 0 {
@@ -385,6 +390,7 @@ impl Loss {
                     "the IR's refs name live history; a deleted, moved or never-filled SVN branch \
                          or tag has no live head"
                         .to_string(),
+                step: None,
             });
         }
         if self.unparseable_dates > 0 {
@@ -394,6 +400,7 @@ impl Loss {
                 reason: "svn:date did not parse as an SVN-format timestamp; no time is carried \
                          rather than a wrong one"
                     .to_string(),
+                step: None,
             });
         }
         LossBoundary { dropped }

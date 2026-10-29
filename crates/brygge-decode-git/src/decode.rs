@@ -1207,16 +1207,19 @@ fn loss_boundary(
             class: LossClass::Representation,
             what: "packfile and delta layout, physical object store".to_string(),
             reason: "representation not assertion; reconstructible from the objects".to_string(),
+            step: None,
         },
         DropRecord {
             class: LossClass::Representation,
             what: "index and working tree".to_string(),
             reason: "local state, not history".to_string(),
+            step: None,
         },
         DropRecord {
             class: LossClass::Representation,
             what: "reflogs".to_string(),
             reason: "local operation log, not history".to_string(),
+            step: None,
         },
     ];
     for (ns, count) in dropped_namespace_counts {
@@ -1224,6 +1227,7 @@ fn loss_boundary(
             class: LossClass::Representation,
             what: format!("{ns} refs ({count})"),
             reason: "workflow/representation refs, not authored history".to_string(),
+            step: None,
         });
     }
     match dropped_only_commits {
@@ -1236,6 +1240,7 @@ fn loss_boundary(
                     "workflow state (stash, notes, remote-tracking), not authored history of a \
                          carried ref"
                         .to_string(),
+                step: None,
             });
         }
         DroppedOnlyCommits::Unavailable => {
@@ -1243,6 +1248,7 @@ fn loss_boundary(
                 class: LossClass::Representation,
                 what: "commits reachable only from dropped refs (count unavailable)".to_string(),
                 reason: "a commit in dropped-only history could not be read".to_string(),
+                step: None,
             });
         }
     }
@@ -1252,6 +1258,7 @@ fn loss_boundary(
             what: format!("refs to non-commit objects ({non_commit_refs})"),
             reason: "a tag or branch naming a tree or blob; the IR's refs point at history atoms"
                 .to_string(),
+            step: None,
         });
     }
     if symbolic_refs > 0 {
@@ -1262,6 +1269,7 @@ fn loss_boundary(
                 "an alias to another ref; the IR has no alias concept; the target ref is carried \
                      on its own"
                     .to_string(),
+            step: None,
         });
     }
     if time_counts.unparseable_times > 0 {
@@ -1274,6 +1282,7 @@ fn loss_boundary(
             reason: "the source's time field could not be parsed; the claim is absent rather than \
                      fabricated"
                 .to_string(),
+            step: None,
         });
     }
     if time_counts.unparseable_offsets > 0 {
@@ -1286,6 +1295,7 @@ fn loss_boundary(
             reason: "the source's timezone offset could not be parsed strictly (`+HHMM`/`-HHMM`); \
                      the time is carried without an offset rather than a fabricated or salvaged one"
                 .to_string(),
+            step: None,
         });
     }
     if time_counts.undecodable_encodings > 0 {
@@ -1299,6 +1309,7 @@ fn loss_boundary(
                 "the commit's declared `encoding` header value was not valid UTF-8, so it is not \
                      carried on the message's `Text.encoding`"
                     .to_string(),
+            step: None,
         });
     }
     if nested_tag_objects > 0 {
@@ -1308,6 +1319,7 @@ fn loss_boundary(
             reason: "an intermediate tag object in a tag-of-a-tag chain; only the outer tag's \
                      annotation is carried"
                 .to_string(),
+            step: None,
         });
     }
     LossBoundary { dropped }

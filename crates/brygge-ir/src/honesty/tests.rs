@@ -90,6 +90,7 @@ fn build() -> Ir {
             class: LossClass::AdvisoryUnreliable,
             what: "mergeinfo".into(),
             reason: "advisory and frequently wrong".into(),
+            step: None,
         }],
     });
     b.add_flag(Flag {
@@ -270,6 +271,7 @@ fn a_representation_drop_is_counted_on_the_not_history_line_not_recorded_loss() 
             class: LossClass::Representation,
             what: "reflogs".into(),
             reason: "local operation log, not history".into(),
+            step: None,
         }],
     });
     let human = summary(&b.finish().unwrap()).render_human();

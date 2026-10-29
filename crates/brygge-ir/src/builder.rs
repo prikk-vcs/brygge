@@ -12,7 +12,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::content::{BlobId, ContentStore, Storage};
 use crate::model::{
     AtomId, ChangeAtom, CopyRecord, Flag, ImportProvenance, Ir, LossBoundary, MetadataClaims,
-    PathOp, RefRecord, SourceIdentity,
+    PathOp, RefRecord, SourceIdentity, TransformRecord,
 };
 use crate::status::EpistemicStatus;
 use crate::{Error, Result};
@@ -44,6 +44,7 @@ pub struct IrBuilder {
     provenance: ImportProvenance,
     loss: LossBoundary,
     flags: Vec<Flag>,
+    transforms: Vec<TransformRecord>,
 }
 
 impl IrBuilder {
@@ -58,6 +59,7 @@ impl IrBuilder {
             provenance,
             loss: LossBoundary::default(),
             flags: Vec::new(),
+            transforms: Vec::new(),
         }
     }
 
@@ -77,6 +79,7 @@ impl IrBuilder {
             provenance,
             loss: LossBoundary::default(),
             flags: Vec::new(),
+            transforms: Vec::new(),
         })
     }
 
@@ -167,6 +170,16 @@ impl IrBuilder {
         self.flags.push(flag);
     }
 
+    /// Add one transform record (RFC 018 D-5), oldest first. Returns the step index this record now
+    /// has — `self.transforms.len()` just before the push — the index later
+    /// [`crate::status::EpistemicStatus::Transformed`] values and [`crate::model::DropRecord::step`]
+    /// reference.
+    pub fn add_transform(&mut self, record: TransformRecord) -> usize {
+        let step = self.transforms.len();
+        self.transforms.push(record);
+        step
+    }
+
     /// Finish the build: order the atoms canonically, sort refs/drops/flags, prune unreferenced blobs,
     /// and assemble the [`Ir`].
     ///
@@ -192,17 +205,26 @@ impl IrBuilder {
             )));
         }
 
+        if self.transforms.len() > 64 {
+            return Err(Error::Invariant(
+                "more than 64 transform records".to_string(),
+            ));
+        }
+
         let mut loss = self.loss;
-        loss.dropped
-            .sort_by(|a, b| (a.class.variant(), &a.what).cmp(&(b.class.variant(), &b.what)));
+        loss.dropped.sort_by(|a, b| {
+            (a.class.variant(), a.step, &a.what).cmp(&(b.class.variant(), b.step, &b.what))
+        });
         if let Some((a, _)) = loss
             .dropped
             .iter()
             .zip(loss.dropped.iter().skip(1))
-            .find(|(a, b)| (a.class.variant(), &a.what) == (b.class.variant(), &b.what))
+            .find(|(a, b)| {
+                (a.class.variant(), a.step, &a.what) == (b.class.variant(), b.step, &b.what)
+            })
         {
             return Err(Error::Invariant(format!(
-                "two drops of one class with the same `what`: {:?}",
+                "two drops of one class/step with the same `what`: {:?}",
                 a.what
             )));
         }
@@ -240,6 +262,7 @@ impl IrBuilder {
             loss,
             flags,
             content,
+            transforms: self.transforms,
         })
     }
 }

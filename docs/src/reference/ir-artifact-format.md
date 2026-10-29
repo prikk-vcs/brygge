@@ -167,6 +167,7 @@ Every field below is `critical = 1` (rule 8). "req" = required (rule 1); "opt" =
 | 3 | provenance | `ImportProvenance` | req |
 | 4 | dropped | `list<DropRecord>` | list |
 | 5 | flags | `list<Flag>` | list |
+| 6 | transforms | `list<TransformRecord>`, oldest first | list — RFC 018 D-5; omitted for a decoder's own artifact (no chain); at most 64 records (`Error::NonCanonical`, checked at decode time) |
 
 ### `ChangeAtom`
 
@@ -286,6 +287,26 @@ One opaque, source-specific datum with no other home in the IR, carried rather t
 |---|---|---|
 | 0 | Stated | (payload-less) |
 | 1 | Derived | the fields of `Derivation`, spliced in directly (not wrapped in a sub-field) |
+| 2 | Transformed | `{1 step: uvarint req, 2 changed: list<text> req, 3 prior: EpistemicStatus req}` (RFC 018 D-5) |
+
+**`Transformed`** (RFC 018 D-5, batch T): a transform step changed this assertion. `step` indexes
+`Ir.transforms` (field 6, above); `prior` is the status this assertion had *before*
+that step — itself `Stated`, `Derived`, or (for a multi-step chain) another `Transformed`, nested as deep
+as the chain itself. `changed` names which part(s) of this assertion the step touched, from a closed
+vocabulary (one for each of the three places `Transformed` may appear):
+
+| Context | Vocabulary |
+|---|---|
+| An atom's own status | `author`, `author-time`, `committer`, `commit-time`, `message`, `ops`, `copies` |
+| A `PathOp`'s own status | `blob`, `mode`, `path` |
+| A `RefRecord`'s own status | `annotation`, `kind`, `name`, `target` |
+
+A `CopyRecord`'s own status may never be `Transformed` at all — copies are not a valid location for it
+(§6). `changed`'s own wire shape is `list<text>`, but — unlike every other `list<T>` in this schema —
+each item is **self-delimiting** (`uvarint(len) ‖ bytes`, the same shape a bare `text` value would have as
+a record field) rather than itself a record or a fixed-size id: nothing else encloses it to say where one
+item ends and the next begins. `changed` is non-empty and strictly ascending by the item's own text (so no
+part repeats).
 
 ### `Derivation`
 
@@ -347,6 +368,7 @@ annotated Git tag object).
 | 1 | class | `LossClass` | req |
 | 2 | what | text | req |
 | 3 | reason | text | req |
+| 4 | step | uvarint | req **iff** `class` is `Transform`, **absent** for every other class (RFC 018 D-5) — which transform step (an index into `Ir.transforms`) dropped this |
 
 ### `LossClass` (enum)
 
@@ -355,6 +377,7 @@ annotated Git tag object).
 | 0 | Representation |
 | 1 | AdvisoryUnreliable |
 | 2 | Other |
+| 3 | Transform — RFC 018 D-5: a transform step dropped this; `DropRecord.step` names which one |
 
 (All payload-less.)
 
@@ -390,6 +413,21 @@ missing".
 | 4 | decoder_version | text | req |
 | 5 | params | map | list |
 
+### `TransformRecord`
+
+One transform program's own run over an artifact (RFC 018 D-5, batch T): what program, what version,
+with what parameters, named by `consumed` — the §3 D-3 digest of the artifact this step **read**.
+`Ir.transforms` holds these oldest first. A record's own *output* is never stored directly: record *k*'s
+output is record *k + 1*'s own `consumed`, and the last record's output is the artifact's own overall
+digest (§3).
+
+| id | Field | Type | Kind |
+|---|---|---|---|
+| 1 | name | text | req — the plugin-name grammar `[a-z0-9][a-z0-9-]*`, at most 64 bytes |
+| 2 | version | text | req — non-empty |
+| 3 | params | map | list — omitted when empty |
+| 4 | consumed | id32 | req — the D-3 digest of the artifact this step read |
+
 ## 6. Canonical orders and structural checks
 
 Enforced on read; a compliant writer produces them directly (no reordering pass needed on the read
@@ -404,10 +442,68 @@ side — a mismatch is a canonical-form violation, not something a reader repair
   **Copies** within one atom are strictly ascending by `(to, from, from_atom)`.
 - **Refs** are strictly ascending by `(name, kind variant)`, and every ref's `target` names an atom
   present in the artifact.
-- **Dropped** entries are strictly ascending by `(class variant, what)`. **Flags** are strictly ascending
-  by `(kind variant, what)`.
+- **Dropped** entries are strictly ascending by `(class variant, step, what)` — RFC 018 D-5 widened this
+  from `(class variant, what)`; an absent `step` sorts **before** any present one, so every
+  non-`Transform` drop (which never has a `step`) sorts ahead of every `Transform` drop at the same class
+  variant (moot in practice, since `Transform` is its own variant, but this is the rule a reader checks).
+  **Flags** are strictly ascending by `(kind variant, what)`.
 - **Blobs:** every op that carries a `blob` (`Add`/`Modify`/`Replace`) names one present in the blob
   store, and **every stored blob is referenced by at least one op** — no orphans either way.
+
+### Transform chain (RFC 018 D-5)
+
+A reader enforces these over `Ir.transforms` and every place `EpistemicStatus::Transformed` or a
+`Transform`-class drop can appear, beyond each record's own field shape (§5):
+
+- **At most 64 transform records.** More is `Error::NonCanonical`, checked as `Ir.transforms` is decoded
+  — before any of the checks below run.
+- **`TransformRecord.name`** matches the plugin-name grammar (`[a-z0-9][a-z0-9-]*`, at most 64 bytes) and
+  **`TransformRecord.version`** is non-empty, or `Error::Decode`/`Error::NonCanonical`.
+- **Every `Transformed.step`** — on an atom's, an op's, or a ref's own status — is **strictly less than**
+  `Ir.transforms.len()`. A `Transform`-class drop's `step` is checked the same way. Either violation is
+  `Error::NonCanonical` ("…step N is not less than the chain's length M").
+- **A nested `prior`'s own `step`, if `prior` is itself `Transformed`, is strictly less than the outer
+  layer's `step`** — so a chain's steps strictly decrease as you walk from the outermost `Transformed`
+  down through `prior` to the eventual `Stated`/`Derived` base. Violating this is `Error::NonCanonical`.
+  (Decode also caps how deep this `prior` nesting may go, at 64 layers, independent of and before the
+  check above against the chain's real length — a defensive bound against a maliciously deep chain, not
+  a looser rule than the one above.)
+- **Every `Transform`-class drop has a `step`, and no drop of any other class does** — enforced where
+  `DropRecord` itself is decoded (§5), not here; this section's own job is only the range check above.
+- **`Transformed.changed`** is non-empty, strictly ascending by its own text, and every entry parses
+  against the closed vocabulary for *where* the `Transformed` sits (an atom's own vocabulary, an op's, or
+  a ref's — listed with `EpistemicStatus` in §5). An entry outside that context's vocabulary is
+  `Error::Decode` ("…uses a part outside its vocabulary"); a non-ascending, duplicate, or empty `changed`
+  is `Error::NonCanonical`.
+- **A `CopyRecord`'s own status may never be `Transformed`.** Unlike an atom's, an op's, or a ref's own
+  status, a copy record is not a valid location for it at all — any `Transformed` found there is
+  `Error::NonCanonical` ("Transformed may not appear on a copy record's own status"), regardless of its
+  own `step`/`changed`/`prior`.
+- **Contract 0.2.0 has none of this.** `Ir` field 6 (`transforms`), `EpistemicStatus` variant 2
+  (`Transformed`), `LossClass` variant 3 (`Transform`), and `DropRecord` field 4 (`step`) are all 0.3.0
+  additions (§4). A 0.2.0 artifact that smuggles any one of them in (hand-crafted bytes, since the shared
+  record decoders are contract-oblivious by design — §5's decoders do not themselves know which contract
+  they are reading) is refused, naming exactly which one: `Error::NonCanonical("contract 0.2.0 does not
+  have Ir field 6 (transforms)")`, `"...EpistemicStatus variant 2 (Transformed)"`, `"...LossClass variant
+  3 (Transform)"`, or `"...DropRecord field 4 (step)"`.
+
+**Two things worth stating plainly about this chain:**
+
+1. **A record's own output digest is never stored — only implied.** `TransformRecord.consumed` names the
+   digest of the artifact a step *read*; the digest of what it *produced* is simply record *k + 1*'s own
+   `consumed`, or, for the chain's last record, the artifact's own overall digest (§3). There is no
+   separate "output" field anywhere, and none is needed.
+2. **A chain's full losses are enumerable from the artifact alone.** Every `Transform`-class drop names
+   its own `step`, so a reader can list, for each record in `Ir.transforms`, exactly what that step
+   dropped and why — without running the transform programs themselves, or even knowing what they are
+   beyond `name`/`version`/`params`.
+
+**What a reader cannot check alone:** whether an atom, op, or ref with *no* `Transformed` mark was truly
+left unchanged by a given step. The chain's own rules (above) only constrain what a `Transformed` mark
+*claims*; they say nothing about an assertion that carries none. Confirming that a step actually touched
+only what it marked, and nothing else, needs that step's own input to compare against — the artifact
+`TransformRecord.consumed` names — which is a check over two artifacts, not one. That is batch P's own
+output-side verification, not something this reader-only format page can state or enforce.
 
 ## 7. Worked example: a minimal one-atom artifact (contract 0.3.0)
 
@@ -464,6 +560,81 @@ its packing matches §3a's plan (trivially, one frame); verify the blob's conten
 id; then run the structural checks of §6 — a single atom with no parents is trivially "in canonical
 order", its `Add` op's blob is present, and the one stored blob is referenced by that op, so nothing is
 orphaned.
+
+### 7a. Worked example: a one-record transform chain (RFC 018 D-5)
+
+Built with `IrBuilder` (not a decoder, and not the example above — a fresh artifact): the same one atom
+adding path `a` with content `hi`, no refs, no drops, no flags — but this time the atom's own status is
+`Transformed { step: 0, changed: [author], prior: Stated }`, and `Ir.transforms` holds the one
+`TransformRecord` that made it: name `"redact"`, version `"1.0.0"`, no params, `consumed` =
+`SHA-256("example-artifact-before-step-0")` (an arbitrary 32 bytes for this illustration — not a digest
+of anything real in this example, just something that looks like one). 302 bytes total, shown here as
+verified hex (generated from real code and hex-dumped, then cross-checked field by field against §5's
+rules by hand, offset by offset — not estimated):
+
+```
+0000: 42 52 59 47 47 45 49 52 02 00 03 00 ae c8 bd 0c
+0010: d4 38 8e 0c 85 46 a8 a5 eb 7d 4b fe 3a 1f 01 04
+0020: dc 7f 78 4a 17 61 74 f0 35 a7 43 ba 01 00 d4 01
+0030: d4 01 03 03 79 01 04 03 20 07 20 2a 6d fc 82 6a
+0040: bf 3a 13 12 b1 5b 56 66 b2 3d 39 09 dc 26 3e 5a
+0050: 17 c4 72 9f cd ef 39 c7 e3 07 31 01 00 04 03 01
+0060: 61 05 20 8f 43 43 46 64 8f 6b 96 df 89 dd a9 01
+0070: c5 17 6b 10 a6 d8 39 61 dd 3c 1a c8 8b 59 b2 dc
+0080: 32 7a a4 07 03 a4 83 02 09 02 00 00 0d 0b 03 03
+0090: 02 00 00 05 00 07 02 72 31 0f 13 02 03 03 01 00
+00a0: 05 08 01 06 61 75 74 68 6f 72 07 02 00 00 07 21
+00b0: 04 03 0d 03 03 02 00 00 05 00 07 04 72 65 70 6f
+00c0: 05 05 30 2e 31 2e 30 07 01 64 09 05 30 2e 31 2e
+00d0: 30 0d 33 01 03 03 06 72 65 64 61 63 74 05 05 31
+00e0: 2e 30 2e 30 09 20 23 a3 29 a6 8c 0a e6 6f ba 5e
+00f0: 69 34 ef 9b 0e 38 88 ec 08 3b 47 16 15 1c 66 7e
+0100: db 97 8c 58 c8 71 01 8f 43 43 46 64 8f 6b 96 df
+0110: 89 dd a9 01 c5 17 6b 10 a6 d8 39 61 dd 3c 1a c8
+0120: 8b 59 b2 dc 32 7a a4 02 01 00 02 02 68 69
+```
+
+Annotated, offset by offset. The parts already walked in §7 (the container header, the atom's `id`/`ops`/
+`source`, the blob table and blob frame) are summarized rather than re-derived; this example's new ground
+is the `status` field's `Transformed` encoding and the `Ir` record's `transforms` field:
+
+| Offset | Bytes | Meaning |
+|---|---|---|
+| `0x00`–`0x0b` | — | Magic, format `2`, version `0.3.0` — as §7. |
+| `0x0c`–`0x2b` | (32 bytes) | The digest, over the logical stream (§3). |
+| `0x2c`–`0x31` | `01 00 d4 01 d4 01` | Metadata frames: `1`, codec `0` (stored), `raw_len`/`stored_len` both `212`. |
+| `0x32` | `03` | The `Ir` record's own field count: **3** (`atoms`, `provenance`, `transforms` — `refs`/`dropped`/`flags` are all empty and omitted). |
+| `0x33`–`0x34` | `03 79` | Field tag `3`→id `1` (`atoms`), length `121`: the one `ChangeAtom`, `0x35`–`0xad`. |
+| `0x36` | `04` | The `ChangeAtom`'s own field count: **4** (`id`, `ops`, `source`, `status`). |
+| `0x37`–`0x58` | — | Field `id` (32 bytes) — as §7, a different atom's `AtomId`. |
+| `0x59`–`0x8b` | — | Field `ops`: one `Add` of path `a`, blob `8f43…7aa4` (`SHA-256("hi")`), mode `0o100644` (`a4 83 02`), **the op's own status `Stated`** — this example's transform touched only the atom's status, not this op's. |
+| `0x8c`–`0x98` | — | Field `source`: `SourceIdentity{kind: Git, repo_id: "", atom_id: "r1"}`. |
+| `0x99`–`0xad` | `0f 13` … | Field `status` (tag `15`→id `7`, length `19`): **`EpistemicStatus::Transformed`** — broken out below. |
+| `0x9b` | `02` | `EpistemicStatus` variant **2** (`Transformed`). |
+| `0x9c` | `03` | Its own record's field count: **3** (`step`, `changed`, `prior`). |
+| `0x9d`–`0x9f` | `03 01 00` | Field `step` (tag `3`→id `1`, length `1`): **`0`** — the chain's first (and only) record. |
+| `0xa0`–`0xa9` | `05 08 01 06` `"author"` | Field `changed` (tag `5`→id `2`, length `8`): `list<text>` count **1**, one self-delimiting item `uvarint(6) ‖ "author"` — the vocabulary's spelling for an atom's claimed author. |
+| `0xaa`–`0xad` | `07 02 00 00` | Field `prior` (tag `7`→id `3`, length `2`): `EpistemicStatus::Stated` — what this atom's status was *before* step 0. |
+| `0xae`–`0xd0` | `07 21` … | Back in the `Ir` record: field `provenance` (tag `7`→id `3`, length `33`) — `ImportProvenance{source: {kind: Git, atom_id: "repo"}, brygge_version: "0.1.0", decoder: "d", decoder_version: "0.1.0"}`, same shape as §5/§7. |
+| `0xd1`–`0x105` | `0d 33` … | Field **`transforms`** (tag `13`→id **`6`**, length `51`) — broken out below. |
+| `0xd3` | `01` | `transforms`: `list<TransformRecord>` count = **1**. |
+| `0xd4` | `03` | The one `TransformRecord`'s own field count: **3** (`name`, `version`, `consumed`; `params` is empty and omitted). |
+| `0xd5`–`0xdc` | `03 06` `"redact"` | Field `name` (tag `3`→id `1`, length `6`): `"redact"`. |
+| `0xdd`–`0xe3` | `05 05` `"1.0.0"` | Field `version` (tag `5`→id `2`, length `5`): `"1.0.0"`. |
+| `0xe4`–`0x105` | `09 20` + (32 bytes) | Field `consumed` (tag `9`→id `4`, length `32`): the step's own `SHA-256("example-artifact-before-step-0")`. |
+| `0x106` | `01` | Blob table: `uvarint(count)` = **1**. |
+| `0x107`–`0x126` | (32 bytes) | The blob's `id32` — `8f43…7aa4`, `SHA-256("hi")`. |
+| `0x127` | `02` | That blob's `raw_len` = **2**. |
+| `0x128`–`0x12b` | `01 00 02 02` | Blob frames: `1`, codec `0` (stored), `raw_len`/`stored_len` both `2`. |
+| `0x12c`–`0x12d` | `68 69` | The content, `"hi"` — the file's end. |
+
+A reader would decode exactly as §7 up through the blob table, and additionally: on reaching the atom's
+`status` field, decode the `Transformed` enum (step `0`, one changed part `"author"`, `prior` `Stated`);
+on reaching the `Ir` record's field `6`, decode the one `TransformRecord`; then, as part of §6's
+structural checks, confirm `step` (`0`) is less than `Ir.transforms.len()` (`1`), confirm `"author"` is in
+the atom-context vocabulary, and confirm the one atom's status is the only `Transformed` anywhere (so
+nothing needed checking against a nested `prior`'s own step, and no `Transform`-class drop's step needed
+checking either, since there is no drop at all in this example).
 
 ## 8. Contract 0.2.0 (read only)
 

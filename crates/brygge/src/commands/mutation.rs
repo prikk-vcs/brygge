@@ -19,8 +19,8 @@ use std::time::Duration;
 
 use brygge_ir::builder::{AtomDraft, IrBuilder};
 use brygge_ir::model::{
-    DropRecord, Flag, FlagKind, ImportProvenance, LossBoundary, LossClass, MetadataClaims, PathOp,
-    RefKind, RefRecord, SourceIdentity, SourceKind, Text,
+    ChangedPart, DropRecord, Flag, FlagKind, ImportProvenance, LossBoundary, LossClass,
+    MetadataClaims, PathOp, RefKind, RefRecord, SourceIdentity, SourceKind, Text, TransformRecord,
 };
 use brygge_ir::status::EpistemicStatus;
 use brygge_mutate::harness::{self, Outcome, Seed};
@@ -82,6 +82,12 @@ fn seed_ir() -> brygge_ir::Ir {
         })
         .unwrap();
     let child_blob = b.add_blob(b"second revision text".to_vec()).unwrap();
+    let step = b.add_transform(TransformRecord {
+        name: "renumber".into(),
+        version: "1.0.0".into(),
+        params: BTreeMap::new(),
+        consumed: [0x42; 32],
+    });
     let child = b
         .add_atom(AtomDraft {
             parents: vec![root],
@@ -89,7 +95,11 @@ fn seed_ir() -> brygge_ir::Ir {
                 path: "second".into(),
                 blob: child_blob,
                 mode: 0o100_644,
-                status: EpistemicStatus::Stated,
+                status: EpistemicStatus::Transformed {
+                    step: step as u64,
+                    changed: vec![ChangedPart::Mode],
+                    prior: Box::new(EpistemicStatus::Stated),
+                },
             }],
             copies: vec![],
             metadata: MetadataClaims::default(),
@@ -100,7 +110,11 @@ fn seed_ir() -> brygge_ir::Ir {
                 signatures: Vec::new(),
                 extras: Vec::new(),
             },
-            status: EpistemicStatus::Stated,
+            status: EpistemicStatus::Transformed {
+                step: step as u64,
+                changed: vec![ChangedPart::Ops],
+                prior: Box::new(EpistemicStatus::Stated),
+            },
         })
         .unwrap();
     b.add_ref(RefRecord {
@@ -113,11 +127,20 @@ fn seed_ir() -> brygge_ir::Ir {
     })
     .unwrap();
     b.set_loss(LossBoundary {
-        dropped: vec![DropRecord {
-            class: LossClass::Other,
-            what: "an example drop".into(),
-            reason: "mutation-seed".into(),
-        }],
+        dropped: vec![
+            DropRecord {
+                class: LossClass::Other,
+                what: "an example drop".into(),
+                reason: "mutation-seed".into(),
+                step: None,
+            },
+            DropRecord {
+                class: LossClass::Transform,
+                what: "an example transform drop".into(),
+                reason: "mutation-seed".into(),
+                step: Some(step as u64),
+            },
+        ],
     });
     b.add_flag(Flag {
         kind: FlagKind::BelowConfidenceFloor,

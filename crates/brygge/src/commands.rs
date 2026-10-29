@@ -14,7 +14,7 @@ use brygge_decode_hg::Error as HgError;
 use brygge_decode_svn::{
     Error as SvnError, LayoutPolicy, Options as SvnOptions, Source as SvnSource,
 };
-use brygge_ir::model::{AtomId, FlagKind, PathOp, RefKind, Text};
+use brygge_ir::model::{AtomId, ChangedPart, FlagKind, PathOp, RefKind, Text};
 use brygge_ir::status::{Derivation, DerivationKind, EpistemicStatus};
 use brygge_ir::{Decoded, Ir, LossClass};
 
@@ -70,7 +70,7 @@ fn status_other(s: &EpistemicStatus) -> Option<&str> {
             DerivationKind::Other(name) => Some(name),
             _ => None,
         },
-        EpistemicStatus::Stated => None,
+        EpistemicStatus::Stated | EpistemicStatus::Transformed { .. } => None,
     }
 }
 
@@ -80,6 +80,7 @@ fn loss_class_label(class: LossClass) -> &'static str {
         LossClass::Representation => "representation",
         LossClass::AdvisoryUnreliable => "advisory-unreliable",
         LossClass::Other => "other",
+        LossClass::Transform => "transform",
     }
 }
 
@@ -91,12 +92,15 @@ fn flag_kind_label(kind: FlagKind) -> &'static str {
     }
 }
 
-/// `stated` or `derived:<kind>` — machine-safe (both halves are fixed Rust-enum-derived labels, never
-/// source text).
+/// `stated`, `derived:<kind>`, or `transformed:<step>` — machine-safe (every half is a fixed
+/// Rust-enum-derived label or a plain integer, never source text). The chain's own prior/changed detail
+/// is not repeated here (RFC 018 D-5): `inspect --atoms`'s machine form carries it, if wanted, through
+/// the dedicated `transform.<k>.*` keys, not by growing this one key's own grammar.
 fn status_label_machine(s: &EpistemicStatus) -> String {
     match s {
         EpistemicStatus::Stated => "stated".to_string(),
         EpistemicStatus::Derived(d) => format!("derived:{}", d.kind.label()),
+        EpistemicStatus::Transformed { step, .. } => format!("transformed:{step}"),
     }
 }
 
@@ -104,30 +108,49 @@ fn status_label_machine(s: &EpistemicStatus) -> String {
 /// §3.4.2). Parameter values are neutralized; the kind label and parameter keys are fixed decoder-chosen
 /// literals, never source text.
 fn status_label_human(s: &EpistemicStatus) -> String {
-    let EpistemicStatus::Derived(d) = s else {
-        return "stated".to_string();
-    };
-    let mut out = format!("derived:{}", d.kind.label());
-    if d.params.is_empty() && d.confidence.is_none() {
-        return out;
-    }
-    out.push_str(" {");
-    let mut first = true;
-    for (k, v) in &d.params {
-        if !first {
-            out.push_str(", ");
+    match s {
+        EpistemicStatus::Stated => "stated".to_string(),
+        EpistemicStatus::Transformed {
+            step,
+            changed,
+            prior,
+        } => {
+            // RFC 018 D-5's own worked example: "transformed at 1 (author) ← stated" — a chain renders
+            // as one arrow per prior step, oldest status last.
+            let parts = changed
+                .iter()
+                .map(ChangedPart::as_str)
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "transformed at {step} ({parts}) ← {}",
+                status_label_human(prior)
+            )
         }
-        first = false;
-        let _ = write!(out, "{k}={}", display::human(v));
-    }
-    if let Some(c) = d.confidence {
-        if !first {
-            out.push_str(", ");
+        EpistemicStatus::Derived(d) => {
+            let mut out = format!("derived:{}", d.kind.label());
+            if d.params.is_empty() && d.confidence.is_none() {
+                return out;
+            }
+            out.push_str(" {");
+            let mut first = true;
+            for (k, v) in &d.params {
+                if !first {
+                    out.push_str(", ");
+                }
+                first = false;
+                let _ = write!(out, "{k}={}", display::human(v));
+            }
+            if let Some(c) = d.confidence {
+                if !first {
+                    out.push_str(", ");
+                }
+                let _ = write!(out, "confidence={c}");
+            }
+            out.push('}');
+            out
         }
-        let _ = write!(out, "confidence={c}");
     }
-    out.push('}');
-    out
 }
 
 fn op_status(op: &PathOp) -> &EpistemicStatus {
@@ -572,6 +595,10 @@ pub fn run_inspect(artifact: &Path, atoms: bool, format: Format) -> i32 {
         Format::Human => report.render_human(),
         Format::Machine => report.render_machine(),
     };
+    rendered.push_str(&match format {
+        Format::Human => render_transforms_human(ir, atoms),
+        Format::Machine => render_transforms_machine(ir),
+    });
     if atoms {
         rendered.push_str(&match format {
             Format::Human => render_atoms_human(ir, decoded.contract),
@@ -582,6 +609,77 @@ pub fn run_inspect(artifact: &Path, atoms: bool, format: Format) -> i32 {
         return code;
     }
     exit::CLEAN
+}
+
+/// RFC 018 D-5, `inspect` §5: the transform chain's own overview — shown whenever the chain is
+/// non-empty, regardless of `--atoms` (unlike [`render_atoms_human`], which only runs under it).
+/// `honesty::summary`'s own section (§3) carries only aggregate counts by design (a pure function of
+/// the `Ir`, reused by `decode`/`verify` too); this one is `inspect`-specific, with each step's own
+/// name/version/consumed digest. `show_params` adds each step's own parameters (`--atoms`).
+fn render_transforms_human(ir: &Ir, show_params: bool) -> String {
+    if ir.transforms.is_empty() {
+        return String::new();
+    }
+    let report = brygge_ir::honesty::summary(ir);
+    let mut s = String::new();
+    let _ = writeln!(s, "transforms: {}", ir.transforms.len());
+    for (k, t) in ir.transforms.iter().enumerate() {
+        let k64 = k as u64;
+        let _ = writeln!(
+            s,
+            "  {k}. {} {} — consumed sha256:{}; changed {} atom(s), {} ref(s); dropped {}",
+            display::human(&t.name),
+            display::human(&t.version),
+            hex(&t.consumed),
+            report.transformed_atoms.get(&k64).copied().unwrap_or(0),
+            report.transformed_refs.get(&k64).copied().unwrap_or(0),
+            report.transformed_drops.get(&k64).copied().unwrap_or(0),
+        );
+        if show_params {
+            for (pk, pv) in &t.params {
+                let _ = writeln!(s, "      {pk}={}", display::human(pv));
+            }
+        }
+    }
+    s
+}
+
+/// [`render_transforms_human`]'s machine form (RFC 018 D-5, `inspect` §5): `transforms=<N>`, then one
+/// `transform.<k>.*` group per step. No parameters section — the machine form names only the keys the
+/// handoff specifies.
+fn render_transforms_machine(ir: &Ir) -> String {
+    if ir.transforms.is_empty() {
+        return String::new();
+    }
+    let report = brygge_ir::honesty::summary(ir);
+    let mut s = String::new();
+    let _ = writeln!(s, "transforms={}", ir.transforms.len());
+    for (k, t) in ir.transforms.iter().enumerate() {
+        let k64 = k as u64;
+        let _ = writeln!(s, "transform.{k}.name={}", display::machine_value(&t.name));
+        let _ = writeln!(
+            s,
+            "transform.{k}.version={}",
+            display::machine_value(&t.version)
+        );
+        let _ = writeln!(s, "transform.{k}.consumed={}", hex(&t.consumed));
+        let _ = writeln!(
+            s,
+            "transform.{k}.changed_atoms={}",
+            report.transformed_atoms.get(&k64).copied().unwrap_or(0)
+        );
+        let _ = writeln!(
+            s,
+            "transform.{k}.changed_refs={}",
+            report.transformed_refs.get(&k64).copied().unwrap_or(0)
+        );
+        let _ = writeln!(
+            s,
+            "transform.{k}.dropped={}",
+            report.transformed_drops.get(&k64).copied().unwrap_or(0)
+        );
+    }
+    s
 }
 
 fn render_atoms_human(ir: &Ir, contract: brygge_ir::ContractVersion) -> String {
@@ -1021,6 +1119,9 @@ fn check_derivations(ir: &Ir) -> CheckOutcome {
         match s {
             EpistemicStatus::Stated => Ok(()),
             EpistemicStatus::Derived(d) => check_one(d),
+            // RFC 018 D-5: a transform's own mark never hides what lies beneath it — a `Derived` prior
+            // (at any depth) is still held to its required parameters, never treated as `Stated`.
+            EpistemicStatus::Transformed { prior, .. } => check_status(prior),
         }
     }
     for atom in &ir.atoms {
@@ -1044,6 +1145,17 @@ fn check_derivations(ir: &Ir) -> CheckOutcome {
         }
     }
     CheckOutcome::Pass
+}
+
+/// Strips away any `Transformed` layers, down to the status a source actually stated or a decoder
+/// originally derived (RFC 018 D-5: "look through `Transformed` to its prior chain" — a transform's own
+/// mark never changes what the source originally stated or a decoder originally derived).
+fn innermost_status(s: &EpistemicStatus) -> &EpistemicStatus {
+    let mut current = s;
+    while let EpistemicStatus::Transformed { prior, .. } = current {
+        current = prior;
+    }
+    current
 }
 
 /// `source-invariants`: per-source honesty invariants that must hold if nothing stripped the marking
@@ -1081,7 +1193,7 @@ fn check_source_invariants(ir: &Ir) -> CheckOutcome {
                 // construction of a branch's tree at its cut (`Derived(ReconstructedBranch)`). Nothing in a
                 // CVS import is ever `Stated` at the atom level.
                 let ok = matches!(
-                    &atom.status,
+                    innermost_status(&atom.status),
                     EpistemicStatus::Derived(d)
                         if d.kind == DerivationKind::ReconstructedChangeset
                             || d.kind == DerivationKind::ReconstructedBranch
@@ -1099,14 +1211,14 @@ fn check_source_invariants(ir: &Ir) -> CheckOutcome {
                 }
             }
             for rf in &ir.refs {
-                if !rf.status.is_derived() {
+                if !innermost_status(&rf.status).is_derived() {
                     return CheckOutcome::Fail("a CVS ref is not Derived".to_string());
                 }
             }
         }
         brygge_ir::SourceKind::Svn => {
             for atom in &ir.atoms {
-                if atom.status.is_derived() {
+                if innermost_status(&atom.status).is_derived() {
                     return CheckOutcome::Fail(
                         "an SVN atom is Derived; SVN's revision spine is always Stated".to_string(),
                     );
@@ -1119,7 +1231,7 @@ fn check_source_invariants(ir: &Ir) -> CheckOutcome {
             }
             for rf in &ir.refs {
                 let ok = matches!(
-                    &rf.status,
+                    innermost_status(&rf.status),
                     EpistemicStatus::Derived(d) if d.kind == DerivationKind::ReconstructedBranch
                 );
                 if !ok {
@@ -1132,7 +1244,7 @@ fn check_source_invariants(ir: &Ir) -> CheckOutcome {
         brygge_ir::SourceKind::Git => {
             for atom in &ir.atoms {
                 for copy in &atom.copies {
-                    if !copy.status.is_derived() {
+                    if !innermost_status(&copy.status).is_derived() {
                         return CheckOutcome::Fail(
                             "a Git copy record is Stated; Git never states a rename".to_string(),
                         );
@@ -1194,6 +1306,13 @@ enum AgainstSourceOutcome {
     DoesNotCorrespond(String),
     Reproduces,
     DoesNotReproduce(String),
+    /// RFC 018 D-5: an artifact with a transform chain is never compared by whole-`Ir` equality — only
+    /// its chain's own *root* (`transforms[0].consumed`) can ever correspond to a fresh decode, since
+    /// nothing re-runs the chain itself. The `String` is the "`N` transform(s) after it were not
+    /// re-run" note.
+    RootCorresponds(String),
+    /// As [`Self::RootCorresponds`], CVS's own "reproduces" wording.
+    RootReproduces(String),
     NotChecked(String),
     NotRun,
 }
@@ -1205,6 +1324,8 @@ impl AgainstSourceOutcome {
             Self::DoesNotCorrespond(_) => "does-not-correspond",
             Self::Reproduces => "reproduces",
             Self::DoesNotReproduce(_) => "does-not-reproduce",
+            Self::RootCorresponds(_) => "root-corresponds",
+            Self::RootReproduces(_) => "root-reproduces",
             Self::NotChecked(_) => "not-checked",
             Self::NotRun => "not-run",
         }
@@ -1215,6 +1336,8 @@ impl AgainstSourceOutcome {
             Self::DoesNotCorrespond(_) => "does not correspond",
             Self::Reproduces => "reproduces",
             Self::DoesNotReproduce(_) => "does not reproduce",
+            Self::RootCorresponds(_) => "the chain's root corresponds to the source",
+            Self::RootReproduces(_) => "the chain's root reproduces the source",
             Self::NotChecked(_) => "could not be checked",
             Self::NotRun => "not run",
         }
@@ -1227,9 +1350,13 @@ impl AgainstSourceOutcome {
     }
     /// An informational note on a *successful* comparison (review 010 F-4): shown under its own key,
     /// never as a failure `detail`, so a consumer cannot read "corresponds" plus a detail as a problem.
+    /// Also carries [`Self::RootCorresponds`]/[`Self::RootReproduces`]'s own "not re-run" count (RFC 018
+    /// D-5) — that, too, is informational, not a reason to doubt the result.
     fn note(&self) -> Option<&str> {
         match self {
-            Self::Corresponds(Some(n)) => Some(n),
+            Self::Corresponds(Some(n)) | Self::RootCorresponds(n) | Self::RootReproduces(n) => {
+                Some(n)
+            }
             _ => None,
         }
     }
@@ -1287,6 +1414,40 @@ fn run_against_source(ir1: &Ir, repo: &Path, storage: &brygge_ir::Storage) -> Ag
     // copy to keep; the note already carries everything the original value was needed for.
     let versions_differ = svn_version_note(ir1, &ir2);
     let ir2 = align_svnadmin_version(ir1, ir2);
+
+    if let Some(first) = ir1.transforms.first() {
+        // RFC 018 D-5: an artifact with a chain is never compared by whole-`Ir` equality — nothing re-
+        // runs the chain itself here (that is batch P's own job), so the only thing a fresh decode of
+        // the source can ever correspond to is the chain's own *root*: what `transforms[0].consumed`
+        // names. `digest_of` is the exact digest `write_to` would give that fresh decode, without
+        // writing it.
+        return match brygge_ir::digest_of(&ir2) {
+            Ok(digest) => {
+                let note = format!(
+                    "{} transform(s) after it were not re-run",
+                    ir1.transforms.len()
+                );
+                if digest == first.consumed {
+                    if is_cvs {
+                        AgainstSourceOutcome::RootReproduces(note)
+                    } else {
+                        AgainstSourceOutcome::RootCorresponds(note)
+                    }
+                } else {
+                    let detail = "the chain's root is not this source's decode".to_string();
+                    if is_cvs {
+                        AgainstSourceOutcome::DoesNotReproduce(detail)
+                    } else {
+                        AgainstSourceOutcome::DoesNotCorrespond(detail)
+                    }
+                }
+            }
+            Err(e) => AgainstSourceOutcome::NotChecked(format!(
+                "could not compute the re-decode's own digest: {e}"
+            )),
+        };
+    }
+
     // Nothing else in the IR is provenance-only-and-volatile any more (import_time was removed by
     // RFC 011), so the aligned decodes are compared directly.
     let corresponds = ir1 == &ir2;

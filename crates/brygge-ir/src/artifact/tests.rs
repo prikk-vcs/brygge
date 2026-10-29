@@ -9,8 +9,8 @@ use super::*;
 use crate::builder::{AtomDraft, IrBuilder};
 use crate::canon::CanonReader;
 use crate::model::{
-    DropRecord, Flag, FlagKind, ImportProvenance, LossBoundary, LossClass, MetadataClaims, PathOp,
-    RefKind, RefRecord, SourceIdentity, SourceKind,
+    ChangedPart, DropRecord, Flag, FlagKind, ImportProvenance, LossBoundary, LossClass,
+    MetadataClaims, PathOp, RefKind, RefRecord, SourceIdentity, SourceKind, TransformRecord,
 };
 use crate::status::EpistemicStatus;
 
@@ -149,6 +149,7 @@ fn build_rich() -> Ir {
             class: LossClass::Representation,
             what: "packfiles".to_string(),
             reason: "representation, not assertion".to_string(),
+            step: None,
         }],
     });
     b.add_flag(Flag {
@@ -876,6 +877,7 @@ fn drop_of(class: LossClass, what: &str) -> DropRecord {
         class,
         what: what.into(),
         reason: "r".into(),
+        step: None,
     }
 }
 
@@ -1203,6 +1205,7 @@ fn fixture_ir() -> Ir {
             class: LossClass::Other,
             what: "an example drop".into(),
             reason: "contract fixture".into(),
+            step: None,
         }],
     });
     b.add_flag(Flag {
@@ -1832,4 +1835,275 @@ fn parallel_blob_frame_compression_is_byte_identical_to_the_serial_writer() {
     // And, of course, still a valid, equal-IR artifact either way.
     let decoded = from_bytes(&parallel).unwrap();
     assert_eq!(decoded.ir, ir);
+}
+
+// ---- RFC 018 D-5: transform records (batch T) --------------------------------------------------
+
+/// A two-record transform chain exercising every shape §8's proof asks for in one fixture:
+/// `Transformed` atoms, ops and refs; a `Transformed` whose own `prior` is itself `Transformed`,
+/// nested over a `Derived` one; and `Transform`-class drops at both steps.
+fn transform_chain_ir() -> Ir {
+    let mut b = IrBuilder::new(provenance());
+    let blob = b.add_blob(b"hello world".to_vec()).unwrap();
+    let root = b
+        .add_atom(AtomDraft {
+            parents: vec![],
+            ops: vec![PathOp::Add {
+                path: "readme".into(),
+                blob,
+                mode: 0o100_644,
+                status: EpistemicStatus::Stated,
+            }],
+            copies: vec![],
+            metadata: MetadataClaims::default(),
+            source: SourceIdentity {
+                kind: SourceKind::Git,
+                repo_id: b"repo".to_vec(),
+                atom_id: b"c1".to_vec(),
+                signatures: Vec::new(),
+                extras: Vec::new(),
+            },
+            status: EpistemicStatus::Stated,
+        })
+        .unwrap();
+    let step0 = b.add_transform(TransformRecord {
+        name: "fix-mode".into(),
+        version: "1.0.0".into(),
+        params: BTreeMap::new(),
+        consumed: [0xaa; 32],
+    });
+    let step1 = b.add_transform(TransformRecord {
+        name: "renumber-author".into(),
+        version: "2.3.1".into(),
+        params: BTreeMap::from([("rule".to_string(), "mailmap".to_string())]),
+        consumed: [0xbb; 32],
+    });
+    assert_eq!((step0, step1), (0, 1));
+    let child_blob = b.add_blob(b"second revision".to_vec()).unwrap();
+    let child = b
+        .add_atom(AtomDraft {
+            parents: vec![root],
+            ops: vec![PathOp::Add {
+                path: "second".into(),
+                blob: child_blob,
+                mode: 0o100_755,
+                status: EpistemicStatus::Transformed {
+                    step: step0 as u64,
+                    changed: vec![ChangedPart::Mode],
+                    prior: Box::new(EpistemicStatus::Stated),
+                },
+            }],
+            copies: vec![],
+            metadata: MetadataClaims::default(),
+            source: SourceIdentity {
+                kind: SourceKind::Git,
+                repo_id: b"repo".to_vec(),
+                atom_id: b"c2".to_vec(),
+                signatures: Vec::new(),
+                extras: Vec::new(),
+            },
+            // A Transformed with a Transformed prior over a Derived one.
+            status: EpistemicStatus::Transformed {
+                step: step1 as u64,
+                changed: vec![ChangedPart::Ops],
+                prior: Box::new(EpistemicStatus::Transformed {
+                    step: step0 as u64,
+                    changed: vec![ChangedPart::Author],
+                    prior: Box::new(EpistemicStatus::Derived(crate::status::Derivation {
+                        kind: crate::status::DerivationKind::NormalizedMetadata,
+                        by: "brygge-decode-git".into(),
+                        decoder_version: "0.1.0".into(),
+                        params: BTreeMap::new(),
+                        confidence: None,
+                    })),
+                }),
+            },
+        })
+        .unwrap();
+    b.add_ref(RefRecord {
+        name: "refs/heads/main".into(),
+        kind: RefKind::Branch,
+        target: child,
+        status: EpistemicStatus::Transformed {
+            step: step1 as u64,
+            changed: vec![ChangedPart::Target],
+            prior: Box::new(EpistemicStatus::Stated),
+        },
+        source: None,
+        annotation: None,
+    })
+    .unwrap();
+    b.set_loss(LossBoundary {
+        dropped: vec![
+            DropRecord {
+                class: LossClass::Transform,
+                what: "a workflow-state file".into(),
+                reason: "step 0 dropped it".into(),
+                step: Some(step0 as u64),
+            },
+            DropRecord {
+                class: LossClass::Transform,
+                what: "an author alias".into(),
+                reason: "step 1 dropped it".into(),
+                step: Some(step1 as u64),
+            },
+        ],
+    });
+    b.finish().unwrap()
+}
+
+/// RFC 018 D-5, §8 item 1: a two-record chain — `Transformed` atoms, ops and refs; a `Transformed`
+/// nested over a `Transformed` nested over a `Derived`; `Transform` drops at both steps — round-trips
+/// through both readers, and `digest_of` agrees with what each one verified.
+#[test]
+fn transform_chain_round_trips_through_both_readers_and_digest_of_agrees() {
+    let ir = transform_chain_ir();
+    let bytes = to_bytes(&ir);
+
+    let via_from_bytes = from_bytes(&bytes).unwrap();
+    assert_eq!(via_from_bytes.ir, ir);
+
+    let via_read_from = read_from(std::io::Cursor::new(bytes)).unwrap();
+    assert_eq!(via_read_from.ir, ir);
+    assert_eq!(via_read_from.digest, via_from_bytes.digest);
+
+    assert_eq!(digest_of(&ir).unwrap(), via_from_bytes.digest);
+}
+
+/// RFC 018 D-3/D-5: `digest_of` agrees with the digest each reader itself verified, for every shape
+/// this module's own fixtures cover — not only the transform-chain one above.
+#[test]
+fn digest_of_agrees_with_decoded_digest_for_every_fixture() {
+    for ir in [
+        build(),
+        build_rich(),
+        fixture_ir(),
+        many_frame_ir(),
+        transform_chain_ir(),
+    ] {
+        let decoded = from_bytes(&to_bytes(&ir)).unwrap();
+        assert_eq!(digest_of(&ir).unwrap(), decoded.digest);
+    }
+}
+
+/// RFC 018 D-5 §2: at most 64 transform records — a 65th is refused, from both readers.
+#[test]
+fn more_than_64_transform_records_is_rejected() {
+    let ir = Ir {
+        atoms: vec![],
+        refs: vec![],
+        provenance: provenance(),
+        loss: LossBoundary::default(),
+        flags: vec![],
+        content: crate::content::ContentStore::new(),
+        transforms: (0..65u16)
+            .map(|i| TransformRecord {
+                name: "t".into(),
+                version: "1".into(),
+                params: BTreeMap::new(),
+                consumed: [i as u8; 32],
+            })
+            .collect(),
+    };
+    let bytes = to_bytes(&ir);
+    match from_bytes(&bytes) {
+        Err(Error::NonCanonical(m)) => assert!(m.contains("64"), "{m}"),
+        other => panic!("expected NonCanonical, got {other:?}"),
+    }
+    match read_from(std::io::Cursor::new(bytes)) {
+        Err(Error::NonCanonical(m)) => assert!(m.contains("64"), "{m}"),
+        other => panic!("expected NonCanonical, got {other:?}"),
+    }
+}
+
+/// RFC 018 D-5 §2: an op's `Transformed.changed` may only use the op vocabulary (`blob`/`mode`/
+/// `path`) — using an atom-only part (`author`) is refused.
+#[test]
+fn an_ops_changed_using_the_atom_vocabulary_is_rejected() {
+    let mut b = IrBuilder::new(provenance());
+    let blob = b.add_blob(b"x".to_vec()).unwrap();
+    let step = b.add_transform(TransformRecord {
+        name: "t".into(),
+        version: "1".into(),
+        params: BTreeMap::new(),
+        consumed: [0u8; 32],
+    });
+    b.add_atom(AtomDraft {
+        parents: vec![],
+        ops: vec![PathOp::Add {
+            path: "p".into(),
+            blob,
+            mode: 0o100_644,
+            status: EpistemicStatus::Transformed {
+                step: step as u64,
+                changed: vec![ChangedPart::Author], // valid on an atom, not on an op
+                prior: Box::new(EpistemicStatus::Stated),
+            },
+        }],
+        copies: vec![],
+        metadata: MetadataClaims::default(),
+        source: SourceIdentity {
+            kind: SourceKind::Git,
+            repo_id: b"repo".to_vec(),
+            atom_id: b"c1".to_vec(),
+            signatures: Vec::new(),
+            extras: Vec::new(),
+        },
+        status: EpistemicStatus::Stated,
+    })
+    .unwrap();
+    let ir = b.finish().unwrap();
+    let bytes = to_bytes(&ir);
+    match from_bytes(&bytes) {
+        Err(Error::Decode(m)) => assert!(m.contains("vocabulary"), "{m}"),
+        other => panic!("expected Decode, got {other:?}"),
+    }
+}
+
+/// RFC 018 D-5: a `DropRecord.step` is refused on any class but `Transform` (model.rs's own decode
+/// check) — a `Representation` drop with a `step` is never canonical.
+#[test]
+fn a_step_on_a_representation_drop_is_rejected() {
+    let ir = Ir {
+        atoms: vec![],
+        refs: vec![],
+        provenance: provenance(),
+        loss: LossBoundary {
+            dropped: vec![DropRecord {
+                class: LossClass::Representation,
+                what: "packfiles".into(),
+                reason: "representation, not assertion".into(),
+                step: Some(0),
+            }],
+        },
+        flags: vec![],
+        content: crate::content::ContentStore::new(),
+        transforms: vec![TransformRecord {
+            name: "t".into(),
+            version: "1".into(),
+            params: BTreeMap::new(),
+            consumed: [0u8; 32],
+        }],
+    };
+    let bytes = to_bytes(&ir);
+    match from_bytes(&bytes) {
+        Err(Error::NonCanonical(m)) => assert!(m.contains("step"), "{m}"),
+        other => panic!("expected NonCanonical, got {other:?}"),
+    }
+}
+
+/// RFC 018 D-5 §2: a 0.2.0 artifact holding `Ir` field 6 (`transforms`) is refused — field 6 does not
+/// exist in 0.2.0, and the shared metadata decoder must know the contract it reads.
+#[test]
+fn field_6_in_a_0_2_0_artifact_is_rejected() {
+    let ir = transform_chain_ir();
+    let bytes = write_0_2_0(&ir);
+    match from_bytes(&bytes) {
+        Err(Error::NonCanonical(m)) => assert!(m.contains("field 6"), "{m}"),
+        other => panic!("expected NonCanonical, got {other:?}"),
+    }
+    match read_from(std::io::Cursor::new(bytes)) {
+        Err(Error::NonCanonical(m)) => assert!(m.contains("field 6"), "{m}"),
+        other => panic!("expected NonCanonical, got {other:?}"),
+    }
 }
