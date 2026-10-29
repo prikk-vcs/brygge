@@ -2,7 +2,8 @@
 
 **Status.** **Accepted (2026-10-21)**; two stale lines corrected by the architect on 2026-10-29 (Part C is in
 0.7.0, per OQ-3; D-3's calling convention stated once) by the owner ("Accepted."). **Parts A and B implemented in
-0.6.0 (2026-10-29); Part C follows with the contract revision in 0.7.0.** No separate answers to OQ-1…OQ-4 were given, so they
+0.6.0 (2026-10-29); Part C follows with the contract revision in 0.7.0, designed by RFC 018 (accepted 2026-10-29), which refines
+D-4's `Transformed` derivation kind into a status that keeps the prior one.** No separate answers to OQ-1…OQ-4 were given, so they
 are recorded as the recommendations (as for RFCs 011 and 013), and the owner can object:
 - **OQ-1:** plugins are found on `PATH` only;
 - **OQ-2:** the reference encoder lives in this repository, `publish = false`, labelled unsupported, and tested;
