@@ -4,9 +4,9 @@
 //! input surface too — the same artifact bytes `brygge-ir`'s own mutation module already fuzzes against
 //! `from_bytes`, carried one step further into the checks the CLI actually runs on a decoded artifact.
 //!
-//! The resigned-mutation approach, as `brygge-ir`'s module uses: mutate only the body (everything after
-//! the digest), then recompute a digest that matches the mutated body, so the mutation reaches the
-//! checks below instead of being caught by the (already separately fuzzed) digest check first.
+//! Mutates the whole artifact (RFC 018 D-1: this crate has no access to `brygge-ir`'s crate-internal
+//! frame/digest machinery, so it can no longer resign a mutated body as a contract-0.2.0-era resigned
+//! mutation did — see [`check`]'s own doc).
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
 
@@ -20,8 +20,6 @@ use brygge_ir::model::{
 };
 use brygge_ir::status::EpistemicStatus;
 use brygge_mutate::harness::{self, Outcome, Seed};
-use brygge_mutate::ops::{Encoding, InterestingPosition};
-use sha2::{Digest, Sha256};
 
 use super::{
     check_derivations, check_loss_boundary, check_provenance, check_replay,
@@ -124,44 +122,6 @@ fn seed_ir() -> brygge_ir::Ir {
     b.finish().unwrap()
 }
 
-/// Minimal unsigned LEB128 skip: returns the position right after the varint starting at `pos`.
-fn skip_uvarint(data: &[u8], mut pos: usize) -> usize {
-    while data.get(pos).is_some_and(|b| b & 0x80 != 0) {
-        pos += 1;
-    }
-    pos + 1
-}
-
-/// Split `brygge_ir::to_bytes`'s output into `(prefix, body)` exactly as `from_bytes` reads it (RFC 011
-/// §2.3): `magic(8) · format(1) · version(uvarint × 3) · digest(32) · body`. `prefix` is
-/// `magic ++ format ++ version` (what the digest is computed over, together with `body`); `body` is
-/// everything after the digest.
-fn split_header(bytes: &[u8]) -> (Vec<u8>, Vec<u8>) {
-    let mut pos = 9; // magic(8) + format(1)
-    for _ in 0..3 {
-        pos = skip_uvarint(bytes, pos);
-    }
-    let prefix = bytes.get(..pos).expect("header present").to_vec();
-    let body = bytes.get(pos + 32..).expect("digest present").to_vec();
-    (prefix, body)
-}
-
-/// Reassemble `(prefix, mutated_body)` with a digest that matches `prefix[9..] ++ mutated_body` — a
-/// mutation that is wrong only in the body, correctly signed, exactly what the checks below exist to
-/// catch (the already-fuzzed digest check, in `brygge-ir`'s own module, would otherwise shadow them).
-fn resign(prefix: &[u8], body: &[u8]) -> Vec<u8> {
-    let version_bytes = prefix.get(9..).unwrap_or(&[]);
-    let mut hasher = Sha256::new();
-    hasher.update(version_bytes);
-    hasher.update(body);
-    let digest: [u8; 32] = hasher.finalize().into();
-    let mut out = Vec::with_capacity(prefix.len() + 32 + body.len());
-    out.extend_from_slice(prefix);
-    out.extend_from_slice(&digest);
-    out.extend_from_slice(body);
-    out
-}
-
 /// Every one of `verify`'s internal checks, run over `decoded.ir`. Each returns a `CheckOutcome`, a
 /// closed three-variant enum (`Pass`/`Fail`/`NotChecked`) — "a verdict that is one of the documented
 /// ones" is true by construction once this compiles; what a panic inside any of them would defeat is
@@ -176,34 +136,25 @@ fn run_internal_checks(ir: &brygge_ir::Ir) -> Outcome {
     Outcome::Ok
 }
 
-fn check(prefix: &[u8], mutated_body: &[u8]) -> Outcome {
-    let full = resign(prefix, mutated_body);
-    match brygge_ir::from_bytes(&full) {
+/// RFC 018 D-1 note: contract 0.3.0's digest covers the artifact's *logical* (decompressed) stream, a
+/// fact only `brygge-ir`'s own, crate-internal reader/writer machinery can recompute — this crate sees
+/// only its public `to_bytes`/`from_bytes`, so the resigned-body trick the RFC 014 D-1 handoff describes
+/// (mutate the body, recompute a matching digest, reach the checks below without the digest check
+/// shadowing them) is no longer available here. Mutating the *whole* artifact directly reaches these
+/// checks less often (most mutations are now caught earlier, inside a frame), but it is correct and
+/// uses only brygge-ir's public surface; `from_bytes`'s own crate-internal mutation tests (RFC 018
+/// §6.6) cover the frame/digest layer this one no longer reaches directly.
+fn check(mutated_bytes: &[u8]) -> Outcome {
+    match brygge_ir::from_bytes(mutated_bytes) {
         Ok(decoded) => run_internal_checks(&decoded.ir),
         Err(_) => Outcome::Ok,
-    }
-}
-
-fn meta_len_position(body: &[u8]) -> InterestingPosition {
-    let len = skip_uvarint(body, 0);
-    InterestingPosition {
-        offset: 0,
-        encoding: Encoding::Uvarint { len },
-        ceiling: Some((body.len() - len) as u64),
     }
 }
 
 #[test]
 fn verifys_internal_checks_never_panic_on_a_mutated_but_correctly_signed_artifact() {
     let full = brygge_ir::to_bytes(&seed_ir());
-    let (prefix, body) = split_header(&full);
-    // Sanity: the unmutated, resigned body decodes and every check at least runs (does not panic) —
-    // confirms the split/resign machinery is correct before fuzzing it.
-    assert!(brygge_ir::from_bytes(&resign(&prefix, &body)).is_ok());
-
-    let position = meta_len_position(&body);
-    let positions = [position];
-    let seeds = [Seed::new(&body, &positions)];
+    let seeds = [Seed::generic(&full)];
     harness::run(
         env!("CARGO_MANIFEST_DIR"),
         "verifys_internal_checks_never_panic_on_a_mutated_but_correctly_signed_artifact",
@@ -211,6 +162,6 @@ fn verifys_internal_checks_never_panic_on_a_mutated_but_correctly_signed_artifac
         QUICK_ITERATIONS,
         DEEP_FACTOR,
         TIME_BUDGET,
-        |_seed_index, mutated_body| check(&prefix, mutated_body),
+        |_seed_index, mutated_bytes| check(mutated_bytes),
     );
 }

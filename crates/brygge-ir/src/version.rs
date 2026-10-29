@@ -33,13 +33,13 @@ impl ContractVersion {
         }
     }
 
-    /// True when a build supporting [`CURRENT`] may read an artifact declaring `self` (RFC 011 D-3):
-    /// while major `0`, only this build's exact `0.y` is accepted; from major `1`, any minor within
-    /// this build's major is accepted (additive-only forward compatibility).
+    /// True when a build supporting [`CURRENT`] may read an artifact declaring `self` (RFC 011 D-3,
+    /// RFC 018 D-7): while major `0`, only a `0.y` listed in [`READABLE`] is accepted (any patch); from
+    /// major `1`, any minor within this build's major is accepted (additive-only forward compatibility).
     #[must_use]
-    pub const fn accepts(self) -> bool {
+    pub fn accepts(self) -> bool {
         if CURRENT.major == 0 {
-            self.major == 0 && self.minor == CURRENT.minor
+            self.major == 0 && READABLE.iter().any(|r| r.minor == self.minor)
         } else {
             self.major == CURRENT.major
         }
@@ -52,9 +52,14 @@ impl std::fmt::Display for ContractVersion {
     }
 }
 
-/// The IR contract version this build writes and reads (RFC 011, accepted 2026-09-23; re-cuts the prior
-/// 1.0.0 freeze).
-pub const CURRENT: ContractVersion = ContractVersion::new(0, 2, 0);
+/// The IR contract version this build **writes** (RFC 018 D-1, compact artifacts; re-cuts RFC 011's
+/// 0.2.0). [`READABLE`] is what it **reads** — a strict superset while this build also keeps reading the
+/// prior minor (RFC 018 D-7, OQ-2).
+pub const CURRENT: ContractVersion = ContractVersion::new(0, 3, 0);
+
+/// Every contract minor this build reads (any patch), oldest first. [`write_to`](crate::artifact::write_to)
+/// only ever writes [`CURRENT`] — this list is the read gate's alone.
+pub const READABLE: &[ContractVersion] = &[ContractVersion::new(0, 2, 0), CURRENT];
 
 /// Check that an artifact's declared contract version is readable, else [`Error::UnsupportedContract`].
 ///
@@ -70,6 +75,15 @@ pub fn ensure_readable(found: ContractVersion) -> Result<(), Error> {
             supported: CURRENT,
         })
     }
+}
+
+/// A one-line rendering of [`READABLE`] for an error message ("reads 0.2, 0.3").
+pub(crate) fn readable_summary() -> String {
+    READABLE
+        .iter()
+        .map(|v| format!("{}.{}", v.major, v.minor))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 #[cfg(test)]

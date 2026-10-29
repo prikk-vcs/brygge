@@ -63,8 +63,9 @@ brygge release and of the IR contract**.
 - **A consumer checks the version key first,** and treats an unknown version as unknown output rather than
   guessing.
 
-`contract_version` (in the atom listing) is the IR contract version of the artifact format this build
-reads and writes. It is not an output version.
+`contract_version` (in the atom listing) is the artifact's **own** IR contract version (RFC 018: this
+build writes `0.3.0` but still reads `0.2.0`, so an older artifact's `inspect` reports `0.2.0`, not this
+build's own `0.3.0`). It is not an output version.
 
 ## 3. Keys
 
@@ -92,7 +93,7 @@ The listing is appended after §3.1's lines. It does not repeat `atoms`: every k
 | Key | Value | Enc. |
 |---|---|---|
 | `inspect_version` | `4` | |
-| `contract_version` | the IR contract version, `major.minor.patch` (currently `0.2.0`) | |
+| `contract_version` | the artifact's own IR contract version, `major.minor.patch` (this build writes `0.3.0`; an older artifact may report `0.2.0`) | |
 | `atom.N.id` | the atom's IR id (hex) | |
 | `atom.N.status` | `stated`, or `derived:<kind>` with `<kind>` a label (`inferred-rename`, `reconstructed-changeset`, `reconstructed-branch`, `inferred-merge`, `normalized-metadata`, `other`) | |
 | `atom.N.status_other` | present only when the status is `derived:other`: the kind's own name | ● |
@@ -228,7 +229,7 @@ dropped.representation=3
 
 ```text
 inspect_version=4
-contract_version=0.2.0
+contract_version=0.3.0
 atom.0.id=40c88458f2adab841b4353ad79f99c845609fdc74b5e4d5a3910406f5947175d
 atom.0.status=stated
 atom.0.source_id=9dcbe4988473481fe5490b12403c1603b1a814c1

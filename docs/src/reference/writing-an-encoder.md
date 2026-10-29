@@ -22,11 +22,16 @@ the [IR artifact format](ir-artifact-format.md)):
 
 1. the container's magic and format byte;
 2. the contract **version** — an unknown contract is refused (`Error::UnsupportedContract`), before
-   anything else is even attempted;
-3. the integrity **digest** over the whole stored body — nothing below is accepted before it matches
-   (`Error::DigestMismatch`);
-4. the metadata's and blob store's **canonical form** — strictly ascending blob ids, no orphan or
-   missing blob, every atom id unique, every parent/ref target known;
+   anything else is even attempted; this build writes contract `0.3.0` and still reads `0.2.0`
+   (RFC 018 D-7);
+3. the integrity **digest** — nothing below is accepted before it matches (`Error::DigestMismatch`).
+   For a `0.3.0` artifact (compact artifacts, RFC 018 D-1) this is the SHA-256 of the **logical**
+   (decompressed) content, never of the on-disk, possibly-DEFLATE-compressed bytes; a `0.2.0` artifact's
+   digest is the prior definition, over the stored bytes directly. `Decoded::digest` is always the one
+   the reader actually checked, whichever contract it is;
+4. the metadata's and blob store's **canonical form** — every atom id unique, every parent/ref target
+   known, no orphan or missing blob, and (for a `0.3.0` artifact) the blob table in **store order** —
+   see §2 — rather than ascending by id;
 5. each blob's own **content address** — a blob's bytes are hashed and checked against its claimed id as
    they stream past.
 
@@ -45,6 +50,12 @@ topologically walk it yourself — one pass, in the given order, is enough to kn
 parents have already been seen. Process `ir.refs` after every atom (every ref's target atom is already
 behind you), then surface the loss boundary (`ir.loss`) and flags (`ir.flags`) to whoever is watching —
 see §3.
+
+If your encoder reads every blob in bulk rather than lazily per op (an encoder for a target with its own
+content store, for instance), use `brygge_ir::artifact::store_order(ir)` for the order to read them in:
+it is the same order a `0.3.0` artifact's blob frames are packed in, so reading in that order touches
+each compressed frame exactly once, instead of re-inflating one repeatedly out of order.
+`examples/encode-git` reads every blob this way, before writing any commit.
 
 ## 3. The honesty obligations of an encoder
 
@@ -104,7 +115,7 @@ it. An encoder's job is to carry that distinction into the target, not to flatte
 Pin the **IR contract version** your encoder supports (`brygge_ir::version::CURRENT` is the one the
 `brygge-ir` you built against produces) — never the brygge tool's own release version. The two move on
 different schedules (`IX-07`): a contract version changes only when the wire format itself does: a
-3-release-old `brygge` binary and today's can both write contract `0.2.0` artifacts. `brygge-ir`'s own
+3-release-old `brygge` binary and today's can both write contract `0.3.0` artifacts. `brygge-ir`'s own
 reader already refuses an artifact whose contract it does not know
 ([`Error::UnsupportedContract`][contract]) before parsing a byte of its metadata — you inherit that
 refusal for free by reading through `from_bytes`/`read_from`/`from_file` rather than parsing the

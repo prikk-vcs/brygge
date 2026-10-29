@@ -8,6 +8,18 @@ Every handoff adds its own entry in its own commit.
 
 ## [Unreleased]
 
+**Breaking:** Artifacts are IR contract 0.3.0: compressed, with blobs grouped by path (about 7× smaller on
+a measured repository). brygge 0.6.0 and earlier cannot read them. The artifact digest is now taken over
+the uncompressed content, so it does not depend on how the artifact was compressed (RFC 018).
+
+**Breaking:** `brygge-ir`: `version::CURRENT` is 0.3.0; `artifact::Decoded` gains `contract`; `brygge-ir`
+depends on `miniz_oxide`.
+
+**Added:** `brygge_ir::artifact::store_order`: the blob order that reads each compressed frame once.
+
+**Changed:** brygge still reads contract 0.2.0 artifacts (`inspect`, `verify`, `encode`), and writes only
+0.3.0. `inspect` shows the artifact's own contract version.
+
 ## [0.6.0] — 2026-10-29
 
 **Extensibility: build your own encoder on brygge's IR, and run it as `brygge encode <target>`.** A new guide

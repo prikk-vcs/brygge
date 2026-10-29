@@ -574,8 +574,8 @@ pub fn run_inspect(artifact: &Path, atoms: bool, format: Format) -> i32 {
     };
     if atoms {
         rendered.push_str(&match format {
-            Format::Human => render_atoms_human(ir),
-            Format::Machine => render_atoms_machine(ir),
+            Format::Human => render_atoms_human(ir, decoded.contract),
+            Format::Machine => render_atoms_machine(ir, decoded.contract),
         });
     }
     if let Some(code) = output::stdout(&rendered) {
@@ -584,16 +584,23 @@ pub fn run_inspect(artifact: &Path, atoms: bool, format: Format) -> i32 {
     exit::CLEAN
 }
 
-fn render_atoms_human(ir: &Ir) -> String {
+fn render_atoms_human(ir: &Ir, contract: brygge_ir::ContractVersion) -> String {
     let mut s = String::new();
     let _ = writeln!(
         s,
         "IR (contract {}): {} atom(s), {} ref(s), {} blob(s)",
-        brygge_ir::version::CURRENT,
+        contract,
         ir.atoms.len(),
         ir.refs.len(),
         ir.content.len()
     );
+    if contract.minor == 2 {
+        let _ = writeln!(
+            s,
+            "note: contract 0.2.0: an older contract; this build reads it, and writes {}",
+            brygge_ir::version::CURRENT
+        );
+    }
     let _ = writeln!(s, "atoms (topological order):");
     for atom in &ir.atoms {
         let subject = message_subject(atom.metadata.message.as_ref());
@@ -681,11 +688,13 @@ fn render_atoms_human(ir: &Ir) -> String {
     s
 }
 
-fn render_atoms_machine(ir: &Ir) -> String {
+fn render_atoms_machine(ir: &Ir, contract: brygge_ir::ContractVersion) -> String {
     // `atoms=` is the fidelity report's line; this listing does not repeat it (one key, one line).
+    // `contract_version` keeps its name from before RFC 018; its meaning is now the artifact's own
+    // contract, not always this build's `CURRENT` (`docs/src/reference/machine-output.md`).
     let mut s = String::new();
     let _ = writeln!(s, "inspect_version={INSPECT_VERSION}");
-    let _ = writeln!(s, "contract_version={}", brygge_ir::version::CURRENT);
+    let _ = writeln!(s, "contract_version={contract}");
     for (i, atom) in ir.atoms.iter().enumerate() {
         let _ = writeln!(s, "atom.{i}.id={}", hex(&atom.id.0));
         let _ = writeln!(s, "atom.{i}.status={}", status_label_machine(&atom.status));

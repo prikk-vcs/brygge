@@ -9,9 +9,25 @@ fn current_is_readable() {
 }
 
 #[test]
-fn the_contract_is_recut_to_0_2_0() {
-    // RFC 011 D-1(a)/D-3: the contract is re-cut off the 1.0.0 freeze while still major 0.
-    assert_eq!(CURRENT, ContractVersion::new(0, 2, 0));
+fn the_contract_is_0_3_0() {
+    // RFC 018 D-1: compact artifacts re-cut the contract to 0.3.0.
+    assert_eq!(CURRENT, ContractVersion::new(0, 3, 0));
+}
+
+#[test]
+fn the_prior_minor_is_still_readable() {
+    // RFC 018 D-7, OQ-2: this build reads 0.2.0 artifacts (the unchanged 0.6.0 layout) as well as 0.3.0.
+    let prior = ContractVersion::new(0, 2, 0);
+    assert!(READABLE.contains(&prior));
+    assert!(prior.accepts());
+    assert!(ensure_readable(prior).is_ok());
+}
+
+#[test]
+fn a_minor_two_behind_is_refused() {
+    let too_old = ContractVersion::new(0, CURRENT.minor - 2, 0);
+    assert!(!too_old.accepts());
+    assert!(ensure_readable(too_old).is_err());
 }
 
 #[test]
@@ -23,10 +39,8 @@ fn a_non_critical_only_patch_bump_is_still_accepted() {
 }
 
 #[test]
-fn a_different_minor_under_major_zero_is_refused() {
-    // RFC 011 D-3: while major 0, a reader accepts only its own exact 0.y — not an older or newer y.
-    let older_minor = ContractVersion::new(0, CURRENT.minor - 1, 0);
-    assert!(!older_minor.accepts());
+fn an_unlisted_minor_under_major_zero_is_refused() {
+    // RFC 011 D-3, widened by RFC 018 D-7: while major 0, a reader accepts only a 0.y in READABLE.
     let newer_minor = ContractVersion::new(0, CURRENT.minor + 1, 0);
     assert!(!newer_minor.accepts());
     match ensure_readable(newer_minor) {

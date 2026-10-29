@@ -129,6 +129,46 @@ impl<R: Read> SeqReader<R> {
         Ok(result)
     }
 
+    /// As [`Self::uvarint_hashed`], but outside the hashed region (RFC 018: a contract-0.3.0 artifact's
+    /// frame headers — `codec`/`raw_len`/`stored_len`/`nframes` — are structural, never hashed directly;
+    /// the digest covers the *decompressed* content a caller hashes itself, once per frame, as
+    /// [`super::read_from_v3`] does).
+    pub(super) fn uvarint_raw(&mut self) -> Result<u64> {
+        let mut result: u64 = 0;
+        let mut shift: u32 = 0;
+        let mut nbytes: u32 = 0;
+        let last_byte;
+        loop {
+            let byte = self.raw_u8("varint")?;
+            nbytes += 1;
+            if shift >= 64 {
+                return Err(Error::Decode("varint too long".to_string()));
+            }
+            result |= u64::from(byte & 0x7f)
+                .checked_shl(shift)
+                .ok_or_else(|| Error::Decode("varint overflow".to_string()))?;
+            if byte & 0x80 == 0 {
+                last_byte = byte;
+                break;
+            }
+            shift += 7;
+        }
+        if last_byte == 0 && nbytes > 1 {
+            return Err(Error::NonCanonical("overlong varint".to_string()));
+        }
+        Ok(result)
+    }
+
+    /// As [`Self::uvarint_raw`], checked against what actually remains (RFC 018: a frame's declared
+    /// `stored_len`).
+    pub(super) fn uvarint_len_raw(&mut self) -> Result<u64> {
+        let len = self.uvarint_raw()?;
+        if len > self.remaining() {
+            return Err(Error::Decode("declared length exceeds input".to_string()));
+        }
+        Ok(len)
+    }
+
     /// Read a `uvarint` length, hashed, and check it against what is actually left — the streaming
     /// equivalent of [`crate::canon::CanonReader::uvarint_len`].
     pub(super) fn uvarint_len_hashed(&mut self) -> Result<u64> {
@@ -185,5 +225,18 @@ impl<R: Read> SeqReader<R> {
     /// The running digest over every hashed byte read so far.
     pub(super) fn digest(&self) -> [u8; 32] {
         self.hasher.clone().finalize().into()
+    }
+
+    /// Feed `bytes` to the running digest without reading them from `r` (RFC 018: the version bytes,
+    /// already read raw and reconstructed canonically by [`super::read_from`] before either contract's
+    /// own reader runs).
+    pub(super) fn hash_raw(&mut self, bytes: &[u8]) {
+        self.hasher.update(bytes);
+    }
+
+    /// Consume `self` and return the underlying reader, once the pass has succeeded — the content
+    /// store's own backing from here on (RFC 015 D-4, RFC 018 D-4).
+    pub(super) fn into_reader(self) -> R {
+        self.r
     }
 }

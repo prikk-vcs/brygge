@@ -3,6 +3,8 @@
 # is the light core a target links, and its dependency surface is the thing this file makes a tested
 # property instead of an asserted one (CR-12.1). Generated with `tools/check-ir-isolation.sh` and kept in
 # sync by CI.
+# adler2: miniz_oxide's own checksum dependency (RFC 018 D-1).
+adler2
 block-buffer
 brygge-ir
 cfg-if
@@ -13,5 +15,7 @@ generic-array
 # libc: cpufeatures -> libc, on non-x86/x86_64 targets only (e.g. aarch64). Present in the closure under
 # `--target all`, which this file's generator now checks (review 092).
 libc
+# miniz_oxide: compact artifacts' DEFLATE codec (RFC 018 D-1/D-4).
+miniz_oxide
 sha2
 typenum

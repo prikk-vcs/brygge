@@ -21,10 +21,15 @@ brygge-decode-git = { version = "0.6.0", path = "crates/brygge-decode-git" }
 brygge-decode-hg = { version = "0.6.0", path = "crates/brygge-decode-hg" }
 brygge-decode-svn = { version = "0.6.0", path = "crates/brygge-decode-svn" }
 brygge-decode-cvs = { version = "0.6.0", path = "crates/brygge-decode-cvs" }
-# The only third-party dependency of the light core (RFC 003 D-3): SHA-256, matching prikk's audited
-# `sha2` usage. brygge-ir links no serialization crate (the codec is hand-rolled) and no decoder library
-# (RFC 009 D-1 — those are isolated in future brygge-decode-* crates).
+# The light core's two third-party dependencies (RFC 003 D-3, RFC 018 D-1): SHA-256, matching prikk's
+# audited `sha2` usage, and DEFLATE framing. brygge-ir links no serialization crate (the codec is
+# hand-rolled) and no decoder library (RFC 009 D-1 — those are isolated in future brygge-decode-*
+# crates).
 sha2 = "0.10"
+# Compact artifacts' frame compression (RFC 018 D-1), the light core's second dependency. Not pinned
+# with `=` (RFC 018 D-3); RFC 018 D-4, approved by the owner on 2026-10-29 under RFC 009 D-6: pure Rust,
+# `forbid(unsafe_code)`, already in the lock file through `flate2`'s `rust_backend` feature.
+miniz_oxide = { version = "0.9", default-features = false, features = ["with-alloc"] }
 # The Git decoder's heavy dependency (RFC 004 D-1, owner-approved 2026-09-04 under RFC 009 D-6). Pure
 # Rust, MIT/Apache, MSRV 1.85 (no bump to the core). gix's **default features carry no network
 # transport** — the `*-network-client` / `*-http-transport-*` features are opt-in and left off — so

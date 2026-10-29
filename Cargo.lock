@@ -141,6 +141,7 @@ name = "brygge-ir"
 version = "0.6.0"
 dependencies = [
  "brygge-mutate",
+ "miniz_oxide",
  "sha2",
 ]
 

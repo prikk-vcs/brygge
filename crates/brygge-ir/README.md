@@ -6,9 +6,10 @@ encoded *from*.
 
 `brygge-ir` is the **light core**: it holds the IR model, its canonical **content-addressed, versioned,
 integrity-digested** artifact, and the honesty machinery (the derived-vs-stated marking, the loss
-boundary, and the recoverable fidelity report). It links **no source-decoder dependency** (only
-`sha2`), so a target can check a brygge import on its own surface — the concrete meaning of "brygge
-carries the dependency weight, the target does not".
+boundary, and the recoverable fidelity report). It links **no source-decoder dependency** (only `sha2`
+and `miniz_oxide`, the compact artifact's DEFLATE codec — RFC 018 D-1), so a target can check a brygge
+import on its own surface — the concrete meaning of "brygge carries the dependency weight, the target
+does not".
 
 Two ideas it enforces at the type level:
 

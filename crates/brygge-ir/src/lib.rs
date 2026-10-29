@@ -59,12 +59,12 @@ pub enum Error {
     /// too much to read safely. Re-decode the source.
     PreReleaseArtifact,
     /// The artifact declares an IR-contract version this build does not read (RFC 011 D-3's "0.y"
-    /// rule): while major 0, a reader accepts only its own exact `0.y`; from major 1, it accepts its
-    /// own major with any minor.
+    /// rule, widened by RFC 018 D-7's [`version::READABLE`]): while major 0, a reader accepts only the
+    /// minors it lists (any patch); from major 1, it accepts its own major with any minor.
     UnsupportedContract {
         /// The contract version found in the artifact.
         found: version::ContractVersion,
-        /// The contract version this build supports.
+        /// The contract version this build writes.
         supported: version::ContractVersion,
     },
     /// A record carried a field with an unrecognized id and its critical bit set (RFC 011 §2.2 rule
@@ -121,9 +121,10 @@ impl std::fmt::Display for Error {
                 "this artifact predates brygge-ir contract 0.2.0 (a pre-release format); re-decode the \
                  source"
             ),
-            Self::UnsupportedContract { found, supported } => write!(
+            Self::UnsupportedContract { found, .. } => write!(
                 f,
-                "artifact contract {found} is not supported by this build ({supported})"
+                "artifact contract {found} is not supported by this build (reads {})",
+                version::readable_summary()
             ),
             Self::UnknownCriticalField { record, tag } => write!(
                 f,

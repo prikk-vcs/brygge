@@ -162,23 +162,34 @@ fn simple_ir() -> Ir {
 }
 
 /// A decoded artifact must never claim more total blob content, atoms, refs, drops or flags than the
-/// bytes it was decoded from could physically have held — the one module-specific "ceiling" this format
-/// has, everything else being bounded by the reader's own length checks (`CanonReader::raw`/`list`,
-/// checked against `remaining()` before any allocation).
+/// bytes it was decoded from could physically have produced — this format's one module-specific
+/// "ceiling", everything else being bounded by the reader's own length checks (`CanonReader::raw`/
+/// `list`, checked against `remaining()` before any allocation).
+///
+/// **Redefined for contract 0.3.0** (RFC 018 §6.6): a frame's declared `raw_len` may legitimately exceed
+/// the artifact's own byte size — that is what compression is for — so "never overclaims" is no longer
+/// "never more than `input_len`". It is instead the bound [`frame::inflate_exact`] itself already
+/// enforces per frame, before any allocation: `raw_len ≤ 1032 × stored_len + 64`. Summed over every
+/// frame, `stored_len`'s total can be at most `input_len` and there can be at most `input_len` frames
+/// (each needs at least one header byte), so `1096 × input_len` (`1032 + 64`) is a sound, if generous,
+/// ceiling on *any* content a correctly-bounds-checked read of this artifact could produce — content or
+/// record counts included, since the metadata is framed exactly the same way.
 fn check(input_len: usize, decoded: &super::Decoded) -> Outcome {
-    let total_blob_bytes = usize::try_from(decoded.ir.content.total_bytes()).unwrap_or(usize::MAX);
-    if total_blob_bytes > input_len {
+    let ceiling = 1096u64.saturating_mul(input_len as u64);
+    let total_blob_bytes = decoded.ir.content.total_bytes();
+    if total_blob_bytes > ceiling {
         return Outcome::Violation(format!(
-            "decoded {total_blob_bytes} bytes of blob content from a {input_len}-byte artifact"
+            "decoded {total_blob_bytes} bytes of blob content from a {input_len}-byte artifact \
+             (ceiling {ceiling})"
         ));
     }
-    let record_count = decoded.ir.atoms.len()
+    let record_count = (decoded.ir.atoms.len()
         + decoded.ir.refs.len()
         + decoded.ir.loss.dropped.len()
-        + decoded.ir.flags.len();
-    if record_count > input_len {
+        + decoded.ir.flags.len()) as u64;
+    if record_count > ceiling {
         return Outcome::Violation(format!(
-            "decoded {record_count} records from a {input_len}-byte artifact"
+            "decoded {record_count} records from a {input_len}-byte artifact (ceiling {ceiling})"
         ));
     }
     Outcome::Ok
@@ -335,5 +346,184 @@ fn from_bytes_on_a_correctly_resigned_mutated_body_never_panics_and_never_overcl
                 .expect("the harness never passes an out-of-range seed index");
             check_resigned(prefix, mutated_body)
         },
+    );
+}
+
+// ---- RFC 018 §6.6: two more strategies, now that a frame sits between the bytes and the digest ------
+
+/// A seed IR with one large, highly repetitive blob, so `write_to` is certain to choose
+/// `Codec::Deflate` for its own frame (`frame::compress_frame` only does when that is strictly
+/// smaller) — the "frames" strategy below needs a real DEFLATE frame to mutate.
+fn deflate_ir() -> Ir {
+    let mut b = IrBuilder::new(provenance());
+    let blob = b
+        .add_blob(b"the quick brown fox jumps over the lazy dog, ".repeat(400))
+        .unwrap();
+    b.add_atom(AtomDraft {
+        parents: vec![],
+        ops: vec![PathOp::Add {
+            path: "big".into(),
+            blob,
+            mode: 0o100_644,
+            status: EpistemicStatus::Stated,
+        }],
+        copies: vec![],
+        metadata: MetadataClaims::default(),
+        source: SourceIdentity {
+            kind: SourceKind::Git,
+            repo_id: b"repo".to_vec(),
+            atom_id: b"c0".to_vec(),
+            signatures: Vec::new(),
+            extras: Vec::new(),
+        },
+        status: EpistemicStatus::Stated,
+    })
+    .unwrap();
+    b.finish().unwrap()
+}
+
+/// "resigned, on the logical stream" (RFC 018 §6.6): mutate only the metadata's own decompressed bytes
+/// — the blob table and blob frames are copied **verbatim** from the real artifact, byte for byte — then
+/// re-frame the mutated metadata as a fresh, `Codec::Stored` section (so the mutated bytes reach
+/// `Ir::decode_metadata` unchanged by any codec) and recompute the digest over the new logical stream.
+/// Reaches the canonical-form checks directly, the same target the 0.2.0-era "resigned" strategy had,
+/// now with the frame codec never standing in the way.
+fn resign_v3_metadata_only(full: &[u8], mutated_meta_bytes: &[u8]) -> Vec<u8> {
+    let (prefix, rest) = split_header(full);
+    let version_bytes = prefix.get(9..).unwrap_or(&[]).to_vec();
+    let mut r = crate::canon::CanonReader::new(&rest);
+
+    // Skip past the original metadata frames (their bytes are being replaced), to reach the verbatim
+    // table + blob-frame tail.
+    let nframes_meta = r.uvarint().unwrap();
+    for _ in 0..nframes_meta {
+        let codec = crate::artifact::frame::Codec::from_u64(r.uvarint().unwrap()).unwrap();
+        let _raw_len = r.uvarint().unwrap();
+        let stored_len = r.uvarint_len().unwrap();
+        let _ = codec;
+        r.raw(stored_len).unwrap();
+    }
+    let tail_start = rest.len() - r.remaining();
+    let tail = rest.get(tail_start..).unwrap().to_vec();
+
+    // The tail's own hash contribution (table + blob content) is exactly its on-disk bytes for the
+    // table part, and the inflated content for the blob-frame part — recomputed the same way
+    // `from_bytes_v3` does, reusing its own frame reader so the two can never diverge.
+    let mut tr = crate::canon::CanonReader::new(&tail);
+    let nblobs = tr.uvarint().unwrap();
+    let table_start = tail.len() - tr.remaining();
+    let mut lens = Vec::with_capacity(nblobs as usize);
+    for _ in 0..nblobs {
+        tr.raw32().unwrap();
+        lens.push(tr.uvarint().unwrap());
+    }
+    let table_end = tail.len() - tr.remaining();
+    let table_bytes = tail.get(table_start..table_end).unwrap();
+
+    let nframes_blob = tr.uvarint().unwrap();
+    let mut blob_bytes = Vec::new();
+    for _ in 0..nframes_blob {
+        let codec = crate::artifact::frame::Codec::from_u64(tr.uvarint().unwrap()).unwrap();
+        let raw_len = tr.uvarint().unwrap();
+        let stored_len = tr.uvarint_len().unwrap();
+        let stored = tr.raw(stored_len).unwrap();
+        blob_bytes.extend_from_slice(
+            &crate::artifact::frame::inflate_exact(codec, stored, raw_len).unwrap(),
+        );
+    }
+
+    let mut hasher = Sha256::new();
+    hasher.update(&version_bytes);
+    hasher.update(crate::canon::uvarint_value(mutated_meta_bytes.len() as u64));
+    hasher.update(mutated_meta_bytes);
+    hasher.update(crate::canon::uvarint_value(nblobs));
+    hasher.update(table_bytes);
+    hasher.update(&blob_bytes);
+    let digest: [u8; 32] = hasher.finalize().into();
+
+    let mut out = prefix.get(..9).unwrap().to_vec();
+    out.extend_from_slice(&version_bytes);
+    out.extend_from_slice(&digest);
+    let meta_len = mutated_meta_bytes.len() as u64;
+    let chunk_lens = crate::artifact::frame::fixed_chunk_lens(meta_len);
+    out.extend_from_slice(&crate::canon::uvarint_value(chunk_lens.len() as u64));
+    let mut offset = 0usize;
+    for len in chunk_lens {
+        let len = len as usize;
+        let chunk = mutated_meta_bytes.get(offset..offset + len).unwrap();
+        out.extend_from_slice(&crate::canon::uvarint_value(0)); // codec: stored
+        out.extend_from_slice(&crate::canon::uvarint_value(len as u64));
+        out.extend_from_slice(&crate::canon::uvarint_value(len as u64));
+        out.extend_from_slice(chunk);
+        offset += len;
+    }
+    out.extend_from_slice(&tail[table_start..]);
+    out
+}
+
+/// The metadata bytes alone, extracted from a real artifact's own frames (so the seed the harness
+/// mutates is exactly what `Ir::decode_metadata` will see).
+fn extract_meta_bytes(full: &[u8]) -> Vec<u8> {
+    let (_, rest) = split_header(full);
+    let mut r = crate::canon::CanonReader::new(&rest);
+    let nframes = r.uvarint().unwrap();
+    let mut out = Vec::new();
+    for _ in 0..nframes {
+        let codec = crate::artifact::frame::Codec::from_u64(r.uvarint().unwrap()).unwrap();
+        let raw_len = r.uvarint().unwrap();
+        let stored_len = r.uvarint_len().unwrap();
+        let stored = r.raw(stored_len).unwrap();
+        out.extend_from_slice(
+            &crate::artifact::frame::inflate_exact(codec, stored, raw_len).unwrap(),
+        );
+    }
+    out
+}
+
+#[test]
+fn from_bytes_on_a_resigned_mutated_logical_metadata_never_panics_and_never_overclaims() {
+    let full_a = to_bytes(&richer_ir());
+    let full_b = to_bytes(&simple_ir());
+    let meta_a = extract_meta_bytes(&full_a);
+    let meta_b = extract_meta_bytes(&full_b);
+    let specs = [Seed::generic(&meta_a), Seed::generic(&meta_b)];
+    let fulls = [full_a, full_b];
+    harness::run(
+        env!("CARGO_MANIFEST_DIR"),
+        "from_bytes_on_a_resigned_mutated_logical_metadata_never_panics_and_never_overclaims",
+        &specs,
+        QUICK_ITERATIONS,
+        DEEP_FACTOR,
+        TIME_BUDGET,
+        |seed_index, mutated_meta| {
+            let full = fulls
+                .get(seed_index)
+                .expect("the harness never passes an out-of-range seed index");
+            let resigned = resign_v3_metadata_only(full, mutated_meta);
+            match check_equivalent(&resigned) {
+                Ok(decoded) => check(resigned.len(), &decoded),
+                Err(outcome) => outcome,
+            }
+        },
+    );
+}
+
+/// "frames" (RFC 018 §6.6): a seed with a real `Codec::Deflate` blob frame, mutated generically across
+/// its *whole* bytes with no re-signing — most mutations land in that frame's stored bytes (by far the
+/// largest span in a small artifact) and so exercise the inflater's own bounds (an invalid DEFLATE
+/// stream, an output that would over/under-run `raw_len`), on top of the version/magic/digest coverage
+/// `from_bytes_on_mutated_raw_bytes_never_panics_and_never_overclaims` already gives every artifact.
+#[test]
+fn from_bytes_on_a_mutated_deflate_frame_never_panics_and_never_overclaims() {
+    let seed = to_bytes(&deflate_ir());
+    let specs = [Seed::generic(&seed)];
+    harness::run(
+        env!("CARGO_MANIFEST_DIR"),
+        "from_bytes_on_a_mutated_deflate_frame_never_panics_and_never_overclaims",
+        &specs,
+        QUICK_ITERATIONS,
+        DEEP_FACTOR,
+        TIME_BUDGET,
+        |_seed_index, bytes| check_raw(bytes),
     );
 }

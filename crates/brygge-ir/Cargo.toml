@@ -13,6 +13,7 @@ homepage.workspace     = true
 
 [dependencies]
 sha2 = { workspace = true }
+miniz_oxide = { workspace = true }
 
 [dev-dependencies]
 # Path-only, test-only (RFC 014 D-1): dropped by `cargo publish`, so brygge-ir's published dependency

@@ -92,14 +92,28 @@ enum Backing {
         /// never read back from, and never part of equality or any other observable behavior.
         dir: PathBuf,
     },
-    /// RFC 015 D-4: a blob's bytes live at `(offset, length)` in an artifact the streaming reader
-    /// already verified once, in one sequential pass, without keeping a copy of any blob past that
-    /// pass. Every later [`ContentStore::get`] re-hashes what it reads back and compares it with the
-    /// `BlobId` — the one thing standing between a caller and bytes the source no longer actually holds
-    /// ([`Error::ArtifactChanged`]).
+    /// RFC 015 D-4: a blob's bytes live at `(offset, length)` in a **contract 0.2.0** artifact the
+    /// streaming reader already verified once, in one sequential pass, without keeping a copy of any
+    /// blob past that pass. Every later [`ContentStore::get`] re-hashes what it reads back and compares
+    /// it with the `BlobId` — the one thing standing between a caller and bytes the source no longer
+    /// actually holds ([`Error::ArtifactChanged`]).
     Artifact {
         source: RefCell<Box<dyn ArtifactSource>>,
         index: BTreeMap<BlobId, (u64, u64)>,
+    },
+    /// RFC 018 D-1/D-4: a blob's bytes live in a **contract 0.3.0** artifact's compressed blob frames.
+    /// `index` maps a blob to (which frame, its offset in that frame's raw/decompressed bytes, its
+    /// length); `frames` lists every blob frame the verifying pass found, in file order. `get` inflates
+    /// the owning frame (bounded as the format page states) and re-hashes the blob slice, the same
+    /// [`Error::ArtifactChanged`] check as [`Backing::Artifact`]. `cache` keeps the last few
+    /// decompressed multi-blob frames (RFC 018 D-4's own bound: at most 8, at most 8 MiB) so that
+    /// reading several blobs out of the same frame does not re-inflate it each time; a frame holding a
+    /// single blob is never cached (nothing in it would be reused).
+    ArtifactCompact {
+        source: RefCell<Box<dyn ArtifactSource>>,
+        frames: Vec<crate::artifact::frame::FrameLoc>,
+        index: BTreeMap<BlobId, (usize, u64, u64)>,
+        cache: RefCell<std::collections::VecDeque<(usize, Vec<u8>)>>,
     },
 }
 
@@ -181,6 +195,25 @@ impl ContentStore {
         }
     }
 
+    /// A store backed by an already-verified **contract 0.3.0** artifact's compressed blob frames
+    /// (RFC 018 D-4). As [`ContentStore::from_artifact_source`], but over [`Backing::ArtifactCompact`]:
+    /// only [`crate::artifact::read_from`]/[`crate::artifact::from_file`] build one, right after the
+    /// verifying pass, never before it.
+    pub(crate) fn from_artifact_source_compact(
+        source: impl ArtifactSource + 'static,
+        frames: Vec<crate::artifact::frame::FrameLoc>,
+        index: BTreeMap<BlobId, (usize, u64, u64)>,
+    ) -> Self {
+        Self {
+            backing: Backing::ArtifactCompact {
+                source: RefCell::new(Box::new(source)),
+                frames,
+                index,
+                cache: RefCell::new(std::collections::VecDeque::new()),
+            },
+        }
+    }
+
     /// Insert `bytes`, returning its content address. Inserting identical bytes twice is idempotent —
     /// the second insert neither writes nor allocates again.
     ///
@@ -210,7 +243,7 @@ impl ContentStore {
             // reader already verified, not an in-progress build — `IrBuilder` never holds one of these
             // (it is only ever produced by `artifact::read_from`/`from_file`, after the pass, as the
             // finished `Ir.content`), so this arm exists only to keep the match exhaustive.
-            Backing::Artifact { .. } => {
+            Backing::Artifact { .. } | Backing::ArtifactCompact { .. } => {
                 return Err(Error::Invariant(
                     "cannot insert into an artifact-backed content store (read-only)".to_string(),
                 ));
@@ -264,6 +297,67 @@ impl ContentStore {
                 }
                 Ok(Some(buf))
             }
+            Backing::ArtifactCompact {
+                source,
+                frames,
+                index,
+                cache,
+            } => {
+                let Some(&(frame_index, offset, len)) = index.get(id) else {
+                    return Ok(None);
+                };
+                let frame = frames.get(frame_index).ok_or_else(|| {
+                    Error::ArtifactChanged(format!("blob {id}'s frame no longer exists"))
+                })?;
+                let raw = if len == frame.raw_len {
+                    // A single-blob frame: nothing to cache for a later blob (RFC 018 D-4).
+                    crate::artifact::frame::inflate_frame(&mut *source.borrow_mut(), frame)?
+                } else {
+                    let mut c = cache.borrow_mut();
+                    if let Some((_, raw)) = c.iter().find(|(idx, _)| *idx == frame_index) {
+                        raw.clone()
+                    } else {
+                        let raw = crate::artifact::frame::inflate_frame(
+                            &mut *source.borrow_mut(),
+                            frame,
+                        )?;
+                        if c.len() >= 8 {
+                            c.pop_front();
+                        }
+                        c.push_back((frame_index, raw.clone()));
+                        raw
+                    }
+                };
+                let start = usize::try_from(offset).map_err(|e| Error::io_msg(e.to_string()))?;
+                let end = start + usize::try_from(len).map_err(|e| Error::io_msg(e.to_string()))?;
+                let buf = raw
+                    .get(start..end)
+                    .ok_or_else(|| {
+                        Error::ArtifactChanged(format!(
+                            "blob {id}'s frame no longer holds enough bytes"
+                        ))
+                    })?
+                    .to_vec();
+                if BlobId::of(&buf) != *id {
+                    return Err(Error::ArtifactChanged(format!(
+                        "blob {id} no longer matches its content; the artifact changed after it was \
+                         verified"
+                    )));
+                }
+                Ok(Some(buf))
+            }
+        }
+    }
+
+    /// `id`'s length, without reading its bytes (RFC 018 D-1): the writer needs every blob's length to
+    /// plan the blob table and the frame packing before it reads any blob's content.
+    pub(crate) fn blob_len(&self, id: &BlobId) -> Option<u64> {
+        match &self.backing {
+            Backing::Memory(blobs) => blobs.get(id).map(|b| b.len() as u64),
+            Backing::File { index, .. } | Backing::Artifact { index, .. } => {
+                index.get(id).map(|&(_, len)| len)
+            }
+            Backing::ArtifactCompact { index, .. } => index.get(id).map(|&(_, _, len)| len),
         }
     }
 
@@ -273,6 +367,7 @@ impl ContentStore {
         match &self.backing {
             Backing::Memory(blobs) => blobs.contains_key(id),
             Backing::File { index, .. } | Backing::Artifact { index, .. } => index.contains_key(id),
+            Backing::ArtifactCompact { index, .. } => index.contains_key(id),
         }
     }
 
@@ -282,6 +377,7 @@ impl ContentStore {
         match &self.backing {
             Backing::Memory(blobs) => blobs.len(),
             Backing::File { index, .. } | Backing::Artifact { index, .. } => index.len(),
+            Backing::ArtifactCompact { index, .. } => index.len(),
         }
     }
 
@@ -300,6 +396,7 @@ impl ContentStore {
             Backing::File { index, .. } | Backing::Artifact { index, .. } => {
                 index.values().map(|&(_, len)| len).sum()
             }
+            Backing::ArtifactCompact { index, .. } => index.values().map(|&(_, _, len)| len).sum(),
         }
     }
 
@@ -310,8 +407,9 @@ impl ContentStore {
         match &self.backing {
             Backing::Memory(blobs) => Either::Left(blobs.keys()),
             Backing::File { index, .. } | Backing::Artifact { index, .. } => {
-                Either::Right(index.keys())
+                Either::Right(Either::Left(index.keys()))
             }
+            Backing::ArtifactCompact { index, .. } => Either::Right(Either::Right(index.keys())),
         }
     }
 
@@ -327,6 +425,9 @@ impl ContentStore {
         match &mut self.backing {
             Backing::Memory(blobs) => blobs.retain(|id, _| keep(id)),
             Backing::File { index, .. } | Backing::Artifact { index, .. } => {
+                index.retain(|id, _| keep(id));
+            }
+            Backing::ArtifactCompact { index, .. } => {
                 index.retain(|id, _| keep(id));
             }
         }

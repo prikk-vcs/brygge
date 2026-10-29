@@ -175,16 +175,28 @@ fn write_to_equals_to_bytes_and_from_bytes_accepts_it() {
     }
 }
 
+/// Locate the digest's own byte range, independent of everything after it (both contracts: the digest
+/// always immediately follows the version bytes, which are always three single uvarints for a
+/// `major`/`minor`/`patch` this small).
+fn locate_digest(bytes: &[u8]) -> std::ops::Range<usize> {
+    let mut vr = CanonReader::new(&bytes[9..]);
+    vr.uvarint().unwrap();
+    vr.uvarint().unwrap();
+    vr.uvarint().unwrap();
+    let version_len = (bytes.len() - 9) - vr.remaining();
+    let digest_start = 9 + version_len;
+    digest_start..digest_start + 32
+}
+
 /// RFC 017 D-2: [`Decoded::digest`] is the digest the reader actually checked, not a value read back
 /// from a fixed offset (which would bypass the reader's own verification) — proved by comparing it
 /// against the bytes stored at the artifact's own digest offset, located independently via
-/// [`locate_sections`]. `from_bytes` and `read_from` must agree.
+/// [`locate_digest`]. `from_bytes` and `read_from` must agree.
 #[test]
 fn decoded_digest_equals_the_digest_stored_at_the_artifacts_header() {
     let ir = build_rich();
     let bytes = to_bytes(&ir);
-    let (digest_start, meta_start, _) = locate_sections(&bytes);
-    let stored: [u8; 32] = bytes[digest_start..meta_start].try_into().unwrap();
+    let stored: [u8; 32] = bytes[locate_digest(&bytes)].try_into().unwrap();
 
     let via_from_bytes = from_bytes(&bytes).unwrap();
     assert_eq!(via_from_bytes.digest, stored);
@@ -234,6 +246,21 @@ fn from_file_agrees_with_from_bytes() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A blob of 300 high-entropy bytes (chained SHA-256 of a fixed seed), deterministic but incompressible
+/// enough that `write_to`'s DEFLATE-or-stored choice always lands on `Codec::Stored` (RFC 018 D-1: the
+/// compressed form would be larger, header overhead included) — so its bytes sit verbatim in the
+/// artifact, byte for byte, as the next test needs.
+fn incompressible_blob() -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut h: [u8; 32] = Sha256::digest(b"brygge-ir artifact test seed").into();
+    while out.len() < 300 {
+        h = Sha256::digest(h).into();
+        out.extend_from_slice(&h);
+    }
+    out.truncate(300);
+    out
+}
+
 /// RFC 015 D-4's own safety property: a blob modified in the artifact file *after* `from_file`'s
 /// verifying pass is never handed to a caller as if nothing happened — the next read of that blob must
 /// fail, not silently return the new bytes.
@@ -241,17 +268,36 @@ fn from_file_agrees_with_from_bytes() {
 fn a_blob_changed_in_the_file_after_the_pass_is_never_read_as_the_new_bytes() {
     let dir = scratch_dir("changed-during-read");
     let path = dir.join("artifact");
-    let ir = build_rich();
+    let mut b = IrBuilder::new(provenance());
+    let blob = b.add_blob(incompressible_blob()).unwrap();
+    b.add_atom(AtomDraft {
+        parents: vec![],
+        ops: vec![PathOp::Add {
+            path: "big".into(),
+            blob,
+            mode: 0o100_644,
+            status: EpistemicStatus::Stated,
+        }],
+        copies: vec![],
+        metadata: MetadataClaims::default(),
+        source: SourceIdentity {
+            kind: SourceKind::Git,
+            repo_id: b"repo".to_vec(),
+            atom_id: b"c1".to_vec(),
+            signatures: Vec::new(),
+            extras: Vec::new(),
+        },
+        status: EpistemicStatus::Stated,
+    })
+    .unwrap();
+    let ir = b.finish().unwrap();
     let bytes = to_bytes(&ir);
     std::fs::write(&path, &bytes).unwrap();
 
     let decoded = from_file(&path).unwrap();
-    let id = *ir
-        .content
-        .ids()
-        .find(|id| ir.content.get(id).unwrap().unwrap().len() >= 2)
-        .expect("at least one blob here is 2+ bytes long");
+    let id = *ir.content.ids().next().expect("one blob");
     let original = decoded.ir.content.get(&id).unwrap().unwrap();
+    assert_eq!(original, incompressible_blob());
 
     // Flip one byte of that very blob's bytes in the file, in place (same length, so every other
     // blob's offset is undisturbed) — found the slow but foolproof way, by searching for the blob's own
@@ -353,9 +399,9 @@ fn a_matching_patch_bump_is_accepted() {
 }
 
 #[test]
-fn a_different_minor_under_major_zero_is_refused() {
+fn an_unlisted_minor_under_major_zero_is_refused() {
     let ir = build();
-    let bytes = container_with_version(&ir, 0, 3, 0);
+    let bytes = container_with_version(&ir, 0, u64::from(version::CURRENT.minor) + 1, 0);
     match from_bytes(&bytes) {
         Err(Error::UnsupportedContract { .. }) => {}
         other => panic!("expected UnsupportedContract, got {other:?}"),
@@ -374,28 +420,78 @@ fn a_newer_major_is_refused() {
 
 // ---- digest (RFC 011 §2.3/§7.5): one byte flipped in each section ---------------------------------
 
-/// Locate `(digest_start, meta_start, blob_start)` in a `to_bytes` output, by re-parsing the fixed
-/// header the same way `from_bytes` does.
-fn locate_sections(bytes: &[u8]) -> (usize, usize, usize) {
-    let mut vr = CanonReader::new(&bytes[9..]);
-    vr.uvarint().unwrap();
-    vr.uvarint().unwrap();
-    vr.uvarint().unwrap();
-    let version_len = (bytes.len() - 9) - vr.remaining();
-    let digest_start = 9 + version_len;
-    let meta_start = digest_start + 32;
-    let mut mr = CanonReader::new(&bytes[meta_start..]);
-    let meta_len = mr.uvarint_len().unwrap();
-    let meta_prefix_len = (bytes.len() - meta_start) - mr.remaining();
-    let blob_start = meta_start + meta_prefix_len + meta_len;
-    (digest_start, meta_start, blob_start)
+/// A contract-0.3.0 container for `ir`, with every frame forced to `Codec::Stored` (bypassing
+/// `write_to`'s own DEFLATE-or-stored choice): so a byte flip anywhere in a frame's stored bytes is a
+/// flip of the *logical* bytes too, one-for-one, deterministically reaching the digest check rather
+/// than risking an "a frame that does not inflate" refusal from a DEFLATE stream a single flipped bit
+/// happens to corrupt structurally. Returns the bytes alongside `(digest_start, meta_stored_start,
+/// blob_stored_start)`.
+fn container_v3_all_stored(ir: &Ir) -> (Vec<u8>, usize, usize, usize) {
+    let mut version = CanonWriter::new();
+    version.uvarint(0);
+    version.uvarint(3);
+    version.uvarint(0);
+
+    let meta_bytes = ir.encode_metadata();
+    let order = store_order(ir);
+    let mut hasher = Sha256::new();
+    hasher.update(version.as_bytes());
+    hasher.update(canon::uvarint_value(meta_bytes.len() as u64));
+    hasher.update(&meta_bytes);
+    hasher.update(canon::uvarint_value(order.len() as u64));
+    let mut blob_bytes: Vec<Vec<u8>> = Vec::new();
+    for id in &order {
+        hasher.update(id.as_bytes());
+        let bytes = ir.content.get(id).unwrap().unwrap();
+        hasher.update(canon::uvarint_value(bytes.len() as u64));
+        blob_bytes.push(bytes);
+    }
+    for bytes in &blob_bytes {
+        hasher.update(bytes);
+    }
+    let digest: [u8; 32] = hasher.finalize().into();
+
+    let mut out = MAGIC.to_vec();
+    out.push(FORMAT);
+    out.extend_from_slice(version.as_bytes());
+    let digest_start = out.len();
+    out.extend_from_slice(&digest);
+
+    // One stored metadata frame.
+    out.extend_from_slice(&canon::uvarint_value(1));
+    out.extend_from_slice(&canon::uvarint_value(0)); // codec: stored
+    out.extend_from_slice(&canon::uvarint_value(meta_bytes.len() as u64));
+    out.extend_from_slice(&canon::uvarint_value(meta_bytes.len() as u64));
+    let meta_stored_start = out.len();
+    out.extend_from_slice(&meta_bytes);
+
+    out.extend_from_slice(&canon::uvarint_value(order.len() as u64));
+    for (id, bytes) in order.iter().zip(blob_bytes.iter()) {
+        out.extend_from_slice(id.as_bytes());
+        out.extend_from_slice(&canon::uvarint_value(bytes.len() as u64));
+    }
+    // One stored frame per blob (simplest valid packing when every blob is tiny: each still obeys
+    // `canonical_frame_raw_lens`'s rule only if blobs are grouped per that rule — `build()`'s two
+    // blobs are small enough that the real writer would pack them into one frame, so match that here
+    // too, to stay a canonical, acceptable artifact for the version/blob-byte tests, which don't care
+    // about packing specifics, only about where the digest lands.
+    let total: u64 = blob_bytes.iter().map(|b| b.len() as u64).sum();
+    out.extend_from_slice(&canon::uvarint_value(1));
+    out.extend_from_slice(&canon::uvarint_value(0)); // codec: stored
+    out.extend_from_slice(&canon::uvarint_value(total));
+    out.extend_from_slice(&canon::uvarint_value(total));
+    let blob_stored_start = out.len();
+    for bytes in &blob_bytes {
+        out.extend_from_slice(bytes);
+    }
+
+    (out, digest_start, meta_stored_start, blob_stored_start)
 }
 
 #[test]
 fn a_flipped_version_byte_is_detected_as_a_digest_mismatch() {
     let ir = build();
-    let mut bytes = to_bytes(&ir);
-    let (digest_start, ..) = locate_sections(&bytes);
+    let (mut bytes, digest_start, ..) = container_v3_all_stored(&ir);
     // Flip the low bit of the patch byte: stays a valid minimal single-byte uvarint, and patch is
     // ignored by the version gate (RFC 011 D-3), so this reaches the digest check.
     bytes[digest_start - 1] ^= 0x01;
@@ -408,10 +504,9 @@ fn a_flipped_version_byte_is_detected_as_a_digest_mismatch() {
 #[test]
 fn a_flipped_metadata_byte_is_detected_as_a_digest_mismatch() {
     let ir = build();
-    let mut bytes = to_bytes(&ir);
-    let (_, meta_start, blob_start) = locate_sections(&bytes);
-    assert!(blob_start > meta_start);
-    bytes[blob_start - 1] ^= 0xff;
+    let (mut bytes, _, meta_stored_start, blob_stored_start) = container_v3_all_stored(&ir);
+    assert!(blob_stored_start > meta_stored_start);
+    bytes[meta_stored_start] ^= 0xff;
     match from_bytes(&bytes) {
         Err(Error::DigestMismatch) => {}
         other => panic!("expected DigestMismatch, got {other:?}"),
@@ -421,9 +516,8 @@ fn a_flipped_metadata_byte_is_detected_as_a_digest_mismatch() {
 #[test]
 fn a_flipped_blob_store_byte_is_detected_as_a_digest_mismatch() {
     let ir = build();
-    let mut bytes = to_bytes(&ir);
-    let (.., blob_start) = locate_sections(&bytes);
-    assert!(bytes.len() > blob_start);
+    let (mut bytes, .., blob_stored_start) = container_v3_all_stored(&ir);
+    assert!(bytes.len() > blob_stored_start);
     let last = bytes.len() - 1;
     bytes[last] ^= 0xff;
     match from_bytes(&bytes) {
@@ -484,11 +578,104 @@ fn a_duplicate_atom_id_is_rejected() {
 }
 
 #[test]
-fn an_orphan_blob_is_rejected() {
+fn an_orphan_blob_is_rejected_by_the_writer() {
+    // RFC 018 D-2: `store_order` only names a blob some op references, so `write_to` now catches an
+    // orphan itself (fail fast) rather than silently excluding it from the artifact.
     let mut ir = build();
     ir.content.insert(b"nobody references me".to_vec()).unwrap();
-    let bytes = to_bytes(&ir);
-    match from_bytes(&bytes) {
+    let mut cursor = std::io::Cursor::new(Vec::new());
+    match write_to(&ir, &mut cursor) {
+        Err(Error::Invariant(m)) => assert!(m.contains("orphan"), "{m}"),
+        other => panic!("expected Invariant (orphan), got {other:?}"),
+    }
+}
+
+/// The read-side counterpart (RFC 011 §2.5): an externally-crafted 0.3.0 artifact whose blob table
+/// names a blob no op references is still rejected on read, independent of `write_to`'s own guard.
+#[test]
+fn an_orphan_blob_in_a_hand_built_artifact_is_rejected_on_read() {
+    let ir = build();
+    let extra = b"nobody references me".to_vec();
+    let extra_id = BlobId::of(&extra);
+    let mut order = store_order(&ir);
+    // The orphan sorts last: its "path" (none) is not a real op, so it is simply appended after the
+    // real table, in id order relative to nothing — any position is fine, since the orphan check runs
+    // after the id-set reconciliation below, not the order check.
+    order.push(extra_id);
+    let mut lens: Vec<u64> = Vec::new();
+    for id in &order {
+        lens.push(if *id == extra_id {
+            extra.len() as u64
+        } else {
+            ir.content.get(id).unwrap().unwrap().len() as u64
+        });
+    }
+
+    let mut version = crate::canon::CanonWriter::new();
+    version.uvarint(0);
+    version.uvarint(3);
+    version.uvarint(0);
+
+    let meta_bytes = ir.encode_metadata();
+    let mut hasher = Sha256::new();
+    hasher.update(version.as_bytes());
+    hasher.update(canon::uvarint_value(meta_bytes.len() as u64));
+    hasher.update(&meta_bytes);
+    hasher.update(canon::uvarint_value(order.len() as u64));
+    for (id, len) in order.iter().zip(lens.iter()) {
+        hasher.update(id.as_bytes());
+        hasher.update(canon::uvarint_value(*len));
+    }
+    for id in &order {
+        let bytes = if *id == extra_id {
+            extra.clone()
+        } else {
+            ir.content.get(id).unwrap().unwrap()
+        };
+        hasher.update(&bytes);
+    }
+    let digest: [u8; 32] = hasher.finalize().into();
+
+    let mut out = MAGIC.to_vec();
+    out.push(FORMAT);
+    out.extend_from_slice(version.as_bytes());
+    out.extend_from_slice(&digest);
+    write_frames(
+        &mut out,
+        &meta_bytes,
+        &frame::fixed_chunk_lens(meta_bytes.len() as u64),
+        false,
+    )
+    .unwrap();
+    out.extend_from_slice(&canon::uvarint_value(order.len() as u64));
+    for (id, len) in order.iter().zip(lens.iter()) {
+        out.extend_from_slice(id.as_bytes());
+        out.extend_from_slice(&canon::uvarint_value(*len));
+    }
+    let frame_lens = frame::canonical_frame_raw_lens(lens.iter().copied());
+    out.extend_from_slice(&canon::uvarint_value(frame_lens.len() as u64));
+    let mut blob_iter = order.iter();
+    for &flen in &frame_lens {
+        let mut buf = Vec::new();
+        let mut collected = 0u64;
+        while collected < flen {
+            let id = blob_iter.next().unwrap();
+            let bytes = if *id == extra_id {
+                extra.clone()
+            } else {
+                ir.content.get(id).unwrap().unwrap()
+            };
+            collected += bytes.len() as u64;
+            buf.extend_from_slice(&bytes);
+        }
+        write_one_frame(&mut out, &buf, false).unwrap();
+    }
+
+    // Caught as the table no longer matching `store_order` (an orphan is, definitionally, a blob no op
+    // places in that order) — the same NonCanonical outcome the pre-RFC-018 reader gave directly from
+    // the orphan check; here it is reached one step earlier, by the order check that now stands in
+    // front of it.
+    match from_bytes(&out) {
         Err(Error::NonCanonical(_)) => {}
         other => panic!("expected NonCanonical, got {other:?}"),
     }
@@ -574,18 +761,30 @@ fn trailing_bytes_in_metadata_are_rejected() {
 
 #[test]
 fn trailing_bytes_after_the_blob_store_are_rejected() {
-    // Rebuild the container with trailing junk appended to the *stored* bytes (so the digest — which
-    // covers exactly those bytes — still matches, and the failure is unambiguously the trailing-bytes
-    // check below it, not a digest mismatch).
+    // A hand-built **contract 0.2.0** body (the prior, unframed layout — `to_bytes` no longer writes
+    // this contract, but this build still reads it) with trailing junk appended to the stored bytes,
+    // so the digest — which covers exactly those bytes — still matches, and the failure is
+    // unambiguously the trailing-bytes check below it, not a digest mismatch.
     let ir = build();
-    let bytes = to_bytes(&ir);
-    let digest_end = 9 + 3 + 32; // magic(8) + format(1) + version(3, for 0.2.0) + digest(32)
-    let mut body = bytes[digest_end..].to_vec();
-    body.extend_from_slice(b"junk");
     let mut version = crate::canon::CanonWriter::new();
     version.uvarint(0);
     version.uvarint(2);
     version.uvarint(0);
+
+    let mut body = crate::canon::CanonWriter::new();
+    let meta = ir.encode_metadata();
+    body.uvarint(meta.len() as u64);
+    body.raw(&meta);
+    body.uvarint(ir.content.len() as u64);
+    for id in ir.content.ids() {
+        let bytes = ir.content.get(id).unwrap().unwrap();
+        body.raw(id.as_bytes());
+        body.uvarint(bytes.len() as u64);
+        body.raw(&bytes);
+    }
+    let mut body = body.into_bytes();
+    body.extend_from_slice(b"junk");
+
     let mut hasher = Sha256::new();
     hasher.update(version.as_bytes());
     hasher.update(&body);
@@ -914,4 +1113,370 @@ fn the_builder_refuses_a_duplicate_key_instead_of_writing_an_unreadable_artifact
     b.add_flag(flag_of(FlagKind::BelowConfidenceFloor, "w"));
     b.add_flag(flag_of(FlagKind::BelowConfidenceFloor, "w"));
     assert!(matches!(b.finish(), Err(Error::Invariant(_))));
+}
+
+// ---- RFC 018: compact artifacts (contract 0.3.0) --------------------------------------------------
+
+/// The shape of `artifact::mutation::richer_ir`, built independently here (that module is test-only
+/// and not reused across these files on purpose) for the golden-bytes and 0.2.0-fixture proofs: two
+/// atoms, a ref, a drop, a flag, and two blobs, one empty.
+fn fixture_ir() -> Ir {
+    let mut b = IrBuilder::new(provenance());
+    let empty_blob = b.add_blob(Vec::new()).unwrap();
+    let blob = b.add_blob(b"hello world".to_vec()).unwrap();
+    let root = b
+        .add_atom(AtomDraft {
+            parents: vec![],
+            ops: vec![
+                PathOp::Add {
+                    path: "empty".into(),
+                    blob: empty_blob,
+                    mode: 0o100_644,
+                    status: EpistemicStatus::Stated,
+                },
+                PathOp::Add {
+                    path: "readme".into(),
+                    blob,
+                    mode: 0o100_644,
+                    status: EpistemicStatus::Stated,
+                },
+            ],
+            copies: vec![],
+            metadata: MetadataClaims {
+                author: Some(crate::model::Identity {
+                    name: crate::model::Text::utf8("A U Thor"),
+                    email: Some(crate::model::Text::utf8("a@example.com")),
+                }),
+                author_time: Some(crate::model::Time {
+                    seconds: 1_700_000_000,
+                    offset_minutes: Some(60),
+                }),
+                committer: None,
+                commit_time: None,
+                message: Some(crate::model::Text::utf8("initial")),
+            },
+            source: SourceIdentity {
+                kind: SourceKind::Git,
+                repo_id: b"repo".to_vec(),
+                atom_id: b"c1".to_vec(),
+                signatures: Vec::new(),
+                extras: Vec::new(),
+            },
+            status: EpistemicStatus::Stated,
+        })
+        .unwrap();
+    let child_blob = b
+        .add_blob(b"second revision, a bit longer than the first".to_vec())
+        .unwrap();
+    let child = b
+        .add_atom(AtomDraft {
+            parents: vec![root],
+            ops: vec![PathOp::Add {
+                path: "second".into(),
+                blob: child_blob,
+                mode: 0o100_644,
+                status: EpistemicStatus::Stated,
+            }],
+            copies: vec![],
+            metadata: MetadataClaims::default(),
+            source: SourceIdentity {
+                kind: SourceKind::Git,
+                repo_id: b"repo".to_vec(),
+                atom_id: b"c2".to_vec(),
+                signatures: Vec::new(),
+                extras: Vec::new(),
+            },
+            status: EpistemicStatus::Stated,
+        })
+        .unwrap();
+    b.add_ref(RefRecord {
+        name: "refs/heads/main".into(),
+        kind: RefKind::Branch,
+        target: child,
+        status: EpistemicStatus::Stated,
+        source: None,
+        annotation: None,
+    })
+    .unwrap();
+    b.set_loss(LossBoundary {
+        dropped: vec![DropRecord {
+            class: LossClass::Other,
+            what: "an example drop".into(),
+            reason: "contract fixture".into(),
+        }],
+    });
+    b.add_flag(Flag {
+        kind: FlagKind::BelowConfidenceFloor,
+        what: "an example flag".into(),
+        count: 1,
+        reason: "contract fixture".into(),
+    });
+    b.finish().unwrap()
+}
+
+fn fixture_data_path(name: &str) -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/data")
+        .join(name)
+}
+
+/// RFC 018 §6.3: `to_bytes` must reproduce `contract-0.3.0.ir` byte for byte. A failure here means a
+/// codec or writer change altered the file's bytes — note it in the CHANGELOG, and regenerate
+/// (`UPDATE_GOLDEN=1 cargo test -p brygge-ir --lib golden_bytes_contract_0_3_0`).
+#[test]
+fn golden_bytes_contract_0_3_0() {
+    let bytes = to_bytes(&fixture_ir());
+    let path = fixture_data_path("contract-0.3.0.ir");
+    if std::env::var("UPDATE_GOLDEN").is_ok() {
+        std::fs::write(&path, &bytes).unwrap();
+        return;
+    }
+    let golden = std::fs::read(&path).unwrap_or_else(|e| {
+        panic!(
+            "{}: {e} (run with UPDATE_GOLDEN=1 to create it)",
+            path.display()
+        )
+    });
+    assert_eq!(
+        bytes,
+        golden,
+        "to_bytes's output no longer matches {}: a codec or writer change altered the artifact's \
+         bytes. If intentional, note it in the CHANGELOG and regenerate the file.",
+        path.display()
+    );
+}
+
+/// Write `ir` as a **contract 0.2.0** artifact directly (the prior, unframed layout — `write_to` no
+/// longer produces it, by design: RFC 018 D-7 keeps 0.2.0 read-only). Used only to freeze the committed
+/// fixture below.
+fn write_0_2_0(ir: &Ir) -> Vec<u8> {
+    let mut version = CanonWriter::new();
+    version.uvarint(0);
+    version.uvarint(2);
+    version.uvarint(0);
+
+    let mut body = CanonWriter::new();
+    let meta = ir.encode_metadata();
+    body.uvarint(meta.len() as u64);
+    body.raw(&meta);
+    body.uvarint(ir.content.len() as u64);
+    for id in ir.content.ids() {
+        let bytes = ir.content.get(id).unwrap().unwrap();
+        body.raw(id.as_bytes());
+        body.uvarint(bytes.len() as u64);
+        body.raw(&bytes);
+    }
+
+    let mut hasher = Sha256::new();
+    hasher.update(version.as_bytes());
+    hasher.update(body.as_bytes());
+    let digest: [u8; 32] = hasher.finalize().into();
+    let mut out = MAGIC.to_vec();
+    out.push(FORMAT);
+    out.extend_from_slice(version.as_bytes());
+    out.extend_from_slice(&digest);
+    out.extend_from_slice(body.as_bytes());
+    out
+}
+
+/// RFC 018 §6.4/D-7: the committed 0.2.0 fixture (the prior, unframed layout) still reads through both
+/// entry points, its digest matches what is stored, and `contract` reports `0.2.0`.
+#[test]
+fn reads_the_0_2_0_fixture() {
+    let path = fixture_data_path("contract-0.2.0.ir");
+    if std::env::var("UPDATE_GOLDEN").is_ok() {
+        std::fs::write(&path, write_0_2_0(&fixture_ir())).unwrap();
+    }
+    let bytes = std::fs::read(&path).unwrap_or_else(|e| {
+        panic!(
+            "{}: {e} (run with UPDATE_GOLDEN=1 to create it)",
+            path.display()
+        )
+    });
+
+    let via_from_bytes = from_bytes(&bytes).unwrap();
+    assert_eq!(via_from_bytes.contract, ContractVersion::new(0, 2, 0));
+    assert_eq!(via_from_bytes.ir, fixture_ir());
+
+    let via_read_from = read_from(std::io::Cursor::new(bytes)).unwrap();
+    assert_eq!(via_read_from.contract, ContractVersion::new(0, 2, 0));
+    assert_eq!(via_read_from.digest, via_from_bytes.digest);
+    assert_eq!(via_read_from.ir, via_from_bytes.ir);
+}
+
+/// RFC 018 §6.2 (digest independence): the same `Ir`, written once with DEFLATE frames (the normal
+/// `to_bytes`) and once with every frame forced `Codec::Stored`, gives two different files but one
+/// digest, and both decode back to an equal `Ir`.
+#[test]
+fn digest_is_independent_of_the_frame_codec() {
+    let ir = fixture_ir();
+    let deflated = to_bytes(&ir);
+
+    let mut cursor = std::io::Cursor::new(Vec::new());
+    write_to_stored_only(&ir, &mut cursor).unwrap();
+    let stored_only = cursor.into_inner();
+
+    assert_ne!(
+        deflated, stored_only,
+        "the fixture's repeated-word blob should actually compress smaller"
+    );
+
+    let a = from_bytes(&deflated).unwrap();
+    let b = from_bytes(&stored_only).unwrap();
+    assert_eq!(a.digest, b.digest);
+    assert_eq!(a.ir, b.ir);
+    assert_eq!(a.ir, ir);
+}
+
+/// RFC 018 §6.5: two frames that should have been one (an extra, needless frame boundary within the
+/// 1 MiB cap) is refused as a packing-rule violation.
+#[test]
+fn wrong_packing_two_frames_that_should_be_one_is_rejected() {
+    let ir = build();
+    let order = store_order(&ir);
+    let lens: Vec<u64> = order
+        .iter()
+        .map(|id| ir.content.get(id).unwrap().unwrap().len() as u64)
+        .collect();
+    // The real writer packs both of `build()`'s tiny blobs into one frame; split them into two here.
+    assert_eq!(
+        frame::canonical_frame_raw_lens(lens.iter().copied()).len(),
+        1
+    );
+    let bytes_by_id: Vec<Vec<u8>> = order
+        .iter()
+        .map(|id| ir.content.get(id).unwrap().unwrap())
+        .collect();
+
+    let mut version = CanonWriter::new();
+    version.uvarint(0);
+    version.uvarint(3);
+    version.uvarint(0);
+    let meta_bytes = ir.encode_metadata();
+    let mut hasher = Sha256::new();
+    hasher.update(version.as_bytes());
+    hasher.update(canon::uvarint_value(meta_bytes.len() as u64));
+    hasher.update(&meta_bytes);
+    hasher.update(canon::uvarint_value(order.len() as u64));
+    for (id, len) in order.iter().zip(lens.iter()) {
+        hasher.update(id.as_bytes());
+        hasher.update(canon::uvarint_value(*len));
+    }
+    for bytes in &bytes_by_id {
+        hasher.update(bytes);
+    }
+    let digest: [u8; 32] = hasher.finalize().into();
+
+    let mut out = MAGIC.to_vec();
+    out.push(FORMAT);
+    out.extend_from_slice(version.as_bytes());
+    out.extend_from_slice(&digest);
+    write_frames(
+        &mut out,
+        &meta_bytes,
+        &frame::fixed_chunk_lens(meta_bytes.len() as u64),
+        false,
+    )
+    .unwrap();
+    out.extend_from_slice(&canon::uvarint_value(order.len() as u64));
+    for (id, len) in order.iter().zip(lens.iter()) {
+        out.extend_from_slice(id.as_bytes());
+        out.extend_from_slice(&canon::uvarint_value(*len));
+    }
+    // Two frames, one per blob, instead of the one canonical frame.
+    out.extend_from_slice(&canon::uvarint_value(2));
+    for bytes in &bytes_by_id {
+        write_one_frame(&mut out, bytes, true).unwrap();
+    }
+
+    match from_bytes(&out) {
+        Err(Error::NonCanonical(m)) => assert!(m.contains("packing"), "{m}"),
+        other => panic!("expected NonCanonical (packing), got {other:?}"),
+    }
+}
+
+/// RFC 018 §6.5: a blob table out of [`store_order`] is refused.
+#[test]
+fn a_blob_table_out_of_store_order_is_rejected() {
+    let ir = build();
+    let mut order = store_order(&ir);
+    assert!(order.len() >= 2, "build() has at least two blobs");
+    order.swap(0, 1); // no longer store_order's own order
+    let lens: Vec<u64> = order
+        .iter()
+        .map(|id| ir.content.get(id).unwrap().unwrap().len() as u64)
+        .collect();
+    let bytes_by_id: Vec<Vec<u8>> = order
+        .iter()
+        .map(|id| ir.content.get(id).unwrap().unwrap())
+        .collect();
+
+    let mut version = CanonWriter::new();
+    version.uvarint(0);
+    version.uvarint(3);
+    version.uvarint(0);
+    let meta_bytes = ir.encode_metadata();
+    let mut hasher = Sha256::new();
+    hasher.update(version.as_bytes());
+    hasher.update(canon::uvarint_value(meta_bytes.len() as u64));
+    hasher.update(&meta_bytes);
+    hasher.update(canon::uvarint_value(order.len() as u64));
+    for (id, len) in order.iter().zip(lens.iter()) {
+        hasher.update(id.as_bytes());
+        hasher.update(canon::uvarint_value(*len));
+    }
+    for bytes in &bytes_by_id {
+        hasher.update(bytes);
+    }
+    let digest: [u8; 32] = hasher.finalize().into();
+
+    let mut out = MAGIC.to_vec();
+    out.push(FORMAT);
+    out.extend_from_slice(version.as_bytes());
+    out.extend_from_slice(&digest);
+    write_frames(
+        &mut out,
+        &meta_bytes,
+        &frame::fixed_chunk_lens(meta_bytes.len() as u64),
+        false,
+    )
+    .unwrap();
+    out.extend_from_slice(&canon::uvarint_value(order.len() as u64));
+    for (id, len) in order.iter().zip(lens.iter()) {
+        out.extend_from_slice(id.as_bytes());
+        out.extend_from_slice(&canon::uvarint_value(*len));
+    }
+    let frame_lens = frame::canonical_frame_raw_lens(lens.iter().copied());
+    out.extend_from_slice(&canon::uvarint_value(frame_lens.len() as u64));
+    let mut blob_iter = bytes_by_id.iter();
+    for &flen in &frame_lens {
+        let mut buf = Vec::new();
+        let mut collected = 0u64;
+        while collected < flen {
+            let bytes = blob_iter.next().unwrap();
+            collected += bytes.len() as u64;
+            buf.extend_from_slice(bytes);
+        }
+        write_one_frame(&mut out, &buf, true).unwrap();
+    }
+
+    match from_bytes(&out) {
+        Err(Error::NonCanonical(m)) => assert!(m.contains("store order"), "{m}"),
+        other => panic!("expected NonCanonical (store order), got {other:?}"),
+    }
+}
+
+/// RFC 018 §6.5: a `0.1` and a `0.4` artifact are both refused (too old for `READABLE`, too new).
+#[test]
+fn versions_outside_readable_are_refused() {
+    let ir = build();
+    for (major, minor, patch) in [(0u64, 1u64, 0u64), (0, 4, 0)] {
+        let bytes = container_with_version(&ir, major, minor, patch);
+        match from_bytes(&bytes) {
+            Err(Error::UnsupportedContract { .. }) => {}
+            other => {
+                panic!("expected UnsupportedContract for {major}.{minor}.{patch}, got {other:?}")
+            }
+        }
+    }
 }

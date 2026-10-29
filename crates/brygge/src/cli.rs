@@ -157,7 +157,8 @@ COMMANDS:
            to a source kind it does not apply to is a usage error. File content is kept on disk while
            decoding, in a private file removed when brygge exits — --spill-dir <DIR> chooses where (it
            must already exist); the default is --out's own directory. The option never changes the
-           artifact; a RAM-backed directory (tmpfs) moves the memory cost rather than removing it
+           artifact; a RAM-backed directory (tmpfs) moves the memory cost rather than removing it.
+           Artifacts are compressed (contract 0.3.0)
   inspect  print the fidelity report an artifact alone reproduces; --atoms adds the per-atom
            listing: epistemic status, source ids, derived parameters, and the loss boundary
   verify   the honesty checks any reader can run with no source (always); with --against-source, also

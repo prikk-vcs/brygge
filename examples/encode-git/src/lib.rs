@@ -330,37 +330,26 @@ pub fn encode<W: Write>(
     let mut atom_marks: BTreeMap<AtomId, u64> = BTreeMap::new();
     let digest_hex = to_hex(&artifact_digest);
 
-    for atom in &ir.atoms {
-        // Every blob this atom's ops reference, written the first time it is seen, by mark, one blob's
-        // bytes in memory at a time.
-        for op in &atom.ops {
-            let blob = match op {
-                PathOp::Add { blob, .. }
-                | PathOp::Modify { blob, .. }
-                | PathOp::Replace { blob, .. } => Some(*blob),
-                PathOp::Delete { .. } => None,
-            };
-            if let Some(blob) = blob {
-                if let std::collections::btree_map::Entry::Vacant(e) = blob_marks.entry(blob) {
-                    let mark = next_mark;
-                    next_mark += 1;
-                    e.insert(mark);
-                    let bytes = ir
-                        .content
-                        .get(&blob)
-                        .map_err(|e| EncodeError::Content(e.to_string()))?
-                        .ok_or_else(|| {
-                            EncodeError::Content(format!("blob {blob} indexed but not readable"))
-                        })?;
-                    writeln!(out, "blob")?;
-                    writeln!(out, "mark :{mark}")?;
-                    writeln!(out, "data {}", bytes.len())?;
-                    out.write_all(&bytes)?;
-                    writeln!(out)?;
-                }
-            }
-        }
+    // Every blob, first — in `store_order` (RFC 018 D-2: the order that reads each of the artifact's
+    // compressed frames exactly once), one blob's bytes in memory at a time, by mark. The commits
+    // below reference these marks; none of them write a blob inline any more.
+    for blob in brygge_ir::artifact::store_order(ir) {
+        let mark = next_mark;
+        next_mark += 1;
+        blob_marks.insert(blob, mark);
+        let bytes = ir
+            .content
+            .get(&blob)
+            .map_err(|e| EncodeError::Content(e.to_string()))?
+            .ok_or_else(|| EncodeError::Content(format!("blob {blob} indexed but not readable")))?;
+        writeln!(out, "blob")?;
+        writeln!(out, "mark :{mark}")?;
+        writeln!(out, "data {}", bytes.len())?;
+        out.write_all(&bytes)?;
+        writeln!(out)?;
+    }
 
+    for atom in &ir.atoms {
         let mut supplied = Supplied::default();
         let mut altered = Altered::default();
         let author_line = identity_line(

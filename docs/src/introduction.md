@@ -38,7 +38,7 @@ brygge verify repo.ir --against-source /path/to/repo
 - **Scripting and CI:** [Machine-readable output](reference/machine-output.md): every key, its versions,
   and the exit codes.
 - **Reading or writing artifacts yourself:** [the IR artifact format](reference/ir-artifact-format.md),
-  contract 0.2.0.
+  contract 0.3.0 (still reads 0.2.0).
 - **What brygge defends, and how:** [the threat model](brygge-03-threat-model-v0.1.md).
 - **The source code, the design decisions (RFCs) and the change log:** the
   [repository on GitHub](https://github.com/prikk-vcs/brygge).

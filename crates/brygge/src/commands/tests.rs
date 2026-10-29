@@ -901,11 +901,11 @@ fn inspect_atoms_adds_the_listing_and_reads_the_artifact_once() {
     let ir = brygge_ir::from_bytes(&std::fs::read(&out).unwrap())
         .unwrap()
         .ir;
-    let human = render_atoms_human(&ir);
+    let human = render_atoms_human(&ir, brygge_ir::version::CURRENT);
     assert!(human.contains("atoms (topological order):"));
     assert!(human.contains("refs:") || ir.refs.is_empty());
     assert!(human.contains("loss boundary:"));
-    let machine = render_atoms_machine(&ir);
+    let machine = render_atoms_machine(&ir, brygge_ir::version::CURRENT);
     assert!(machine.starts_with("inspect_version=4\n"));
     assert!(machine.contains("atom.0.id="));
 }
@@ -1539,7 +1539,7 @@ fn a_hostile_commit_message_renders_escaped_in_inspect_atoms_human() {
         })
         .unwrap();
     let ir = b.finish().unwrap();
-    let human = render_atoms_human(&ir);
+    let human = render_atoms_human(&ir, brygge_ir::version::CURRENT);
     assert!(!human.contains('\x1b'), "the raw ESC byte must not appear");
     assert!(
         !human.contains('\u{202E}'),
@@ -1575,7 +1575,7 @@ fn a_line_separator_in_a_commit_subject_renders_escaped_in_inspect_atoms_human()
         })
         .unwrap();
     let ir = b.finish().unwrap();
-    let human = render_atoms_human(&ir);
+    let human = render_atoms_human(&ir, brygge_ir::version::CURRENT);
     assert!(
         !human.contains('\u{2028}'),
         "the raw line separator must not appear"
@@ -1611,7 +1611,7 @@ fn a_ref_named_with_equals_cannot_forge_a_machine_key() {
     })
     .unwrap();
     let ir = b.finish().unwrap();
-    let machine = render_atoms_machine(&ir);
+    let machine = render_atoms_machine(&ir, brygge_ir::version::CURRENT);
     assert!(machine.contains("ref.0.name=a%3Db"));
     // The name never appears as a raw key or unescaped value.
     for line in machine.lines() {
@@ -2705,7 +2705,7 @@ fn part2_5_1_keys_that_embed_a_label_are_snake_case_and_values_stay_kebab_case()
             .any(|l| l.starts_with("verify.check.loss_boundary="))
     );
     // Values keep kebab-case: the status value and the not-checked word.
-    let atoms = render_atoms_machine(&ir);
+    let atoms = render_atoms_machine(&ir, brygge_ir::version::CURRENT);
     assert!(atoms.contains("atom.1.copy.0.status=derived:inferred-rename"));
     assert!(lines.iter().any(|l| l == "verify.check.replay=not-checked"));
 }
@@ -2714,7 +2714,7 @@ fn part2_5_1_keys_that_embed_a_label_are_snake_case_and_values_stay_kebab_case()
 fn part2_5_2_inspect_atoms_does_not_repeat_the_atoms_key() {
     let ir = machine_output_fixture();
     let report = brygge_ir::honesty::summary(&ir).render_machine();
-    let atoms = render_atoms_machine(&ir);
+    let atoms = render_atoms_machine(&ir, brygge_ir::version::CURRENT);
     assert_eq!(
         report.lines().filter(|l| l.starts_with("atoms=")).count(),
         1
@@ -2735,7 +2735,7 @@ fn part2_5_2_inspect_atoms_does_not_repeat_the_atoms_key() {
 #[test]
 fn part2_5_3_atom_message_is_the_raw_bytes_percent_encoded_once() {
     let ir = machine_output_fixture();
-    let atoms = render_atoms_machine(&ir);
+    let atoms = render_atoms_machine(&ir, brygge_ir::version::CURRENT);
     // "caf\xe9 100%\nsecond line": the non-UTF-8 byte, the space, the literal `%` and the newline.
     assert!(
         atoms.contains("atom.0.message=caf%E9%20100%25%0Asecond%20line\n"),
@@ -2744,7 +2744,7 @@ fn part2_5_3_atom_message_is_the_raw_bytes_percent_encoded_once() {
     // Not prepared for the terminal first (the old form escaped, or replaced non-UTF-8 by a placeholder).
     assert!(!atoms.contains("byte(s)") && !atoms.contains("\\u{"));
     // The human form keeps its display escaping: a non-UTF-8 message is not echoed as raw bytes.
-    let human = render_atoms_human(&ir);
+    let human = render_atoms_human(&ir, brygge_ir::version::CURRENT);
     assert!(!human.contains('\u{fffd}'));
     // An absent message is an empty value.
     assert!(atoms.contains("atom.1.message=\n"));
@@ -2843,7 +2843,7 @@ fn part2_5_6_skipped_non_critical_fields_are_visible_to_machines() {
 #[test]
 fn part2_5_7_other_is_not_flattened_the_label_is_other_and_the_name_has_a_companion_key() {
     let ir = machine_output_fixture();
-    let atoms = render_atoms_machine(&ir);
+    let atoms = render_atoms_machine(&ir, brygge_ir::version::CURRENT);
     for expected in [
         "atom.0.status=derived:other\n",
         "atom.0.status_other=bespoke%20kind%20%3D%20x\n",
@@ -2867,7 +2867,10 @@ fn part2_5_versions_are_bumped() {
     assert_eq!(INSPECT_VERSION, 4);
     assert_eq!(VERIFY_VERSION, 4);
     assert!(every_verify_line_shape().contains(&"verify_version=4".to_string()));
-    assert!(render_atoms_machine(&machine_output_fixture()).starts_with("inspect_version=4\n"));
+    assert!(
+        render_atoms_machine(&machine_output_fixture(), brygge_ir::version::CURRENT)
+            .starts_with("inspect_version=4\n")
+    );
 }
 
 #[test]
@@ -2877,6 +2880,7 @@ fn part2_5_every_machine_key_matches_the_key_rule_across_every_key_family() {
         assert_machine_keys_follow_the_rule(&brygge_ir::honesty::summary(&ir).render_machine());
     keys.extend(assert_machine_keys_follow_the_rule(&render_atoms_machine(
         &ir,
+        brygge_ir::version::CURRENT,
     )));
     keys.extend(assert_machine_keys_follow_the_rule(
         &every_verify_line_shape().join("\n"),

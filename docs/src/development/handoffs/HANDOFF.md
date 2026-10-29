@@ -36,7 +36,7 @@ where told. The governing upstream contract is prikk **RFC 113** (History import
 | Area | State |
 |---|---|
 | **Decode → IR (Track A)** | **Released in 0.1.0** for all four sources: Git, Mercurial, Subversion, CVS (main line). See `CHANGELOG.md` and the user guides in `docs/src/guide/`. |
-| **IR contract** | **0.2.0** (RFC 011, which replaced the pre-release 1.0.0 freeze). Tagged fields with a critical bit, a strict canonical form, a digest over the stored bytes; published in `docs/src/reference/ir-artifact-format.md`. |
+| **IR contract** | **0.3.0** (RFC 018, compact artifacts: DEFLATE frames, blobs grouped by path, a digest over the logical stream; this build still reads 0.2.0). Tagged fields with a critical bit, a strict canonical form; published in `docs/src/reference/ir-artifact-format.md`. |
 | **CLI** | `brygge decode <git\|hg\|svn\|cvs> <source> --out <artifact>`, `inspect <artifact> [--atoms]`, `verify <artifact> [--against-source <source>]`, `encode <target> <artifact> [-- <plugin args>]` / `encode --list` (RFC 017 D-3, an external plugin found on `PATH` only); human and versioned machine output (`docs/src/reference/machine-output.md`); CL-08 exit classes. |
 | **Encode → prikk (Track B)** | **Not started past design.** prikk ruled OQ-1…OQ-3 (2026-09-13) and UD-4 (2026-09-23); the encoder waits on prikk building UD-1 and UD-2 (RFC 008; see §8). `brygge encode` (RFC 017 D-3) runs an *external* plugin only; `encode prikk` is reserved and stays unavailable until this lands. |
 | **Gates** | fmt · clippy `-D warnings` · test · `cargo deny` · `cargo audit` · `tools/check-ir-isolation.sh` · `tools/check-links.sh` · `tools/test-release-tools.sh`, all `--locked`, on the default toolchain **and** on MSRV 1.87; CI-enforced (§7). CI runs fmt, clippy and test on Linux x86_64, Linux arm64, macOS (Apple Silicon) and Windows (RFC 012 D-9). |
@@ -98,7 +98,7 @@ module style (`foo.rs` + `foo/`, no `mod.rs`), tests as siblings (`#[cfg(test)] 
 | How to import from each source, what is carried, refused and why | `docs/src/guide/` (one guide per source) |
 | The machine-readable output (keys, versions, exit codes) | `docs/src/reference/machine-output.md` |
 | The whole docs set as a book | `docs/src/SUMMARY.md` (mdbook) |
-| The exact IR artifact wire format (for a foreign encoder or reader) | `docs/src/reference/ir-artifact-format.md` (contract `0.2.0`, RFC 011, PU-3) |
+| The exact IR artifact wire format (for a foreign encoder or reader) | `docs/src/reference/ir-artifact-format.md` (contract `0.3.0`, RFC 018, PU-3; reads `0.2.0` too) |
 | Direction, milestones, release cycles, prikk dependencies | `ROADMAP.md` |
 | How decisions are made, who approves what, the gates | `GOVERNANCE.md` |
 | Every design decision + its build spec | `rfcs/` — see `rfcs/README.md` (the index and the source of truth for RFC state) |

@@ -126,7 +126,7 @@ not apply to). The machine output is specified in
   surface), `-03-threat-model` (what it defends and how). brygge parses untrusted input; the threat model
   is a first-class deliverable.
 - **Reference:** the IR artifact format ([`docs/src/reference/ir-artifact-format.md`](docs/src/reference/ir-artifact-format.md),
-  contract 0.2.0) and the machine output ([`docs/src/reference/machine-output.md`](docs/src/reference/machine-output.md)).
+  contract 0.3.0) and the machine output ([`docs/src/reference/machine-output.md`](docs/src/reference/machine-output.md)).
 - **Decisions:** `rfcs/`: one RFC per source decoder (004 Git, 005 Mercurial, 006 Subversion, 007 CVS),
   the IR foundations (001/002/003) and their re-cut (011), the dependency-surface policy (009), and bounded
   memory (010).
