@@ -22,9 +22,12 @@ brygge decode svn /path/to/repo --out repo.ir    # or let brygge run svnadmin du
 ## Memory while decoding
 
 brygge keeps file content on disk while decoding, not in memory: a large repository needs free disk
-space of roughly the artifact's own size, not the memory that content would otherwise take.
-`--spill-dir <DIR>` chooses where; the default is `--out`'s own directory. A RAM-backed directory
-(`tmpfs`) moves the memory cost rather than removing it. The option never changes the artifact.
+space of roughly its content's uncompressed size while decoding (the spill file, removed when brygge
+exits), plus the artifact, which is several times smaller. `--spill-dir <DIR>` chooses where; the
+default is `--out`'s own directory. A RAM-backed directory (`tmpfs`) moves the memory cost rather than
+removing it. The option never changes the artifact. Compressing the artifact uses up to 8 threads and
+about 100 MiB more memory than before (not growing with the repository), and makes decoding take about
+1.5× as long.
 
 ## Dump forms
 

@@ -125,6 +125,13 @@ codec  := 0 stored (bytes as they are) | 1 DEFLATE (RFC 1951, raw, no zlib heade
 - **What that gives:**
   - two files that differ only in compression are one artifact, with one digest;
   - **the digest stays reproducible across codec versions.**
+- **The digest is a function of the IR alone** (clarified 2026-10-29, after prikk's letter 005):
+  - the store order and the frame packing are fixed by the contract, and enforced by the reader, so two
+    conforming writers cannot order or group the same IR differently;
+  - the only freedom a writer has is each frame's codec, and its DEFLATE bytes, and the digest covers neither.
+  - **The IR includes its provenance** (the brygge and decoder versions, and the parameters). So two decodes of
+    one repository by different brygge versions are two IRs, with two digests. The digest names an IR: a history
+    as decoded. `verify --against-source` is what ties it to the source.
 - **The reader still verifies the digest in its one pass,** before it accepts anything (RFC 015 D-4), and
   `ArtifactChanged` keeps its meaning.
 - **`Decoded::digest`** (0.6.0) keeps its name, with this meaning. The Git example's `Brygge-Artifact:` trailer
@@ -159,6 +166,11 @@ codec  := 0 stored (bytes as they are) | 1 DEFLATE (RFC 1951, raw, no zlib heade
   - **`consumed`** (id32): the digest (D-3) of the artifact it read.
 
   The first record's `consumed` is the decoder's original.
+  - **Each record's output digest is not stored, because it is implied:** record *k*'s output is record *k + 1*'s
+    `consumed`, and the last record's output is the artifact's own digest. A stored copy could only disagree with
+    those (clarified 2026-10-29, prikk's letter 005).
+  - **The losses can be enumerated from the artifact alone:** every `Transform` drop names its step, and the
+    drops without a step are the decoder's own.
 - **A new `EpistemicStatus` variant 2, `Transformed { step: uvarint, changed: list<text>, prior: EpistemicStatus }`,**
   on an atom or a ref that a transform changed:
   - `step` indexes the chain;
@@ -264,6 +276,15 @@ codec  := 0 stored (bytes as they are) | 1 DEFLATE (RFC 1951, raw, no zlib heade
   - whether `miniz_oxide` in `brygge-ir` troubles its dependency policy.
 - **A reply that arrives before the cut** is folded in, by an amendment the owner approves.
 - **0.7.0 is not tagged** until prikk has replied, or the owner rules to go ahead without a reply.
+- **prikk replied on 2026-10-29** (letter 005):
+  - nothing conflicts;
+  - the logical digest is the one prikk would cite;
+  - prikk has no policy on transforms yet;
+  - the dependency is no trouble.
+
+  Its question and its suggestions are answered by the D-3 and D-5 clarifications above, and by D-1's bounds
+  (batch C enforces them before inflating). They change no design. A per-frame digest, its other suggestion, is
+  not needed: each blob's id is its digest, and `get` re-checks it on every later read (`ArtifactChanged`).
 
 ## Open questions (the owner's) — ruled 2026-10-29, as recommended
 

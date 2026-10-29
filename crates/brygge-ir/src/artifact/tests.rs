@@ -1584,8 +1584,17 @@ fn a_one_gib_deflate_bomb_streams_through_read_from_within_a_bounded_peak() {
     std::fs::write(&path, &bytes).unwrap();
 
     if !reset_peak_rss() {
-        eprintln!("skipping: /proc/self/clear_refs is not writable here");
         let _ = std::fs::remove_dir_all(&dir);
+        if cfg!(target_os = "linux") {
+            // Review 100 S-3: on Linux, `/proc/self/clear_refs` missing or unwritable is the test
+            // environment failing to provide what this check needs, not a legitimate reason to skip
+            // (review 093's same ruling for the test plugin) — this is the one OS every CI job that
+            // runs this test runs on.
+            panic!(
+                "/proc/self/clear_refs is not writable, and this is Linux: the peak-RSS bound cannot be checked"
+            );
+        }
+        eprintln!("skipping: /proc/self/clear_refs is not writable here (not Linux)");
         return;
     }
     let before = peak_rss_kib();

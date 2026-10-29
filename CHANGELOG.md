@@ -21,6 +21,9 @@ depends on `miniz_oxide`.
 **Changed:** brygge still reads contract 0.2.0 artifacts (`inspect`, `verify`, `encode`), and writes only
 0.3.0. `inspect` shows the artifact's own contract version.
 
+**Changed:** `decode` compresses on up to 8 threads, and uses about 100 MiB more memory than 0.6.0 for
+it. The amount does not grow with the repository. A decode takes about 1.5× as long.
+
 ## [0.6.0] — 2026-10-29
 
 **Extensibility: build your own encoder on brygge's IR, and run it as `brygge encode <target>`.** A new guide
