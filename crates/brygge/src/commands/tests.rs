@@ -13,8 +13,8 @@ use super::*;
 use crate::cli::{Format, SourceKind};
 use brygge_ir::builder::{AtomDraft, IrBuilder};
 use brygge_ir::model::{
-    DropRecord, Identity, ImportProvenance, LossBoundary, MetadataClaims, RefRecord,
-    TransformRecord,
+    ChangedPart, CopyRecord, DropRecord, Identity, ImportProvenance, LossBoundary, MetadataClaims,
+    RefRecord, TransformRecord,
 };
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -3189,28 +3189,103 @@ fn encode_accepts_a_0_2_0_artifact() {
 
 // ---- RFC 018 D-5, §8 item 4: `verify --against-source` on an artifact with a transform chain ----
 
-/// Wraps `ir`'s root atom's status in a single `Transformed` layer over whatever it already was, and
-/// appends one `TransformRecord` naming `consumed` as the artifact it read — the shape `--against-source`
-/// treats as "has a chain" (RFC 018 D-5). A minimal, hand-built stand-in for what batch P's own encoder
-/// would someday produce; this handoff adds no command that writes one.
-fn wrap_root_in_one_transform(mut ir: brygge_ir::Ir, consumed: [u8; 32]) -> brygge_ir::Ir {
-    ir.transforms.push(TransformRecord {
-        name: "rename-fixer".into(),
-        version: "1.0.0".into(),
-        params: BTreeMap::new(),
-        consumed,
-    });
-    let prior = ir.atoms[0].status.clone();
-    ir.atoms[0].status = EpistemicStatus::Transformed {
-        step: 0,
-        changed: vec![brygge_ir::model::ChangedPart::Author],
-        prior: Box::new(prior),
-    };
-    ir
+/// Rebuilds `ir` through `IrBuilder`, atom by atom in canonical order, remapping every parent/copy
+/// `from_atom`/ref `target` through the new ids `add_atom` returns as it goes — every `AtomId` is
+/// recomputed over whatever changed, so this is exactly the by-hand work review 102 T-1 pointed out a
+/// real transform author has to repeat today (batch P's handoff will give `brygge-ir` a helper for it).
+/// Atom 0's author claim is always changed, so the result genuinely differs in *content* from `ir`, not
+/// only in a status wrapper. When `mark` is `Some(consumed)`, atom 0's status also becomes
+/// `Transformed { step: 0, changed: [Author], prior: <its own original status> }` and one
+/// `TransformRecord` naming `consumed` is added — a well-formed, honestly-marked chain (review 102
+/// T-1). When `mark` is `None`, the status is left exactly as it was and no transform record is added:
+/// a well-formed artifact that simply does not say anything changed — the lying forgery review 102 T-2
+/// asks for, as opposed to the malformed one the original (now-replaced) test used.
+fn rebuild_with_root_author_changed(ir: &brygge_ir::Ir, mark: Option<[u8; 32]>) -> brygge_ir::Ir {
+    let mut b = IrBuilder::new(ir.provenance.clone());
+    for id in ir.content.ids() {
+        // Content-addressed: re-inserting the same bytes yields the same `BlobId`, so no blob
+        // remapping is needed, only atom/ref ids.
+        let bytes = ir.content.get(id).unwrap().unwrap();
+        b.add_blob(bytes).unwrap();
+    }
+    if let Some(consumed) = mark {
+        b.add_transform(TransformRecord {
+            name: "rename-fixer".into(),
+            version: "1.0.0".into(),
+            params: BTreeMap::new(),
+            consumed,
+        });
+    }
+    let mut id_map: BTreeMap<brygge_ir::AtomId, brygge_ir::AtomId> = BTreeMap::new();
+    for (i, atom) in ir.atoms.iter().enumerate() {
+        let parents = atom
+            .parents
+            .iter()
+            .map(|p| *id_map.get(p).expect("parents precede their children"))
+            .collect();
+        let copies = atom
+            .copies
+            .iter()
+            .map(|c| CopyRecord {
+                from: c.from.clone(),
+                from_atom: *id_map
+                    .get(&c.from_atom)
+                    .expect("a copy's from_atom precedes it"),
+                to: c.to.clone(),
+                status: c.status.clone(),
+            })
+            .collect();
+        let mut metadata = atom.metadata.clone();
+        let mut status = atom.status.clone();
+        if i == 0 {
+            metadata.author = Some(Identity {
+                name: brygge_ir::Text::utf8("Transformed Author"),
+                email: Some(brygge_ir::Text::utf8("transformed@example.com")),
+            });
+            if mark.is_some() {
+                status = EpistemicStatus::Transformed {
+                    step: 0,
+                    changed: vec![ChangedPart::Author],
+                    prior: Box::new(status),
+                };
+            }
+        }
+        let new_id = b
+            .add_atom(AtomDraft {
+                parents,
+                ops: atom.ops.clone(),
+                copies,
+                metadata,
+                source: atom.source.clone(),
+                status,
+            })
+            .unwrap();
+        id_map.insert(atom.id, new_id);
+    }
+    for rf in &ir.refs {
+        b.add_ref(RefRecord {
+            name: rf.name.clone(),
+            kind: rf.kind.clone(),
+            target: *id_map.get(&rf.target).expect("a ref's target precedes it"),
+            status: rf.status.clone(),
+            source: rf.source.clone(),
+            annotation: rf.annotation.clone(),
+        })
+        .unwrap();
+    }
+    b.set_loss(ir.loss.clone());
+    for flag in &ir.flags {
+        b.add_flag(flag.clone());
+    }
+    b.finish().unwrap()
+}
+
+fn write_ir_to(ir: &brygge_ir::Ir, path: &Path) {
+    std::fs::write(path, brygge_ir::to_bytes(ir)).unwrap();
 }
 
 #[test]
-fn verify_against_source_root_corresponds_forgery_and_wrong_consumed() {
+fn verify_against_source_root_corresponds_and_wrong_consumed_through_the_real_reader() {
     if !git_available() {
         eprintln!("skipping: git not on PATH");
         return;
@@ -3230,11 +3305,18 @@ fn verify_against_source_root_corresponds_forgery_and_wrong_consumed() {
         code == exit::CLEAN || code == exit::RECORDED_LOSS,
         "unexpected exit {code}"
     );
-    let consumed = brygge_ir::digest_of(&read_ir(&out).unwrap().ir).unwrap();
+    let fresh = read_ir(&out).unwrap().ir;
+    let consumed = brygge_ir::digest_of(&fresh).unwrap();
 
-    // A chain whose root really does correspond to a fresh decode: `root-corresponds`, same exit as
-    // plain `corresponds`.
-    let ir1 = wrap_root_in_one_transform(read_ir(&out).unwrap().ir, consumed);
+    // A chain whose root really does correspond to a fresh decode: written through `to_bytes`, read
+    // back through `brygge_ir::from_file` (so `check_structure` genuinely ran on it), then compared —
+    // `root-corresponds`, same exit as plain `corresponds`.
+    let honest = tmp_ir_path("transform-root-honest");
+    write_ir_to(
+        &rebuild_with_root_author_changed(&fresh, Some(consumed)),
+        &honest,
+    );
+    let ir1 = read_ir(&honest).unwrap().ir;
     let against = run_against_source(&ir1, repo.path(), &brygge_ir::Storage::Memory);
     assert_eq!(against.machine_label(), "root-corresponds");
     assert_eq!(Verdict::from(true, &against).machine_label(), "pass");
@@ -3246,25 +3328,144 @@ fn verify_against_source_root_corresponds_forgery_and_wrong_consumed() {
         "{:?}",
         against.note()
     );
+    assert_eq!(
+        run_verify(&honest, Some(repo.path()), None, Format::Machine),
+        exit::CLEAN,
+        "the real reader, check_structure, and the comparison together must still reach root-corresponds"
+    );
 
-    // The forgery: the same transformed root, with the chain record itself removed — now compared by
-    // whole-`Ir` equality (no chain, so the old path), and the status-wrapper difference it leaves
-    // behind is still a genuine mismatch, never a silent pass.
-    let mut forged = wrap_root_in_one_transform(read_ir(&out).unwrap().ir, consumed);
-    forged.transforms.clear();
-    let against = run_against_source(&forged, repo.path(), &brygge_ir::Storage::Memory);
-    assert_eq!(against.machine_label(), "does-not-correspond");
-
-    // A chain whose `consumed` names the wrong artifact: `does-not-correspond`, with the root detail.
-    let wrong = wrap_root_in_one_transform(read_ir(&out).unwrap().ir, [0u8; 32]);
-    let against = run_against_source(&wrong, repo.path(), &brygge_ir::Storage::Memory);
+    // A chain whose `consumed` names the wrong artifact: `does-not-correspond`, with the root detail —
+    // again through a real write and a real read back.
+    let wrong = tmp_ir_path("transform-root-wrong");
+    write_ir_to(
+        &rebuild_with_root_author_changed(&fresh, Some([0u8; 32])),
+        &wrong,
+    );
+    let ir2 = read_ir(&wrong).unwrap().ir;
+    let against = run_against_source(&ir2, repo.path(), &brygge_ir::Storage::Memory);
     assert_eq!(against.machine_label(), "does-not-correspond");
     assert_eq!(
         against.detail(),
         Some("the chain's root is not this source's decode")
     );
+    assert_eq!(
+        run_verify(&wrong, Some(repo.path()), None, Format::Machine),
+        exit::VERIFY_FAILED
+    );
 
     let _ = std::fs::remove_file(&out);
+    let _ = std::fs::remove_file(&honest);
+    let _ = std::fs::remove_file(&wrong);
+}
+
+/// Review 102 T-2: the forgery that actually matters is not a malformed artifact (a reader refuses that
+/// outright, before any comparison — see
+/// [`a_malformed_transform_chain_is_refused_by_the_reader_not_given_a_verdict`] below) but a
+/// **well-formed** one that simply lies: the content changed, but the status stays `Stated` and no
+/// transform record says so at all — indistinguishable from the decoder's own original by structure
+/// alone. `verify`'s internal checks pass it (it is well-formed); `--against-source` is what catches it.
+#[test]
+fn verify_against_source_rejects_a_well_formed_artifact_that_lies_about_being_unchanged() {
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let repo = simple_repo("transform-forgery");
+    let out = tmp_ir_path("transform-forgery-base");
+    let code = run_decode(
+        SourceKind::Git,
+        repo.path(),
+        &out,
+        false,
+        false,
+        None,
+        Format::Machine,
+    );
+    assert!(
+        code == exit::CLEAN || code == exit::RECORDED_LOSS,
+        "unexpected exit {code}"
+    );
+    let fresh = read_ir(&out).unwrap().ir;
+
+    let lie = tmp_ir_path("transform-forgery-lie");
+    write_ir_to(&rebuild_with_root_author_changed(&fresh, None), &lie);
+
+    // Well-formed: the internal checks (structure, replay, derivations, source-invariants, provenance,
+    // loss-boundary) all pass — nothing about this artifact's own shape is wrong.
+    let (checks, internal_pass) = compute_internal_checks(&brygge_ir::from_file(&lie));
+    let failing: Vec<&str> = checks
+        .iter()
+        .filter(|(_, outcome)| outcome.label() != "pass")
+        .map(|(name, _)| *name)
+        .collect();
+    assert!(
+        internal_pass,
+        "a lying-but-well-formed artifact must still pass every internal check: {failing:?}"
+    );
+
+    let liar_ir = read_ir(&lie).unwrap().ir;
+    let against = run_against_source(&liar_ir, repo.path(), &brygge_ir::Storage::Memory);
+    assert_eq!(
+        against.machine_label(),
+        "does-not-correspond",
+        "the content really did change, even though nothing in the artifact admits it"
+    );
+    assert_eq!(
+        run_verify(&lie, Some(repo.path()), None, Format::Machine),
+        exit::VERIFY_FAILED
+    );
+
+    let _ = std::fs::remove_file(&out);
+    let _ = std::fs::remove_file(&lie);
+}
+
+/// Review 102 T-2's other half: the chain-removed case the previous version of this test used is not a
+/// forgery `--against-source` should ever see — it is a malformed artifact (`Transformed { step: 0,
+/// .. }` with an empty `Ir.transforms`, so `step` is not less than the chain's own length `0`), refused
+/// by the reader itself, before any source comparison runs at all. A read failure, not a verdict:
+/// `verify`'s own exit code for "this does not even decode", not one of `--against-source`'s outcomes.
+#[test]
+fn a_malformed_transform_chain_is_refused_by_the_reader_not_given_a_verdict() {
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let repo = simple_repo("transform-malformed");
+    let out = tmp_ir_path("transform-malformed-base");
+    let code = run_decode(
+        SourceKind::Git,
+        repo.path(),
+        &out,
+        false,
+        false,
+        None,
+        Format::Machine,
+    );
+    assert!(
+        code == exit::CLEAN || code == exit::RECORDED_LOSS,
+        "unexpected exit {code}"
+    );
+    let fresh = read_ir(&out).unwrap().ir;
+    let consumed = brygge_ir::digest_of(&fresh).unwrap();
+
+    let mut malformed = rebuild_with_root_author_changed(&fresh, Some(consumed));
+    malformed.transforms.clear(); // the status still claims step 0; the chain no longer has one.
+
+    let bad = tmp_ir_path("transform-malformed-bytes");
+    write_ir_to(&malformed, &bad);
+
+    match brygge_ir::from_file(&bad) {
+        Err(brygge_ir::Error::NonCanonical(m)) => assert!(m.contains("step"), "{m}"),
+        other => panic!("expected a NonCanonical refusal, got {other:?}"),
+    }
+    assert_eq!(
+        run_verify(&bad, Some(repo.path()), None, Format::Machine),
+        exit::VERIFY_FAILED,
+        "a read failure must still exit as a failure, never silently as a verdict of any kind"
+    );
+
+    let _ = std::fs::remove_file(&out);
+    let _ = std::fs::remove_file(&bad);
 }
 
 #[test]
@@ -3289,18 +3490,29 @@ fn verify_against_source_root_reproduces_for_cvs() {
         code == exit::CLEAN || code == exit::RECORDED_LOSS,
         "unexpected exit {code}"
     );
-    let consumed = brygge_ir::digest_of(&read_ir(&out).unwrap().ir).unwrap();
-    let ir1 = wrap_root_in_one_transform(read_ir(&out).unwrap().ir, consumed);
+    let fresh = read_ir(&out).unwrap().ir;
+    let consumed = brygge_ir::digest_of(&fresh).unwrap();
+
+    let honest = repo.dir.join("transformed.ir");
+    write_ir_to(
+        &rebuild_with_root_author_changed(&fresh, Some(consumed)),
+        &honest,
+    );
+    let ir1 = read_ir(&honest).unwrap().ir;
     let against = run_against_source(&ir1, repo.path(), &brygge_ir::Storage::Memory);
     assert_eq!(against.machine_label(), "root-reproduces");
     assert_eq!(Verdict::from(true, &against).machine_label(), "pass");
+    assert_eq!(
+        run_verify(&honest, Some(repo.path()), None, Format::Machine),
+        exit::CLEAN
+    );
 }
 
 /// RFC 018 D-5 §5: `inspect`'s own transforms overview — shown regardless of `--atoms`, with each
 /// step's name/version/consumed digest and how many atoms/refs/drops it changed.
 #[test]
 fn inspect_shows_the_transform_chain_overview() {
-    let ir = wrap_root_in_one_transform(machine_output_fixture(), [0x11; 32]);
+    let ir = rebuild_with_root_author_changed(&machine_output_fixture(), Some([0x11; 32]));
 
     let human = render_transforms_human(&ir, false);
     assert!(human.contains("transforms: 1"), "{human}");
