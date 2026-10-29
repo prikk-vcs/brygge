@@ -20,6 +20,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 const USAGE: i32 = 2;
+#[cfg(unix)]
 const FAILURE: i32 = 1;
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -249,8 +250,7 @@ fn an_empty_and_a_relative_path_entry_are_skipped() {
 
 #[test]
 fn a_non_executable_file_is_skipped_and_the_search_continues() {
-    #[cfg(windows)]
-    {
+    if cfg!(windows) {
         eprintln!("skipping: this test's premise (a non-executable regular file) is Unix-only");
         return;
     }
@@ -290,8 +290,7 @@ fn a_non_executable_file_is_skipped_and_the_search_continues() {
 
 #[test]
 fn a_non_executable_file_alone_is_not_found() {
-    #[cfg(windows)]
-    {
+    if cfg!(windows) {
         eprintln!("skipping: this test's premise (a non-executable regular file) is Unix-only");
         return;
     }
