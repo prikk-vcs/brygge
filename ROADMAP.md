@@ -7,10 +7,11 @@ design ids (e.g. `PR-4`, `IX-06`, `HO-1`, `INV-2`) refer to the design set in
 model). The governing upstream is prikk **RFC 113** (the import contract; accepted, owner-ruled
 2026-09-13).
 
-> **Status (2026-10-29): brygge 0.6.0 (Extensibility) is released,** after 0.5.0 (Scale at real size), 0.4.0
-> (Hardening), 0.3.1 (Security), 0.3.0 (Source reach), 0.2.0 (Scale), 0.1.1 (Windows, and release automation)
-> and 0.1.0 (the first release). All four sources (Git, hg, SVN, CVS) decode into IR contract 0.2.0 (see
-> `CHANGELOG.md`). Next is **0.7.0 (contract 0.3.0)**. brygge is in **v0 development**: breaking changes made to
+> **Status (2026-10-30): brygge 0.7.0 (Contract 0.3.0) is released,** after 0.6.0 (Extensibility), 0.5.0
+> (Scale at real size), 0.4.0 (Hardening), 0.3.1 (Security), 0.3.0 (Source reach), 0.2.0 (Scale), 0.1.1
+> (Windows, and release automation) and 0.1.0 (the first release). All four sources (Git, hg, SVN, CVS)
+> decode into the IR (contract 0.2.0, RFC 011); artifacts are written as contract 0.3.0, and brygge still
+> reads 0.2.0 (see `CHANGELOG.md`). Next: to be planned. brygge is in **v0 development**: breaking changes made to
 > improve or fix it are acceptable, and are stated in the release notes. Track B (encode → prikk):
 > **prikk decides, brygge informs proactively**. brygge sends its import requirements to prikk; the encoder
 > is built once prikk's import foundations exist (see Track B). For the invariants, the architecture and
@@ -167,7 +168,7 @@ design (prikk RFC 113 §6).
 | **0.4.0** (**released 2026-10-20**) | **Hardening** | Mutation tests of every untrusted parser and the IR artifact reader, on stable Rust with no new dependency or feature: quick in every test run; deep, under a memory cap, when parser code or `Cargo.lock` changes and at each release cut; real-world validation on public repositories of each source kind (results and import shapes recorded); the broken-pipe fix | 0.3.1 released; RFC 014 accepted | Every mutation module passes at both depths; the deep job proven on a parser change; the corpus results recorded |
 | **0.5.0** (**released 2026-10-21**) | **Scale at real size**, and **the AUR** | Measure first (where a real decode's peak goes); a streaming artifact writer; a disk-backed content store during decoding (`--spill-dir` to place it); a streaming reader for `verify`/`inspect`; **RFC 016:** `brygge` and `brygge-bin` published to the AUR by the release workflow, built and checked in an Arch container first. Peak memory tracks the history's metadata, not its total content; artifacts byte-identical (the format is unchanged) | 0.4.0 released; RFC 015 accepted | fish-shell and TortoiseHg decode and verify on an ordinary machine; byte-identity on every fixture, the bench and the real corpus |
 | **0.6.0** (**released 2026-10-29**) | **Extensibility** | The IR as the official extension point: an encoder author's guide, and an **unsupported**, labelled reference encoder from IR to Git (`git fast-import`); external encoder plugins, `brygge encode <target>` → `brygge-encode-<target>` on `PATH`, with the artifact verified first and honest labelling (this amends the external design's CL-03) | 0.5.0 released | The reference encoder round-trips a Git fixture (differences only where the IR records a loss); plugin discovery and refusals tested |
-| **0.7.0** (**in progress**; RFC 018 accepted 2026-10-29) | **Contract 0.3.0: compact artifacts and honest transforms** | A compressed blob encoding with a pinned, deterministic codec (RFC 015 OQ-1), and transforms (middlewares) that record themselves (a transform chain, and a `Transformed` derivation kind; RFC 017 D-4). **One contract change for both;** prikk's view asked by letter | Its RFC opens when 0.5.0 is released, or earlier if prikk's import design needs smaller artifacts | Defined by its RFC |
+| **0.7.0** (**released 2026-10-30**) | **Contract 0.3.0: compact artifacts and honest transforms** | A compressed blob encoding with a pinned, deterministic codec (RFC 015 OQ-1), and transforms (middlewares) that record themselves (a transform chain, and a `Transformed` derivation kind; RFC 017 D-4). **One contract change for both;** prikk's view asked by letter | Its RFC opens when 0.5.0 is released, or earlier if prikk's import design needs smaller artifacts | Defined by its RFC |
 | **B0** | **Requirements to prikk** | Letter 001: an importer's requirements and questions (no code) | RFC 011 accepted | **Done 2026-09-23:** sent and answered (see Track B0) |
 | **B1** | **prikk encoder** | RFC 008, conforming to prikk's import foundations | prikk's foundations accepted (see Track B) | Per RFC 008 |
 | **1.0.0** | — | The owner's decision alone. Its criteria are to be restated when 1.0 is discussed (the former "prikk proposal encoder (B0)" criterion was withdrawn with B0) | — | — |

@@ -10,6 +10,8 @@ it, instead of answering `not-checked`; and D-2's bulk-read API is
 `brygge_ir::artifact::store_order(&Ir)`, not `ContentStore::iter`. The order is defined by the metadata, so one
 function serves the writer, the reader's check and encoders alike, for a store read from an artifact and for one
 still being built.
+
+**Done (2026-10-30): implemented in 0.7.0.**
 **Two contract refinements at the batch P handoff (the architect, 2026-10-30; 0.3.0 unreleased):**
 - `parents` joins the atom vocabulary of `changed`, because removing an atom rewires its children;
 - a `Transform` drop's `what` has a grammar the reader checks (`atom <id>`, `op <id> <path>`, `copy <id> <to>`,

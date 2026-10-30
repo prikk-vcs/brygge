@@ -61,7 +61,7 @@ dependencies = [
 
 [[package]]
 name = "brygge"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "brygge-decode-cvs",
  "brygge-decode-git",
@@ -75,7 +75,7 @@ dependencies = [
 
 [[package]]
 name = "brygge-bench"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "brygge-decode-cvs",
  "brygge-decode-git",
@@ -86,7 +86,7 @@ dependencies = [
 
 [[package]]
 name = "brygge-decode-cvs"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "brygge-ir",
  "brygge-mutate",
@@ -95,7 +95,7 @@ dependencies = [
 
 [[package]]
 name = "brygge-decode-git"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "brygge-ir",
  "gix",
@@ -103,7 +103,7 @@ dependencies = [
 
 [[package]]
 name = "brygge-decode-hg"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "brygge-ir",
  "brygge-mutate",
@@ -114,7 +114,7 @@ dependencies = [
 
 [[package]]
 name = "brygge-decode-svn"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "brygge-ir",
  "brygge-mutate",
@@ -124,7 +124,7 @@ dependencies = [
 
 [[package]]
 name = "brygge-encode-git-example"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "brygge-decode-cvs",
  "brygge-decode-git",
@@ -135,11 +135,11 @@ dependencies = [
 
 [[package]]
 name = "brygge-encode-test-plugin"
-version = "0.6.0"
+version = "0.7.0"
 
 [[package]]
 name = "brygge-ir"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "brygge-mutate",
  "miniz_oxide",
@@ -148,11 +148,11 @@ dependencies = [
 
 [[package]]
 name = "brygge-mutate"
-version = "0.6.0"
+version = "0.7.0"
 
 [[package]]
 name = "brygge-transform-authors-example"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "brygge-decode-git",
  "brygge-ir",
@@ -160,7 +160,7 @@ dependencies = [
 
 [[package]]
 name = "brygge-transform-test-plugin"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "brygge-ir",
 ]

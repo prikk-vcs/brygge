@@ -8,48 +8,63 @@ Every handoff adds its own entry in its own commit.
 
 ## [Unreleased]
 
-**Breaking:** Artifacts are IR contract 0.3.0: compressed, with blobs grouped by path (4.6× to 7.5×
-smaller on the measured repositories — eza, TortoiseHg, fish-shell — most for histories of small files).
-brygge 0.6.0 and earlier cannot read them. The artifact digest is now taken over the uncompressed
-content, so it does not depend on how the artifact was compressed (RFC 018).
+## [0.7.0] — 2026-10-30
 
-**Breaking:** `brygge-ir`: `version::CURRENT` is 0.3.0; `artifact::Decoded` gains `contract`; `brygge-ir`
-depends on `miniz_oxide`.
+**Contract 0.3.0: compact artifacts, and transforms that record themselves.** Artifacts are compressed, and
+4.6× to 7.5× smaller on the measured repositories. Their digest is taken over the uncompressed content, so it
+does not depend on how they were compressed. `brygge transform <name>` runs an external transform plugin (for
+example an author mapping) and checks its output against its input: every change marked, every removal
+recorded, nothing invented. If any check fails, nothing is written. `verify --against-source` traces a
+transformed artifact back to its source. brygge still reads artifacts of contract 0.2.0. **Breaking:** brygge
+0.6.0 and earlier cannot read the new artifacts, and `brygge-ir`'s API changes (below). Install with `cargo
+install --locked brygge`, or download a binary from the GitHub release.
 
-**Added:** `brygge_ir::artifact::store_order`: the blob order that reads each compressed frame once.
+The detailed changes that made up 0.7.0 follow.
 
-**Added:** IR contract 0.3.0 can record transforms (programs that turn one artifact into another): a
-chain of records, each citing the digest of the artifact it read; a `Transformed` status that keeps the
-status before it; and a `Transform` loss. `inspect` shows the chain; `verify --against-source` checks its
-root against the source (`root-corresponds`). brygge itself writes no transformed artifact yet (RFC 018).
+### Added
 
-**Added:** `brygge_ir::artifact::digest_of`: an IR's digest, without writing it.
+- `brygge_ir::artifact::store_order`: the blob order that reads each compressed frame once.
+- IR contract 0.3.0 can record transforms (programs that turn one artifact into another): a
+  chain of records, each citing the digest of the artifact it read; a `Transformed` status that keeps the
+  status before it; and a `Transform` loss. `inspect` shows the chain; `verify --against-source` checks its
+  root against the source (`root-corresponds`). brygge itself writes no transformed artifact yet (RFC 018).
+- `brygge_ir::artifact::digest_of`: an IR's digest, without writing it.
+- `brygge transform <name> <artifact> --out <file>`: runs an external transform plugin,
+  `brygge-transform-<name>`, found on `PATH` only. brygge verifies the input artifact first, refuses one
+  with two atoms sharing the same source identity, and checks the plugin's own output for honesty
+  (`brygge_ir::transform::check`) before accepting it — any failure leaves `--out` untouched. `brygge
+  transform --list` shows the plugins found (RFC 018 D-6).
+- `brygge_ir::transform`: `check`, the honesty rule an output must pass to be accepted as a
+  transform of an input (every change marked, every removal recorded, nothing invented); and `Edit`, the
+  sanctioned way to build one, which computes every mark from the difference with the input and passes
+  `check` by construction (RFC 018 D-6).
+- `examples/transform-authors`: an unsupported example transform rewriting author/committer
+  identities through a mailmap-style map file. It is not part of brygge, and is never released (RFC 018
+  D-6).
 
-**Added:** `brygge transform <name> <artifact> --out <file>`: runs an external transform plugin,
-`brygge-transform-<name>`, found on `PATH` only. brygge verifies the input artifact first, refuses one
-with two atoms sharing the same source identity, and checks the plugin's own output for honesty
-(`brygge_ir::transform::check`) before accepting it — any failure leaves `--out` untouched. `brygge
-transform --list` shows the plugins found (RFC 018 D-6).
+### Changed
 
-**Added:** `brygge_ir::transform`: `check`, the honesty rule an output must pass to be accepted as a
-transform of an input (every change marked, every removal recorded, nothing invented); and `Edit`, the
-sanctioned way to build one, which computes every mark from the difference with the input and passes
-`check` by construction (RFC 018 D-6).
+- brygge still reads contract 0.2.0 artifacts (`inspect`, `verify`, `encode`), and writes only
+  0.3.0. `inspect` shows the artifact's own contract version.
+- `decode` compresses on up to 8 threads, and uses about 100 MiB more memory than 0.6.0 for
+  it. The amount does not grow with the repository. A decode takes about 1.5× as long.
+- IR contract 0.3.0: `ChangedPart::Parents` joins the atom vocabulary
+  (removing an atom rewires its children's parents to its own, in order, without duplicates); a
+  `Transform`-class drop's `what` now follows a fixed grammar (`atom <id>`, `op <id> <path>`, `copy <id>
+  <to>`, `ref <kind> <name>`), checked at decode time (RFC 018 D-6).
+- `verify --against-source` on an artifact made by another brygge version re-derives it under that
+  artifact's versions. An identical history gives `corresponds`, with a note. A different one gives
+  `not-checked`, with the version to re-run with, never `does-not-correspond`. Before, every artifact
+  from an earlier version was reported as not corresponding.
 
-**Added:** `examples/transform-authors`: an unsupported example transform rewriting author/committer
-identities through a mailmap-style map file. It is not part of brygge, and is never released (RFC 018
-D-6).
+### Breaking
 
-**Changed:** brygge still reads contract 0.2.0 artifacts (`inspect`, `verify`, `encode`), and writes only
-0.3.0. `inspect` shows the artifact's own contract version.
-
-**Changed:** `decode` compresses on up to 8 threads, and uses about 100 MiB more memory than 0.6.0 for
-it. The amount does not grow with the repository. A decode takes about 1.5× as long.
-
-**Changed:** IR contract 0.3.0 (still unreleased): `ChangedPart::Parents` joins the atom vocabulary
-(removing an atom rewires its children's parents to its own, in order, without duplicates); a
-`Transform`-class drop's `what` now follows a fixed grammar (`atom <id>`, `op <id> <path>`, `copy <id>
-<to>`, `ref <kind> <name>`), checked at decode time (RFC 018 D-6).
+- Artifacts are IR contract 0.3.0: compressed, with blobs grouped by path (4.6× to 7.5×
+  smaller on the measured repositories — eza, TortoiseHg, fish-shell — most for histories of small files).
+  brygge 0.6.0 and earlier cannot read them. The artifact digest is now taken over the uncompressed
+  content, so it does not depend on how the artifact was compressed (RFC 018).
+- `brygge-ir`: `version::CURRENT` is 0.3.0; `artifact::Decoded` gains `contract`; `brygge-ir`
+  depends on `miniz_oxide`.
 
 ## [0.6.0] — 2026-10-29
 

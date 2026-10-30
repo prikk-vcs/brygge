@@ -5,19 +5,22 @@ map: what brygge is, the state at handover, the invariants you must never regres
 lives, how to build and gate it, and the prioritized backlog. Everything it references is in this
 repository; nothing load-bearing lives only in someone's head.
 
-**Date of handover:** 2026-09-12. **Updated for the 0.6.0 release, 2026-10-29.** **State:** brygge
+**Date of handover:** 2026-09-12. **Updated for the 0.7.0 release, 2026-10-30.** **State:** brygge
 **0.1.0 is released**: the decode → IR half for all four named sources, on IR contract **0.2.0**.
 **0.1.1** added Windows support and the release workflow (RFC 012), **0.2.0** bounds long Git and
 CVS histories (RFC 010), **0.3.0** reaches SVN delta dumps, Mercurial's hashed store paths and CVS branch
 history (RFC 013), **0.4.0** mutation-tests every untrusted parser and validates brygge against real
 public repositories of every source kind (RFC 014), **0.5.0** keeps a decode's content on disk and
 streams the artifact writer and reader, so peak memory tracks a history's metadata rather than its total
-content, and publishes `brygge`/`brygge-bin` to the AUR (RFC 015, RFC 016), and **0.6.0** turns the IR into
+content, and publishes `brygge`/`brygge-bin` to the AUR (RFC 015, RFC 016), **0.6.0** turns the IR into
 the official extension point: an encoder author's guide, an unsupported reference encoder from IR to Git
 (`examples/encode-git`), and external encoder plugins run with `brygge encode <target>` (RFC 017 Parts A
-and B; Part C, transforms, follows in 0.7.0). All gates
-are green, and CI enforces them on the declared MSRV. The encode → prikk half waits on prikk's import
-foundations (see §8).
+and B), and **0.7.0** is the next contract revision, RFC 018: artifacts are compressed (contract **0.3.0**,
+batch C), transforms can record themselves in the contract and be checked for honesty by the reader (batch
+T), and `brygge transform <name>` runs them as external plugins, with brygge checking every plugin's output
+against its input before writing anything (batch P; RFC 017 Part C). This build still reads contract 0.2.0.
+All gates are green, and CI enforces them on the declared MSRV. The encode → prikk half waits on prikk's
+import foundations (see §8).
 
 ---
 
@@ -37,7 +40,7 @@ where told. The governing upstream contract is prikk **RFC 113** (History import
 |---|---|
 | **Decode → IR (Track A)** | **Released in 0.1.0** for all four sources: Git, Mercurial, Subversion, CVS (main line). See `CHANGELOG.md` and the user guides in `docs/src/guide/`. |
 | **IR contract** | **0.3.0** (RFC 018, compact artifacts: DEFLATE frames, blobs grouped by path, a digest over the logical stream; this build still reads 0.2.0). Tagged fields with a critical bit, a strict canonical form; published in `docs/src/reference/ir-artifact-format.md`. |
-| **CLI** | `brygge decode <git\|hg\|svn\|cvs> <source> --out <artifact>`, `inspect <artifact> [--atoms]`, `verify <artifact> [--against-source <source>]`, `encode <target> <artifact> [-- <plugin args>]` / `encode --list` (RFC 017 D-3, an external plugin found on `PATH` only); human and versioned machine output (`docs/src/reference/machine-output.md`); CL-08 exit classes. |
+| **CLI** | `brygge decode <git\|hg\|svn\|cvs> <source> --out <artifact>`, `inspect <artifact> [--atoms]`, `verify <artifact> [--against-source <source>]`, `encode <target> <artifact> [-- <plugin args>]` / `encode --list` (RFC 017 D-3, an external plugin found on `PATH` only), `transform <name> <artifact> --out <file> [-- <plugin args>]` / `transform --list` (RFC 018 D-6, an external plugin, checked against its input before anything is written); human and versioned machine output (`docs/src/reference/machine-output.md`); CL-08 exit classes. |
 | **Encode → prikk (Track B)** | **Not started past design.** prikk ruled OQ-1…OQ-3 (2026-09-13) and UD-4 (2026-09-23); the encoder waits on prikk building UD-1 and UD-2 (RFC 008; see §8). `brygge encode` (RFC 017 D-3) runs an *external* plugin only; `encode prikk` is reserved and stays unavailable until this lands. |
 | **Gates** | fmt · clippy `-D warnings` · test · `cargo deny` · `cargo audit` · `tools/check-ir-isolation.sh` · `tools/check-links.sh` · `tools/test-release-tools.sh`, all `--locked`, on the default toolchain **and** on MSRV 1.87; CI-enforced (§7). CI runs fmt, clippy and test on Linux x86_64, Linux arm64, macOS (Apple Silicon) and Windows (RFC 012 D-9). |
 | **Toolchain** | Rust 2024, MSRV **1.87** (raised from 1.85 for the ruzstd security fix, RUSTSEC-2026-0344; enforced by CI). |
@@ -303,7 +306,7 @@ the team inherits the reasoning, not just the TODO. `ROADMAP.md` is authoritativ
   streams: RFC 010 increments 2 and 4 are deferred by measurement.
 - **No progress reporting or cancellation.** Interrupting a decode is safe (the artifact write is atomic),
   but it produces nothing.
-- The threat model is the living document, revisited every release (v0.3 for 0.1.0, v0.4 for 0.1.1, v0.5 for 0.2.0, v0.6 for 0.3.0, v0.7 for 0.3.1, v0.8 for 0.4.0, v0.9 for 0.5.0, v0.10 for 0.6.0).
+- The threat model is the living document, revisited every release (v0.3 for 0.1.0, v0.4 for 0.1.1, v0.5 for 0.2.0, v0.6 for 0.3.0, v0.7 for 0.3.1, v0.8 for 0.4.0, v0.9 for 0.5.0, v0.10 for 0.6.0, v0.11 for 0.7.0).
 
 ---
 
