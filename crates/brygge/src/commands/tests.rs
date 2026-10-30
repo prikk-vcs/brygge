@@ -3165,26 +3165,39 @@ fn verify_against_source_corresponds_on_a_0_2_0_artifact() {
     );
 
     // Review 106 V-1: this fixture's provenance names brygge 0.6.0 (confirmed in the fixture's own
-    // test below); this build is a different version. Direct `run_against_source`, through the real
-    // reader (`from_file`), proves the comparison restamps rather than falsely reporting tampering.
+    // test below); this build is usually a different version, but not always — `main` carries this
+    // fix before the 0.7.0 version bump itself lands (a separate, later commit), and CI runs this
+    // suite on both sides of that bump. `assert_version_note` below handles either case. Direct
+    // `run_against_source`, through the real reader (`from_file`), proves the comparison restamps
+    // rather than falsely reporting tampering.
     let decoded = brygge_ir::from_file(&fixture).unwrap();
     match run_against_source(&decoded.ir, r.path(), &brygge_ir::Storage::Memory) {
-        AgainstSourceOutcome::Corresponds(Some(note)) => {
-            assert_eq!(
-                note,
-                format!(
-                    "decoded by brygge 0.6.0, re-derived by {}; the history is identical",
-                    env!("CARGO_PKG_VERSION")
-                ),
-                "the note names both versions and says the history is identical"
-            );
-            assert_ne!(
-                env!("CARGO_PKG_VERSION"),
-                "0.6.0",
-                "this test needs a real version gap"
-            );
-        }
-        other => panic!("expected Corresponds(Some(note)) across brygge versions, got {other:?}"),
+        AgainstSourceOutcome::Corresponds(note) => assert_version_note("0.6.0", note),
+        other => panic!("expected Corresponds across brygge versions, got {other:?}"),
+    }
+}
+
+/// Review 106 V-1/V-2: whether `run_against_source` adds a version note depends on whether *this
+/// build's* version actually differs from `fixture_version` — true whenever these fixtures (made by
+/// brygge 0.6.0) are compared on a build that is genuinely a different version, but **not** on a
+/// checkout of this very fix that sits on `main` before the separate version-bump commit lands (the
+/// fixtures and this fix are reviewed and pushed first; see review 107's "Then"). Asserts whichever
+/// is actually true, rather than assuming the gap, so these tests pass on both sides of that bump.
+fn assert_version_note(fixture_version: &str, note: Option<String>) {
+    let this_version = env!("CARGO_PKG_VERSION");
+    if this_version == fixture_version {
+        assert_eq!(
+            note, None,
+            "this build's own version equals the fixture's: no version gap, no note"
+        );
+    } else {
+        assert_eq!(
+            note,
+            Some(format!(
+                "decoded by brygge {fixture_version}, re-derived by {this_version}; the history is identical"
+            )),
+            "the note names both versions and says the history is identical"
+        );
     }
 }
 
@@ -3218,17 +3231,8 @@ fn verify_against_source_reproduces_on_a_0_2_0_cvs_artifact_across_brygge_versio
     assert_eq!(decoded.contract, brygge_ir::ContractVersion::new(0, 2, 0));
 
     match run_against_source(&decoded.ir, repo.path(), &brygge_ir::Storage::Memory) {
-        AgainstSourceOutcome::Reproduces(Some(note)) => {
-            assert_eq!(
-                note,
-                format!(
-                    "decoded by brygge 0.6.0, re-derived by {}; the history is identical",
-                    env!("CARGO_PKG_VERSION")
-                ),
-                "CVS's own wording (reproduces) carries the same version note"
-            );
-        }
-        other => panic!("expected Reproduces(Some(note)) across brygge versions, got {other:?}"),
+        AgainstSourceOutcome::Reproduces(note) => assert_version_note("0.6.0", note),
+        other => panic!("expected Reproduces across brygge versions, got {other:?}"),
     }
 }
 
@@ -3266,17 +3270,8 @@ fn verify_against_source_corresponds_on_a_0_2_0_git_rename_artifact_across_brygg
     assert_eq!(decoded.contract, brygge_ir::ContractVersion::new(0, 2, 0));
 
     match run_against_source(&decoded.ir, r.path(), &brygge_ir::Storage::Memory) {
-        AgainstSourceOutcome::Corresponds(Some(note)) => {
-            assert_eq!(
-                note,
-                format!(
-                    "decoded by brygge 0.6.0, re-derived by {}; the history is identical",
-                    env!("CARGO_PKG_VERSION")
-                ),
-                "the inferred rename's own Derivation must be restamped too"
-            );
-        }
-        other => panic!("expected Corresponds(Some(note)) across brygge versions, got {other:?}"),
+        AgainstSourceOutcome::Corresponds(note) => assert_version_note("0.6.0", note),
+        other => panic!("expected Corresponds across brygge versions, got {other:?}"),
     }
 }
 
