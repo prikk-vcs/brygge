@@ -3188,6 +3188,98 @@ fn verify_against_source_corresponds_on_a_0_2_0_artifact() {
     }
 }
 
+/// `crates/brygge/tests/data/contract-0.2.0-cvs-repro.ir`: review 106 V-2 — the architect's own runs
+/// (reviews 106/107) showed what this would prove; this test brings that proof into the permanent
+/// suite. Decoded by the 0.6.0 release's own `brygge` (commit `2f1e659`, built in a separate worktree)
+/// from exactly the CVS repository [`decode_cvs_reconstructs_derived_changesets_and_reproduces`] above
+/// builds: a plain directory with `a.c,v`/`b.c,v`, each `cvs_single_rev("alice", <date>, "add",
+/// <content>)` — `("alice", "2024.01.01.12.00.00", "add", "aaa\n")` and `("alice",
+/// "2024.01.01.12.00.01", "add", "bbb\n")`. Rebuild recipe: `cargo run -p brygge --bin brygge -- decode
+/// cvs <that repository> --out contract-0.2.0-cvs-repro.ir`, run from a `2f1e659` worktree. CVS's
+/// reconstructed changeset carries a `Derivation` (`by: "brygge-decode-cvs"`), so this exercises
+/// `restamped`'s `Derived`-restamping path, not only `Stated` content.
+#[test]
+fn verify_against_source_reproduces_on_a_0_2_0_cvs_artifact_across_brygge_versions() {
+    let repo = cvs_repo();
+    write_vfile(
+        &repo,
+        "a.c",
+        &cvs_single_rev("alice", "2024.01.01.12.00.00", "add", "aaa\n"),
+    );
+    write_vfile(
+        &repo,
+        "b.c",
+        &cvs_single_rev("alice", "2024.01.01.12.00.01", "add", "bbb\n"),
+    );
+
+    let fixture =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/contract-0.2.0-cvs-repro.ir");
+    let decoded = brygge_ir::from_file(&fixture).unwrap();
+    assert_eq!(decoded.contract, brygge_ir::ContractVersion::new(0, 2, 0));
+
+    match run_against_source(&decoded.ir, repo.path(), &brygge_ir::Storage::Memory) {
+        AgainstSourceOutcome::Reproduces(Some(note)) => {
+            assert_eq!(
+                note,
+                format!(
+                    "decoded by brygge 0.6.0, re-derived by {}; the history is identical",
+                    env!("CARGO_PKG_VERSION")
+                ),
+                "CVS's own wording (reproduces) carries the same version note"
+            );
+        }
+        other => panic!("expected Reproduces(Some(note)) across brygge versions, got {other:?}"),
+    }
+}
+
+/// `crates/brygge/tests/data/contract-0.2.0-git-rename.ir`: review 106 V-2's other fixture, with an
+/// inferred rename (so a `Derived` *copy* record is restamped too, not just an atom's own status).
+/// Decoded by the 0.6.0 release's own `brygge` (commit `2f1e659`) with `--infer-renames`, from a
+/// three-commit repository using `TempRepo`'s own pinned identity/date (as
+/// [`verify_against_source_corresponds_on_a_0_2_0_artifact`] above uses): `c1` adds `a.txt`
+/// ("rename-fixture one\n"), `c2` adds `b.txt` ("rename-fixture two\n"), `c3` is `git mv a.txt c.txt`
+/// alone. Rebuild recipe: build this exact repository with `TempRepo` (below), then `cargo run -p
+/// brygge --bin brygge -- decode git <that repository> --out contract-0.2.0-git-rename.ir
+/// --infer-renames`, run from a `2f1e659` worktree.
+#[test]
+fn verify_against_source_corresponds_on_a_0_2_0_git_rename_artifact_across_brygge_versions() {
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let r = TempRepo::new();
+    r.commit("a.txt", "rename-fixture one\n", "c1");
+    r.commit("b.txt", "rename-fixture two\n", "c2");
+    r.git(&["mv", "a.txt", "c.txt"]);
+    r.git(&[
+        "-c",
+        "commit.gpgsign=false",
+        "commit",
+        "-q",
+        "-m",
+        "c3-rename",
+    ]);
+
+    let fixture =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/contract-0.2.0-git-rename.ir");
+    let decoded = brygge_ir::from_file(&fixture).unwrap();
+    assert_eq!(decoded.contract, brygge_ir::ContractVersion::new(0, 2, 0));
+
+    match run_against_source(&decoded.ir, r.path(), &brygge_ir::Storage::Memory) {
+        AgainstSourceOutcome::Corresponds(Some(note)) => {
+            assert_eq!(
+                note,
+                format!(
+                    "decoded by brygge 0.6.0, re-derived by {}; the history is identical",
+                    env!("CARGO_PKG_VERSION")
+                ),
+                "the inferred rename's own Derivation must be restamped too"
+            );
+        }
+        other => panic!("expected Corresponds(Some(note)) across brygge versions, got {other:?}"),
+    }
+}
+
 /// Review 099 R-4 ("small"): `examples/encode-git`'s own test plugin-interface binary accepts a
 /// contract-0.2.0 artifact too (the CHANGELOG's "brygge still reads contract 0.2.0 artifacts" line
 /// covers `encode`, not only `inspect`/`verify`) — `encode` hands either contract to the plugin
