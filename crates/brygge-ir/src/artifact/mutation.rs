@@ -492,14 +492,14 @@ fn resign_v3_metadata_only(full: &[u8], mutated_meta_bytes: &[u8]) -> Vec<u8> {
 /// (id32 ‖ uvarint(len))*` — the table is never compressed, so this is already exactly its logical-
 /// stream contribution, no re-framing needed to use it again), and every blob's raw bytes, inflated
 /// and concatenated in table order.
-struct Decomposed {
-    version_bytes: Vec<u8>,
-    meta_bytes: Vec<u8>,
-    table_bytes: Vec<u8>,
-    blob_bytes: Vec<u8>,
+pub(crate) struct Decomposed {
+    pub(crate) version_bytes: Vec<u8>,
+    pub(crate) meta_bytes: Vec<u8>,
+    pub(crate) table_bytes: Vec<u8>,
+    pub(crate) blob_bytes: Vec<u8>,
 }
 
-fn decompose(full: &[u8]) -> Decomposed {
+pub(crate) fn decompose(full: &[u8]) -> Decomposed {
     let (prefix, rest) = split_header(full);
     let version_bytes = prefix.get(9..).unwrap_or(&[]).to_vec();
     let mut r = crate::canon::CanonReader::new(&rest);
@@ -561,7 +561,7 @@ fn decompose(full: &[u8]) -> Decomposed {
 /// what the packing/order/content checks exist to catch, never a panic or an overclaim regardless of
 /// which specific check ends up catching it (RFC 018 §6.6's redefined property, checked by `check` as
 /// everywhere else in this module).
-fn reassemble_v3(
+pub(crate) fn reassemble_v3(
     version_bytes: &[u8],
     meta_bytes: &[u8],
     table_bytes: &[u8],

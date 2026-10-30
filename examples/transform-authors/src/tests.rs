@@ -101,7 +101,7 @@ fn transform_remaps_a_matching_author_and_committer() {
     assert_eq!(atom.metadata.author, Some(identity("New", "new@x")));
     assert_eq!(atom.metadata.committer, Some(identity("New", "new@x")));
     assert_eq!(output.transforms.len(), 1);
-    assert_eq!(output.transforms[0].name, "authors");
+    assert_eq!(output.transforms[0].name, "authors-example");
     assert_eq!(
         output.transforms[0]
             .params
@@ -151,5 +151,5 @@ fn transform_output_passes_check() {
     let output_ir = transform(&input, &map, b"map").unwrap();
     let output_bytes = brygge_ir::to_bytes(&output_ir);
     let output = brygge_ir::from_bytes(&output_bytes).unwrap();
-    brygge_ir::transform::check(&input, &output, "authors").unwrap();
+    brygge_ir::transform::check(&input, &output, "authors-example").unwrap();
 }

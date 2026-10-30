@@ -45,7 +45,7 @@ let mut params = BTreeMap::new();
 params.insert("map_sha256".to_string(), BlobId::of(map_bytes).to_hex());
 params.insert("map_entries".to_string(), map.len().to_string());
 
-let mut edit = Edit::begin(input, "authors", env!("CARGO_PKG_VERSION"), params);
+let mut edit = Edit::begin(input, "authors-example", env!("CARGO_PKG_VERSION"), params);
 for (in_atom, atom_edit) in input.ir.atoms.iter().zip(edit.atoms()) {
     if let Some(author) = &in_atom.metadata.author {
         if let Some(new) = remap(map, author) {

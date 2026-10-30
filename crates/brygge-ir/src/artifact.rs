@@ -1394,4 +1394,4 @@ fn check_transform_chain(ir: &Ir) -> Result<()> {
 mod tests;
 
 #[cfg(test)]
-mod mutation;
+pub(crate) mod mutation;

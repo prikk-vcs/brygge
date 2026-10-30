@@ -63,6 +63,27 @@ fn test_plugin_bin() -> PathBuf {
     sibling_bin("brygge-transform-test-plugin")
 }
 
+fn authors_example_bin() -> PathBuf {
+    sibling_bin("brygge-transform-authors-example")
+}
+
+fn git_example_bin() -> PathBuf {
+    sibling_bin("brygge-encode-git-example")
+}
+
+/// Copies `src` into `dir`, keeping its own file name (both real plugins here are already named
+/// `brygge-<kind>-<name>[.exe]`, so unlike [`install_plugin`] there is nothing to rename).
+fn install_as_is(dir: &Path, src: &Path) -> PathBuf {
+    let dest = dir.join(src.file_name().expect("a binary path has a file name"));
+    std::fs::copy(src, &dest).expect("copy plugin binary");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    dest
+}
+
 struct TempDir(PathBuf);
 
 impl Drop for TempDir {
@@ -419,4 +440,178 @@ fn a_dishonest_output_is_refused_out_is_untouched_and_no_temp_file_remains() {
         "{stderr}"
     );
     no_temp_file_left(&scratch.0);
+}
+
+// ---- the real example, as a plugin, through the whole chain (review 103 P-1) --------------------------
+
+/// A decoded, one-commit IR artifact whose single commit's author/committer is `author`/`email`
+/// exactly — unlike [`make_artifact`], which uses a fixed identity, this lets the test name the one
+/// identity the map file will remap. Skips (returning `None`) if `git` is not on `PATH`.
+fn make_artifact_with_author(dir: &Path, author: &str, email: &str) -> Option<PathBuf> {
+    if !git_available() {
+        return None;
+    }
+    let repo = dir.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let git = |args: &[&str]| {
+        let out = Command::new("git")
+            .current_dir(&repo)
+            .args(args)
+            .env("GIT_AUTHOR_NAME", author)
+            .env("GIT_AUTHOR_EMAIL", email)
+            .env("GIT_AUTHOR_DATE", "2005-04-07T22:13:13 +0000")
+            .env("GIT_COMMITTER_NAME", author)
+            .env("GIT_COMMITTER_EMAIL", email)
+            .env("GIT_COMMITTER_DATE", "2005-04-07T22:13:13 +0000")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .output()
+            .expect("run git");
+        assert!(out.status.success(), "git {args:?} failed");
+    };
+    git(&["init", "-q", "--initial-branch=main"]);
+    std::fs::write(repo.join("a.txt"), "one\n").unwrap();
+    git(&["add", "-A"]);
+    git(&["-c", "commit.gpgsign=false", "commit", "-q", "-m", "c1"]);
+    let artifact = dir.join("in.ir");
+    let out = Command::new(bin())
+        .args(["decode", "git"])
+        .arg(&repo)
+        .arg("--out")
+        .arg(&artifact)
+        .output()
+        .expect("run brygge decode");
+    assert!(out.status.success(), "decode failed: {out:?}");
+    Some(artifact)
+}
+
+fn machine_value(lines: &str, key: &str) -> Option<String> {
+    lines
+        .lines()
+        .find_map(|l| l.strip_prefix(key).map(ToString::to_string))
+}
+
+#[test]
+fn the_real_example_runs_as_a_plugin_through_the_whole_chain() {
+    let transform_plugin = authors_example_bin();
+    let encode_plugin = git_example_bin();
+    let scratch = temp_dir("real-example-chain");
+    let path_dir = scratch.0.join("path");
+    std::fs::create_dir_all(&path_dir).unwrap();
+    install_as_is(&path_dir, &transform_plugin);
+    install_as_is(&path_dir, &encode_plugin);
+
+    let Some(artifact) = make_artifact_with_author(&scratch.0, "Old Name", "old@example.com")
+    else {
+        eprintln!("skipping: git not on PATH");
+        return;
+    };
+    let repo = scratch.0.join("repo");
+
+    let map = scratch.0.join("map.txt");
+    std::fs::write(
+        &map,
+        "Old Name <old@example.com> = New Name <new@example.com>\n",
+    )
+    .unwrap();
+
+    // 1. `brygge transform authors-example <artifact> --out <file> -- --map <map>`, the real example on
+    //    a temporary PATH.
+    let transformed = scratch.0.join("transformed.ir");
+    let transform_output = Command::new(bin())
+        .args(["transform", "authors-example"])
+        .arg(&artifact)
+        .arg("--out")
+        .arg(&transformed)
+        .args(["--", "--map"])
+        .arg(&map)
+        .env("PATH", &path_dir)
+        .output()
+        .expect("run brygge transform authors-example");
+    assert!(transform_output.status.success(), "{:?}", transform_output);
+
+    // 2a. `verify` passes.
+    let verify = Command::new(bin())
+        .arg("verify")
+        .arg(&transformed)
+        .output()
+        .expect("run brygge verify");
+    assert!(verify.status.success(), "{:?}", verify);
+
+    // 2b. `verify --against-source` gives `root-corresponds` (the output has a one-step chain; only its
+    // root — the input artifact's own digest — can ever correspond to a fresh decode of the source).
+    let verify_source = Command::new(bin())
+        .arg("verify")
+        .arg(&transformed)
+        .arg("--against-source")
+        .arg(&repo)
+        .args(["--format", "machine"])
+        .output()
+        .expect("run brygge verify --against-source");
+    assert!(verify_source.status.success(), "{:?}", verify_source);
+    let stdout = String::from_utf8_lossy(&verify_source.stdout);
+    assert!(
+        stdout.contains("verify.against_source=root-corresponds"),
+        "{stdout}"
+    );
+
+    // 2c. `inspect --format machine` gives `transforms=1` and `transform.0.changed_atoms` > 0.
+    let inspect = Command::new(bin())
+        .arg("inspect")
+        .arg(&transformed)
+        .args(["--format", "machine"])
+        .output()
+        .expect("run brygge inspect");
+    assert!(inspect.status.success(), "{:?}", inspect);
+    let stdout = String::from_utf8_lossy(&inspect.stdout);
+    assert!(stdout.contains("transforms=1"), "{stdout}");
+    let changed_atoms: u64 = machine_value(&stdout, "transform.0.changed_atoms=")
+        .unwrap_or_else(|| panic!("no transform.0.changed_atoms line: {stdout}"))
+        .parse()
+        .unwrap();
+    assert!(changed_atoms > 0, "{stdout}");
+
+    // 3. `brygge encode git-example` on the output gives `Brygge-Transformed:` trailers naming
+    //    `author`, and `git fast-import` accepts it.
+    let fast_import_stream = scratch.0.join("out.fi");
+    let encode_output = Command::new(bin())
+        .args(["encode", "git-example"])
+        .arg(&transformed)
+        .args(["--", "--out"])
+        .arg(&fast_import_stream)
+        .env("PATH", &path_dir)
+        .output()
+        .expect("run brygge encode git-example");
+    assert!(encode_output.status.success(), "{:?}", encode_output);
+
+    let fi_bytes = std::fs::read(&fast_import_stream).unwrap();
+    let fi_text = String::from_utf8_lossy(&fi_bytes);
+    let transformed_line = fi_text
+        .lines()
+        .find(|l| l.contains("Brygge-Transformed:"))
+        .unwrap_or_else(|| panic!("no Brygge-Transformed: trailer: {fi_text}"));
+    assert!(
+        transformed_line.contains("author"),
+        "the trailer must name author: {transformed_line}"
+    );
+
+    let target_repo = scratch.0.join("target-repo");
+    std::fs::create_dir_all(&target_repo).unwrap();
+    let init = Command::new("git")
+        .current_dir(&target_repo)
+        .args(["init", "-q", "--initial-branch=main"])
+        .output()
+        .expect("git init");
+    assert!(init.status.success());
+    let fast_import = Command::new("git")
+        .current_dir(&target_repo)
+        .arg("fast-import")
+        .stdin(std::fs::File::open(&fast_import_stream).unwrap())
+        .output()
+        .expect("git fast-import");
+    assert!(
+        fast_import.status.success(),
+        "{}",
+        String::from_utf8_lossy(&fast_import.stderr)
+    );
 }

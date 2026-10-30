@@ -1504,23 +1504,25 @@ fn reset_peak_rss() -> bool {
     std::fs::write("/proc/self/clear_refs", "5").is_ok()
 }
 
-/// Review 099 R-1's own proof. Review 101 F-1: review 100's resize to 4 MiB (to fit `mutation.yml`'s
-/// own `ulimit -v 2000000` deep-sweep cap) let this test pass code review 099 itself found broken — a
-/// whole-buffer inflate that allocates `raw_len` up front also fits comfortably under 4 MiB (well under
-/// the 16 MiB bound below), so a test at that size proved nothing about the bug it exists to catch.
-/// Back to a size that bug cannot survive, 256 MiB — built here without ever materializing it: the
+const DEFLATE_BOMB_RAW_LEN: u64 = 256 * 1024 * 1024;
+
+/// Switches [`deflate_bomb_peak_rss_helper`] on when set — otherwise it is a no-op, so it never runs,
+/// or measures anything, as part of an ordinary `cargo test` pass. Only
+/// [`a_one_gib_deflate_bomb_streams_through_read_from_within_a_bounded_peak`] sets it, on the child
+/// process it spawns to run that one test alone (review 103 P-3).
+const DEFLATE_BOMB_CHILD_ENV: &str = "BRYGGE_DEFLATE_BOMB_CHILD";
+
+/// Builds the deflate-bomb artifact's bytes, without ever materializing its claimed 256 MiB: the
 /// frame's compressed bytes come from `frame::deflate_zeros_streamed` (64 KiB chunks of zeros through
 /// `miniz_oxide`'s own streaming compressor, one chunk held at a time), and the digest's content pass
-/// hashes the same 256 MiB of zeros the same way, a chunk at a time. An artifact of a few hundred KiB
-/// (that real DEFLATE stream) whose single frame claims 256 MiB streams through `read_from` (via
-/// `from_file`, over a real file) with a peak well below the 256 MiB the old, whole-buffer inflate
-/// would have allocated — bounded instead by a small multiple of the 64 KiB inflate buffer — and fails
-/// only on the content address (the table's id is deliberately wrong, so the pass must finish inflating
-/// and hashing the whole claim, within that bound, before it is refused).
-#[test]
-fn a_one_gib_deflate_bomb_streams_through_read_from_within_a_bounded_peak() {
-    const RAW_LEN: u64 = 256 * 1024 * 1024;
-
+/// hashes the same 256 MiB of zeros the same way, a chunk at a time. Hand-built from the logical
+/// components directly (not by patching `to_bytes`'s own output): the table keeps the *real* blob id
+/// (`store_order`'s own, matching the IR's blob reference, so the store-order check passes), but the
+/// frame's actual content (a real, highly compressible DEFLATE stream of zeros) is not that id's — so
+/// the content check, reached only after everything else passes, is the one that fails, only once the
+/// whole claim has been inflated and hashed. The digest is computed over this same (real-id,
+/// big-content) combination, so the pass reaches that far rather than failing on the digest.
+fn deflate_bomb_bytes() -> Vec<u8> {
     let mut b = IrBuilder::new(provenance());
     // The real blob stays small: nothing else depends on its size, only that it is some real content
     // `real_id` legitimately names — the content-address mismatch below comes from the big blob's frame
@@ -1550,14 +1552,7 @@ fn a_one_gib_deflate_bomb_streams_through_read_from_within_a_bounded_peak() {
     let meta_bytes = ir.encode_metadata();
     drop(ir);
 
-    // Hand-built from the logical components directly (not by patching `to_bytes`'s own output): the
-    // table keeps the *real* id (`store_order`'s own, matching the IR's blob reference, so the
-    // store-order check passes), but the frame's actual content (256 MiB of zeros, a real — highly
-    // compressible — DEFLATE stream) is not that id's — so the content check, reached only after
-    // everything else passes, is the one that fails, only once the whole claim has been inflated and
-    // hashed. The digest is computed over this same (real-id, big-content) combination, so the pass
-    // reaches that far rather than failing on the digest.
-    let stored = frame::deflate_zeros_streamed(RAW_LEN);
+    let stored = frame::deflate_zeros_streamed(DEFLATE_BOMB_RAW_LEN);
 
     let mut version = CanonWriter::new();
     version.uvarint(0);
@@ -1569,9 +1564,9 @@ fn a_one_gib_deflate_bomb_streams_through_read_from_within_a_bounded_peak() {
     hasher.update(&meta_bytes);
     hasher.update(canon::uvarint_value(1)); // one blob
     hasher.update(real_id.as_bytes());
-    hasher.update(canon::uvarint_value(RAW_LEN));
+    hasher.update(canon::uvarint_value(DEFLATE_BOMB_RAW_LEN));
     let zero_chunk = [0u8; 64 * 1024];
-    let mut remaining = RAW_LEN;
+    let mut remaining = DEFLATE_BOMB_RAW_LEN;
     while remaining > 0 {
         let n = remaining.min(zero_chunk.len() as u64) as usize;
         hasher.update(&zero_chunk[..n]);
@@ -1592,27 +1587,40 @@ fn a_one_gib_deflate_bomb_streams_through_read_from_within_a_bounded_peak() {
     .unwrap();
     bytes.extend_from_slice(&canon::uvarint_value(1));
     bytes.extend_from_slice(real_id.as_bytes());
-    bytes.extend_from_slice(&canon::uvarint_value(RAW_LEN));
+    bytes.extend_from_slice(&canon::uvarint_value(DEFLATE_BOMB_RAW_LEN));
     bytes.extend_from_slice(&canon::uvarint_value(1)); // one blob frame
-    write_frame_body(&mut bytes, frame::Codec::Deflate, RAW_LEN, &stored).unwrap();
-    drop(stored); // `bytes` now holds only the (small) compressed frame
+    write_frame_body(
+        &mut bytes,
+        frame::Codec::Deflate,
+        DEFLATE_BOMB_RAW_LEN,
+        &stored,
+    )
+    .unwrap();
+    bytes
+}
 
-    let dir = scratch_dir("deflate-bomb");
+/// Review 103 P-3: does the actual decode, in whatever process runs it, and prints this process's own
+/// peak-RSS delta to stdout as `DEFLATE_BOMB_DELTA_KIB=<n>` (or `=unavailable` if `/proc/self/clear_refs`
+/// could not be reset) — never asserted here directly, since a no-op run (the env switch unset) must
+/// exit cleanly with nothing to report.
+/// `a_one_gib_deflate_bomb_streams_through_read_from_within_a_bounded_peak` (below) is the only caller
+/// that ever sets the switch, on a freshly spawned, single-threaded child process running this one test
+/// alone — immune to whatever every *other* test thread in a shared process is
+/// concurrently allocating, which is what made the old, same-process measurement flaky (review 103 P-3,
+/// the architect's own miss in review 101: `VmHWM` is process-wide).
+#[test]
+fn deflate_bomb_peak_rss_helper() {
+    if std::env::var_os(DEFLATE_BOMB_CHILD_ENV).is_none() {
+        return;
+    }
+    let bytes = deflate_bomb_bytes();
+    let dir = scratch_dir("deflate-bomb-child");
     let path = dir.join("artifact");
     std::fs::write(&path, &bytes).unwrap();
 
     if !reset_peak_rss() {
         let _ = std::fs::remove_dir_all(&dir);
-        if cfg!(target_os = "linux") {
-            // Review 100 S-3: on Linux, `/proc/self/clear_refs` missing or unwritable is the test
-            // environment failing to provide what this check needs, not a legitimate reason to skip
-            // (review 093's same ruling for the test plugin) — this is the one OS every CI job that
-            // runs this test runs on.
-            panic!(
-                "/proc/self/clear_refs is not writable, and this is Linux: the peak-RSS bound cannot be checked"
-            );
-        }
-        eprintln!("skipping: /proc/self/clear_refs is not writable here (not Linux)");
+        println!("DEFLATE_BOMB_DELTA_KIB=unavailable");
         return;
     }
     let before = peak_rss_kib();
@@ -1624,14 +1632,84 @@ fn a_one_gib_deflate_bomb_streams_through_read_from_within_a_bounded_peak() {
         matches!(err, Error::Decode(ref m) if m.contains("does not match its id")),
         "expected a content-address refusal, got {err:?}"
     );
-    if let (Some(before), Some(after)) = (before, after) {
-        let delta = after.saturating_sub(before);
-        assert!(
-            delta < 16 * 1024,
-            "read_from's own peak grew by {delta} KiB above baseline, inflating a 256 MiB claim; \
-             expected well under 16 MiB"
-        );
+    match (before, after) {
+        (Some(before), Some(after)) => {
+            println!("DEFLATE_BOMB_DELTA_KIB={}", after.saturating_sub(before));
+        }
+        _ => println!("DEFLATE_BOMB_DELTA_KIB=unavailable"),
     }
+}
+
+/// Review 099 R-1's own proof. Review 101 F-1: review 100's resize to 4 MiB (to fit `mutation.yml`'s
+/// own `ulimit -v 2000000` deep-sweep cap) let this test pass code review 099 itself found broken — a
+/// whole-buffer inflate that allocates `raw_len` up front also fits comfortably under 4 MiB (well under
+/// the 16 MiB bound below), so a test at that size proved nothing about the bug it exists to catch. Back
+/// to a size that bug cannot survive, 256 MiB (`deflate_bomb_bytes`, above).
+///
+/// **Review 103 P-3** (the architect's own miss in review 101): the peak-RSS measurement itself used to
+/// run inline, in this same test process — but `VmHWM` (what `peak_rss_kib` reads) is process-wide, so
+/// under `--test-threads=4` every *other* test thread's own concurrent allocations counted against this
+/// one test's 16 MiB bound, making it flaky by design, not a property of this batch's own changes. Fixed
+/// by re-running this binary as a child process (`std::env::current_exe()`), filtered with `--exact` to
+/// run only [`deflate_bomb_peak_rss_helper`], alone, at `--test-threads=1` — the measurement now reflects
+/// that one decode, in a process nothing else is concurrently allocating in.
+#[test]
+fn a_one_gib_deflate_bomb_streams_through_read_from_within_a_bounded_peak() {
+    let exe = std::env::current_exe().expect("this test's own binary has a path");
+    let output = std::process::Command::new(&exe)
+        .args([
+            "artifact::tests::deflate_bomb_peak_rss_helper",
+            "--exact",
+            "--test-threads=1",
+            "--nocapture",
+        ])
+        .env(DEFLATE_BOMB_CHILD_ENV, "1")
+        .output()
+        .expect("spawn the child measurement process");
+    assert!(
+        output.status.success(),
+        "the child measurement process failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Not `.lines().find_map(strip_prefix(...))`: with `--nocapture`, libtest writes its own
+    // "test <name> ... " progress text *before* the newline that would otherwise end that line, so a
+    // test's own `println!` lands appended to that same line, never at its start. Searching the whole
+    // text for the marker, wherever it falls, is what actually finds it.
+    let after_marker = stdout
+        .split("DEFLATE_BOMB_DELTA_KIB=")
+        .nth(1)
+        .unwrap_or_else(|| panic!("no DEFLATE_BOMB_DELTA_KIB marker in child output: {stdout}"));
+    let delta_line = after_marker
+        .split(|c: char| c.is_whitespace())
+        .next()
+        .unwrap_or("");
+
+    if delta_line == "unavailable" {
+        if cfg!(target_os = "linux") {
+            // Review 100 S-3: on Linux, `/proc/self/clear_refs` missing or unwritable is the test
+            // environment failing to provide what this check needs, not a legitimate reason to skip
+            // (review 093's same ruling for the test plugin) — this is the one OS every CI job that
+            // runs this test runs on.
+            panic!(
+                "/proc/self/clear_refs is not writable in the child process, and this is Linux: the \
+                 peak-RSS bound cannot be checked"
+            );
+        }
+        eprintln!(
+            "skipping: /proc/self/clear_refs is not writable in the child process (not Linux)"
+        );
+        return;
+    }
+    let delta: u64 = delta_line
+        .parse()
+        .unwrap_or_else(|e| panic!("malformed DEFLATE_BOMB_DELTA_KIB value {delta_line:?}: {e}"));
+    assert!(
+        delta < 16 * 1024,
+        "the child process's own peak grew by {delta} KiB above baseline, inflating a 256 MiB claim; \
+         expected well under 16 MiB"
+    );
 }
 
 /// Review 099 R-1: a blob frame whose `raw_len` does not match the packing plan is refused — the

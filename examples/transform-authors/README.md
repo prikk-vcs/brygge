@@ -14,7 +14,7 @@ whose author or committer claim byte-matches one of the map's own entries gets t
 Everything else — every op, copy, ref, and every atom the map does not touch — passes through unedited.
 
 This is also the interface `brygge transform` runs a plugin through (RFC 018 D-6 §3): the same binary,
-unmodified, works invoked directly or as a `brygge transform authors` plugin.
+unmodified, works invoked directly or as a `brygge transform authors-example` plugin.
 
 brygge **verified the input artifact** before this program ever saw it, and will itself re-check this
 program's own output (`brygge_ir::transform::check`) before accepting it — this program's own honesty is
