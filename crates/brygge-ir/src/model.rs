@@ -60,7 +60,7 @@ pub struct Time {
 }
 
 /// Which source system an identity came from.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum SourceKind {
     /// Git.
     Git,
@@ -77,7 +77,7 @@ pub enum SourceKind {
 /// One opaque cryptographic signature the source carried over its own object (e.g. Git's `gpgsig`),
 /// labelled so a reader knows what it signs without brygge interpreting it (RFC 011 D-6). Never
 /// verified by brygge.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Signature {
     /// What the signature is (e.g. `"gpgsig"`, `"gpgsig-sha256"`).
     pub label: String,
@@ -87,7 +87,7 @@ pub struct Signature {
 
 /// One opaque, source-specific datum brygge does not model by name, carried rather than dropped (RFC
 /// 011 D-6): a labelled bag for source data with no home elsewhere in the IR.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Extra {
     /// What the datum is, in the source's own terms (e.g. `"mergetag"`).
     pub label: String,
@@ -97,7 +97,10 @@ pub struct Extra {
 
 /// The source's own opaque identifiers, signatures and unclassified extras (`PR-4/IR-3`) — the only
 /// cryptographic link back to the original. Carried unchanged; they verify nothing in any target.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `Hash` (RFC 018 D-6): `brygge_ir::transform` matches atoms between an input and output artifact by
+/// this value, so it needs to key a map.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SourceIdentity {
     /// The source system.
     pub kind: SourceKind,
@@ -275,7 +278,7 @@ impl ChangeAtom {
 }
 
 /// The kind of a ref pointer.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum RefKind {
     /// A branch.
     Branch,
@@ -424,7 +427,7 @@ pub struct Ir {
 /// 0.3.0's closed vocabulary (`ir-artifact-format.md`). The Rust API, not a raw string, so a caller
 /// cannot misspell one; [`ChangedPart::as_str`]/[`ChangedPart::parse`] are the only way in or out of the
 /// wire's `list<text>` representation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ChangedPart {
     /// An atom's claimed author.
     Author,
@@ -440,6 +443,8 @@ pub enum ChangedPart {
     Ops,
     /// An atom's own copy records.
     Copies,
+    /// An atom's own parents (RFC 018 D-6, R-a: removing an atom rewires its children's parents).
+    Parents,
     /// An op's content address.
     Blob,
     /// An op's file mode.
@@ -468,6 +473,7 @@ impl ChangedPart {
             Self::Message => "message",
             Self::Ops => "ops",
             Self::Copies => "copies",
+            Self::Parents => "parents",
             Self::Blob => "blob",
             Self::Mode => "mode",
             Self::Path => "path",
@@ -489,6 +495,7 @@ impl ChangedPart {
             "message" => Self::Message,
             "ops" => Self::Ops,
             "copies" => Self::Copies,
+            "parents" => Self::Parents,
             "blob" => Self::Blob,
             "mode" => Self::Mode,
             "path" => Self::Path,
@@ -512,6 +519,7 @@ impl ChangedPart {
                 | Self::Message
                 | Self::Ops
                 | Self::Copies
+                | Self::Parents
         )
     }
 
@@ -529,6 +537,44 @@ impl ChangedPart {
             Self::Annotation | Self::Kind | Self::Name | Self::Target
         )
     }
+}
+
+/// `true` for a 64-byte string of lowercase hex digits — the wire spelling of an [`AtomId`] in a
+/// `Transform`-class drop's `what` (RFC 018 D-6, R-b).
+fn is_lower_hex_atom_id(s: &str) -> bool {
+    s.len() == 64
+        && s.bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// The grammar a `Transform`-class [`DropRecord::what`] must match (RFC 018 D-6, R-b): exactly one of
+/// `atom <id>`, `op <id> <path>`, `copy <id> <to>`, or `ref <kind> <name>` (`<kind>` one of `branch`,
+/// `tag`, `bookmark`, `named-branch`, or `other:<label>`) — so every loss a transform records names
+/// exactly one thing, and a reader can count them. The single space after the leading word is the only
+/// separator; a path or a name runs to the end of the line (so it may itself contain spaces). Every
+/// `<id>` is the *input* artifact's own `AtomId` — the one the step's own record cites as `consumed` —
+/// never the output's. Every other loss class carries free text and is not checked this way.
+fn is_valid_transform_drop_what(what: &str) -> bool {
+    if let Some(id) = what.strip_prefix("atom ") {
+        return is_lower_hex_atom_id(id);
+    }
+    if let Some(rest) = what.strip_prefix("op ") {
+        return rest
+            .split_once(' ')
+            .is_some_and(|(id, _path)| is_lower_hex_atom_id(id));
+    }
+    if let Some(rest) = what.strip_prefix("copy ") {
+        return rest
+            .split_once(' ')
+            .is_some_and(|(id, _to)| is_lower_hex_atom_id(id));
+    }
+    if let Some(rest) = what.strip_prefix("ref ") {
+        return rest.split_once(' ').is_some_and(|(kind, _name)| {
+            matches!(kind, "branch" | "tag" | "bookmark" | "named-branch")
+                || kind.starts_with("other:")
+        });
+    }
+    false
 }
 
 /// The plugin-name grammar a [`TransformRecord::name`] must match (RFC 018 D-5): lowercase ASCII
@@ -1449,11 +1495,16 @@ impl DropRecord {
             }
             _ => {}
         }
+        let what = what
+            .ok_or_else(|| Error::NonCanonical("DropRecord missing field 2 (what)".to_string()))?;
+        if class == LossClass::Transform && !is_valid_transform_drop_what(&what) {
+            return Err(Error::Decode(format!(
+                "DropRecord.what {what:?} does not match the Transform-drop grammar"
+            )));
+        }
         Ok(Self {
             class,
-            what: what.ok_or_else(|| {
-                Error::NonCanonical("DropRecord missing field 2 (what)".to_string())
-            })?,
+            what,
             reason: reason.ok_or_else(|| {
                 Error::NonCanonical("DropRecord missing field 3 (reason)".to_string())
             })?,

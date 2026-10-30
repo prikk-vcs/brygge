@@ -95,5 +95,13 @@ fn run(cmd: Command) -> i32 {
             format,
         } => commands::run_encode(&target, &artifact, &plugin_args, format),
         Command::EncodeList { format } => commands::run_encode_list(format),
+        Command::Transform {
+            name,
+            artifact,
+            out,
+            plugin_args,
+            format,
+        } => commands::run_transform(&name, &artifact, &out, &plugin_args, format),
+        Command::TransformList { format } => commands::run_transform_list(format),
     }
 }

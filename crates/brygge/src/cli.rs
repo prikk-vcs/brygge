@@ -104,6 +104,26 @@ pub enum Command {
         /// Output format.
         format: Format,
     },
+    /// `transform <name> <artifact> --out <file> [--format …] [-- <plugin arguments>…]` (RFC 018 D-6).
+    Transform {
+        /// The plugin's own name (`[a-z0-9][a-z0-9-]*`, at most 64 bytes — the same grammar `encode`'s
+        /// target uses).
+        name: String,
+        /// The IR artifact to transform.
+        artifact: PathBuf,
+        /// Where to write the transformed artifact. Required: `transform` never runs a plugin without
+        /// somewhere to put what it produces.
+        out: PathBuf,
+        /// Everything after `--`, verbatim, passed to the plugin unchanged.
+        plugin_args: Vec<String>,
+        /// Output format, for the verify-first report and the banner.
+        format: Format,
+    },
+    /// `transform --list [--format …]` (RFC 018 D-6).
+    TransformList {
+        /// Output format.
+        format: Format,
+    },
     /// `--version`.
     Version,
     /// `--help`, `<command> --help`, or no arguments.
@@ -147,6 +167,8 @@ USAGE:
   brygge verify <artifact> [--against-source <source> [--spill-dir <DIR>]] [--format human|machine]
   brygge encode <target> <artifact> [--format human|machine] [-- <plugin arguments>…]
   brygge encode --list [--format human|machine]
+  brygge transform <name> <artifact> --out <file> [--format human|machine] [-- <plugin arguments>…]
+  brygge transform --list [--format human|machine]
   brygge --version | --help | <command> --help
 
 COMMANDS:
@@ -175,6 +197,18 @@ COMMANDS:
            in PATH order, marking one shadowed by an earlier directory's plugin of the same target.
            `encode prikk` is reserved for the built-in encoder (Track B1): not available yet, and never
            looked up on PATH
+  transform run an external transform plugin, `brygge-transform-<name>`, found on PATH only — never the
+           bare name, never the current directory. brygge verifies the input artifact first (the same
+           checks as `verify`, without --against-source) and refuses to run the plugin on anything but a
+           clean pass; it then refuses an input with two atoms sharing one source identity, before the
+           plugin ever runs. The plugin writes its own output to a private temp file in --out's own
+           directory; brygge then runs the same internal checks on that output, and brygge_ir::transform's
+           own honesty check, before accepting it — any failure leaves --out untouched and exits 50, never
+           writing a half-trusted result. --out is required, and is treated exactly as `decode --out` is
+           (silently, atomically overwritten if it already exists); it must not be the same file as
+           <artifact>. Arguments after -- are passed to the plugin verbatim, with no shell. The plugin is
+           not part of brygge. `transform --list` shows every brygge-transform-* plugin found on PATH, in
+           PATH order, marking one shadowed by an earlier directory's plugin of the same name
 
 VOCABULARY: artifact, source, stated, derived, dropped, flagged, refused, Unverifiable.";
 
@@ -203,6 +237,7 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
         "inspect" => parse_inspect(args.get(1..).unwrap_or(&[])),
         "verify" => parse_verify(args.get(1..).unwrap_or(&[])),
         "encode" => parse_encode(args.get(1..).unwrap_or(&[])),
+        "transform" => parse_transform(args.get(1..).unwrap_or(&[])),
         other => Err(format!(
             "unknown command '{other}'\n\nrun `brygge --help` for usage"
         )),
@@ -578,6 +613,120 @@ fn parse_encode_list(args: &[String]) -> Result<Command, String> {
         }
     }
     Ok(Command::EncodeList { format })
+}
+
+fn parse_transform(args: &[String]) -> Result<Command, String> {
+    if wants_help(args) {
+        return Ok(Command::Help);
+    }
+    let mut it = args.iter();
+    let Some(first) = it.next() else {
+        return Err(usage_error(
+            "transform",
+            "transform needs a name: transform <name> <artifact> --out <file> [-- <plugin \
+             arguments>...] (see transform --list)",
+        ));
+    };
+    if first == "--list" {
+        return parse_transform_list(args.get(1..).unwrap_or(&[]));
+    }
+    if first.starts_with('-') {
+        return Err(usage_error("transform", format!("unknown flag '{first}'")));
+    }
+    let name = first.clone();
+    if !is_valid_target(&name) {
+        return Err(usage_error(
+            "transform",
+            format!(
+                "name '{name}' is not valid: it must match [a-z0-9][a-z0-9-]*, at most 64 bytes"
+            ),
+        ));
+    }
+    let mut artifact: Option<PathBuf> = None;
+    let mut out: Option<PathBuf> = None;
+    let mut out_seen = false;
+    let mut plugin_args: Vec<String> = Vec::new();
+    let mut format = Format::Human;
+    let mut format_seen = false;
+    let mut saw_dashdash = false;
+    while let Some(arg) = it.next() {
+        if saw_dashdash {
+            plugin_args.push(arg.clone());
+            continue;
+        }
+        match arg.as_str() {
+            "--" => saw_dashdash = true,
+            "--out" => {
+                if out_seen {
+                    return Err(usage_error("transform", "--out given more than once"));
+                }
+                out_seen = true;
+                out = Some(need_value(&mut it, "--out", "transform")?);
+            }
+            "--format" => {
+                if format_seen {
+                    return Err(usage_error("transform", "--format given more than once"));
+                }
+                format_seen = true;
+                format = parse_format(&mut it, "transform")?;
+            }
+            other if other.starts_with('-') => {
+                return Err(usage_error("transform", format!("unknown flag '{other}'")));
+            }
+            other => {
+                if artifact.is_some() {
+                    return Err(usage_error(
+                        "transform",
+                        format!(
+                            "unexpected extra argument '{other}' (plugin arguments must follow --)"
+                        ),
+                    ));
+                }
+                artifact = Some(PathBuf::from(other));
+            }
+        }
+    }
+    let artifact = artifact.ok_or_else(|| {
+        usage_error(
+            "transform",
+            "transform needs an <artifact>: transform <name> <artifact> --out <file>",
+        )
+    })?;
+    let out = out.ok_or_else(|| usage_error("transform", "transform needs --out <file>"))?;
+    Ok(Command::Transform {
+        name,
+        artifact,
+        out,
+        plugin_args,
+        format,
+    })
+}
+
+fn parse_transform_list(args: &[String]) -> Result<Command, String> {
+    if wants_help(args) {
+        return Ok(Command::Help);
+    }
+    let mut it = args.iter();
+    let mut format = Format::Human;
+    let mut format_seen = false;
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--format" => {
+                if format_seen {
+                    return Err(usage_error("transform", "--format given more than once"));
+                }
+                format_seen = true;
+                format = parse_format(&mut it, "transform")?;
+            }
+            other => {
+                return Err(usage_error(
+                    "transform",
+                    format!("unexpected argument '{other}'"),
+                ));
+            }
+        }
+    }
+    Ok(Command::TransformList { format })
 }
 
 #[cfg(test)]

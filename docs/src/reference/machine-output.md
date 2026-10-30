@@ -52,6 +52,8 @@ brygge release and of the IR contract**.
 | `verify_version` | `verify`'s lines (§3.4) | `4` |
 | `encode_list_version` | `encode --list`'s lines (§3.5) | `1` |
 | `encode_version` | `encode`'s own banner and exit lines (§3.6) | `1` |
+| `transform_list_version` | `transform --list`'s lines (§3.7) | `1` |
+| `transform_version` | `transform`'s own banner, exit, and result lines (§3.8) | `1` |
 
 **The rule (normative):**
 - A version is **bumped** whenever any key or value domain of the output it governs changes:
@@ -215,6 +217,58 @@ the line after it ends are.
 | `encode.exit_code` | the plugin's own exit code (brygge's own process exits with the same code) | |
 | `encode.signal` | Unix only: the signal number that killed the plugin (brygge's own process then exits `1`) | |
 
+### 3.7 `transform --list` (governed by `transform_list_version`)
+
+| Key | Value | Enc. |
+|---|---|---|
+| `transform_list_version` | `1` | |
+| `transformer.N.name` | the plugin's own name | ● |
+| `transformer.N.path` | its resolved, absolute path | ● |
+| `transformer.N.shadowed` | `true` if an earlier `PATH` directory already has a plugin of this name (brygge would never run this one); else `false` | |
+
+The same shape §3.5 (`encode --list`) uses, over `brygge-transform-*` plugins instead of
+`brygge-encode-*` ones. On stdout; `transform --list` runs no plugin.
+
+### 3.8 `transform <name>` (governed by `transform_version`)
+
+`transform <name>`'s own status — like `encode <target>` (§3.6) — goes to **stderr, not stdout**: the
+plugin's own stdout/stderr are inherited and untouched for the whole run.
+
+**If the mandatory verify-first check does not pass, or the input has two atoms sharing one source
+identity,** the plugin never starts, and brygge prints `verify`'s own lines (§3.4) — or, for the
+source-identity refusal, a single line starting `refused:` — to stderr instead of this section.
+
+**Otherwise, before the plugin starts:**
+
+| Key | Value | Enc. |
+|---|---|---|
+| `transform_version` | `1` | |
+| `transform.name` | the plugin's own name | ● |
+| `transform.plugin_path` | the plugin's resolved, absolute path | ● |
+| `transform.banner` | always `not_part_of_brygge` | |
+
+**After the plugin ends,** exactly one of:
+
+| Key | Value | Enc. |
+|---|---|---|
+| `transform.exit_code` | the plugin's own exit code (brygge's own process exits with the same code) | |
+| `transform.signal` | Unix only: the signal number that killed the plugin (brygge's own process then exits `1`) | |
+
+**On exit `0`, once the plugin's own output has passed every internal check and
+`brygge_ir::transform::check`**, exactly these, naming the step `check` itself just accepted:
+
+| Key | Value | Enc. |
+|---|---|---|
+| `transform.step` | the new transform record's own index | |
+| `transform.atoms_changed` | how many atoms this step changed | |
+| `transform.ops_changed` | how many ops this step changed | |
+| `transform.refs_changed` | how many refs this step changed | |
+| `transform.dropped` | how many new drops this step made | |
+
+If the plugin's own output fails any check instead, brygge prints one line, `the transform's output was
+refused: <why>`, deletes the plugin's temp output, leaves `--out` untouched, and exits `50` — none of the
+five keys above appear.
+
 ## 4. Exit codes
 
 The exit code carries the outcome class, so a gate can branch without parsing output.
@@ -236,6 +290,13 @@ When several classes apply to one `decode`, `30` takes precedence over `10`.
 pass, it exits with `verify`'s own code above; otherwise it exits with the plugin's own code, unchanged
 (or `1`, naming the signal, if the plugin was killed by one). A bad or reserved target, or a target not
 found on `PATH`, is `2`.
+
+**`transform <name>`'s own exit code is not in this table either**, and follows more of its own path
+than `encode`'s does: if verify-first fails, `verify`'s own code; if the input has two atoms sharing one
+source identity, `50`; otherwise the plugin runs, and a non-zero exit or a signal passes through exactly
+as `encode`'s does; on a clean plugin exit, `50` if the plugin's own output fails any check (§3.8), else
+the fidelity class `decode` would have given that same output (this table's `0`/`10`/`30` rows). A bad
+name, or a name not found on `PATH`, is `2`; `--out` naming the same file as `<artifact>` is also `2`.
 
 ## 5. Examples
 

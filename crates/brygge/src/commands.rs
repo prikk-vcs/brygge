@@ -552,9 +552,15 @@ pub fn run_decode(
     if let Some(code) = output::stdout(&rendered) {
         return code;
     }
-    // Exit class (CL-08): a flagged condition (RFC 011 D-8 — an unresolved SVN layout, a CVS
-    // reconstruction under the confidence floor) takes precedence; else recorded loss if any
-    // non-representation drop exists; else clean.
+    fidelity_exit_class(&ir)
+}
+
+/// CL-08's fidelity exit class for `ir` alone: a flagged condition (RFC 011 D-8 — an unresolved SVN
+/// layout, a CVS reconstruction under the confidence floor) takes precedence; else recorded loss if any
+/// non-representation drop exists; else clean. `decode`'s own tail; `transform` (RFC 018 D-6 §3: "exit
+/// with the fidelity class decode would give for the output artifact") reuses it rather than
+/// re-deriving the same three-way rule a second time.
+fn fidelity_exit_class(ir: &Ir) -> i32 {
     if !ir.flags.is_empty() {
         exit::CONVENTION_VIOLATION
     } else if ir
@@ -1877,7 +1883,7 @@ const ENCODE_VERSION: u32 = 1;
 
 /// `encode --list [--format …]`: every `brygge-encode-*` plugin [`plugin::list`] finds on `PATH`.
 pub fn run_encode_list(format: Format) -> i32 {
-    let plugins = plugin::list();
+    let plugins = plugin::list(plugin::Kind::Encode);
     let rendered = match format {
         Format::Human => render_encode_list_human(&plugins),
         Format::Machine => render_encode_list_machine(&plugins),
@@ -1895,7 +1901,7 @@ fn render_encode_list_human(plugins: &[plugin::Listed]) -> String {
         return s;
     }
     for p in plugins {
-        let _ = write!(s, "{}  {}", p.target, p.path.display());
+        let _ = write!(s, "{}  {}", p.name, p.path.display());
         if p.shadowed {
             let _ = write!(s, "  (shadowed)");
         }
@@ -1908,11 +1914,7 @@ fn render_encode_list_machine(plugins: &[plugin::Listed]) -> String {
     let mut s = String::new();
     let _ = writeln!(s, "encode_list_version={ENCODE_LIST_VERSION}");
     for (i, p) in plugins.iter().enumerate() {
-        let _ = writeln!(
-            s,
-            "encoder.{i}.target={}",
-            display::machine_value(&p.target)
-        );
+        let _ = writeln!(s, "encoder.{i}.target={}", display::machine_value(&p.name));
         let _ = writeln!(
             s,
             "encoder.{i}.path={}",
@@ -1969,7 +1971,7 @@ fn encode_signal_text(format: Format, target: &str, signal: i32) -> String {
 /// code), then spawns the plugin with the mandatory banner. The plugin's stdin/stdout/stderr are
 /// inherited: its own stdout is the user's output, never touched by brygge.
 pub fn run_encode(target: &str, artifact: &Path, plugin_args: &[String], format: Format) -> i32 {
-    let Some(path) = plugin::find(target) else {
+    let Some(path) = plugin::find(plugin::Kind::Encode, target) else {
         output::stderr(&format!(
             "no encoder for '{target}': brygge-encode-{target} is not on PATH (see `brygge encode \
              --list`)"
@@ -2008,6 +2010,325 @@ pub fn run_encode(target: &str, artifact: &Path, plugin_args: &[String], format:
     }
 }
 
+// ---- transform (RFC 018 D-6) -----------------------------------------------------------------------
+
+const TRANSFORM_LIST_VERSION: u32 = 1;
+const TRANSFORM_VERSION: u32 = 1;
+
+/// `transform --list [--format …]`: every `brygge-transform-*` plugin [`plugin::list`] finds on `PATH`.
+pub fn run_transform_list(format: Format) -> i32 {
+    let plugins = plugin::list(plugin::Kind::Transform);
+    let rendered = match format {
+        Format::Human => render_transform_list_human(&plugins),
+        Format::Machine => render_transform_list_machine(&plugins),
+    };
+    if let Some(code) = output::stdout(&rendered) {
+        return code;
+    }
+    exit::CLEAN
+}
+
+fn render_transform_list_human(plugins: &[plugin::Listed]) -> String {
+    let mut s = String::new();
+    if plugins.is_empty() {
+        let _ = writeln!(s, "no brygge-transform-* plugins found on PATH");
+        return s;
+    }
+    for p in plugins {
+        let _ = write!(s, "{}  {}", p.name, p.path.display());
+        if p.shadowed {
+            let _ = write!(s, "  (shadowed)");
+        }
+        let _ = writeln!(s);
+    }
+    s
+}
+
+fn render_transform_list_machine(plugins: &[plugin::Listed]) -> String {
+    let mut s = String::new();
+    let _ = writeln!(s, "transform_list_version={TRANSFORM_LIST_VERSION}");
+    for (i, p) in plugins.iter().enumerate() {
+        let _ = writeln!(
+            s,
+            "transformer.{i}.name={}",
+            display::machine_value(&p.name)
+        );
+        let _ = writeln!(
+            s,
+            "transformer.{i}.path={}",
+            display::machine_value(&p.path.display().to_string())
+        );
+        let _ = writeln!(s, "transformer.{i}.shadowed={}", p.shadowed);
+    }
+    s
+}
+
+/// Whether `a` and `b` name the same file (canonicalized compare, per the handoff's own "--out must not
+/// be the same file as `<artifact>`" rule). Falls back to a plain path compare when either side cannot
+/// be canonicalized (typically `out`, which usually does not exist yet) — a non-existent path can never
+/// be the same *file* as one that does exist, but comparing the given paths directly still catches the
+/// common case of passing the same literal path twice.
+fn same_file_as(a: &Path, b: &Path) -> bool {
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(ca), Ok(cb)) => ca == cb,
+        _ => a == b,
+    }
+}
+
+/// Reserves a unique, visible temp file for `transform`'s own plugin output, in `dir` (`--out`'s own
+/// directory): named `.brygge-transform-<pid>-<nanos>-<attempt>`, `create_new` so a pre-existing file or
+/// symlink there is never followed or truncated, mode `0600` on Unix — the same naming/permission
+/// convention [`crate::content::spill`]'s own file uses in brygge-ir. Unlike that one, this file is
+/// never unlinked here: the plugin needs a real path to write its own output into, and the caller
+/// (`run_transform`) removes or renames it once the plugin has run.
+fn create_transform_temp(dir: &Path) -> std::io::Result<std::path::PathBuf> {
+    let pid = std::process::id();
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    const MAX_ATTEMPTS: u32 = 64;
+    let mut last_err: Option<std::io::Error> = None;
+    for attempt in 0..MAX_ATTEMPTS {
+        let path = dir.join(format!(".brygge-transform-{pid}-{nanos}-{attempt}"));
+        let opened = open_transform_temp(&path);
+        match opened {
+            Ok(()) => return Ok(path),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => last_err = Some(e),
+            Err(e) => return Err(e),
+        }
+    }
+    Err(last_err.unwrap_or_else(|| std::io::Error::other("could not create a temp file")))
+}
+
+#[cfg(unix)]
+fn open_transform_temp(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+        .map(|_| ())
+}
+
+#[cfg(not(unix))]
+fn open_transform_temp(path: &Path) -> std::io::Result<()> {
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map(|_| ())
+}
+
+/// As [`encode_banner_text`], for `transform` (RFC 018 D-6 §3): the plugin's own output is never
+/// trusted on brygge's say-so either — it still has to pass `brygge_ir::transform::check`.
+fn transform_banner_text(format: Format, name: &str, path: &Path) -> String {
+    match format {
+        Format::Human => format!(
+            "transforming with the external plugin `brygge-transform-{name}` (`{}`): not part of \
+             brygge; brygge verified the input artifact, and will check the plugin's own output before \
+             accepting it",
+            path.display()
+        ),
+        Format::Machine => format!(
+            "transform_version={TRANSFORM_VERSION}\ntransform.name={}\ntransform.plugin_path={}\n\
+             transform.banner=not_part_of_brygge",
+            display::machine_value(name),
+            display::machine_value(&path.display().to_string()),
+        ),
+    }
+}
+
+fn transform_exit_text(format: Format, name: &str, code: i32) -> String {
+    match format {
+        Format::Human => format!("`brygge-transform-{name}` exited with {code}"),
+        Format::Machine => format!("transform.exit_code={code}"),
+    }
+}
+
+fn transform_signal_text(format: Format, name: &str, signal: i32) -> String {
+    match format {
+        Format::Human => match plugin::signal_name(signal) {
+            Some(n) => format!("`brygge-transform-{name}` was killed by signal {signal} ({n})"),
+            None => format!("`brygge-transform-{name}` was killed by signal {signal}"),
+        },
+        Format::Machine => format!("transform.signal={signal}"),
+    }
+}
+
+/// The one result line on a successfully accepted transform: the new step's own index plus the counts
+/// [`brygge_ir::transform::check`] itself computed while accepting it.
+fn transform_result_text(format: Format, summary: &brygge_ir::transform::StepSummary) -> String {
+    match format {
+        Format::Human => format!(
+            "step {}: {} atom(s) changed, {} op(s) changed, {} ref(s) changed, {} dropped",
+            summary.step,
+            summary.atoms_changed,
+            summary.ops_changed,
+            summary.refs_changed,
+            summary.dropped
+        ),
+        Format::Machine => format!(
+            "transform.step={}\ntransform.atoms_changed={}\ntransform.ops_changed={}\n\
+             transform.refs_changed={}\ntransform.dropped={}",
+            summary.step,
+            summary.atoms_changed,
+            summary.ops_changed,
+            summary.refs_changed,
+            summary.dropped
+        ),
+    }
+}
+
+/// `transform <name> <artifact> --out <file> [-- <plugin arguments>…]` (RFC 018 D-6 §3). Resolves
+/// `brygge-transform-<name>` on `PATH` ([`plugin::find`] — never the bare name), verifies the input
+/// artifact first exactly as `encode` does (refusing to run the plugin on anything but a clean `pass`),
+/// then refuses an input with two atoms sharing one source identity (nothing downstream could match
+/// atoms by it at all). The plugin writes its own output to a private, visible temp file in `--out`'s
+/// own directory; only once that output has itself passed every internal check and
+/// [`brygge_ir::transform::check`] is it renamed over `--out` — exactly as `decode --out` behaves,
+/// silently overwriting whatever was there. Any failure along the way removes the temp file and leaves
+/// `--out` untouched.
+pub fn run_transform(
+    name: &str,
+    artifact: &Path,
+    out: &Path,
+    plugin_args: &[String],
+    format: Format,
+) -> i32 {
+    if same_file_as(out, artifact) {
+        output::stderr("--out must not be the same file as <artifact>");
+        return exit::USAGE;
+    }
+
+    let Some(path) = plugin::find(plugin::Kind::Transform, name) else {
+        output::stderr(&format!(
+            "no transform for '{name}': brygge-transform-{name} is not on PATH (see `brygge transform \
+             --list`)"
+        ));
+        return exit::USAGE;
+    };
+
+    let (report, code) = verify_internal_report(artifact, format);
+    if code != exit::CLEAN {
+        output::stderr(&report);
+        return code;
+    }
+
+    let input = match brygge_ir::from_file(artifact) {
+        Ok(d) => d,
+        Err(e) => {
+            output::stderr(&display::human(&format!(
+                "cannot read {}: {e}",
+                artifact.display()
+            )));
+            return exit::FAILURE;
+        }
+    };
+    if let Some(dup) = brygge_ir::transform::duplicate_source_identity(&input) {
+        output::stderr(&display::human(&format!(
+            "refused: the input has two atoms with the same source identity ({dup:?}) — a transform \
+             cannot match atoms by it at all"
+        )));
+        return exit::VERIFY_FAILED;
+    }
+
+    output::stderr(&transform_banner_text(format, name, &path));
+
+    let dir = out
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let tmp = match create_transform_temp(dir) {
+        Ok(p) => p,
+        Err(e) => {
+            output::stderr(&format!(
+                "cannot create a temp file in {}: {e}",
+                dir.display()
+            ));
+            return exit::FAILURE;
+        }
+    };
+
+    let mut argv: Vec<std::ffi::OsString> = vec![
+        "--artifact".into(),
+        artifact.as_os_str().to_os_string(),
+        "--out".into(),
+        tmp.as_os_str().to_os_string(),
+    ];
+    argv.extend(plugin_args.iter().map(std::ffi::OsString::from));
+
+    match plugin::run(&path, &argv) {
+        plugin::Ran::Exited(0) => {}
+        plugin::Ran::Exited(code) => {
+            let _ = std::fs::remove_file(&tmp);
+            output::stderr(&transform_exit_text(format, name, code));
+            return code;
+        }
+        plugin::Ran::Signaled(signal) => {
+            let _ = std::fs::remove_file(&tmp);
+            output::stderr(&transform_signal_text(format, name, signal));
+            return exit::FAILURE;
+        }
+        plugin::Ran::CannotStart(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            output::stderr(&format!(
+                "cannot start brygge-transform-{name} ({}): {e}",
+                path.display()
+            ));
+            return exit::FAILURE;
+        }
+    }
+
+    let parsed_output = brygge_ir::from_file(&tmp);
+    let (checks, internal_pass) = compute_internal_checks(&parsed_output);
+    if !internal_pass {
+        let _ = std::fs::remove_file(&tmp);
+        let detail = checks
+            .iter()
+            .find_map(|(name, outcome)| match outcome {
+                CheckOutcome::Fail(d) => Some(format!("{name}: {d}")),
+                _ => None,
+            })
+            .unwrap_or_else(|| "an internal check failed".to_string());
+        output::stderr(&display::human(&format!(
+            "the transform's output was refused: {detail}"
+        )));
+        return exit::VERIFY_FAILED;
+    }
+    let Ok(output_decoded) = parsed_output else {
+        // Unreachable: `internal_pass` is only true when `compute_internal_checks` saw `Ok(_)` (its
+        // "integrity" check fails immediately on `Err`, which already returned above).
+        let _ = std::fs::remove_file(&tmp);
+        return exit::FAILURE;
+    };
+
+    match brygge_ir::transform::check(&input, &output_decoded, name) {
+        Ok(summary) => {
+            let final_exit = fidelity_exit_class(&output_decoded.ir);
+            // Drop the output's own `Decoded` (and the open handle its content store holds on `tmp`,
+            // RFC 015 D-4) before renaming `tmp` out from under it — renaming an open file is not
+            // guaranteed to work on every platform.
+            drop(output_decoded);
+            if let Err(e) = std::fs::rename(&tmp, out) {
+                let _ = std::fs::remove_file(&tmp);
+                output::stderr(&format!("cannot write {}: {e}", out.display()));
+                return exit::FAILURE;
+            }
+            output::stderr(&transform_result_text(format, &summary));
+            final_exit
+        }
+        Err(violation) => {
+            let _ = std::fs::remove_file(&tmp);
+            output::stderr(&display::human(&format!(
+                "the transform's output was refused: {violation}"
+            )));
+            exit::VERIFY_FAILED
+        }
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::print_stdout, clippy::print_stderr)]
 // test diagnostics ("skipping: ... not on PATH")
@@ -2018,3 +2339,6 @@ mod mutation;
 
 #[cfg(test)]
 mod encode_tests;
+
+#[cfg(test)]
+mod transform_tests;

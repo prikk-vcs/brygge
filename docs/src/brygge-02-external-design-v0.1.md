@@ -124,6 +124,7 @@ The command surface makes the **decode/encode separation** visible and the **hon
     | `2` | **usage error** (bad arguments, an option given where it does not apply) |
 
   - A CI gate can therefore tell "faithful within stated limits" from "hit the floor", and "called wrongly" from "broke", without parsing prose.
+- **CL-09 — `transform` runs external transform plugins.** `brygge transform <name> <artifact> --out <file>` runs `brygge-transform-<name>`, found on `PATH` only, after verifying the input artifact and refusing one with two atoms sharing one source identity (RFC 018 D-6). The plugin's own output is itself checked — `brygge_ir::transform::check`'s honesty rule, that every change is marked and every removal recorded — before it is accepted; any failure leaves `--out` untouched. `transform --list` shows every plugin found this way, the same shape `encode --list` does.
 
 ### 2.2 The IR's external contract (IX-…)
 

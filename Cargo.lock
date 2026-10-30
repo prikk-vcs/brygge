@@ -151,6 +151,21 @@ name = "brygge-mutate"
 version = "0.6.0"
 
 [[package]]
+name = "brygge-transform-authors-example"
+version = "0.6.0"
+dependencies = [
+ "brygge-decode-git",
+ "brygge-ir",
+]
+
+[[package]]
+name = "brygge-transform-test-plugin"
+version = "0.6.0"
+dependencies = [
+ "brygge-ir",
+]
+
+[[package]]
 name = "bstr"
 version = "1.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

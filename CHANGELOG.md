@@ -25,11 +25,31 @@ root against the source (`root-corresponds`). brygge itself writes no transforme
 
 **Added:** `brygge_ir::artifact::digest_of`: an IR's digest, without writing it.
 
+**Added:** `brygge transform <name> <artifact> --out <file>`: runs an external transform plugin,
+`brygge-transform-<name>`, found on `PATH` only. brygge verifies the input artifact first, refuses one
+with two atoms sharing the same source identity, and checks the plugin's own output for honesty
+(`brygge_ir::transform::check`) before accepting it — any failure leaves `--out` untouched. `brygge
+transform --list` shows the plugins found (RFC 018 D-6).
+
+**Added:** `brygge_ir::transform`: `check`, the honesty rule an output must pass to be accepted as a
+transform of an input (every change marked, every removal recorded, nothing invented); and `Edit`, the
+sanctioned way to build one, which computes every mark from the difference with the input and passes
+`check` by construction (RFC 018 D-6).
+
+**Added:** `examples/transform-authors`: an unsupported example transform rewriting author/committer
+identities through a mailmap-style map file. It is not part of brygge, and is never released (RFC 018
+D-6).
+
 **Changed:** brygge still reads contract 0.2.0 artifacts (`inspect`, `verify`, `encode`), and writes only
 0.3.0. `inspect` shows the artifact's own contract version.
 
 **Changed:** `decode` compresses on up to 8 threads, and uses about 100 MiB more memory than 0.6.0 for
 it. The amount does not grow with the repository. A decode takes about 1.5× as long.
+
+**Changed:** IR contract 0.3.0 (still unreleased): `ChangedPart::Parents` joins the atom vocabulary
+(removing an atom rewires its children's parents to its own, in order, without duplicates); a
+`Transform`-class drop's `what` now follows a fixed grammar (`atom <id>`, `op <id> <path>`, `copy <id>
+<to>`, `ref <kind> <name>`), checked at decode time (RFC 018 D-6).
 
 ## [0.6.0] — 2026-10-29
 

@@ -1,0 +1,32 @@
+[package]
+name        = "brygge-transform-authors-example"
+description = "An unsupported example transform, from brygge's IR to itself, that rewrites author/committer identities through a mailmap-style map file (RFC 018 D-6 §4). It is not part of brygge, is never released, and exists only to show that a transform can be built on brygge-ir alone."
+publish     = false
+
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+authors.workspace      = true
+repository.workspace   = true
+
+[[bin]]
+name = "brygge-transform-authors-example"
+path = "src/main.rs"
+
+[lib]
+name = "brygge_transform_authors_example"
+path = "src/lib.rs"
+
+[dependencies]
+# The isolation proof, the same one `examples/encode-git` makes for an encoder (RFC 017 D-1/D-2): a
+# transform built on the IR alone, no third-party crate at all.
+brygge-ir = { workspace = true }
+
+[dev-dependencies]
+# Test-only, to build fixture artifacts to round-trip (path-only — this crate is `publish = false`
+# itself, and none of these are published through it; see `tools/check-release-dev-deps.sh`).
+brygge-decode-git = { workspace = true }
+
+[lints]
+workspace = true

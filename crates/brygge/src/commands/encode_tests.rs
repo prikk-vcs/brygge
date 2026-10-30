@@ -59,12 +59,12 @@ fn signal_text_falls_back_to_the_bare_number_when_unknown() {
 fn list_human_marks_shadowed_entries() {
     let plugins = vec![
         Listed {
-            target: "a".to_string(),
+            name: "a".to_string(),
             path: PathBuf::from("/x/brygge-encode-a"),
             shadowed: false,
         },
         Listed {
-            target: "a".to_string(),
+            name: "a".to_string(),
             path: PathBuf::from("/y/brygge-encode-a"),
             shadowed: true,
         },
@@ -85,7 +85,7 @@ fn list_human_empty_says_so() {
 #[test]
 fn list_machine_has_the_version_and_shadowed_flag() {
     let plugins = vec![Listed {
-        target: "git-example".to_string(),
+        name: "git-example".to_string(),
         path: PathBuf::from("/x/brygge-encode-git-example"),
         shadowed: false,
     }];

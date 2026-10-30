@@ -1,4 +1,6 @@
-//! Finding and running an external `brygge encode` plugin on `PATH` (RFC 017 D-3, OQ-1).
+//! Finding and running an external `brygge encode`/`brygge transform` plugin on `PATH` (RFC 017 D-3,
+//! OQ-1; extended to `transform` by RFC 018 D-6, batch P — the same module, no copy: every rule below
+//! is shared between the two kinds, parameterized only by [`Kind`]'s own prefix).
 //!
 //! brygge resolves the plugin's absolute path itself and spawns that path directly — never the bare
 //! name through [`std::process::Command::new`]: on Windows, that would let the OS search the current
@@ -6,34 +8,54 @@
 //!
 //! The search walks `PATH` in order, skipping every empty and every relative entry (an empty entry means
 //! the current directory on Unix; a relative entry would search whatever the current directory happens
-//! to be, including a source repository). On Unix, a match is the first `<dir>/brygge-encode-<target>`
-//! that is a regular file (after following symlinks) with an execute bit. On Windows, a match is the
-//! first `<dir>\brygge-encode-<target>.exe` that is a regular file — `.exe` only, never `.bat` or `.cmd`,
-//! which run through `cmd.exe` and its own argument-splitting rules.
+//! to be, including a source repository). On Unix, a match is the first `<dir>/<prefix><name>` that is a
+//! regular file (after following symlinks) with an execute bit. On Windows, a match is the first
+//! `<dir>\<prefix><name>.exe` that is a regular file — `.exe` only, never `.bat` or `.cmd`, which run
+//! through `cmd.exe` and its own argument-splitting rules.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-const PREFIX: &str = "brygge-encode-";
+/// Which plugin surface is being searched — sets the file-name prefix; every other rule (`PATH`-only
+/// lookup, the execute bit, `.exe` only on Windows, the name grammar, no shell, `--list` and shadowing)
+/// is shared between the two.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    /// `brygge-encode-<target>` (RFC 017 D-3).
+    Encode,
+    /// `brygge-transform-<name>` (RFC 018 D-6).
+    Transform,
+}
 
-/// The platform's expected plugin file name for `target`.
-fn plugin_file_name(target: &str) -> String {
-    if cfg!(windows) {
-        format!("{PREFIX}{target}.exe")
-    } else {
-        format!("{PREFIX}{target}")
+impl Kind {
+    fn prefix(self) -> &'static str {
+        match self {
+            Self::Encode => "brygge-encode-",
+            Self::Transform => "brygge-transform-",
+        }
     }
 }
 
-/// The target name a candidate file name would serve, if any: the part after `brygge-encode-` (and,
-/// on Windows, before a `.exe` suffix — a name without one, or with any other suffix, names no target).
-fn target_from_file_name(name: &str) -> Option<&str> {
+/// The platform's expected plugin file name for `name`, under `kind`'s own prefix.
+fn plugin_file_name(kind: Kind, name: &str) -> String {
+    let prefix = kind.prefix();
+    if cfg!(windows) {
+        format!("{prefix}{name}.exe")
+    } else {
+        format!("{prefix}{name}")
+    }
+}
+
+/// The target/transform name a candidate file name would serve under `kind`, if any: the part after
+/// `kind`'s own prefix (and, on Windows, before a `.exe` suffix — a name without one, or with any other
+/// suffix, names nothing).
+fn name_from_file_name(kind: Kind, name: &str) -> Option<&str> {
     let base = if cfg!(windows) {
         name.strip_suffix(".exe")?
     } else {
         name
     };
-    base.strip_prefix(PREFIX)
+    base.strip_prefix(kind.prefix())
 }
 
 /// `PATH`'s entries, in order, with every empty and every relative entry removed.
@@ -68,42 +90,45 @@ fn is_runnable(path: &Path) -> bool {
     std::fs::metadata(path).is_ok_and(|meta| meta.is_file())
 }
 
-/// The resolved, absolute path to `brygge-encode-<target>` on `PATH`, or `None` if it is not there.
+/// The resolved, absolute path to `kind`'s own plugin named `name` on `PATH`, or `None` if it is not
+/// there.
 #[must_use]
-pub fn find(target: &str) -> Option<PathBuf> {
-    find_in(target, &path_dirs())
+pub fn find(kind: Kind, name: &str) -> Option<PathBuf> {
+    find_in(kind, name, &path_dirs())
 }
 
 /// As [`find`], over an explicit, already-filtered list of directories (so a test can give a crafted
 /// search order without touching the real `PATH`).
-fn find_in(target: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
-    let name = plugin_file_name(target);
+fn find_in(kind: Kind, name: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
+    let file_name = plugin_file_name(kind, name);
     dirs.iter()
-        .map(|dir| dir.join(&name))
+        .map(|dir| dir.join(&file_name))
         .find(|p| is_runnable(p))
 }
 
-/// One `brygge-encode-*` plugin found on `PATH`.
+/// One plugin found on `PATH`, of whichever [`Kind`] was searched for.
 pub struct Listed {
-    /// Its target name.
-    pub target: String,
+    /// Its target/transform name.
+    pub name: String,
     /// Its resolved, absolute path.
     pub path: PathBuf,
-    /// Whether an earlier `PATH` directory already has a plugin of the same target — [`find`] would
+    /// Whether an earlier `PATH` directory already has a plugin of the same name — [`find`] would
     /// never resolve to this one.
     pub shadowed: bool,
 }
 
-/// Every `brygge-encode-*` plugin on `PATH`, by the same rules [`find`] uses, in `PATH` order (and, within
-/// one directory, by target name — a directory listing's own order is unspecified). A plugin whose
-/// target an earlier directory already has is still listed, marked `shadowed`.
+/// Every `kind`-prefixed plugin on `PATH`, by the same rules [`find`] uses, in `PATH` order (and,
+/// within one directory, by name — a directory listing's own order is unspecified). A plugin whose
+/// name an earlier directory already has is still listed, marked `shadowed`. No name of either kind is
+/// reserved — a `transform` plugin and an `encode` plugin may share a name with no conflict, since
+/// they are found under different prefixes.
 #[must_use]
-pub fn list() -> Vec<Listed> {
-    list_in(&path_dirs())
+pub fn list(kind: Kind) -> Vec<Listed> {
+    list_in(kind, &path_dirs())
 }
 
 /// As [`list`], over an explicit, already-filtered list of directories.
-fn list_in(dirs: &[PathBuf]) -> Vec<Listed> {
+fn list_in(kind: Kind, dirs: &[PathBuf]) -> Vec<Listed> {
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
     for dir in dirs {
@@ -113,22 +138,22 @@ fn list_in(dirs: &[PathBuf]) -> Vec<Listed> {
         let mut in_dir: Vec<(String, PathBuf)> = Vec::new();
         for entry in entries.flatten() {
             let path = entry.path();
-            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            let Some(file_name) = path.file_name().and_then(|n| n.to_str()) else {
                 continue;
             };
-            let Some(target) = target_from_file_name(name) else {
+            let Some(name) = name_from_file_name(kind, file_name) else {
                 continue;
             };
-            if !crate::cli::is_valid_target(target) || !is_runnable(&path) {
+            if !crate::cli::is_valid_target(name) || !is_runnable(&path) {
                 continue;
             }
-            in_dir.push((target.to_string(), path));
+            in_dir.push((name.to_string(), path));
         }
         in_dir.sort_by(|a, b| a.0.cmp(&b.0));
-        for (target, path) in in_dir {
-            let shadowed = !seen.insert(target.clone());
+        for (name, path) in in_dir {
+            let shadowed = !seen.insert(name.clone());
             out.push(Listed {
-                target,
+                name,
                 path,
                 shadowed,
             });

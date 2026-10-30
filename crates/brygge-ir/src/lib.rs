@@ -27,6 +27,7 @@ pub mod content;
 pub mod honesty;
 pub mod model;
 pub mod status;
+pub mod transform;
 pub mod version;
 
 pub use artifact::{Decoded, digest_of, from_bytes, from_file, read_from, to_bytes};

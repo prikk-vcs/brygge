@@ -1,0 +1,21 @@
+[package]
+name        = "brygge-transform-test-plugin"
+description = "A controllable fake `brygge transform` plugin, for crates/brygge's own integration tests of the `transform` command (RFC 018 D-6). Not a real transform; never published; not part of the shipped surface."
+publish     = false
+
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+authors.workspace      = true
+repository.workspace   = true
+
+[[bin]]
+name = "brygge-transform-test-plugin"
+path = "src/main.rs"
+
+[dependencies]
+brygge-ir = { workspace = true }
+
+[lints]
+workspace = true

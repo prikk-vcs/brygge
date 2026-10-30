@@ -141,7 +141,7 @@ fn richer_ir() -> Ir {
             },
             DropRecord {
                 class: LossClass::Transform,
-                what: "an example transform drop".into(),
+                what: format!("atom {}", root.to_hex()),
                 reason: "mutation-seed".into(),
                 step: Some(step as u64),
             },

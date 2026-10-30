@@ -152,6 +152,7 @@ fn every_changed_part_round_trips_through_its_own_spelling() {
         ChangedPart::Message,
         ChangedPart::Ops,
         ChangedPart::Copies,
+        ChangedPart::Parents,
         ChangedPart::Blob,
         ChangedPart::Mode,
         ChangedPart::Path,

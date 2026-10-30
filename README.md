@@ -140,3 +140,7 @@ not apply to). The machine output is specified in
   supports none of them itself — see [`docs/src/reference/writing-an-encoder.md`](docs/src/reference/writing-an-encoder.md)
   if you want to build one. `encode prikk` is reserved for the built-in encoder (RFC 008), which still
   waits on prikk's import foundations (`ROADMAP.md`, Track B).
+- **`transform` runs external transform plugins the same way** (`brygge-transform-<name>`, found on
+  `PATH`), checking the plugin's own output for honesty before accepting it — see
+  [`docs/src/reference/writing-a-transform.md`](docs/src/reference/writing-a-transform.md) if you want to
+  build one.

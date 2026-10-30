@@ -1937,13 +1937,13 @@ fn transform_chain_ir() -> Ir {
         dropped: vec![
             DropRecord {
                 class: LossClass::Transform,
-                what: "a workflow-state file".into(),
+                what: format!("op {} workflow-state.txt", root.to_hex()),
                 reason: "step 0 dropped it".into(),
                 step: Some(step0 as u64),
             },
             DropRecord {
                 class: LossClass::Transform,
-                what: "an author alias".into(),
+                what: "ref branch refs/heads/alias".into(),
                 reason: "step 1 dropped it".into(),
                 step: Some(step1 as u64),
             },
