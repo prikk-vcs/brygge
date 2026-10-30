@@ -3163,6 +3163,29 @@ fn verify_against_source_corresponds_on_a_0_2_0_artifact() {
         "verify --against-source corresponds on a 0.2.0 artifact, against the repository it was \
          decoded from (review 099 R-4)"
     );
+
+    // Review 106 V-1: this fixture's provenance names brygge 0.6.0 (confirmed in the fixture's own
+    // test below); this build is a different version. Direct `run_against_source`, through the real
+    // reader (`from_file`), proves the comparison restamps rather than falsely reporting tampering.
+    let decoded = brygge_ir::from_file(&fixture).unwrap();
+    match run_against_source(&decoded.ir, r.path(), &brygge_ir::Storage::Memory) {
+        AgainstSourceOutcome::Corresponds(Some(note)) => {
+            assert_eq!(
+                note,
+                format!(
+                    "decoded by brygge 0.6.0, re-derived by {}; the history is identical",
+                    env!("CARGO_PKG_VERSION")
+                ),
+                "the note names both versions and says the history is identical"
+            );
+            assert_ne!(
+                env!("CARGO_PKG_VERSION"),
+                "0.6.0",
+                "this test needs a real version gap"
+            );
+        }
+        other => panic!("expected Corresponds(Some(note)) across brygge versions, got {other:?}"),
+    }
 }
 
 /// Review 099 R-4 ("small"): `examples/encode-git`'s own test plugin-interface binary accepts a
@@ -3417,6 +3440,196 @@ fn verify_against_source_rejects_a_well_formed_artifact_that_lies_about_being_un
 
     let _ = std::fs::remove_file(&out);
     let _ = std::fs::remove_file(&lie);
+}
+
+/// Rebuild `ir` with its provenance's `brygge_version`/`decoder_version` set to the given strings,
+/// otherwise identical (review 106 V-1's tests) — built independently of [`brygge_ir::Ir::restamped`]
+/// itself, through the same `IrBuilder` pattern [`rebuild_with_root_author_changed`] uses, so these
+/// tests do not exercise the function under test to build their own fixtures.
+fn rebuild_with_version(
+    ir: &brygge_ir::Ir,
+    brygge_version: &str,
+    decoder_version: &str,
+) -> brygge_ir::Ir {
+    let mut provenance = ir.provenance.clone();
+    provenance.brygge_version = brygge_version.to_string();
+    provenance.decoder_version = decoder_version.to_string();
+    let mut b = IrBuilder::new(provenance);
+    for id in ir.content.ids() {
+        let bytes = ir.content.get(id).unwrap().unwrap();
+        b.add_blob(bytes).unwrap();
+    }
+    for t in &ir.transforms {
+        b.add_transform(t.clone());
+    }
+    let mut id_map: BTreeMap<brygge_ir::AtomId, brygge_ir::AtomId> = BTreeMap::new();
+    for atom in &ir.atoms {
+        let parents = atom
+            .parents
+            .iter()
+            .map(|p| *id_map.get(p).expect("parents precede their children"))
+            .collect();
+        let copies = atom
+            .copies
+            .iter()
+            .map(|c| CopyRecord {
+                from: c.from.clone(),
+                from_atom: *id_map
+                    .get(&c.from_atom)
+                    .expect("a copy's from_atom precedes it"),
+                to: c.to.clone(),
+                status: c.status.clone(),
+            })
+            .collect();
+        let new_id = b
+            .add_atom(AtomDraft {
+                parents,
+                ops: atom.ops.clone(),
+                copies,
+                metadata: atom.metadata.clone(),
+                source: atom.source.clone(),
+                status: atom.status.clone(),
+            })
+            .unwrap();
+        id_map.insert(atom.id, new_id);
+    }
+    for rf in &ir.refs {
+        b.add_ref(RefRecord {
+            name: rf.name.clone(),
+            kind: rf.kind.clone(),
+            target: *id_map.get(&rf.target).expect("a ref's target precedes it"),
+            status: rf.status.clone(),
+            source: rf.source.clone(),
+            annotation: rf.annotation.clone(),
+        })
+        .unwrap();
+    }
+    b.set_loss(ir.loss.clone());
+    for flag in &ir.flags {
+        b.add_flag(flag.clone());
+    }
+    b.finish().unwrap()
+}
+
+/// Review 106 V-1: a brygge/decoder-version difference is a fact about the tool, never itself evidence
+/// of tampering. An artifact recorded as made by a (hypothetical) older brygge, whose history really
+/// has changed since, must be `not-checked` — never `does-not-correspond` — with a detail naming the
+/// version to re-run with, and the verdict `incomplete` (exit 1, never `pass`, never `fail`'s exit 50).
+#[test]
+fn verify_against_source_not_checked_when_recorded_version_differs_and_history_does_too() {
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let repo = simple_repo("version-mismatch");
+    let out = tmp_ir_path("version-mismatch-base");
+    let code = run_decode(
+        SourceKind::Git,
+        repo.path(),
+        &out,
+        false,
+        false,
+        None,
+        Format::Machine,
+    );
+    assert!(
+        code == exit::CLEAN || code == exit::RECORDED_LOSS,
+        "unexpected exit {code}"
+    );
+    let fresh = read_ir(&out).unwrap().ir;
+
+    // Both the recorded version and the history itself differ from a fresh decode — exactly the one
+    // case the restamped comparison cannot resolve either way, so it must not guess.
+    let edited = tmp_ir_path("version-mismatch-edited");
+    write_ir_to(
+        &rebuild_with_version(
+            &rebuild_with_root_author_changed(&fresh, None),
+            "0.0.1",
+            "0.0.1",
+        ),
+        &edited,
+    );
+
+    let ir1 = read_ir(&edited).unwrap().ir;
+    let against = run_against_source(&ir1, repo.path(), &brygge_ir::Storage::Memory);
+    assert_eq!(against.machine_label(), "not-checked");
+    let detail = against.detail().expect("not-checked carries a detail");
+    assert!(
+        detail.contains("decoded by brygge 0.0.1"),
+        "names the artifact's own version: {detail:?}"
+    );
+    assert!(
+        detail.contains("run `verify --against-source` with brygge 0.0.1"),
+        "says which brygge to re-run with: {detail:?}"
+    );
+    assert_eq!(Verdict::from(true, &against).machine_label(), "incomplete");
+    assert_eq!(
+        run_verify(&edited, Some(repo.path()), None, Format::Machine),
+        exit::FAILURE,
+        "incomplete is never pass (0), and never fail's exit 50 either"
+    );
+
+    let _ = std::fs::remove_file(&out);
+    let _ = std::fs::remove_file(&edited);
+}
+
+/// Review 106 V-1's third bullet: the root comparison of a chained artifact follows the same rule.
+#[test]
+fn verify_against_source_root_corresponds_with_both_notes_across_brygge_versions() {
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let repo = simple_repo("version-chain");
+    let out = tmp_ir_path("version-chain-base");
+    let code = run_decode(
+        SourceKind::Git,
+        repo.path(),
+        &out,
+        false,
+        false,
+        None,
+        Format::Machine,
+    );
+    assert!(
+        code == exit::CLEAN || code == exit::RECORDED_LOSS,
+        "unexpected exit {code}"
+    );
+    let fresh = read_ir(&out).unwrap().ir;
+    // What a (hypothetical) brygge 0.0.1 would have written for this exact repository: same content,
+    // a different version stamp. The chain's `consumed` must cite *this* digest, not `fresh`'s own
+    // (`digest_of` covers the provenance too) — exactly what a real 0.0.1 decode's chain would cite.
+    let root_at_0_0_1 = rebuild_with_version(&fresh, "0.0.1", "0.0.1");
+    let consumed = brygge_ir::digest_of(&root_at_0_0_1).unwrap();
+
+    // An honest chain whose root really is this source's decode, recorded as made by that older
+    // brygge: the chain's own author-change is real content; the version gap is not.
+    let honest = tmp_ir_path("version-chain-honest");
+    write_ir_to(
+        &rebuild_with_root_author_changed(&root_at_0_0_1, Some(consumed)),
+        &honest,
+    );
+    let ir1 = read_ir(&honest).unwrap().ir;
+    let against = run_against_source(&ir1, repo.path(), &brygge_ir::Storage::Memory);
+    assert_eq!(against.machine_label(), "root-corresponds");
+    let note = against.note().expect("root-corresponds carries a note");
+    assert!(
+        note.contains("1 transform(s) after it were not re-run"),
+        "keeps the existing chain note: {note:?}"
+    );
+    assert!(
+        note.contains("decoded by brygge 0.0.1"),
+        "and adds the version note: {note:?}"
+    );
+    assert!(note.ends_with("the history is identical"), "{note:?}");
+    assert_eq!(Verdict::from(true, &against).machine_label(), "pass");
+    assert_eq!(
+        run_verify(&honest, Some(repo.path()), None, Format::Machine),
+        exit::CLEAN
+    );
+
+    let _ = std::fs::remove_file(&out);
+    let _ = std::fs::remove_file(&honest);
 }
 
 /// Review 102 T-2's other half: the chain-removed case the previous version of this test used is not a

@@ -1305,12 +1305,15 @@ fn check_loss_boundary(ir: &Ir) -> CheckOutcome {
 /// checks (VF-4): the two claims are never merged into one verdict. `NotChecked` (review 003 R-1) is
 /// distinct from a genuine mismatch: "could not be checked" is not "does not correspond" — the latter is
 /// a claim of tampering, the former a claim that nothing was compared at all.
+#[derive(Debug)]
 enum AgainstSourceOutcome {
     /// `Some(note)` carries an informational note even on success (e.g. CR-07.6: the two decodes used
-    /// different `svnadmin` versions but the history is identical) — never a reason to doubt the result.
+    /// different `svnadmin` versions, or different brygge versions, but the history is identical) —
+    /// never a reason to doubt the result.
     Corresponds(Option<String>),
     DoesNotCorrespond(String),
-    Reproduces,
+    /// As [`Self::Corresponds`], CVS's own "reproduces" wording.
+    Reproduces(Option<String>),
     DoesNotReproduce(String),
     /// RFC 018 D-5: an artifact with a transform chain is never compared by whole-`Ir` equality — only
     /// its chain's own *root* (`transforms[0].consumed`) can ever correspond to a fresh decode, since
@@ -1328,7 +1331,7 @@ impl AgainstSourceOutcome {
         match self {
             Self::Corresponds(_) => "corresponds",
             Self::DoesNotCorrespond(_) => "does-not-correspond",
-            Self::Reproduces => "reproduces",
+            Self::Reproduces(_) => "reproduces",
             Self::DoesNotReproduce(_) => "does-not-reproduce",
             Self::RootCorresponds(_) => "root-corresponds",
             Self::RootReproduces(_) => "root-reproduces",
@@ -1340,7 +1343,7 @@ impl AgainstSourceOutcome {
         match self {
             Self::Corresponds(_) => "corresponds",
             Self::DoesNotCorrespond(_) => "does not correspond",
-            Self::Reproduces => "reproduces",
+            Self::Reproduces(_) => "reproduces",
             Self::DoesNotReproduce(_) => "does not reproduce",
             Self::RootCorresponds(_) => "the chain's root corresponds to the source",
             Self::RootReproduces(_) => "the chain's root reproduces the source",
@@ -1360,9 +1363,10 @@ impl AgainstSourceOutcome {
     /// D-5) — that, too, is informational, not a reason to doubt the result.
     fn note(&self) -> Option<&str> {
         match self {
-            Self::Corresponds(Some(n)) | Self::RootCorresponds(n) | Self::RootReproduces(n) => {
-                Some(n)
-            }
+            Self::Corresponds(Some(n))
+            | Self::Reproduces(Some(n))
+            | Self::RootCorresponds(n)
+            | Self::RootReproduces(n) => Some(n),
             _ => None,
         }
     }
@@ -1421,24 +1425,62 @@ fn run_against_source(ir1: &Ir, repo: &Path, storage: &brygge_ir::Storage) -> Ag
     let versions_differ = svn_version_note(ir1, &ir2);
     let ir2 = align_svnadmin_version(ir1, ir2);
 
+    // Review 106 V-1: which brygge *decoded* ir1 and ir2 is, like `svnadmin`'s own version, a fact
+    // about the tool, never itself evidence of tampering (CR-07.6's pattern, generalized beyond
+    // `svnadmin`) — until this fix, every artifact from an earlier brygge failed every later one's
+    // `--against-source` with `does-not-correspond`, a false claim of tampering (review 003 R-1).
+    // Captured before `ir2` is consumed by `restamped`, for the messages below.
+    let this_build_brygge_version = ir2.provenance.brygge_version.clone();
+    let brygge_versions_differ = ir1.provenance.brygge_version != this_build_brygge_version
+        || ir1.provenance.decoder_version != ir2.provenance.decoder_version;
+    let ir2 = if brygge_versions_differ {
+        match ir2.restamped(
+            &ir1.provenance.brygge_version,
+            &ir1.provenance.decoder_version,
+        ) {
+            Ok(r) => r,
+            Err(e) => {
+                return AgainstSourceOutcome::NotChecked(format!(
+                    "could not compare across brygge versions: {e}"
+                ));
+            }
+        }
+    } else {
+        ir2
+    };
+    let version_note =
+        || brygge_version_note(&ir1.provenance.brygge_version, &this_build_brygge_version);
+    let version_detail =
+        || brygge_version_detail(&ir1.provenance.brygge_version, &this_build_brygge_version);
+
     if let Some(first) = ir1.transforms.first() {
         // RFC 018 D-5: an artifact with a chain is never compared by whole-`Ir` equality — nothing re-
         // runs the chain itself here (that is batch P's own job), so the only thing a fresh decode of
         // the source can ever correspond to is the chain's own *root*: what `transforms[0].consumed`
         // names. `digest_of` is the exact digest `write_to` would give that fresh decode, without
-        // writing it.
+        // writing it. Review 106 V-1: the same brygge-version rule applies to this root comparison —
+        // `ir2` above is already restamped to `ir1`'s versions when they differ.
         return match brygge_ir::digest_of(&ir2) {
             Ok(digest) => {
-                let note = format!(
+                let rerun_note = format!(
                     "{} transform(s) after it were not re-run",
                     ir1.transforms.len()
                 );
                 if digest == first.consumed {
+                    let note = if brygge_versions_differ {
+                        format!("{rerun_note}; {}", version_note())
+                    } else {
+                        rerun_note
+                    };
                     if is_cvs {
                         AgainstSourceOutcome::RootReproduces(note)
                     } else {
                         AgainstSourceOutcome::RootCorresponds(note)
                     }
+                } else if brygge_versions_differ {
+                    // Never a claim of tampering: a difference across brygge versions proves nothing
+                    // about the chain's root by itself.
+                    AgainstSourceOutcome::NotChecked(version_detail())
                 } else {
                     let detail = "the chain's root is not this source's decode".to_string();
                     if is_cvs {
@@ -1457,6 +1499,11 @@ fn run_against_source(ir1: &Ir, repo: &Path, storage: &brygge_ir::Storage) -> Ag
     // Nothing else in the IR is provenance-only-and-volatile any more (import_time was removed by
     // RFC 011), so the aligned decodes are compared directly.
     let corresponds = ir1 == &ir2;
+    if !corresponds && brygge_versions_differ {
+        // Review 106 V-1: a difference across brygge versions is not evidence of tampering — never
+        // `does-not-correspond`/`does-not-reproduce` here, whatever `corresponds` says.
+        return AgainstSourceOutcome::NotChecked(version_detail());
+    }
     let detail = || {
         let d = divergence(ir1, &ir2);
         match &versions_differ {
@@ -1465,14 +1512,36 @@ fn run_against_source(ir1: &Ir, repo: &Path, storage: &brygge_ir::Storage) -> Ag
         }
     };
     match (is_cvs, corresponds) {
-        (true, true) => AgainstSourceOutcome::Reproduces,
+        (true, true) => AgainstSourceOutcome::Reproduces(brygge_versions_differ.then(version_note)),
         (true, false) => AgainstSourceOutcome::DoesNotReproduce(detail()),
-        (false, true) => AgainstSourceOutcome::Corresponds(
-            versions_differ
-                .map(|v| format!("svnadmin versions differ ({v}); the history is identical")),
-        ),
+        (false, true) => {
+            let svn_note = versions_differ
+                .map(|v| format!("svnadmin versions differ ({v}); the history is identical"));
+            let note = match (brygge_versions_differ.then(version_note), svn_note) {
+                (Some(a), Some(b)) => Some(format!("{a}; {b}")),
+                (Some(a), None) => Some(a),
+                (None, b) => b,
+            };
+            AgainstSourceOutcome::Corresponds(note)
+        }
         (false, false) => AgainstSourceOutcome::DoesNotCorrespond(detail()),
     }
+}
+
+/// Review 106 V-1: an informational note that two decodes used different brygge versions, but the
+/// history is identical — never a reason to doubt a `corresponds`/`reproduces`/`root-corresponds`
+/// result, exactly as [`svn_version_note`]'s note is for `svnadmin`.
+fn brygge_version_note(a: &str, b: &str) -> String {
+    format!("decoded by brygge {a}, re-derived by {b}; the history is identical")
+}
+
+/// Review 106 V-1: the detail for `not-checked` when two different brygge versions decode `a`'s
+/// history differently — never a claim of tampering, which a version difference alone can never be.
+fn brygge_version_detail(a: &str, b: &str) -> String {
+    format!(
+        "decoded by brygge {a}; this build ({b}) decodes differently, which a newer decoder may do \
+         legitimately; run `verify --against-source` with brygge {a} for a definite answer"
+    )
 }
 
 /// `Some(reason)` when `repo`'s form (a dumpfile vs a live repository) differs from what `ir1`'s

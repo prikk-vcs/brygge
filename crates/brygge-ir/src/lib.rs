@@ -26,6 +26,7 @@ pub(crate) mod canon;
 pub mod content;
 pub mod honesty;
 pub mod model;
+pub mod restamp;
 pub mod status;
 pub mod transform;
 pub mod version;
