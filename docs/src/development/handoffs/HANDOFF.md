@@ -26,9 +26,9 @@ import foundations (see §8).
 
 ## 1. What brygge is, in one paragraph
 
-**brygge** carries version-control history **out of** an existing system (Git, Mercurial, Subversion, CVS)
-into an **intermediate representation (IR)** that belongs to no particular system, so a target — prikk
-first — can encode from it. The pipeline is two deliberately separated halves: **decode** a source into
+**brygge** carries version-control history **from one system to another**: it decodes an existing system
+(Git, Mercurial, Subversion, CVS) into an **intermediate representation (IR)** that belongs to no particular
+system, and encodes a target from it (prikk first, built in and planned; others through external plugins). The pipeline is two deliberately separated halves: **decode** a source into
 the IR; **encode** a target from the IR. The one idea everything turns on is **faithfulness with
 provenance, not neutrality**: brygge records what the source *literally guaranteed*, and marks — *in the
 object itself* — anything it had to infer. It reads untrusted input, links no network, and writes only

@@ -1,10 +1,18 @@
 # brygge
 
-**brygge** carries version-control history **out of** Git, Mercurial, Subversion and CVS into an
-**intermediate representation (IR)** that belongs to no particular system, so a target can import it. It
-records what the source actually stated, marks in the artifact itself anything it had to infer, and records
-everything it did not carry. It reads untrusted repositories, uses no network, and writes only the file you
-name.
+**brygge carries version-control history from one system to another.** It **decodes** a Git, Mercurial,
+Subversion or CVS repository into one portable, verifiable file, an **IR artifact**, that belongs to no system, and
+**encodes** that artifact into a target system.
+
+- **Decoding** is complete for all four sources.
+- **Encoding:** prikk is the first target, through a built-in encoder (planned). Until then, and for other targets,
+  external encoder plugins do it, labelled as not part of brygge.
+
+It records what the source **stated**, marks what it had to **derive**, and records what it could not carry, all
+inside the artifact. It reads untrusted repositories, uses no network, and writes only where you tell it.
+
+*brygge* is Norwegian for *wharf*: history is unloaded from one system, counted and labelled, and loaded onto the
+next.
 
 This crate is the command-line tool. The IR library is [`brygge-ir`](https://crates.io/crates/brygge-ir).
 
@@ -26,6 +34,10 @@ live Subversion repository also needs `svnadmin`; decoding a dumpfile does not.
 brygge decode <git|hg|svn|cvs> <source> --out <artifact> [--infer-renames | --reconstruct-refs] [--format human|machine]
 brygge inspect <artifact> [--atoms] [--format human|machine]
 brygge verify <artifact> [--against-source <source>] [--format human|machine]
+brygge encode <target> <artifact> [--format human|machine] [-- <plugin arguments>…]
+brygge encode --list [--format human|machine]
+brygge transform <name> <artifact> --out <file> [--format human|machine] [-- <plugin arguments>…]
+brygge transform --list [--format human|machine]
 ```
 
 - **`decode`** reads a source into an IR artifact. Before it starts, it states what that source can and
@@ -36,6 +48,10 @@ brygge verify <artifact> [--against-source <source>] [--format human|machine]
   what needs attention. `--atoms` lists every atom with its status and source id.
 - **`verify`** checks an artifact's integrity and honesty with nothing but the artifact.
   `--against-source` also decodes the source again and reports, separately, whether the two correspond.
+- **`encode`** runs an external encoder plugin, `brygge-encode-<target>`, found on `PATH` only, after verifying the
+  artifact. The plugin is not part of brygge, and brygge says so. The built-in prikk encoder is planned.
+- **`transform`** runs an external transform plugin, `brygge-transform-<name>`, and checks its output against its
+  input: every change marked, every removal recorded, nothing invented. Otherwise nothing is written.
 
 Authorship is always *Unverifiable*: brygge carries who the source claims wrote something, and verifies
 no one. Every piece of text from a repository is escaped before it reaches your terminal.

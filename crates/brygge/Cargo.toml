@@ -1,6 +1,6 @@
 [package]
 name        = "brygge"
-description = "Carry version-control history out of Git, Mercurial, Subversion and CVS into an intermediate representation (IR), with every inference marked and every loss recorded: decode, inspect and verify."
+description = "Carry version-control history from one system to another: decode Git, Mercurial, Subversion and CVS into a portable, verifiable IR artifact, with every inference marked and every loss recorded, and encode it into a target."
 readme      = "README.md"
 
 version.workspace      = true
