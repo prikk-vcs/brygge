@@ -1,11 +1,27 @@
 # brygge
 
-**brygge** (Norwegian: *wharf* — where cargo is landed) carries version-control history **out of** an
-existing system (Git, Mercurial, Subversion, or CVS) into an **intermediate representation (IR)** that
-belongs to no particular system, so a target — prikk first — can encode from it. The guiding idea is
-**faithfulness with provenance, not neutrality**: brygge records what the source *literally guaranteed*,
-and marks — in the object itself — anything it had to *infer*. It reads untrusted repositories, links no
-network, and writes only where you tell it.
+**brygge carries version-control history from one system to another.** It **decodes** a Git, Mercurial,
+Subversion or CVS repository into one portable, verifiable file, an **IR artifact**, that belongs to no system, and
+**encodes** that artifact into a target system.
+
+- **Why it exists:** moving history between systems tends to blur fact and guesswork. A migration that hides what it
+  guessed cannot be trusted later.
+- **Its role:** the bridge between two systems, with the IR artifact as the one handover point, so any source can
+  reach any target.
+  - **Decoding** is complete for all four sources.
+  - **Encoding:** prikk is the first target, through a built-in encoder that follows prikk's own import design
+    (planned). Until then, and for other targets, external encoder plugins do it, labelled as not part of brygge.
+- **What it does:** it records what the source **stated**, marks what it had to **derive**, and records what it
+  could not carry, all inside the artifact. `inspect` shows them, and `verify` checks them, alone or against the
+  source. Transform plugins can change an artifact on the way, but only by recording every change. brygge reads
+  untrusted repositories, uses no network, and writes only where you tell it.
+- **A typical day:** you are leaving CVS. `brygge decode cvs` turns the repository into an artifact.
+  `brygge inspect` shows which changesets it had to reconstruct. `brygge verify --against-source` confirms that the
+  artifact still matches the repository. Then `brygge encode <target>` hands it to the new system.
+
+**The name:** *brygge* is Norwegian for *wharf*, where cargo is unloaded from one ship, counted, labelled, and loaded
+onto the next. brygge does the same for history: every crate that arrived damaged is written down, and every one it
+had to repack is marked as repacked. No ship leaves with a crate it cannot account for.
 
 ## Install
 
