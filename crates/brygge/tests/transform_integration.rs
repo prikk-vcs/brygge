@@ -33,13 +33,16 @@ fn git_available() -> bool {
         .unwrap_or(false)
 }
 
+/// Every workspace binary built in the same `cargo build`/`cargo test --workspace` session lands beside
+/// `brygge`'s own binary — that directory, not `current_exe()`'s, which cargo has moved more than once
+/// (review 115: cargo 1.100 dropped `target/<profile>/deps/`, writing a test executable's directory
+/// under `target/<profile>/build/<pkg>/<hash>/out/` instead). `CARGO_BIN_EXE_brygge` is the one path
+/// cargo guarantees, so its parent is always right regardless of where the test binary itself landed.
 fn workspace_bin_dir() -> PathBuf {
-    let exe = std::env::current_exe().expect("current exe");
-    let mut dir = exe.parent().expect("has a parent").to_path_buf();
-    if dir.ends_with("deps") {
-        dir.pop();
-    }
-    dir
+    Path::new(bin())
+        .parent()
+        .expect("CARGO_BIN_EXE_brygge has a parent")
+        .to_path_buf()
 }
 
 fn exe_name(name: &str) -> String {

@@ -13,7 +13,6 @@ rust-version = "1.87"
 license      = "Apache-2.0"
 authors      = ["nabbisen"]
 repository   = "https://github.com/prikk-vcs/brygge"
-homepage     = "https://github.com/prikk-vcs/brygge"
 
 [workspace.dependencies]
 brygge-ir = { version = "0.7.0", path = "crates/brygge-ir" }
