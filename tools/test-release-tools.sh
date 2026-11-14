@@ -575,4 +575,28 @@ grep -q 'pkgrel=7' "$scratch/aur-out4/brygge/PKGBUILD" || die "aur-render: AUR_P
 pass "aur-render: AUR_PKGREL overrides pkgrel (RFC 016 D-3)"
 unset BRYGGE_TEST_TAG_ARCHIVE_BASE
 
+# Review 116 D-1: both workflows' docker run must mount the whole tools/ directory at /tools, not a
+# single file — aur-in-container.sh calls sibling scripts (aur-srcinfo-check.sh) by its own directory, so
+# a single-file mount leaves those missing and render-check/build stop under set -e.
+for wf in .github/workflows/aur-packaging.yml .github/workflows/release.yml; do
+    grep -qE '^\s*-v "\$[A-Za-z_{}/-]+/tools:/tools:ro"' "$wf" ||
+        die "$wf: no docker run mounts the whole tools/ directory at /tools"
+    grep -q '/aur-in-container.sh:/aur-in-container.sh' "$wf" &&
+        die "$wf: still mounts aur-in-container.sh as a single file, not the tools/ directory"
+done
+pass "aur-packaging.yml and release.yml mount the whole tools/ directory into the AUR container"
+
+# Review 116 D-1: every sibling script aur-in-container.sh calls by its own directory must exist in
+# tools/ — the mount above being complete doesn't help if the call names a script that was renamed or
+# removed.
+mapfile -t sibling_scripts < <(
+    grep -oE '\$\(dirname "\$\{BASH_SOURCE\[0\]\}"\)/[a-zA-Z0-9_.-]+\.sh' tools/aur-in-container.sh |
+        sed -E 's#.*/##'
+)
+[ "${#sibling_scripts[@]}" -gt 0 ] || die "aur-in-container.sh: no sibling-script calls found to check"
+for script in "${sibling_scripts[@]}"; do
+    [ -f "tools/$script" ] || die "aur-in-container.sh calls tools/$script, which does not exist"
+done
+pass "aur-in-container.sh: every sibling script it calls exists in tools/"
+
 echo "all $passed release-tool checks passed"

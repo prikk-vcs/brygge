@@ -14,6 +14,7 @@ on:
       - "packaging/aur/**"
       - "tools/aur-render.sh"
       - "tools/aur-in-container.sh"
+      - "tools/aur-srcinfo-check.sh"
       - ".github/workflows/aur-packaging.yml"
       - ".github/workflows/release.yml"
   pull_request:
@@ -21,6 +22,7 @@ on:
       - "packaging/aur/**"
       - "tools/aur-render.sh"
       - "tools/aur-in-container.sh"
+      - "tools/aur-srcinfo-check.sh"
       - ".github/workflows/aur-packaging.yml"
       - ".github/workflows/release.yml"
 
@@ -56,5 +58,5 @@ jobs:
           set -euo pipefail
           docker run --rm \
             -v "$AUR_RENDER_OUT:/aur-out" \
-            -v "$PWD/tools/aur-in-container.sh:/aur-in-container.sh:ro" \
-            "$AUR_CONTAINER" bash /aur-in-container.sh render-check /aur-out
+            -v "$PWD/tools:/tools:ro" \
+            "$AUR_CONTAINER" bash /tools/aur-in-container.sh render-check /aur-out

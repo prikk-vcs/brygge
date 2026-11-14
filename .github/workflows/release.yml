@@ -465,8 +465,8 @@ jobs:
           docker run --rm \
             -v "$GITHUB_WORKSPACE/rendered:/aur-out" \
             -v "$GITHUB_WORKSPACE/dist:/aur-dist:ro" \
-            -v "$GITHUB_WORKSPACE/release-tools/tools/aur-in-container.sh:/aur-in-container.sh:ro" \
-            "$AUR_CONTAINER" bash /aur-in-container.sh build /aur-out /aur-dist
+            -v "$GITHUB_WORKSPACE/release-tools/tools:/tools:ro" \
+            "$AUR_CONTAINER" bash /tools/aur-in-container.sh build /aur-out /aur-dist
       # Review 080 F-1: cloned anonymously over HTTPS (the AUR serves this read-only, no credential), with
       # the push URL switched to SSH only for the later push step — so a dry run proves this step, the
       # build and the lint above with no secret involved at all, and can run before AUR_SSH_PRIVATE_KEY
