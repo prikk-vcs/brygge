@@ -85,6 +85,13 @@ true`, after fixing the cause. The same path, with a `pkgrel` input, is RFC 016 
 (a PKGBUILD change with no new brygge release); `dry_run: true` stops before `git push`, to prove the job
 without touching the AUR.
 
+**Never push a placeholder** to an AUR package name. A deleted package cannot be pushed to again until a
+Package Maintainer restores it, and an orphaned one until its adoption is granted (2026-10-28 → 2026-11-02,
+which delayed 0.5.0's and 0.6.0's packages).
+
+**A packaging-only fix** is a dispatch with `aur_only: true`, the same tag, and `pkgrel` raised. The brygge
+version does not change.
+
 **Re-running.**
 - *Actions → Release → Run workflow* with the same `tag`. It is safe: crates already published are
   skipped.

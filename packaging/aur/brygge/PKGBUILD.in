@@ -11,7 +11,7 @@
 pkgname=brygge
 pkgver=@VERSION@
 pkgrel=@PKGREL@
-pkgdesc="A VCS history to IR converter (Git, Mercurial, Subversion, CVS), built from source"
+pkgdesc="Carries version-control history between systems: decodes Git, Mercurial, Subversion and CVS into a verifiable IR (built from source)"
 arch=('x86_64' 'aarch64')
 url="https://github.com/prikk-vcs/brygge"
 license=('Apache-2.0')

@@ -531,6 +531,14 @@ for pkg in brygge brygge-bin; do
     grep -qE '@[A-Z_]+@' "$scratch/aur-out/$pkg/PKGBUILD" && die "aur-render: $pkg/PKGBUILD still has an unfilled placeholder"
 done
 pass "aur-render: both PKGBUILDs are written with the version, pkgrel and checksums filled in"
+for pkg in brygge brygge-bin; do
+    # Review 110: $CARCH in a per-architecture source array is wrong on the x86_64 runner that always
+    # renders this template (makepkg --printsrcinfo would write "x86_64" into source_aarch64 too) — assert
+    # directly on the rendered PKGBUILD, so this needs no makepkg/container to catch a regression.
+    grep -qE '^source(_[a-z0-9]+)?=.*\$CARCH' "$scratch/aur-out/$pkg/PKGBUILD" &&
+        die "aur-render: $pkg/PKGBUILD's source array still uses \$CARCH"
+done
+pass "aur-render: neither PKGBUILD's source array uses \$CARCH"
 if command -v makepkg >/dev/null 2>&1; then
     [ -f "$scratch/aur-out/brygge/.SRCINFO" ] && [ -f "$scratch/aur-out/brygge-bin/.SRCINFO" ] || die "aur-render: makepkg is installed but .SRCINFO was not written"
     pass "aur-render: .SRCINFO was written (makepkg is installed)"
