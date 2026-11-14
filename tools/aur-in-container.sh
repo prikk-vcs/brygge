@@ -54,20 +54,9 @@ for pkg in brygge brygge-bin; do
     echo "::endgroup::"
 done
 
-# Review 110: brygge-bin's per-architecture source arrays must name their architecture literally, because
-# makepkg --printsrcinfo always runs here on the x86_64 runner that renders this template — $CARCH would
-# write "x86_64" into source_aarch64 too, and that wrong .SRCINFO is what the AUR's page and helpers read,
-# regardless of what a real build on an aarch64 machine would evaluate $CARCH to. Catch a regression here,
-# where the three original dry runs missed it (they never read the rendered .SRCINFO at all).
-srcinfo="$dir/brygge-bin/.SRCINFO"
-if ! grep -q '^source_x86_64 = .*x86_64-unknown-linux-gnu' "$srcinfo"; then
-    echo "aur-in-container: brygge-bin's .SRCINFO source_x86_64 does not name x86_64-unknown-linux-gnu" >&2
-    exit 1
-fi
-if ! grep -q '^source_aarch64 = .*aarch64-unknown-linux-gnu' "$srcinfo"; then
-    echo "aur-in-container: brygge-bin's .SRCINFO source_aarch64 does not name aarch64-unknown-linux-gnu" >&2
-    exit 1
-fi
+# Review 110/115: catch a regression here, where the three original dry runs missed it (they never read
+# the rendered .SRCINFO at all) — the shared check tolerates the tab indentation makepkg writes.
+"$(dirname "${BASH_SOURCE[0]}")/aur-srcinfo-check.sh" "$dir/brygge-bin/.SRCINFO"
 
 if [ "$mode" = build ]; then
     # Review 083 C-1: `cargo` is a virtual package with two providers in `extra` — `rust` and `rustup` —

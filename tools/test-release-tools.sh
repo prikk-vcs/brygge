@@ -539,9 +539,24 @@ for pkg in brygge brygge-bin; do
         die "aur-render: $pkg/PKGBUILD's source array still uses \$CARCH"
 done
 pass "aur-render: neither PKGBUILD's source array uses \$CARCH"
+
+# Review 115 B-1: tools/aur-srcinfo-check.sh's own logic, on literal fixtures — no makepkg needed, so
+# this runs on every CI runner. The fixtures are tab-indented exactly as a real `makepkg --printsrcinfo`
+# writes a field under pkgbase (confirmed against a real render): the first version of this check
+# anchored its pattern at column 0 and so refused every real .SRCINFO, correct or not.
+good_srcinfo="$scratch/good.SRCINFO"
+printf 'pkgbase = brygge-bin\n\tpkgver = 0.7.0\n\tsource_x86_64 = https://github.com/prikk-vcs/brygge/releases/download/0.7.0/brygge-x86_64-unknown-linux-gnu.tar.gz\n\tsource_aarch64 = https://github.com/prikk-vcs/brygge/releases/download/0.7.0/brygge-aarch64-unknown-linux-gnu.tar.gz\n' >"$good_srcinfo"
+expect_ok "aur-srcinfo-check: a correct .SRCINFO is accepted" tools/aur-srcinfo-check.sh "$good_srcinfo"
+
+bad_srcinfo="$scratch/bad.SRCINFO"
+printf 'pkgbase = brygge-bin\n\tpkgver = 0.7.0\n\tsource_x86_64 = https://github.com/prikk-vcs/brygge/releases/download/0.7.0/brygge-x86_64-unknown-linux-gnu.tar.gz\n\tsource_aarch64 = https://github.com/prikk-vcs/brygge/releases/download/0.7.0/brygge-x86_64-unknown-linux-gnu.tar.gz\n' >"$bad_srcinfo"
+expect_fail "aur-srcinfo-check: the x86_64 tarball on the aarch64 line is refused" "source_aarch64" tools/aur-srcinfo-check.sh "$bad_srcinfo"
+
 if command -v makepkg >/dev/null 2>&1; then
     [ -f "$scratch/aur-out/brygge/.SRCINFO" ] && [ -f "$scratch/aur-out/brygge-bin/.SRCINFO" ] || die "aur-render: makepkg is installed but .SRCINFO was not written"
     pass "aur-render: .SRCINFO was written (makepkg is installed)"
+    expect_ok "aur-srcinfo-check: the real rendered brygge-bin .SRCINFO is accepted" \
+        tools/aur-srcinfo-check.sh "$scratch/aur-out/brygge-bin/.SRCINFO"
 else
     echo "skip the .SRCINFO assertion: makepkg is not installed (it runs inside the archlinux container in CI)"
 fi
