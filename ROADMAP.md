@@ -104,6 +104,13 @@ design (prikk RFC 113 §6).
     identity-bearing,** so re-imports reproduce ids (brygge's UD-4, ruled by prikk).
   - **Personal data:** identities are carried as-is; pseudonymisation is a later owner decision on the
     target side.
+  - **Path rules (prikk 0.57.0; brygge letter 007, prikk reply 006, 2026-11-14):** non-ASCII names in NFC
+    only, a frozen table of refused characters, and one canonical caseless key per path; `seal` refuses a
+    state holding two paths with one key, and `verify` warns only when a *tip* holds one. **brygge's
+    pre-flight calls prikk's own functions** (`canonical_caseless_key`, `first_refused_character`,
+    `non_nfc_spelling` in `prikk-object`), never a mirror, with `prikk-object` pinned to the version of the
+    `prikk` that will admit the import. They are public items of a v0 crate, not yet a promised interface,
+    so the pin is exact. The dependency enters only the encoder crate, under RFC 009's review.
 - **Direction, still owed by prikk's foundations design:**
   - provenance per import, with per-atom source identifiers inside it (a prikk format change);
   - the floor published in a checkable form;
@@ -112,6 +119,10 @@ design (prikk RFC 113 §6).
     (where valid UTF-8), the import statement, or both. It is not yet ruled (prikk reply 003);
   - how `NodeId`s are authored from brygge's evidence. prikk will send that rule to brygge before
     implementing it.
+  - how an import meets a **past state whose paths collide** under the caseless key: refused, carried,
+    or renamed with a recorded loss. brygge measured eza (14 of 3,499 commits) and fish-shell (6 of 23,576),
+    both with clean tips; prikk recorded it on its import row and will ask for Mercurial, Subversion and
+    CVS figures when the design opens.
 
 ### Phase B1 — the prikk encoder (RFC 008)
 - **Starts** once prikk's architect has accepted the RFC 113 foundations design (after the owner schedules
