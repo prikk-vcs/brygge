@@ -465,8 +465,13 @@ fn svn_dump_fixture() -> Vec<u8> {
     b
 }
 
+/// This fixture has no `trunk`/`branches`/`tags` layout at all (`a.txt` sits at the repository root) —
+/// exactly the one documented SVN limit (the guide's "what this does not do yet"): even with
+/// `--reconstruct-refs`, there is no convention to reconstruct a ref from, so the IR has zero refs and
+/// `encode git` refuses it (review 136 F-2) rather than writing unreachable commits. It is not
+/// encodable to Git in 0.8.0; this test demonstrates that limit for real, rather than skip it.
 #[test]
-fn an_svn_fixture_encodes_into_a_repository_git_accepted() {
+fn an_svn_fixture_with_no_trunk_layout_is_refused_not_silently_lost() {
     if !git_available() {
         eprintln!("skipping: git not on PATH");
         return;
@@ -477,22 +482,46 @@ fn an_svn_fixture_encodes_into_a_repository_git_accepted() {
 
     let ir = brygge_decode_svn::decode(
         &brygge_decode_svn::Source::DumpFile(dump_path),
-        &brygge_decode_svn::Options::default(),
+        &brygge_decode_svn::Options {
+            reconstruct_refs: true,
+            ..brygge_decode_svn::Options::default()
+        },
     )
     .unwrap();
+    assert!(
+        ir.refs.is_empty(),
+        "this fixture has no trunk/branches/tags layout to reconstruct a ref from"
+    );
     let artifact = write_artifact(&ir);
     let out = scratch_dir("result").join("repo");
-    let encoded = run_encode_git(&artifact, &out);
+    let result = run_encode_git(&artifact, &out);
+    assert_eq!(result.status.code(), Some(2));
     assert!(
-        encoded.status.success(),
-        "{}",
-        String::from_utf8_lossy(&encoded.stderr)
+        !out.exists(),
+        "nothing must be written at {}",
+        out.display()
     );
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(stderr.contains("not reachable from any ref"), "{stderr}");
 }
 
 fn cvs_single_rev(author: &str, date: &str, log: &str, content: &str) -> Vec<u8> {
     format!(
         "head\t1.1;\naccess;\nsymbols;\nlocks; strict;\n\n\n\
+1.1\ndate\t{date};\tauthor {author};\tstate Exp;\nbranches;\nnext\t;\n\n\n\
+desc\n@@\n\n\n\
+1.1\nlog\n@{log}@\ntext\n@{content}@\n"
+    )
+    .into_bytes()
+}
+
+/// As [`cvs_single_rev`], but with one RCS symbol (`TAG1:1.1`) naming the one revision — with
+/// `--reconstruct-refs`, this is enough for the CVS decoder to reconstruct a real tag ref, unlike a
+/// fixture with no symbols at all (which gives zero refs even with the flag — see
+/// `an_artifact_with_zero_refs_is_refused_not_warned_about`).
+fn cvs_single_rev_with_symbol(author: &str, date: &str, log: &str, content: &str) -> Vec<u8> {
+    format!(
+        "head\t1.1;\naccess;\nsymbols\n\tTAG1:1.1;\nlocks; strict;\n\n\n\
 1.1\ndate\t{date};\tauthor {author};\tstate Exp;\nbranches;\nnext\t;\n\n\n\
 desc\n@@\n\n\n\
 1.1\nlog\n@{log}@\ntext\n@{content}@\n"
@@ -508,16 +537,63 @@ fn a_cvs_fixture_encodes_with_derived_trailers() {
     }
     let repo_dir = scratch_dir("cvs-repo");
     let vfile = repo_dir.join("a.c,v");
+    // One RCS symbol (TAG1:1.1) gives --reconstruct-refs a real tag to build, so the resulting repository
+    // has a reachable commit (review 136 F-2: an artifact with zero refs is refused, not written —
+    // see `an_artifact_with_zero_refs_is_refused_not_warned_about` for that case).
+    std::fs::write(
+        &vfile,
+        cvs_single_rev_with_symbol("alice", "2024.01.01.12.00.00", "add a.c", "aaa\n"),
+    )
+    .unwrap();
+
+    let ir = brygge_decode_cvs::decode(
+        &brygge_decode_cvs::Source::LocalRepo(repo_dir),
+        &brygge_decode_cvs::Options {
+            reconstruct_refs: true,
+            ..brygge_decode_cvs::Options::default()
+        },
+    )
+    .unwrap();
+    assert!(
+        !ir.refs.is_empty(),
+        "the TAG1 symbol must reconstruct a ref"
+    );
+    let artifact = write_artifact(&ir);
+    let out = scratch_dir("result").join("repo");
+    let encoded = run_encode_git(&artifact, &out);
+    assert!(
+        encoded.status.success(),
+        "{}",
+        String::from_utf8_lossy(&encoded.stderr)
+    );
+
+    let message = git_out(&out, &["log", "-1", "--format=%B", "refs/tags/TAG1"]);
+    assert!(
+        message.contains("Brygge-Derived: atom reconstructed-changeset"),
+        "{message}"
+    );
+    assert!(message.contains("Brygge-Supplied:"), "{message}");
+    assert!(message.contains("committer"), "{message}");
+}
+
+// ---- reachability (review 136 F-2) -------------------------------------------------------------------
+
+#[test]
+fn an_artifact_with_zero_refs_is_refused_not_warned_about() {
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let repo_dir = scratch_dir("cvs-repo-norefs");
+    let vfile = repo_dir.join("a.c,v");
+    // No symbols at all: even --reconstruct-refs reconstructs no branch or tag, so the IR has atoms but
+    // zero refs — every commit would be unreachable once written. This must now refuse, not warn.
     std::fs::write(
         &vfile,
         cvs_single_rev("alice", "2024.01.01.12.00.00", "add a.c", "aaa\n"),
     )
     .unwrap();
 
-    // This minimal fixture's RCS file has no `symbols` at all, so even --reconstruct-refs reconstructs
-    // no branch or tag from it: the IR has zero refs, and the resulting repository's one commit is
-    // written but unreachable from anywhere (encode git warns about exactly this). Found here by its
-    // object hash directly (git cat-file --batch-all-objects, not a ref) rather than skipped.
     let ir = brygge_decode_cvs::decode(
         &brygge_decode_cvs::Source::LocalRepo(repo_dir),
         &brygge_decode_cvs::Options {
@@ -532,39 +608,16 @@ fn a_cvs_fixture_encodes_with_derived_trailers() {
     );
     let artifact = write_artifact(&ir);
     let out = scratch_dir("result").join("repo");
-    let encoded = run_encode_git(&artifact, &out);
+    let result = run_encode_git(&artifact, &out);
+    assert_eq!(result.status.code(), Some(2));
     assert!(
-        encoded.status.success(),
-        "{}",
-        String::from_utf8_lossy(&encoded.stderr)
+        !out.exists(),
+        "nothing must be written at {}",
+        out.display()
     );
-    let stderr = String::from_utf8_lossy(&encoded.stderr);
-    assert!(
-        stderr.contains("warning: the artifact has no refs at all"),
-        "{stderr}"
-    );
-
-    let batch_check = Command::new("git")
-        .current_dir(&out)
-        .args([
-            "cat-file",
-            "--batch-all-objects",
-            "--batch-check=%(objectname) %(objecttype)",
-        ])
-        .output()
-        .expect("git cat-file --batch-all-objects");
-    assert!(batch_check.status.success());
-    let commit_sha = String::from_utf8_lossy(&batch_check.stdout)
-        .lines()
-        .find_map(|l| l.strip_suffix(" commit").map(str::to_string))
-        .expect("the one commit must still exist in the object database, unreachable or not");
-    let message = git_out(&out, &["log", "-1", "--format=%B", &commit_sha]);
-    assert!(
-        message.contains("Brygge-Derived: atom reconstructed-changeset"),
-        "{message}"
-    );
-    assert!(message.contains("Brygge-Supplied:"), "{message}");
-    assert!(message.contains("committer"), "{message}");
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(stderr.contains("not reachable from any ref"), "{stderr}");
+    assert!(stderr.contains("--reconstruct-refs"), "{stderr}");
 }
 
 // ---- refusals ---------------------------------------------------------------------------------------
@@ -605,6 +658,33 @@ fn an_existing_out_directory_is_refused() {
         String::from_utf8_lossy(&result.stderr).contains("already exists"),
         "{:?}",
         result
+    );
+}
+
+/// Review 136 F-4: `<dir>.brygge-report` is refused up front, exactly as `<dir>` is, rather than
+/// silently overwritten.
+#[test]
+fn an_existing_report_path_is_refused() {
+    let dir = scratch_dir("report-exists");
+    let out = dir.join("repo");
+    let report_path = dir.join("repo.brygge-report");
+    std::fs::write(&report_path, b"pre-existing report").unwrap();
+    let artifact = scratch_dir("dummy2").join("a.ir");
+    std::fs::write(&artifact, b"not a real artifact").unwrap();
+
+    let result = run_encode_git(&artifact, &out);
+    assert_eq!(result.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(stderr.contains("already exists"), "{stderr}");
+    assert!(
+        !out.exists(),
+        "nothing must be written at {}",
+        out.display()
+    );
+    assert_eq!(
+        std::fs::read(&report_path).unwrap(),
+        b"pre-existing report",
+        "the pre-existing report must be left untouched"
     );
 }
 

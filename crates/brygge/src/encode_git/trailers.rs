@@ -48,11 +48,11 @@ pub(super) fn source_kind_label(kind: &SourceKind) -> String {
 /// `Brygge-Supplied` can list exactly what was supplied for one atom or ref (RFC 017 D-1 §1, carried by
 /// RFC 019 D-2: "never invent a value the IR does not carry… supply it and mark it as supplied").
 #[derive(Debug, Default)]
-pub(super) struct Supplied(Vec<&'static str>);
+pub(super) struct Supplied(Vec<String>);
 
 impl Supplied {
-    pub(super) fn mark(&mut self, field: &'static str) {
-        self.0.push(field);
+    pub(super) fn mark(&mut self, field: &str) {
+        self.0.push(field.to_string());
     }
 
     pub(super) fn trailer(&self) -> Option<String> {
@@ -65,9 +65,9 @@ impl Supplied {
 
     /// Folds this instance's fields into a running per-field total (for the encode report's
     /// `encode.supplied.<field>` counts).
-    pub(super) fn fold_into(&self, totals: &mut BTreeMap<&'static str, u64>) {
+    pub(super) fn fold_into(&self, totals: &mut BTreeMap<String, u64>) {
         for field in &self.0 {
-            *totals.entry(field).or_insert(0) += 1;
+            *totals.entry(field.clone()).or_insert(0) += 1;
         }
     }
 }
@@ -136,7 +136,11 @@ pub(super) fn identity_line(
             }
         },
         None => {
-            supplied.mark(field);
+            // Review 136 F-1: the whole identity being absent (the `let Some(identity) = identity`
+            // guard above) and only its email being absent are different claims — "brygge invented
+            // this author" against "brygge filled in a missing email" — and must be marked under
+            // different field names, or a reader cannot tell them apart.
+            supplied.mark(&format!("{field}-email"));
             String::new()
         }
     };

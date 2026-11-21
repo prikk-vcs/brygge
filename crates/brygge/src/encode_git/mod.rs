@@ -14,10 +14,12 @@
 //! (D-3; the example flattened everything into `refs/heads/*`), and collecting every pre-flight refusal
 //! into one report instead of refusing on the first one found (D-7).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Write;
 
-use brygge_ir::{AtomId, BlobId, Ir, PathOp, RefKind, RefRecord, TransformRecord};
+use brygge_ir::{
+    AtomId, BlobId, Ir, LossClass, PathOp, RefKind, RefRecord, SourceKind, TransformRecord,
+};
 
 mod trailers;
 
@@ -81,6 +83,18 @@ pub(crate) enum Refusal {
         /// `git check-ref-format`'s own reason, verbatim.
         reason: String,
     },
+    /// Review 136 F-2: at least one atom is not reachable from any ref (walking parents from every ref
+    /// target). Written under the scratch ref and then orphaned once it is removed, such an atom is
+    /// lost the next time Git garbage-collects — exactly what a pre-flight refusal exists to stop,
+    /// rather than a warning after the fact, which is easy to miss.
+    UnreachableAtoms {
+        /// How many atoms are unreachable.
+        count: usize,
+        /// The first few, by source id, for a reader to recognize.
+        first: Vec<String>,
+        /// What would fix it, specific to how this artifact was made.
+        fix: String,
+    },
 }
 
 impl std::fmt::Display for Refusal {
@@ -112,6 +126,10 @@ impl std::fmt::Display for Refusal {
             Self::InvalidRefName { git_ref, reason } => {
                 write!(f, "ref {git_ref:?} is not a valid Git ref name: {reason}")
             }
+            Self::UnreachableAtoms { count, first, fix } => write!(
+                f,
+                "{count} atom(s) are not reachable from any ref, starting with {first:?} — {fix}"
+            ),
         }
     }
 }
@@ -215,14 +233,79 @@ fn non_utf8_tag_messages(ir: &Ir) -> Vec<Refusal> {
     out
 }
 
-/// Every IR-level refusal (RFC 019 D-7), before anything is written: bad modes, ref collisions, and
-/// non-UTF-8 annotated-tag messages. **Does not check ref name validity** — that needs `git
-/// check-ref-format`, which only the CLI can run (`commands.rs` merges its own [`Refusal::InvalidRefName`]
-/// entries into this same list before reporting).
+/// What fixes an [`Refusal::UnreachableAtoms`] refusal, specific to how the artifact was made (review
+/// 136 F-2). For Subversion and CVS, no refs at all usually means the decode ran without
+/// `--reconstruct-refs`; for Git and Mercurial, which always carry the source's own refs, the likely
+/// cause is a transform that removed one — named by its step, when `ir.loss.dropped` records a
+/// `Transform`-class drop naming a ref.
+fn reachability_fix_hint(ir: &Ir) -> String {
+    match &ir.provenance.source.kind {
+        SourceKind::Svn | SourceKind::Cvs => {
+            "decode with --reconstruct-refs, which is needed to give this history any ref at all"
+                .to_string()
+        }
+        SourceKind::Git | SourceKind::Hg => {
+            let step = ir
+                .loss
+                .dropped
+                .iter()
+                .find(|d| d.class == LossClass::Transform && d.what.starts_with("ref "))
+                .and_then(|d| d.step);
+            match step {
+                Some(step) => format!("a ref was removed by a transform (step {step})"),
+                None => "a ref was removed by a transform".to_string(),
+            }
+        }
+        SourceKind::Other(_) => {
+            "decode with whichever option reconstructs refs for this source, if one exists"
+                .to_string()
+        }
+    }
+}
+
+/// Every atom reachable from at least one ref, walking parents from every ref's own target (review 136
+/// F-2). An atom this never reaches would be written under the scratch ref and then orphaned once it is
+/// removed — unreachable, and lost the next time Git garbage-collects.
+fn unreachable_atoms(ir: &Ir) -> Vec<Refusal> {
+    let by_id: HashMap<AtomId, &brygge_ir::ChangeAtom> =
+        ir.atoms.iter().map(|a| (a.id, a)).collect();
+    let mut reachable: HashSet<AtomId> = HashSet::new();
+    let mut stack: Vec<AtomId> = ir.refs.iter().map(|rf| rf.target).collect();
+    while let Some(id) = stack.pop() {
+        if reachable.insert(id) {
+            if let Some(atom) = by_id.get(&id) {
+                stack.extend(atom.parents.iter().copied());
+            }
+        }
+    }
+    let unreachable: Vec<&brygge_ir::ChangeAtom> = ir
+        .atoms
+        .iter()
+        .filter(|a| !reachable.contains(&a.id))
+        .collect();
+    if unreachable.is_empty() {
+        return Vec::new();
+    }
+    vec![Refusal::UnreachableAtoms {
+        count: unreachable.len(),
+        first: unreachable
+            .iter()
+            .take(5)
+            .map(|a| trailers::source_id_text(&a.source.atom_id))
+            .collect(),
+        fix: reachability_fix_hint(ir),
+    }]
+}
+
+/// Every IR-level refusal (RFC 019 D-7), before anything is written: bad modes, ref collisions,
+/// non-UTF-8 annotated-tag messages, and unreachable atoms. **Does not check ref name validity** — that
+/// needs `git check-ref-format`, which only the CLI can run (`commands.rs` merges its own
+/// [`Refusal::InvalidRefName`] entries into this same list before reporting).
 #[must_use]
 pub(crate) fn preflight(ir: &Ir) -> Vec<Refusal> {
     let mut out = bad_modes(ir);
     out.extend(ref_collisions(&ir.refs));
+    out.extend(unreachable_atoms(ir));
     out.extend(non_utf8_tag_messages(ir));
     out
 }
@@ -301,11 +384,7 @@ fn fold_u64_map<K: Ord>(into: &mut BTreeMap<K, u64>, from: BTreeMap<K, u64>) {
 /// Folds a [`Supplied`] instance's per-field counts into `summary.supplied` (`BTreeMap<String, u64>`) —
 /// [`Supplied::fold_into`] itself works over `&'static str` keys, so this converts them.
 fn fold_supplied(summary: &mut Summary, supplied: &Supplied) {
-    let mut totals: BTreeMap<&'static str, u64> = BTreeMap::new();
-    supplied.fold_into(&mut totals);
-    for (field, count) in totals {
-        *summary.supplied.entry(field.to_string()).or_insert(0) += count;
-    }
+    supplied.fold_into(&mut summary.supplied);
 }
 
 /// As [`fold_supplied`], for [`Altered`].

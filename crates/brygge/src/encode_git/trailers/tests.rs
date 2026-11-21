@@ -21,6 +21,9 @@ fn a_present_identity_needs_nothing_supplied_or_altered() {
 
 #[test]
 fn a_missing_email_is_supplied_as_empty_and_marked() {
+    // Review 136 F-1: only the email is missing here, so the mark must name `author-email`, not the
+    // bare `author` — that would claim brygge invented the whole identity, which it did not (the name
+    // is the IR's own).
     let identity = Identity {
         name: Text::utf8("A U Thor"),
         email: None,
@@ -29,7 +32,19 @@ fn a_missing_email_is_supplied_as_empty_and_marked() {
     let mut altered = Altered::default();
     let line = identity_line(Some(&identity), &mut supplied, &mut altered, "author");
     assert_eq!(line, "A U Thor <>");
-    assert_eq!(supplied.trailer().unwrap(), "Brygge-Supplied: author");
+    assert_eq!(supplied.trailer().unwrap(), "Brygge-Supplied: author-email");
+    assert!(altered.trailer().is_none());
+}
+
+#[test]
+fn a_missing_identity_is_supplied_under_the_bare_field_not_email() {
+    // The other half of F-1: the whole identity absent (distinct from only its email) is marked under
+    // the bare field name.
+    let mut supplied = Supplied::default();
+    let mut altered = Altered::default();
+    let line = identity_line(None, &mut supplied, &mut altered, "tagger");
+    assert_eq!(line, "unknown <>");
+    assert_eq!(supplied.trailer().unwrap(), "Brygge-Supplied: tagger");
     assert!(altered.trailer().is_none());
 }
 
@@ -262,8 +277,7 @@ fn supplied_and_altered_fold_into_per_field_totals() {
     supplied.mark("author");
     supplied.mark("author");
     supplied.mark("committer");
-    let mut totals: std::collections::BTreeMap<&'static str, u64> =
-        std::collections::BTreeMap::new();
+    let mut totals: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
     supplied.fold_into(&mut totals);
     assert_eq!(totals.get("author"), Some(&2));
     assert_eq!(totals.get("committer"), Some(&1));

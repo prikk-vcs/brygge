@@ -40,10 +40,16 @@ not exist yet — the report says so.
 example) are refused by name, naming both, before anything is written — brygge never picks one or
 renames either. Likewise, every Git ref name must pass Git's own rules (`git check-ref-format`).
 
-**An artifact with no refs at all** (a CVS decode without `--reconstruct-refs`, for one) still has its
-commits written, but nothing points at them: they are unreachable, and lost the next time Git
-garbage-collects. `encode git` warns about this on stderr; decode with the options that give the history
-real refs first.
+**Every atom must be reachable from at least one ref** — walked through parents from every ref's own
+target. An artifact where some atom is not (a CVS or Subversion decode without `--reconstruct-refs`, for
+one; or, for Git or Mercurial, a transform that removed the ref that reached it) is **refused**, naming
+how many atoms and the first few by source id, before anything is written: a result that would silently
+lose history once Git garbage-collects is not a migration, and D-7's pre-flight exists to catch exactly
+this.
+
+**One known limit:** a Subversion repository with no `trunk`/`branches`/`tags` layout gets no refs at
+all, even with `--reconstruct-refs` — there is no convention to reconstruct one from. Such a repository
+cannot be encoded to Git in 0.8.0.
 
 ## The trailers
 
@@ -63,13 +69,23 @@ fixed order (`git interpret-trailers --parse` reads it back):
 A `Transformed` mark on a ref with no message of its own to carry it (a lightweight tag, or a branch,
 bookmark, named branch or `Other` ref) goes into the report instead, naming the ref.
 
+**The field vocabulary in `Brygge-Supplied:`/`Brygge-Altered:`** is `author`, `author-email`,
+`author-time`, `author-time-zone`, `committer`, `committer-email`, `commit-time`,
+`commit-time-zone`, `tagger`, `tagger-email`, `tag-time`, `tag-time-zone`. A bare field (`author`,
+`committer`, `tagger`) means the **whole identity** was invented, or copied from the author because the
+IR stated no distinct committer; `<field>-email` means only the email was missing — a weaker, narrower
+claim. The two are never conflated: a reader must be able to tell "brygge invented this person" from
+"brygge filled in an empty email" apart.
+
 ## What this does not do (yet)
 
 - **It does not check its own output** against the artifact (RFC 019 D-6, batch G2) — the one honesty
   claim this page cannot yet make for you. Run `brygge verify <artifact> --against-source <repo>` on the
   real source separately if you still have it.
-- **It does not map identities** (RFC 019 D-4, batch G3): Subversion and CVS commits, which have no
-  email, get `Brygge-Supplied: committer` (or `author`) and `<>` for the email, unless you run `brygge
-  transform authors` first.
+- **It does not map identities** (RFC 019 D-4, batch G3): Subversion and CVS commits, which carry an
+  author name but no email, get `Brygge-Supplied: author-email` and `<>` for the email; since they also
+  carry no distinct committer, the committer identity is copied from the author and marked
+  `Brygge-Supplied: committer, commit-time` (the whole identity, not just its email). Run `brygge
+  transform authors` first to give them real Git identities instead.
 - Incremental or continuous synchronization, pushing to a hosting service, `git-svn` metadata, submodules
   and LFS, and SHA-256 object-format repositories are all out of scope for this release.

@@ -2328,6 +2328,19 @@ pub fn run_encode_git(artifact: &Path, out: &Path, format: Format) -> i32 {
         ));
         return exit::USAGE;
     }
+    let report_path = {
+        let mut p = out.as_os_str().to_os_string();
+        p.push(".brygge-report");
+        PathBuf::from(p)
+    };
+    // Review 136 F-4: refused up front, exactly as `out` is — today this is silently overwritten.
+    if report_path.symlink_metadata().is_ok() {
+        output::stderr(&format!(
+            "{} already exists; encode git refuses to overwrite it",
+            report_path.display()
+        ));
+        return exit::USAGE;
+    }
 
     let (report, code) = verify_internal_report(artifact, format);
     if code != exit::CLEAN {
@@ -2475,23 +2488,67 @@ pub fn run_encode_git(artifact: &Path, out: &Path, format: Format) -> i32 {
         }
     };
 
-    if let Err(e) = std::fs::rename(&partial, out) {
-        cleanup(&partial);
-        output::stderr(&format!("cannot write {}: {e}", out.display()));
-        return exit::FAILURE;
-    }
-
+    // Review 136 F-4: the report is written to a temporary sibling, and checked written, *before* the
+    // repository is renamed into place — so a failure here still leaves nothing at `<dir>`, matching
+    // every other failure path, instead of a complete repository with no report beside it.
     let fidelity = brygge_ir::honesty::summary(ir);
     let report_text =
         render_encode_git_report(&decoded.digest, &default_branch, &summary, &fidelity);
-    let report_path = {
-        let mut p = out.as_os_str().to_os_string();
-        p.push(".brygge-report");
-        PathBuf::from(p)
+    let report_dir = report_path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let report_tmp = {
+        let report_name = report_path.file_name().map_or_else(
+            || "brygge-report".to_string(),
+            |n| n.to_string_lossy().into_owned(),
+        );
+        let pid = std::process::id();
+        let mut p = None;
+        for attempt in 0..64u32 {
+            let candidate = report_dir.join(format!("{report_name}.partial-{pid}-{attempt}"));
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&candidate)
+                .and_then(|mut f| f.write_all(report_text.as_bytes()).map(|()| f))
+            {
+                Ok(_) => {
+                    p = Some(candidate);
+                    break;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => {
+                    cleanup(&partial);
+                    let _ = std::fs::remove_file(&candidate);
+                    output::stderr(&format!(
+                        "cannot write a temporary report beside {}: {e}",
+                        report_path.display()
+                    ));
+                    return exit::FAILURE;
+                }
+            }
+        }
+        match p {
+            Some(p) => p,
+            None => {
+                cleanup(&partial);
+                output::stderr("cannot write a temporary report: too many attempts");
+                return exit::FAILURE;
+            }
+        }
     };
-    if let Err(e) = std::fs::write(&report_path, report_text) {
+
+    if let Err(e) = std::fs::rename(&partial, out) {
+        cleanup(&partial);
+        let _ = std::fs::remove_file(&report_tmp);
+        output::stderr(&format!("cannot write {}: {e}", out.display()));
+        return exit::FAILURE;
+    }
+    if let Err(e) = std::fs::rename(&report_tmp, &report_path) {
+        let _ = std::fs::remove_file(&report_tmp);
         output::stderr(&format!(
-            "the repository was written at {}, but its report could not be written to {}: {e}",
+            "the repository was written at {}, but its report could not be put at {}: {e}",
             out.display(),
             report_path.display()
         ));
@@ -2511,19 +2568,6 @@ pub fn run_encode_git(artifact: &Path, out: &Path, format: Format) -> i32 {
             ", which has no commits"
         }
     ));
-    // The IR can carry atoms with no ref at all (CVS without --reconstruct-refs, for one): every commit
-    // is still written, under the scratch ref removed at the end, so with zero refs none of them is
-    // reachable from anywhere — a silent, total loss once Git garbage-collects. Not a refusal (the IR is
-    // honestly reflected, and D-7 does not list this), but loud: a user must not discover it later.
-    if summary.commits > 0 && summary.refs == 0 {
-        output::stderr(&format!(
-            "warning: the artifact has no refs at all, so these {} commit(s) are not reachable from \
-             any branch or tag; they will be lost once Git garbage-collects {} (consider decoding with \
-             --reconstruct-refs)",
-            summary.commits,
-            out.display()
-        ));
-    }
     fidelity_exit_class(ir)
 }
 

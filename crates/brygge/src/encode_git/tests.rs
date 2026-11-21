@@ -662,9 +662,215 @@ fn supplied_and_altered_are_counted_in_the_summary() {
     let ir = builder.finish().unwrap();
     let mut out = Vec::new();
     let summary = write_stream(&ir, &[0u8; 32], &mut out).unwrap();
+    // Review 136 F-1: the identity itself is present (name non-UTF-8, altered); only the email is
+    // missing, so the mark is "author-email", never the bare "author" (that would claim the whole
+    // identity was invented).
     assert_eq!(summary.altered.get("author-name").copied(), Some(1));
-    assert_eq!(summary.supplied.get("author").copied(), Some(1));
+    assert_eq!(summary.supplied.get("author-email").copied(), Some(1));
     assert_eq!(summary.supplied.get("author-time").copied(), Some(1));
     assert_eq!(summary.supplied.get("committer").copied(), Some(1));
     assert_eq!(summary.supplied.get("commit-time").copied(), Some(1));
+}
+
+// ---- reachability (review 136 F-2) -------------------------------------------------------------------
+
+/// A one-atom IR with no refs at all.
+fn ir_with_no_refs(kind: SourceKind) -> brygge_ir::Ir {
+    let mut builder = IrBuilder::new(provenance(kind.clone()));
+    let blob = builder.add_blob(b"x\n".to_vec()).unwrap();
+    builder
+        .add_atom(AtomDraft {
+            parents: Vec::new(),
+            ops: vec![brygge_ir::PathOp::Add {
+                path: "f".to_string(),
+                blob,
+                mode: 0o100_644,
+                status: brygge_ir::EpistemicStatus::Stated,
+            }],
+            copies: Vec::new(),
+            metadata: MetadataClaims::default(),
+            source: source(kind, b"r1"),
+            status: brygge_ir::EpistemicStatus::Stated,
+        })
+        .unwrap();
+    builder.finish().unwrap()
+}
+
+#[test]
+fn zero_refs_is_refused_naming_the_svn_fix() {
+    let ir = ir_with_no_refs(SourceKind::Svn);
+    let refusals = preflight(&ir);
+    assert_eq!(refusals.len(), 1);
+    match &refusals[0] {
+        Refusal::UnreachableAtoms { count, fix, .. } => {
+            assert_eq!(*count, 1);
+            assert!(fix.contains("--reconstruct-refs"), "{fix}");
+        }
+        other => panic!("expected UnreachableAtoms, got {other:?}"),
+    }
+}
+
+#[test]
+fn zero_refs_on_a_git_source_names_a_transform_not_reconstruct_refs() {
+    let ir = ir_with_no_refs(SourceKind::Git);
+    let refusals = preflight(&ir);
+    assert_eq!(refusals.len(), 1);
+    match &refusals[0] {
+        Refusal::UnreachableAtoms { fix, .. } => {
+            assert!(fix.contains("a ref was removed by a transform"), "{fix}");
+            assert!(!fix.contains("--reconstruct-refs"), "{fix}");
+        }
+        other => panic!("expected UnreachableAtoms, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_transform_drop_naming_a_ref_names_its_step_in_the_fix() {
+    use brygge_ir::DropRecord;
+    let mut builder = IrBuilder::new(provenance(SourceKind::Hg));
+    let step = builder.add_transform(brygge_ir::TransformRecord {
+        name: "prune-branches".to_string(),
+        version: "1.0.0".to_string(),
+        params: BTreeMap::new(),
+        consumed: [0x33; 32],
+    });
+    let blob = builder.add_blob(b"x\n".to_vec()).unwrap();
+    builder
+        .add_atom(AtomDraft {
+            parents: Vec::new(),
+            ops: vec![brygge_ir::PathOp::Add {
+                path: "f".to_string(),
+                blob,
+                mode: 0o100_644,
+                status: brygge_ir::EpistemicStatus::Stated,
+            }],
+            copies: Vec::new(),
+            metadata: MetadataClaims::default(),
+            source: source(SourceKind::Hg, b"r1"),
+            status: brygge_ir::EpistemicStatus::Stated,
+        })
+        .unwrap();
+    builder.set_loss(brygge_ir::LossBoundary {
+        dropped: vec![DropRecord {
+            class: brygge_ir::LossClass::Transform,
+            what: "ref branch pruned-branch".to_string(),
+            reason: "no longer needed".to_string(),
+            step: Some(step as u64),
+        }],
+    });
+    let ir = builder.finish().unwrap();
+    let refusals = preflight(&ir);
+    assert_eq!(refusals.len(), 1);
+    match &refusals[0] {
+        Refusal::UnreachableAtoms { fix, .. } => {
+            assert!(fix.contains(&format!("step {step}")), "{fix}");
+        }
+        other => panic!("expected UnreachableAtoms, got {other:?}"),
+    }
+}
+
+#[test]
+fn partial_reachability_names_only_the_unreachable_count() {
+    // Two independent atoms (no parent relationship): one ref points at the first; the second is
+    // unreachable. Confirms the walk does not treat "some ref exists" as "everything is reachable".
+    let mut builder = IrBuilder::new(provenance(SourceKind::Git));
+    let blob1 = builder.add_blob(b"one\n".to_vec()).unwrap();
+    let reachable_id = builder
+        .add_atom(AtomDraft {
+            parents: Vec::new(),
+            ops: vec![brygge_ir::PathOp::Add {
+                path: "a".to_string(),
+                blob: blob1,
+                mode: 0o100_644,
+                status: brygge_ir::EpistemicStatus::Stated,
+            }],
+            copies: Vec::new(),
+            metadata: MetadataClaims::default(),
+            source: source(SourceKind::Git, b"r1"),
+            status: brygge_ir::EpistemicStatus::Stated,
+        })
+        .unwrap();
+    let blob2 = builder.add_blob(b"two\n".to_vec()).unwrap();
+    builder
+        .add_atom(AtomDraft {
+            parents: Vec::new(),
+            ops: vec![brygge_ir::PathOp::Add {
+                path: "b".to_string(),
+                blob: blob2,
+                mode: 0o100_644,
+                status: brygge_ir::EpistemicStatus::Stated,
+            }],
+            copies: Vec::new(),
+            metadata: MetadataClaims::default(),
+            source: source(SourceKind::Git, b"r2"),
+            status: brygge_ir::EpistemicStatus::Stated,
+        })
+        .unwrap();
+    builder
+        .add_ref(RefRecord {
+            name: "main".to_string(),
+            kind: RefKind::Branch,
+            target: reachable_id,
+            status: brygge_ir::EpistemicStatus::Stated,
+            source: None,
+            annotation: None,
+        })
+        .unwrap();
+    let ir = builder.finish().unwrap();
+    let refusals = preflight(&ir);
+    assert_eq!(refusals.len(), 1);
+    match &refusals[0] {
+        Refusal::UnreachableAtoms { count, .. } => assert_eq!(*count, 1),
+        other => panic!("expected UnreachableAtoms, got {other:?}"),
+    }
+}
+
+#[test]
+fn full_reachability_through_a_parent_chain_passes() {
+    // A ref targets only the tip; its parent must still count as reachable through the walk.
+    let mut builder = IrBuilder::new(provenance(SourceKind::Git));
+    let blob1 = builder.add_blob(b"one\n".to_vec()).unwrap();
+    let parent_id = builder
+        .add_atom(AtomDraft {
+            parents: Vec::new(),
+            ops: vec![brygge_ir::PathOp::Add {
+                path: "a".to_string(),
+                blob: blob1,
+                mode: 0o100_644,
+                status: brygge_ir::EpistemicStatus::Stated,
+            }],
+            copies: Vec::new(),
+            metadata: MetadataClaims::default(),
+            source: source(SourceKind::Git, b"r1"),
+            status: brygge_ir::EpistemicStatus::Stated,
+        })
+        .unwrap();
+    let blob2 = builder.add_blob(b"two\n".to_vec()).unwrap();
+    let tip_id = builder
+        .add_atom(AtomDraft {
+            parents: vec![parent_id],
+            ops: vec![brygge_ir::PathOp::Add {
+                path: "b".to_string(),
+                blob: blob2,
+                mode: 0o100_644,
+                status: brygge_ir::EpistemicStatus::Stated,
+            }],
+            copies: Vec::new(),
+            metadata: MetadataClaims::default(),
+            source: source(SourceKind::Git, b"r2"),
+            status: brygge_ir::EpistemicStatus::Stated,
+        })
+        .unwrap();
+    builder
+        .add_ref(RefRecord {
+            name: "main".to_string(),
+            kind: RefKind::Branch,
+            target: tip_id,
+            status: brygge_ir::EpistemicStatus::Stated,
+            source: None,
+            annotation: None,
+        })
+        .unwrap();
+    let ir = builder.finish().unwrap();
+    assert!(preflight(&ir).is_empty());
 }
