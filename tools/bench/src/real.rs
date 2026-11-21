@@ -1310,6 +1310,11 @@ mod tests {
         // corrupted cache (someone committed into it) would be in.
         std::fs::write(dest.join("f.txt"), "tampered\n").unwrap();
         git_cmd(&["add", "f.txt"], &dest);
+        // A fresh clone carries no identity of its own, unlike `source` above: a CI runner with no
+        // global git config (unlike this author's machine) would otherwise fail this commit with
+        // "Please tell me who you are."
+        git_cmd(&["config", "user.email", "t@example.com"], &dest);
+        git_cmd(&["config", "user.name", "t"], &dest);
         git_cmd(&["commit", "--quiet", "-m", "tamper"], &dest);
         match check_entry(&entry, &cache) {
             Err(CheckError::Mismatch(why)) => assert!(why.contains(&pin)),
@@ -1358,8 +1363,14 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// Skipped where `rsync` is absent (not installed on the `windows-latest` CI runner), as the other
+    /// real-tool tests in this workspace do.
     #[test]
     fn cvs_entry_fetch_check_corruption_and_no_network() {
+        if Command::new("rsync").arg("--version").output().is_err() {
+            eprintln!("skipping: rsync not on PATH");
+            return;
+        }
         let root = scratch("cvs");
         let source = root.join("source");
         std::fs::create_dir_all(&source).unwrap();
