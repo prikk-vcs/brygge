@@ -237,17 +237,36 @@ fn non_utf8_tag_messages(ir: &Ir) -> Vec<Refusal> {
 }
 
 /// What fixes an [`Refusal::UnreachableAtoms`] refusal, specific to how the artifact was made (review
-/// 136 F-2). For Subversion and CVS, no refs at all usually means the decode ran without
-/// `--reconstruct-refs`; for Git and Mercurial, which always carry the source's own refs, the likely
-/// cause is a transform that removed one — named by its step, when `ir.loss.dropped` records a
-/// `Transform`-class drop naming a ref.
+/// 136 F-2; review 137 F-8 split each source's hint by whether the IR has any ref at all — suggesting
+/// `--reconstruct-refs` when it was already given, because some refs exist but do not reach every atom,
+/// is wrong advice).
 fn reachability_fix_hint(ir: &Ir) -> String {
+    let refs_present = !ir.refs.is_empty();
     match &ir.provenance.source.kind {
-        SourceKind::Svn | SourceKind::Cvs => {
-            "decode with --reconstruct-refs, which is needed to give this history any ref at all"
-                .to_string()
+        SourceKind::Svn => {
+            if refs_present {
+                "no reconstructed ref reaches these atoms".to_string()
+            } else {
+                "decode with --reconstruct-refs, which is needed to give this history any ref at all"
+                    .to_string()
+            }
+        }
+        SourceKind::Cvs => {
+            if refs_present {
+                // The one case the guide documents today (F-3, request 071, not yet landed): CVS's
+                // --reconstruct-refs gives every branch a ref, but not the main line itself.
+                "no reconstructed ref reaches these atoms — the main line has none of its own until \
+                 request 071 (F-3) lands"
+                    .to_string()
+            } else {
+                "decode with --reconstruct-refs, which is needed to give this history any ref at all"
+                    .to_string()
+            }
         }
         SourceKind::Git | SourceKind::Hg => {
+            // Git and Mercurial always carry the source's own refs, present or not, so this hint never
+            // depends on `refs_present`: the only way an atom here can go unreached is a transform that
+            // removed the ref that would have reached it.
             let step = ir
                 .loss
                 .dropped
@@ -260,8 +279,12 @@ fn reachability_fix_hint(ir: &Ir) -> String {
             }
         }
         SourceKind::Other(_) => {
-            "decode with whichever option reconstructs refs for this source, if one exists"
-                .to_string()
+            if refs_present {
+                "no ref reaches these atoms".to_string()
+            } else {
+                "decode with whichever option reconstructs refs for this source, if one exists"
+                    .to_string()
+            }
         }
     }
 }

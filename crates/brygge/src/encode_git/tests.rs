@@ -873,3 +873,122 @@ fn full_reachability_through_a_parent_chain_passes() {
     let ir = builder.finish().unwrap();
     assert!(preflight(&ir).is_empty());
 }
+// ---- review 137 F-8: the reachability hint when refs do exist -----------------------------------------
+
+#[test]
+fn svn_with_refs_present_says_no_reconstructed_ref_reaches_not_reconstruct_refs() {
+    // One ref exists (reachable_id), but a second, independent atom is not reachable from it: the hint
+    // must not suggest --reconstruct-refs again (it was already effective enough to produce a ref).
+    let mut builder = IrBuilder::new(provenance(SourceKind::Svn));
+    let blob1 = builder.add_blob(b"one\n".to_vec()).unwrap();
+    let reachable_id = builder
+        .add_atom(AtomDraft {
+            parents: Vec::new(),
+            ops: vec![brygge_ir::PathOp::Add {
+                path: "a".to_string(),
+                blob: blob1,
+                mode: 0o100_644,
+                status: brygge_ir::EpistemicStatus::Stated,
+            }],
+            copies: Vec::new(),
+            metadata: MetadataClaims::default(),
+            source: source(SourceKind::Svn, &1u64.to_be_bytes()),
+            status: brygge_ir::EpistemicStatus::Stated,
+        })
+        .unwrap();
+    let blob2 = builder.add_blob(b"two\n".to_vec()).unwrap();
+    builder
+        .add_atom(AtomDraft {
+            parents: Vec::new(),
+            ops: vec![brygge_ir::PathOp::Add {
+                path: "b".to_string(),
+                blob: blob2,
+                mode: 0o100_644,
+                status: brygge_ir::EpistemicStatus::Stated,
+            }],
+            copies: Vec::new(),
+            metadata: MetadataClaims::default(),
+            source: source(SourceKind::Svn, &2u64.to_be_bytes()),
+            status: brygge_ir::EpistemicStatus::Stated,
+        })
+        .unwrap();
+    builder
+        .add_ref(RefRecord {
+            name: "trunk".to_string(),
+            kind: RefKind::Branch,
+            target: reachable_id,
+            status: brygge_ir::EpistemicStatus::Stated,
+            source: None,
+            annotation: None,
+        })
+        .unwrap();
+    let ir = builder.finish().unwrap();
+    let refusals = preflight(&ir);
+    assert_eq!(refusals.len(), 1);
+    match &refusals[0] {
+        Refusal::UnreachableAtoms { fix, .. } => {
+            assert!(fix.contains("no reconstructed ref reaches"), "{fix}");
+            assert!(!fix.contains("--reconstruct-refs"), "{fix}");
+        }
+        other => panic!("expected UnreachableAtoms, got {other:?}"),
+    }
+}
+
+#[test]
+fn cvs_with_refs_present_names_the_main_line_case_until_request_071() {
+    let mut builder = IrBuilder::new(provenance(SourceKind::Cvs));
+    let blob1 = builder.add_blob(b"one\n".to_vec()).unwrap();
+    let reachable_id = builder
+        .add_atom(AtomDraft {
+            parents: Vec::new(),
+            ops: vec![brygge_ir::PathOp::Add {
+                path: "a".to_string(),
+                blob: blob1,
+                mode: 0o100_644,
+                status: brygge_ir::EpistemicStatus::Stated,
+            }],
+            copies: Vec::new(),
+            metadata: MetadataClaims::default(),
+            source: source(SourceKind::Cvs, b"a@1.1"),
+            status: brygge_ir::EpistemicStatus::Stated,
+        })
+        .unwrap();
+    let blob2 = builder.add_blob(b"two\n".to_vec()).unwrap();
+    builder
+        .add_atom(AtomDraft {
+            parents: Vec::new(),
+            ops: vec![brygge_ir::PathOp::Add {
+                path: "b".to_string(),
+                blob: blob2,
+                mode: 0o100_644,
+                status: brygge_ir::EpistemicStatus::Stated,
+            }],
+            copies: Vec::new(),
+            metadata: MetadataClaims::default(),
+            source: source(SourceKind::Cvs, b"b@1.1"),
+            status: brygge_ir::EpistemicStatus::Stated,
+        })
+        .unwrap();
+    builder
+        .add_ref(RefRecord {
+            name: "a-branch".to_string(),
+            kind: RefKind::Branch,
+            target: reachable_id,
+            status: brygge_ir::EpistemicStatus::Stated,
+            source: None,
+            annotation: None,
+        })
+        .unwrap();
+    let ir = builder.finish().unwrap();
+    let refusals = preflight(&ir);
+    assert_eq!(refusals.len(), 1);
+    match &refusals[0] {
+        Refusal::UnreachableAtoms { fix, .. } => {
+            assert!(fix.contains("no reconstructed ref reaches"), "{fix}");
+            assert!(fix.contains("main line"), "{fix}");
+            assert!(fix.contains("request 071"), "{fix}");
+            assert!(!fix.contains("--reconstruct-refs"), "{fix}");
+        }
+        other => panic!("expected UnreachableAtoms, got {other:?}"),
+    }
+}
