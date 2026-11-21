@@ -161,9 +161,20 @@ design (prikk RFC 113 §6).
     describes: commits, files per commit, atoms per block. brygge can supply measured shapes of real
     repositories from its IR when prikk's import work is scheduled.
 
-### Phase B2 — a second target encoder
-- Proves PU-3: a non-prikk target's encoder written against the IR alone, with no brygge change.
-  Optionally a snapshot target, to prove the IR privileges no identity model (IX-05).
+### Phase B2 — a second target encoder: Git (the owner, 2026-11-14)
+- **The target:** Git, officially supported, so Subversion → Git and CVS → Git migrations go through brygge,
+  with every derivation and every loss still recorded. It ranks **below prikk**: B1 always comes first, and
+  B2 is scheduled only while B1 waits on prikk.
+- **Proves PU-3:** a non-prikk target's encoder written against the IR alone, with no brygge change.
+- **Starts from** `examples/encode-git` (IR → a `git fast-import` stream). It is an unsupported example today;
+  supporting it officially is a decision for its own RFC.
+- **The RFC settles, before any code:**
+  - a built-in `encode git`, or a supported plugin;
+  - where the derived marks and the recorded losses go in Git (trailers, notes, a report beside the
+    repository), so that the result never reads as the source's own record (INV-1);
+  - deterministic output: the same artifact gives the same commit ids;
+  - how the result is checked against the artifact.
+- **Optionally later:** a snapshot target, to prove the IR privileges no identity model (IX-05).
 
 ---
 
