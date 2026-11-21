@@ -8,6 +8,16 @@ Every handoff adds its own entry in its own commit.
 
 ## [Unreleased]
 
+### Added
+
+- `brygge encode git`: a supported encoder that writes a new bare Git repository from an artifact, every
+  commit labelled with `Brygge-` trailers (RFC 019).
+
+### Breaking
+
+- `examples/encode-git` is removed, and a `brygge-encode-git` plugin is no longer run: `git` is now a
+  reserved, built-in `encode` target (RFC 019).
+
 ### Security
 
 - `faster-hex` 0.10.1, for RUSTSEC-2026-0306 (an informational, unsound-class advisory, reached only

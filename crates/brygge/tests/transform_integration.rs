@@ -70,10 +70,6 @@ fn authors_example_bin() -> PathBuf {
     sibling_bin("brygge-transform-authors-example")
 }
 
-fn git_example_bin() -> PathBuf {
-    sibling_bin("brygge-encode-git-example")
-}
-
 /// Copies `src` into `dir`, keeping its own file name (both real plugins here are already named
 /// `brygge-<kind>-<name>[.exe]`, so unlike [`install_plugin`] there is nothing to rename).
 fn install_as_is(dir: &Path, src: &Path) -> PathBuf {
@@ -497,12 +493,10 @@ fn machine_value(lines: &str, key: &str) -> Option<String> {
 #[test]
 fn the_real_example_runs_as_a_plugin_through_the_whole_chain() {
     let transform_plugin = authors_example_bin();
-    let encode_plugin = git_example_bin();
     let scratch = temp_dir("real-example-chain");
     let path_dir = scratch.0.join("path");
     std::fs::create_dir_all(&path_dir).unwrap();
     install_as_is(&path_dir, &transform_plugin);
-    install_as_is(&path_dir, &encode_plugin);
 
     let Some(artifact) = make_artifact_with_author(&scratch.0, "Old Name", "old@example.com")
     else {
@@ -574,47 +568,32 @@ fn the_real_example_runs_as_a_plugin_through_the_whole_chain() {
         .unwrap();
     assert!(changed_atoms > 0, "{stdout}");
 
-    // 3. `brygge encode git-example` on the output gives `Brygge-Transformed:` trailers naming
-    //    `author`, and `git fast-import` accepts it.
-    let fast_import_stream = scratch.0.join("out.fi");
+    // 3. `brygge encode git` (the built-in, RFC 019 — `git` is reserved, never a plugin) on the output
+    //    gives `Brygge-Transformed:` trailers naming `author`, in a real repository `git fast-import`
+    //    already accepted (the built-in runs it itself).
+    let target_repo = scratch.0.join("target-repo");
     let encode_output = Command::new(bin())
-        .args(["encode", "git-example"])
+        .args(["encode", "git"])
         .arg(&transformed)
-        .args(["--", "--out"])
-        .arg(&fast_import_stream)
-        .env("PATH", &path_dir)
+        .arg("--out")
+        .arg(&target_repo)
         .output()
-        .expect("run brygge encode git-example");
+        .expect("run brygge encode git");
     assert!(encode_output.status.success(), "{:?}", encode_output);
 
-    let fi_bytes = std::fs::read(&fast_import_stream).unwrap();
-    let fi_text = String::from_utf8_lossy(&fi_bytes);
-    let transformed_line = fi_text
+    let log = Command::new("git")
+        .current_dir(&target_repo)
+        .args(["log", "--format=%B"])
+        .output()
+        .expect("git log");
+    assert!(log.status.success(), "{:?}", log);
+    let log_text = String::from_utf8_lossy(&log.stdout);
+    let transformed_line = log_text
         .lines()
         .find(|l| l.contains("Brygge-Transformed:"))
-        .unwrap_or_else(|| panic!("no Brygge-Transformed: trailer: {fi_text}"));
+        .unwrap_or_else(|| panic!("no Brygge-Transformed: trailer: {log_text}"));
     assert!(
         transformed_line.contains("author"),
         "the trailer must name author: {transformed_line}"
-    );
-
-    let target_repo = scratch.0.join("target-repo");
-    std::fs::create_dir_all(&target_repo).unwrap();
-    let init = Command::new("git")
-        .current_dir(&target_repo)
-        .args(["init", "-q", "--initial-branch=main"])
-        .output()
-        .expect("git init");
-    assert!(init.status.success());
-    let fast_import = Command::new("git")
-        .current_dir(&target_repo)
-        .arg("fast-import")
-        .stdin(std::fs::File::open(&fast_import_stream).unwrap())
-        .output()
-        .expect("git fast-import");
-    assert!(
-        fast_import.status.success(),
-        "{}",
-        String::from_utf8_lossy(&fast_import.stderr)
     );
 }

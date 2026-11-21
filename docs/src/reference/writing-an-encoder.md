@@ -2,13 +2,16 @@
 
 brygge's half of the pipeline ends at the IR artifact (requirement `PU-3`): a decoder reads a source
 repository and writes an artifact; `inspect`/`verify` read it back and report on it; an **encoder** reads
-it and produces something in a target system. brygge supports no encoder itself (it is not part of
-brygge's shipped surface) — this page is for whoever writes one, on `brygge-ir` alone, for any target.
+it and produces something in a target system. brygge supports exactly one encoder itself, `brygge encode
+git` (RFC 019) — this page is for whoever writes another, on `brygge-ir` alone, for any other target, run
+as an external plugin (`brygge encode <target>`, §6).
 
 It assumes you know Rust and your target format, but have never read brygge's own code. The one real
-example, `examples/encode-git` (IR → a `git fast-import` stream), is unsupported and not part of brygge,
-but it is complete, tested against real fixtures from all four of brygge's decoders, and worth reading
-alongside this page — every rule below is one it actually follows.
+worked example is brygge's own built-in encoder, `crates/brygge/src/encode_git/` (IR → a `git
+fast-import` stream) — complete, tested against real fixtures from all four of brygge's decoders, and
+worth reading alongside this page: every rule below is one it actually follows. (Its earlier,
+unsupported form, `examples/encode-git`, RFC 017, is retired; its logic moved here when RFC 019 made
+`git` a supported, built-in target rather than a plugin.)
 
 ## 1. Reading an artifact
 
@@ -55,7 +58,7 @@ If your encoder reads every blob in bulk rather than lazily per op (an encoder f
 content store, for instance), use `brygge_ir::artifact::store_order(ir)` for the order to read them in:
 it is the same order a `0.3.0` artifact's blob frames are packed in, so reading in that order touches
 each compressed frame exactly once, instead of re-inflating one repeatedly out of order.
-`examples/encode-git` reads every blob this way, before writing any commit.
+`encode_git` reads every blob this way, before writing any commit.
 
 ## 3. The honesty obligations of an encoder
 
@@ -67,7 +70,7 @@ it. An encoder's job is to carry that distinction into the target, not to flatte
   `Derived` assertion names its kind and the exact parameters that produced it (`DerivationKind`). If
   your target has nowhere to put that (no trailer, no note, no custom field), say in your own output, in
   words, that something was inferred and dropped — never let it disappear without a trace.
-  `examples/encode-git` puts one `Brygge-Derived: <scope> <kind> <params>` trailer per derivation on the
+  `encode_git` puts one `Brygge-Derived: <scope> <kind> <params>` trailer per derivation on the
   commit it concerns.
 
   ```text
@@ -88,33 +91,37 @@ it. An encoder's job is to carry that distinction into the target, not to flatte
 - **Never invent a value the IR does not carry.** A missing committer, a missing time zone, a missing
   email — if your target's format *requires* something the IR left absent (most targets require more
   structure than the IR promises, by design — see §5), you may supply a placeholder, but you must mark
-  that you did. `examples/encode-git` adds one `Encoded-supplied: <fields>` trailer naming exactly what
+  that you did. `encode_git` adds one `Brygge-Supplied: <fields>` trailer naming exactly what
   it invented (for example `committer, commit-time-zone`), and never writes that trailer when nothing was
   supplied.
 
 - **Mark a value you had to *change*, even when the IR did carry it — distinctly from one you
   invented.** A target's own syntax can force a change on a value the IR stated in full: Git's
   line-oriented identity syntax cannot carry a literal newline, an angle bracket, a NUL, or non-UTF-8
-  bytes, so `examples/encode-git` folds, strips, or replaces them to write the line at all. That is not
+  bytes, so `encode_git` folds, strips, or replaces them to write the line at all. That is not
   invention — the IR carried a real value — but it is not exactly what the source said either, so it gets
-  its own trailer, `Encoded-altered: <field> (<why>)`, never folded into `Encoded-supplied:`:
+  its own trailer, `Brygge-Altered: <field> (<why>)`, never folded into `Brygge-Supplied:`:
 
   ```text
-  Encoded-altered: author-name (not UTF-8, replaced), author-email (newline folded)
+  Brygge-Altered: author-name (not UTF-8, replaced), author-email (newline folded)
   ```
 
 - **Report the loss boundary and flags.** `ir.loss.dropped` names every class of thing the decoder
   explicitly chose not to carry, and why; `ir.flags` names conditions that need the user's attention
   (a convention violation, a confidence floor). `brygge_ir::summary` turns both, plus the derived counts,
   into one `FidelityReport` — render it (`render_human`/`render_machine`) and show it to whoever is
-  running your encoder, the same way `brygge inspect`/`verify` already do. `examples/encode-git` prints
+  running your encoder, the same way `brygge inspect`/`verify` already do. `encode_git` prints
   it to stderr once, after writing its main output.
 
 - **Present the result as your own work, never as something brygge verified.** brygge verified the
   *artifact* — its integrity, its canonical form, every blob's content address. It verified nothing about
-  what you do with it. Label your output as such. `examples/encode-git`'s every commit trailer, its
-  `--help`, and its `README.md` all say the same thing: *"an unsupported example; not part of brygge."*
-  Say the equivalent for your own encoder, with your own target's name in place of "example."
+  what you do with it. Label your output as such, everywhere a user would see it: your `--help`, your
+  `README`, and (unless your target format has no notion of a commit message to put one in) a trailer on
+  every commit naming your encoder and its version, the way `Brygge-Encoded: brygge <version> from
+  <source kind>` does for the built-in one. `examples/transform-authors` (a still-unsupported example,
+  for a *transform*, not an encoder) states it the same way: *"an unsupported example; not part of
+  brygge."* Say the equivalent for your own encoder, with your own target's name in place of "example,"
+  so nobody mistakes your plugin's output for brygge's own claim.
 
 [status]: https://docs.rs/brygge-ir (crate docs — `EpistemicStatus`)
 [kind]: https://docs.rs/brygge-ir (crate docs — `DerivationKind`)

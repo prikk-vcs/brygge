@@ -6,7 +6,8 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::io::Write as IoWrite;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::process::{Command as Subprocess, Stdio};
 
 use brygge_decode_cvs::{Error as CvsError, Options as CvsOptions, Source as CvsSource};
 use brygge_decode_git::Error as GitError;
@@ -18,8 +19,9 @@ use brygge_ir::model::{AtomId, ChangedPart, FlagKind, PathOp, RefKind, Text};
 use brygge_ir::status::{Derivation, DerivationKind, EpistemicStatus};
 use brygge_ir::{Decoded, Ir, LossClass};
 
-use crate::cli::{Format, SourceKind};
+use crate::cli::{Format, GIT_TARGET, SourceKind};
 use crate::display;
+use crate::encode_git;
 use crate::exit;
 use crate::output;
 use crate::plugin;
@@ -1947,8 +1949,12 @@ fn format_verify_report(
 
 // ---- encode (RFC 017 D-3) --------------------------------------------------------------------------
 
-const ENCODE_LIST_VERSION: u32 = 1;
+// RFC 019 D-1: `git` is now a reserved, built-in target, so a `brygge-encode-git` plugin on PATH is
+// never run; it still appears here (plugin::list has no notion of the reservation), marked shadowed by
+// the built-in. That is a new meaning for `shadowed`/a new key, so this version bumps.
+const ENCODE_LIST_VERSION: u32 = 2;
 const ENCODE_VERSION: u32 = 1;
+const ENCODE_GIT_VERSION: u32 = 1;
 
 /// `encode --list [--format …]`: every `brygge-encode-*` plugin [`plugin::list`] finds on `PATH`.
 pub fn run_encode_list(format: Format) -> i32 {
@@ -1971,7 +1977,9 @@ fn render_encode_list_human(plugins: &[plugin::Listed]) -> String {
     }
     for p in plugins {
         let _ = write!(s, "{}  {}", p.name, p.path.display());
-        if p.shadowed {
+        if p.name == GIT_TARGET {
+            let _ = write!(s, "  (shadowed by the built-in)");
+        } else if p.shadowed {
             let _ = write!(s, "  (shadowed)");
         }
         let _ = writeln!(s);
@@ -1989,7 +1997,16 @@ fn render_encode_list_machine(plugins: &[plugin::Listed]) -> String {
             "encoder.{i}.path={}",
             display::machine_value(&p.path.display().to_string())
         );
-        let _ = writeln!(s, "encoder.{i}.shadowed={}", p.shadowed);
+        // `git` is always shadowed (the built-in always wins), regardless of plugin::list's own
+        // PATH-position-based `shadowed` computation, which knows nothing of the reservation.
+        let _ = writeln!(
+            s,
+            "encoder.{i}.shadowed={}",
+            p.shadowed || p.name == GIT_TARGET
+        );
+        if p.name == GIT_TARGET {
+            let _ = writeln!(s, "encoder.{i}.shadowed_by=built_in");
+        }
     }
     s
 }
@@ -2077,6 +2094,437 @@ pub fn run_encode(target: &str, artifact: &Path, plugin_args: &[String], format:
             exit::FAILURE
         }
     }
+}
+
+// ---- encode git (RFC 019, batch G1) ------------------------------------------------------------------
+
+/// A unique path under the system temp directory, named `brygge-encode-git-<label>-<pid>-<nanos>`. Not
+/// itself created — the caller creates the directory or file it names, after checking the name is free
+/// (the same pid+nanos+attempt scheme `create_transform_temp` uses for a file, adapted here for a
+/// directory too).
+fn unique_temp_path(label: &str, attempt: u32) -> PathBuf {
+    let pid = std::process::id();
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    std::env::temp_dir().join(format!("brygge-encode-git-{label}-{pid}-{nanos}-{attempt}"))
+}
+
+/// The fixed environment `git` runs under for `encode git` (RFC 019 D-1): no user configuration,
+/// template, or hook can reach the result. `HOME` and `GIT_CONFIG_GLOBAL` are a throwaway directory and
+/// file, removed when this value is dropped.
+struct GitEnv {
+    home: PathBuf,
+    global_config: PathBuf,
+}
+
+impl GitEnv {
+    fn new() -> std::io::Result<Self> {
+        const MAX_ATTEMPTS: u32 = 64;
+        let mut home = None;
+        for attempt in 0..MAX_ATTEMPTS {
+            let p = unique_temp_path("home", attempt);
+            match std::fs::create_dir(&p) {
+                Ok(()) => {
+                    home = Some(p);
+                    break;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(e),
+            }
+        }
+        let home = home.ok_or_else(|| std::io::Error::other("could not create a temp HOME"))?;
+
+        let mut global_config = None;
+        for attempt in 0..MAX_ATTEMPTS {
+            let p = unique_temp_path("gitconfig", attempt);
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&p)
+            {
+                Ok(_) => {
+                    global_config = Some(p);
+                    break;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => {
+                    let _ = std::fs::remove_dir_all(&home);
+                    return Err(e);
+                }
+            }
+        }
+        let Some(global_config) = global_config else {
+            let _ = std::fs::remove_dir_all(&home);
+            return Err(std::io::Error::other(
+                "could not create a temp GIT_CONFIG_GLOBAL file",
+            ));
+        };
+        Ok(Self {
+            home,
+            global_config,
+        })
+    }
+
+    /// Applies the fixed environment to `cmd`: `env_clear()`, then exactly `PATH` (the real value,
+    /// unchanged — `git` itself must still be found by the same `PATH` brygge resolved it from),
+    /// `HOME`, `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL`, `LC_ALL=C`, and, on Windows, `SystemRoot`
+    /// (Windows's own DLL loader needs it).
+    fn apply(&self, cmd: &mut Subprocess) {
+        cmd.env_clear();
+        if let Some(path) = std::env::var_os("PATH") {
+            cmd.env("PATH", path);
+        }
+        cmd.env("HOME", &self.home);
+        cmd.env("GIT_CONFIG_NOSYSTEM", "1");
+        cmd.env("GIT_CONFIG_GLOBAL", &self.global_config);
+        cmd.env("LC_ALL", "C");
+        if cfg!(windows) {
+            if let Some(system_root) = std::env::var_os("SystemRoot") {
+                cmd.env("SystemRoot", system_root);
+            }
+        }
+    }
+}
+
+impl Drop for GitEnv {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.home);
+        let _ = std::fs::remove_file(&self.global_config);
+    }
+}
+
+/// `git check-ref-format <name>`, under the same fixed environment. `Ok(())` if Git accepts the name;
+/// `Err(reason)` otherwise — `check-ref-format` itself prints nothing explaining why, so the reason is
+/// brygge's own, naming the exit code.
+fn check_ref_format(git: &Path, env: &GitEnv, git_ref: &str) -> Result<(), String> {
+    let mut cmd = Subprocess::new(git);
+    env.apply(&mut cmd);
+    cmd.args(["check-ref-format", git_ref]);
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    match cmd.status() {
+        Ok(status) if status.success() => Ok(()),
+        Ok(status) => Err(format!(
+            "git check-ref-format rejected it (exit {})",
+            status.code().map_or("?".to_string(), |c| c.to_string())
+        )),
+        Err(e) => Err(format!("cannot run git check-ref-format: {e}")),
+    }
+}
+
+/// Every pre-flight refusal (RFC 019 D-7): [`encode_git::preflight`]'s IR-level refusals, plus one
+/// `git check-ref-format` check per distinct Git ref name (the CLI's own job — it alone can run `git`).
+fn encode_git_preflight(ir: &Ir, git: &Path, env: &GitEnv) -> Vec<encode_git::Refusal> {
+    let mut refusals = encode_git::preflight(ir);
+    let mut checked: BTreeSet<String> = BTreeSet::new();
+    for rf in &ir.refs {
+        let path = encode_git::git_ref_path(rf);
+        if !checked.insert(path.clone()) {
+            continue;
+        }
+        if let Err(reason) = check_ref_format(git, env, &path) {
+            refusals.push(encode_git::Refusal::InvalidRefName {
+                git_ref: path,
+                reason,
+            });
+        }
+    }
+    refusals
+}
+
+fn render_encode_git_refusals(format: Format, refusals: &[encode_git::Refusal]) -> String {
+    match format {
+        Format::Human => {
+            let mut s = String::new();
+            let _ = writeln!(s, "the artifact cannot be written as Git:");
+            for r in refusals {
+                let _ = writeln!(s, "  {}", display::human(&r.to_string()));
+            }
+            s
+        }
+        Format::Machine => {
+            let mut s = String::new();
+            let _ = writeln!(s, "encode_git_version={ENCODE_GIT_VERSION}");
+            for (i, r) in refusals.iter().enumerate() {
+                let _ = writeln!(
+                    s,
+                    "encode_git.refusal.{i}={}",
+                    display::machine_value(&r.to_string())
+                );
+            }
+            s
+        }
+    }
+}
+
+/// The `<dir>.brygge-report` sidecar file (RFC 019 D-2, OQ-1): always in the machine format
+/// (`machine-output.md`), regardless of `--format` — a sidecar meant for later reading and tooling, not
+/// this run's own stderr/stdout.
+fn render_encode_git_report(
+    digest: &[u8; 32],
+    default_branch: &encode_git::DefaultBranch,
+    summary: &encode_git::Summary,
+    fidelity: &brygge_ir::honesty::FidelityReport,
+) -> String {
+    let mut s = String::new();
+    let _ = writeln!(s, "encode_git_version={ENCODE_GIT_VERSION}");
+    let _ = writeln!(s, "encode_git.artifact_digest=sha256:{}", hex(digest));
+    let _ = writeln!(s, "encode_git.brygge_version={}", env!("CARGO_PKG_VERSION"));
+    let _ = writeln!(
+        s,
+        "encode_git.default_branch={}",
+        display::machine_value(&default_branch.name)
+    );
+    let _ = writeln!(
+        s,
+        "encode_git.default_branch_existed={}",
+        default_branch.existed
+    );
+    let _ = writeln!(s, "encode_git.commits={}", summary.commits);
+    let _ = writeln!(s, "encode_git.tags={}", summary.tags);
+    let _ = writeln!(s, "encode_git.refs={}", summary.refs);
+    for (class, count) in &fidelity.dropped {
+        let _ = writeln!(s, "encode_git.dropped.{}={count}", key_segment(class));
+    }
+    for (kind, count) in &fidelity.flagged {
+        let _ = writeln!(s, "encode_git.flagged.{}={count}", key_segment(kind));
+    }
+    for (field, count) in &summary.supplied {
+        let _ = writeln!(s, "encode_git.supplied.{}={count}", key_segment(field));
+    }
+    for (field, count) in &summary.altered {
+        let _ = writeln!(s, "encode_git.altered.{}={count}", key_segment(field));
+    }
+    for (i, line) in summary.unplaced_ref_transforms.iter().enumerate() {
+        let _ = writeln!(
+            s,
+            "encode_git.unplaced_ref_transform.{i}={}",
+            display::machine_value(line)
+        );
+    }
+    s
+}
+
+/// A label as a machine-output key segment (matching `brygge_ir::honesty`'s own convention): keys are
+/// `snake_case`, values (labels, field names) stay as they are given.
+fn key_segment(label: &str) -> String {
+    label.replace('-', "_")
+}
+
+/// `encode git <artifact> --out <dir>` (RFC 019, batch G1): the built-in, supported encoder. `<dir>`
+/// must not exist. Verifies the artifact first, then runs the pre-flight (D-7): every refusal in one
+/// report, exit 2, nothing written. On success, `<dir>` is a new bare Git repository, and
+/// `<dir>.brygge-report` its sidecar record (D-2, OQ-1). On any failure after that point, nothing is
+/// left at `<dir>` (C-7): a temporary sibling directory is used throughout, renamed into place only once
+/// every check has passed.
+pub fn run_encode_git(artifact: &Path, out: &Path, format: Format) -> i32 {
+    if out.symlink_metadata().is_ok() {
+        output::stderr(&format!(
+            "{} already exists; encode git refuses to overwrite it",
+            out.display()
+        ));
+        return exit::USAGE;
+    }
+
+    let (report, code) = verify_internal_report(artifact, format);
+    if code != exit::CLEAN {
+        output::stderr(&report);
+        return code;
+    }
+
+    let decoded = match brygge_ir::from_file(artifact) {
+        Ok(d) => d,
+        Err(e) => {
+            output::stderr(&display::human(&format!(
+                "cannot read {}: {e}",
+                artifact.display()
+            )));
+            return exit::FAILURE;
+        }
+    };
+    let ir = &decoded.ir;
+
+    let Some(git) = plugin::find_tool("git") else {
+        output::stderr("git is not on PATH: brygge encode git needs it (RFC 019 D-1)");
+        return exit::FAILURE;
+    };
+    let env = match GitEnv::new() {
+        Ok(e) => e,
+        Err(e) => {
+            output::stderr(&format!("cannot prepare git's environment: {e}"));
+            return exit::FAILURE;
+        }
+    };
+
+    let refusals = encode_git_preflight(ir, &git, &env);
+    if !refusals.is_empty() {
+        output::stderr(&render_encode_git_refusals(format, &refusals));
+        return exit::USAGE;
+    }
+
+    let default_branch = encode_git::choose_default_branch(ir);
+
+    let parent = out.parent().filter(|p| !p.as_os_str().is_empty());
+    let partial = {
+        let out_name = out.file_name().map_or_else(
+            || "encode-git".to_string(),
+            |n| n.to_string_lossy().into_owned(),
+        );
+        let pid = std::process::id();
+        let mut p = None;
+        for attempt in 0..64u32 {
+            let base_name = format!("{out_name}.partial-{pid}-{attempt}");
+            let candidate =
+                parent.map_or_else(|| PathBuf::from(&base_name), |d| d.join(&base_name));
+            match std::fs::create_dir(&candidate) {
+                Ok(()) => {
+                    p = Some(candidate);
+                    break;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => {
+                    output::stderr(&format!(
+                        "cannot create a working directory beside {}: {e}",
+                        out.display()
+                    ));
+                    return exit::FAILURE;
+                }
+            }
+        }
+        match p {
+            Some(p) => p,
+            None => {
+                output::stderr("cannot create a working directory: too many attempts");
+                return exit::FAILURE;
+            }
+        }
+    };
+    let cleanup = |partial: &Path| {
+        let _ = std::fs::remove_dir_all(partial);
+    };
+
+    let mut init = Subprocess::new(&git);
+    env.apply(&mut init);
+    init.current_dir(&partial);
+    init.args([
+        "init",
+        "--quiet",
+        "--bare",
+        &format!("--initial-branch={}", default_branch.name),
+    ]);
+    match init.status() {
+        Ok(status) if status.success() => {}
+        Ok(status) => {
+            cleanup(&partial);
+            output::stderr(&format!("git init failed (exit {:?})", status.code()));
+            return exit::FAILURE;
+        }
+        Err(e) => {
+            cleanup(&partial);
+            output::stderr(&format!("cannot start git: {e}"));
+            return exit::FAILURE;
+        }
+    }
+
+    let mut import = Subprocess::new(&git);
+    env.apply(&mut import);
+    import.current_dir(&partial);
+    import.args(["fast-import", "--quiet", "--done"]);
+    import.stdin(Stdio::piped());
+    let mut child = match import.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            cleanup(&partial);
+            output::stderr(&format!("cannot start git fast-import: {e}"));
+            return exit::FAILURE;
+        }
+    };
+    let summary = {
+        #[allow(clippy::expect_used)]
+        let mut stdin = child
+            .stdin
+            .take()
+            .expect("stdin was requested with Stdio::piped()");
+        let write_result = encode_git::write_stream(ir, &decoded.digest, &mut stdin);
+        drop(stdin);
+        write_result
+    };
+    let status = child.wait();
+    let summary = match (summary, status) {
+        (Ok(summary), Ok(status)) if status.success() => summary,
+        (Ok(_), Ok(status)) => {
+            cleanup(&partial);
+            output::stderr(&format!(
+                "git fast-import failed (exit {:?})",
+                status.code()
+            ));
+            return exit::FAILURE;
+        }
+        (Err(e), _) => {
+            cleanup(&partial);
+            output::stderr(&format!("writing the fast-import stream failed: {e}"));
+            return exit::FAILURE;
+        }
+        (Ok(_), Err(e)) => {
+            cleanup(&partial);
+            output::stderr(&format!("cannot wait for git fast-import: {e}"));
+            return exit::FAILURE;
+        }
+    };
+
+    if let Err(e) = std::fs::rename(&partial, out) {
+        cleanup(&partial);
+        output::stderr(&format!("cannot write {}: {e}", out.display()));
+        return exit::FAILURE;
+    }
+
+    let fidelity = brygge_ir::honesty::summary(ir);
+    let report_text =
+        render_encode_git_report(&decoded.digest, &default_branch, &summary, &fidelity);
+    let report_path = {
+        let mut p = out.as_os_str().to_os_string();
+        p.push(".brygge-report");
+        PathBuf::from(p)
+    };
+    if let Err(e) = std::fs::write(&report_path, report_text) {
+        output::stderr(&format!(
+            "the repository was written at {}, but its report could not be written to {}: {e}",
+            out.display(),
+            report_path.display()
+        ));
+        return exit::FAILURE;
+    }
+
+    output::stderr(&format!(
+        "wrote {} ({} commit(s), {} tag(s), {} ref(s) total; default branch {}{})",
+        out.display(),
+        summary.commits,
+        summary.tags,
+        summary.refs,
+        default_branch.name,
+        if default_branch.existed {
+            ""
+        } else {
+            ", which has no commits"
+        }
+    ));
+    // The IR can carry atoms with no ref at all (CVS without --reconstruct-refs, for one): every commit
+    // is still written, under the scratch ref removed at the end, so with zero refs none of them is
+    // reachable from anywhere — a silent, total loss once Git garbage-collects. Not a refusal (the IR is
+    // honestly reflected, and D-7 does not list this), but loud: a user must not discover it later.
+    if summary.commits > 0 && summary.refs == 0 {
+        output::stderr(&format!(
+            "warning: the artifact has no refs at all, so these {} commit(s) are not reachable from \
+             any branch or tag; they will be lost once Git garbage-collects {} (consider decoding with \
+             --reconstruct-refs)",
+            summary.commits,
+            out.display()
+        ));
+    }
+    fidelity_exit_class(ir)
 }
 
 // ---- transform (RFC 018 D-6) -----------------------------------------------------------------------

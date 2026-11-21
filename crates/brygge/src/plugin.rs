@@ -106,6 +106,27 @@ fn find_in(kind: Kind, name: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
         .find(|p| is_runnable(p))
 }
 
+/// The resolved, absolute path to a trusted external tool named `exe_name` on `PATH` (no
+/// `brygge-encode-`/`brygge-transform-` prefix), by the same rules as [`find`]: absolute `PATH` entries
+/// only, never the current directory, `.exe` appended on Windows. Used for `git` (RFC 019 D-1), under
+/// the same trust rule `svnadmin`/`svn`/`hg` already run under — a trusted external tool, not a plugin.
+#[must_use]
+pub fn find_tool(exe_name: &str) -> Option<PathBuf> {
+    find_tool_in(exe_name, &path_dirs())
+}
+
+/// As [`find_tool`], over an explicit, already-filtered list of directories.
+fn find_tool_in(exe_name: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
+    let file_name = if cfg!(windows) {
+        format!("{exe_name}.exe")
+    } else {
+        exe_name.to_string()
+    };
+    dirs.iter()
+        .map(|dir| dir.join(&file_name))
+        .find(|p| is_runnable(p))
+}
+
 /// One plugin found on `PATH`, of whichever [`Kind`] was searched for.
 pub struct Listed {
     /// Its target/transform name.

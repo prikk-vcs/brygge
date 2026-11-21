@@ -85,12 +85,34 @@ fn list_human_empty_says_so() {
 #[test]
 fn list_machine_has_the_version_and_shadowed_flag() {
     let plugins = vec![Listed {
-        name: "git-example".to_string(),
-        path: PathBuf::from("/x/brygge-encode-git-example"),
+        name: "svn-example".to_string(),
+        path: PathBuf::from("/x/brygge-encode-svn-example"),
         shadowed: false,
     }];
     let s = render_encode_list_machine(&plugins);
-    assert!(s.starts_with("encode_list_version=1\n"));
-    assert!(s.contains("encoder.0.target=git-example"));
+    // RFC 019: the list's version bumped to 2 (a `git` plugin is now always shown shadowed by the
+    // built-in, a new meaning for the `shadowed` key and a new `shadowed_by` key).
+    assert!(s.starts_with("encode_list_version=2\n"));
+    assert!(s.contains("encoder.0.target=svn-example"));
     assert!(s.contains("encoder.0.shadowed=false"));
+}
+
+#[test]
+fn a_git_plugin_on_path_is_always_shown_shadowed_by_the_built_in() {
+    // Even though plugin::list's own `shadowed` is false here (no earlier PATH entry of this name), a
+    // `brygge-encode-git` plugin can never run: `git` is the built-in, reserved target (RFC 019 D-1).
+    let plugins = vec![Listed {
+        name: "git".to_string(),
+        path: PathBuf::from("/x/brygge-encode-git"),
+        shadowed: false,
+    }];
+    let human = render_encode_list_human(&plugins);
+    assert!(human.contains("shadowed by the built-in"), "{human}");
+
+    let machine = render_encode_list_machine(&plugins);
+    assert!(machine.contains("encoder.0.shadowed=true"), "{machine}");
+    assert!(
+        machine.contains("encoder.0.shadowed_by=built_in"),
+        "{machine}"
+    );
 }

@@ -2,19 +2,19 @@
 //! observable at the process boundary — real spawning, real `PATH` search, real exit codes, real signal
 //! delivery — that a unit test inside `src/` cannot see.
 //!
-//! Two sibling binaries, built in the same `cargo build`/`cargo test --workspace` as `brygge` itself and
+//! One sibling binary, built in the same `cargo build`/`cargo test --workspace` as `brygge` itself and
 //! found alongside it in the target directory (never through `CARGO_BIN_EXE_*`, which Cargo sets only for
-//! binaries of *this* package):
-//! - `brygge-encode-test-plugin` (`tools/encode-test-plugin`): a controllable fake plugin for the lookup,
-//!   verify-first, pass-through and argument tests.
-//! - `brygge-encode-git-example` (`examples/encode-git`): the real reference encoder, used once as the
-//!   actual plugin a user would run, to prove `encode` invokes it exactly as running it directly would.
+//! binaries of *this* package): `brygge-encode-test-plugin` (`tools/encode-test-plugin`), a controllable
+//! fake plugin for the lookup, verify-first, pass-through and argument tests. (The retired
+//! `examples/encode-git`'s own real-plugin round-trip test moved to the built-in `encode git`'s own
+//! level-2 proof, `tests/encode_git_fast_import.rs`, since RFC 019 made `git` a reserved, built-in
+//! target rather than a plugin.)
 //!
-//! Both are workspace-built binaries, not a system tool whose absence is legitimate (like `git`, which
-//! these tests do skip for): if either is missing, the test that needs it **fails**, naming the fix
+//! This is a workspace-built binary, not a system tool whose absence is legitimate (like `git`, which
+//! these tests do skip for): if it is missing, the test that needs it **fails**, naming the fix
 //! (`cargo test --workspace`), rather than silently reporting `ok` for a test that never ran (review 093
-//! R-1/R-2). A bare `cargo test -p brygge`, without `--workspace`, does not build either one and so fails
-//! these tests on purpose; CI, the MSRV job and the AUR `check()` all run `--workspace`.
+//! R-1/R-2). A bare `cargo test -p brygge`, without `--workspace`, does not build it and so fails these
+//! tests on purpose; CI, the MSRV job and the AUR `check()` all run `--workspace`.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
 
@@ -76,10 +76,6 @@ fn sibling_bin(name: &str) -> PathBuf {
 
 fn test_plugin_bin() -> PathBuf {
     sibling_bin("brygge-encode-test-plugin")
-}
-
-fn git_example_bin() -> PathBuf {
-    sibling_bin("brygge-encode-git-example")
 }
 
 struct TempDir(PathBuf);
@@ -343,7 +339,8 @@ fn two_directories_with_the_plugin_the_first_runs_and_list_shows_the_second_shad
         .expect("run brygge encode --list");
     assert!(list_output.status.success());
     let stdout = String::from_utf8_lossy(&list_output.stdout);
-    assert!(stdout.contains("encode_list_version=1"), "{stdout}");
+    // RFC 019 bumped this to 2 (git's always-shadowed-by-the-built-in meaning).
+    assert!(stdout.contains("encode_list_version=2"), "{stdout}");
     let path_line = stdout
         .lines()
         .find(|l| l.starts_with("encoder.0.path="))
@@ -488,78 +485,4 @@ fn arguments_reach_the_plugin_verbatim_with_no_shell() {
     for a in &tricky {
         assert!(stdout.contains(&format!("argv: {a}")), "{stdout}");
     }
-}
-
-// ---- the example as a real plugin (proof item 1) ------------------------------------------------------
-
-#[test]
-fn the_git_example_runs_as_a_plugin_exactly_as_it_runs_directly() {
-    if !git_available() {
-        eprintln!("skipping: git not on PATH");
-        return;
-    }
-    let example = git_example_bin();
-    let scratch = temp_dir("git-example-plugin");
-    install_plugin(&scratch.0, "git-example", &example);
-    let Some(artifact) = make_artifact(&scratch.0) else {
-        eprintln!("skipping: git not on PATH");
-        return;
-    };
-
-    let via_plugin = scratch.0.join("via-plugin.fi");
-    let output = Command::new(bin())
-        .args(["encode", "git-example"])
-        .arg(&artifact)
-        .args(["--", "--out"])
-        .arg(&via_plugin)
-        .env("PATH", &scratch.0)
-        .output()
-        .expect("run brygge encode git-example");
-    assert!(output.status.success(), "{:?}", output);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("encoding with the external plugin `brygge-encode-git-example`"),
-        "{stderr}"
-    );
-    assert!(stderr.contains("not part of brygge"), "{stderr}");
-    assert!(stderr.contains("exited with 0"), "{stderr}");
-
-    let direct = scratch.0.join("direct.fi");
-    let direct_output = Command::new(&example)
-        .arg("--artifact")
-        .arg(&artifact)
-        .arg("--out")
-        .arg(&direct)
-        .output()
-        .expect("run brygge-encode-git-example directly");
-    assert!(direct_output.status.success());
-
-    let via_plugin_bytes = std::fs::read(&via_plugin).unwrap();
-    let direct_bytes = std::fs::read(&direct).unwrap();
-    assert_eq!(
-        via_plugin_bytes, direct_bytes,
-        "running through `brygge encode` must produce the same fast-import stream as running the \
-         example directly"
-    );
-
-    // And a real repository imports it without error.
-    let target_repo = scratch.0.join("target-repo");
-    std::fs::create_dir_all(&target_repo).unwrap();
-    let init = Command::new("git")
-        .current_dir(&target_repo)
-        .args(["init", "-q", "--initial-branch=main"])
-        .output()
-        .expect("git init");
-    assert!(init.status.success());
-    let fast_import = Command::new("git")
-        .current_dir(&target_repo)
-        .arg("fast-import")
-        .stdin(std::fs::File::open(&via_plugin).unwrap())
-        .output()
-        .expect("git fast-import");
-    assert!(
-        fast_import.status.success(),
-        "{}",
-        String::from_utf8_lossy(&fast_import.stderr)
-    );
 }

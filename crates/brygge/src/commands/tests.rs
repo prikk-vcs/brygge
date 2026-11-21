@@ -3275,10 +3275,10 @@ fn verify_against_source_corresponds_on_a_0_2_0_git_rename_artifact_across_brygg
     }
 }
 
-/// Review 099 R-4 ("small"): `examples/encode-git`'s own test plugin-interface binary accepts a
-/// contract-0.2.0 artifact too (the CHANGELOG's "brygge still reads contract 0.2.0 artifacts" line
-/// covers `encode`, not only `inspect`/`verify`) — `encode` hands either contract to the plugin
-/// unchanged, since it works from the decoded `Ir`, never the artifact's own bytes.
+/// Review 099 R-4 ("small"): `encode`'s own test plugin-interface accepts a contract-0.2.0 artifact too
+/// (the CHANGELOG's "brygge still reads contract 0.2.0 artifacts" line covers `encode`, not only
+/// `inspect`/`verify`) — `encode` hands either contract to the plugin unchanged, since it works from the
+/// decoded `Ir`, never the artifact's own bytes.
 #[test]
 fn encode_accepts_a_0_2_0_artifact() {
     let fixture =
@@ -3287,8 +3287,9 @@ fn encode_accepts_a_0_2_0_artifact() {
     assert_eq!(decoded.contract, brygge_ir::ContractVersion::new(0, 2, 0));
     // `encode`'s own mandatory verify-first gate (OQ-4): the exact function it calls before handing an
     // artifact to a plugin. Proving it passes, and exits clean, on this 0.2.0 fixture is the
-    // contract-acceptance claim `encode` makes — the plugin step itself is `examples/encode-git`'s own
-    // concern (its round-trip suite), not duplicated here.
+    // contract-acceptance claim `encode` makes — the plugin/built-in step itself (round-trip correctness)
+    // is `crates/brygge/tests/encode_integration.rs`'s and `encode_git_fast_import.rs`'s own concern, not
+    // duplicated here.
     let (_, exit_code) = verify_internal_report(&fixture, Format::Human);
     assert_eq!(
         exit_code,

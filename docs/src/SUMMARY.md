@@ -8,6 +8,7 @@
 - [Importing a Mercurial repository](guide/hg.md)
 - [Importing a Subversion repository](guide/svn.md)
 - [Importing a CVS repository](guide/cvs.md)
+- [Migrating to Git](guide/git-target.md)
 
 # Reference
 

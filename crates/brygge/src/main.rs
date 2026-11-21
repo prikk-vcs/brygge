@@ -18,6 +18,7 @@
 mod cli;
 mod commands;
 mod display;
+mod encode_git;
 mod exit;
 mod output;
 mod plugin;
@@ -95,6 +96,11 @@ fn run(cmd: Command) -> i32 {
             format,
         } => commands::run_encode(&target, &artifact, &plugin_args, format),
         Command::EncodeList { format } => commands::run_encode_list(format),
+        Command::EncodeGit {
+            artifact,
+            out,
+            format,
+        } => commands::run_encode_git(&artifact, &out, format),
         Command::Transform {
             name,
             artifact,

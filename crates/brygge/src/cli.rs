@@ -104,6 +104,16 @@ pub enum Command {
         /// Output format.
         format: Format,
     },
+    /// `encode git <artifact> --out <dir> [--format …]` (RFC 019): the built-in encoder, never looked
+    /// up on `PATH`. `<dir>` must not exist.
+    EncodeGit {
+        /// The IR artifact to encode.
+        artifact: PathBuf,
+        /// Where to create the new bare Git repository. Must not already exist.
+        out: PathBuf,
+        /// Output format, for the verify-first report and the pre-flight report.
+        format: Format,
+    },
     /// `transform <name> <artifact> --out <file> [--format …] [-- <plugin arguments>…]` (RFC 018 D-6).
     Transform {
         /// The plugin's own name (`[a-z0-9][a-z0-9-]*`, at most 64 bytes — the same grammar `encode`'s
@@ -132,6 +142,10 @@ pub enum Command {
 
 /// The target name reserved for the built-in encoder (Track B1, RFC 008): never looked up on `PATH`.
 pub const PRIKK_TARGET: &str = "prikk";
+
+/// The target name reserved for the built-in Git encoder (RFC 019 D-1): never looked up on `PATH`.
+/// `encode --list` still shows a `brygge-encode-git` found there, marked shadowed by the built-in.
+pub const GIT_TARGET: &str = "git";
 
 /// Today's message for `encode prikk` (kept until Track B1 lands): a usage error, not a lookup failure.
 pub const PRIKK_NOT_AVAILABLE: &str = "'encode prikk' is not available yet: the prikk encoder follows \
@@ -531,6 +545,9 @@ fn parse_encode(args: &[String]) -> Result<Command, String> {
     if target == PRIKK_TARGET {
         return Err(PRIKK_NOT_AVAILABLE.to_string());
     }
+    if target == GIT_TARGET {
+        return parse_encode_git(args.get(1..).unwrap_or(&[]));
+    }
     if !is_valid_target(&target) {
         return Err(usage_error(
             "encode",
@@ -584,6 +601,65 @@ fn parse_encode(args: &[String]) -> Result<Command, String> {
         target,
         artifact,
         plugin_args,
+        format,
+    })
+}
+
+/// `encode git <artifact> --out <dir> [--format …]` (RFC 019). No `--`/plugin-argument syntax: the
+/// built-in encoder is not a plugin.
+fn parse_encode_git(args: &[String]) -> Result<Command, String> {
+    let mut it = args.iter();
+    let mut artifact: Option<PathBuf> = None;
+    let mut out: Option<PathBuf> = None;
+    let mut format = Format::Human;
+    let mut format_seen = false;
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--out" => {
+                if out.is_some() {
+                    return Err(usage_error("encode", "--out given more than once"));
+                }
+                out =
+                    Some(PathBuf::from(it.next().ok_or_else(|| {
+                        usage_error("encode", "--out needs a value")
+                    })?));
+            }
+            "--format" => {
+                if format_seen {
+                    return Err(usage_error("encode", "--format given more than once"));
+                }
+                format_seen = true;
+                format = parse_format(&mut it, "encode")?;
+            }
+            other if other.starts_with('-') => {
+                return Err(usage_error("encode", format!("unknown flag '{other}'")));
+            }
+            other => {
+                if artifact.is_some() {
+                    return Err(usage_error(
+                        "encode",
+                        format!("unexpected extra argument '{other}'"),
+                    ));
+                }
+                artifact = Some(PathBuf::from(other));
+            }
+        }
+    }
+    let artifact = artifact.ok_or_else(|| {
+        usage_error(
+            "encode",
+            "encode git needs an <artifact>: encode git <artifact> --out <dir>",
+        )
+    })?;
+    let out = out.ok_or_else(|| {
+        usage_error(
+            "encode",
+            "encode git needs --out <dir>: encode git <artifact> --out <dir>",
+        )
+    })?;
+    Ok(Command::EncodeGit {
+        artifact,
+        out,
         format,
     })
 }

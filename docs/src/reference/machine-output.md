@@ -50,10 +50,11 @@ brygge release and of the IR contract**.
 | `report_version` | the fidelity report: the lines `decode` and `inspect` print (§3.1) | `3` |
 | `inspect_version` | the transform-chain section (§3.2) and the per-atom listing `inspect --atoms` appends (§3.3) | `4` |
 | `verify_version` | `verify`'s lines (§3.4) | `4` |
-| `encode_list_version` | `encode --list`'s lines (§3.5) | `1` |
+| `encode_list_version` | `encode --list`'s lines (§3.5) | `2` |
 | `encode_version` | `encode`'s own banner and exit lines (§3.6) | `1` |
 | `transform_list_version` | `transform --list`'s lines (§3.7) | `1` |
 | `transform_version` | `transform`'s own banner, exit, and result lines (§3.8) | `1` |
+| `encode_git_version` | `encode git`'s pre-flight refusal lines and its `<dir>.brygge-report` sidecar (§3.9) | `1` |
 
 **The rule (normative):**
 - A version is **bumped** whenever any key or value domain of the output it governs changes:
@@ -181,14 +182,16 @@ when it did not pass. `not-run` (for `verify.against_source`) means "not request
 
 | Key | Value | Enc. |
 |---|---|---|
-| `encode_list_version` | `1` | |
+| `encode_list_version` | `2` | |
 | `encoder.N.target` | the plugin's target name | ● |
 | `encoder.N.path` | its resolved, absolute path | ● |
-| `encoder.N.shadowed` | `true` if an earlier `PATH` directory already has a plugin of this target (brygge would never run this one); else `false` | |
+| `encoder.N.shadowed` | `true` if an earlier `PATH` directory already has a plugin of this target, or if the target is `git` (brygge would never run either); else `false` | |
+| `encoder.N.shadowed_by` | present, `built_in`, only when `encoder.N.target` is `git` (RFC 019 D-1: `git` is a reserved, built-in target, never a plugin, regardless of `PATH` position) | |
 
 Plugins appear in `PATH` order (and, within one directory, by target name — a directory listing's own
 order is unspecified). On stdout, like every other command's result; `encode --list` runs no plugin, so
-nothing competes for stdout the way `encode <target>` itself does (§3.6).
+nothing competes for stdout the way `encode <target>` itself does (§3.6). (Version 2: `git`'s entry, if
+one is found, is now always `shadowed`, with the new `shadowed_by` key; version 1 had neither.)
 
 ### 3.6 `encode <target>` (governed by `encode_version`)
 
@@ -268,6 +271,47 @@ source-identity refusal, a single line starting `refused:` — to stderr instead
 If the plugin's own output fails any check instead, brygge prints one line, `the transform's output was
 refused: <why>`, deletes the plugin's temp output, leaves `--out` untouched, and exits `50` — none of the
 five keys above appear.
+
+### 3.9 `encode git` (governed by `encode_git_version`)
+
+`encode git <artifact> --out <dir>` (RFC 019) is the built-in, supported encoder — `git` is reserved and
+never looked up as a plugin. Unlike `encode <target>`'s own banner/exit lines (§3.6), which it still
+prints to stderr before a pre-flight refusal, this section's two outputs are a **refusal report**
+(stderr, in `--format`'s chosen form) and a **sidecar file**, `<dir>.brygge-report`, which is always in
+this machine form regardless of `--format` — it is written once, beside the result, for later reading.
+
+**If the mandatory verify-first check (OQ-4) does not pass,** nothing below is printed; brygge prints
+`verify`'s own lines (§3.4) instead.
+
+**If the pre-flight (D-7) finds any refusal** — a mode Git cannot write, two refs colliding on one Git
+ref, a non-UTF-8 annotated-tag message, or a ref name `git check-ref-format` rejects — brygge writes
+nothing at `<dir>`, prints this to stderr, and exits `2`:
+
+| Key | Value | Enc. |
+|---|---|---|
+| `encode_git_version` | `1` | |
+| `encode_git.refusal.N` | one refusal's own text, naming the atom (by source id) or the ref | ● |
+
+**Otherwise, `<dir>` is written, and `<dir>.brygge-report` holds:**
+
+| Key | Value | Enc. |
+|---|---|---|
+| `encode_git_version` | `1` | |
+| `encode_git.artifact_digest` | `sha256:<hex>` | |
+| `encode_git.brygge_version` | the `brygge` version that wrote it | |
+| `encode_git.default_branch` | the branch `--initial-branch` named (D-3) | ● |
+| `encode_git.default_branch_existed` | `true` unless the IR had no branch-like ref at all (tags only), in which case this name has no commits | |
+| `encode_git.commits` | commits written | |
+| `encode_git.tags` | tags written (annotated or lightweight) | |
+| `encode_git.refs` | every ref written, tags included | |
+| `encode_git.dropped.<class>` | as `dropped.<class>` in the fidelity report (§3.1), for the artifact encoded | |
+| `encode_git.flagged.<kind>` | as `flagged.<kind>` in the fidelity report (§3.1) | |
+| `encode_git.supplied.<field>` | how many times that field was `Brygge-Supplied` | ● |
+| `encode_git.altered.<field>` | how many times that field was `Brygge-Altered` | ● |
+| `encode_git.unplaced_ref_transform.N` | a `Transformed` mark on a ref with no message of its own to carry it (a lightweight tag, a branch, a bookmark, a named branch, or an `Other` ref) — one line per such ref, naming it | ● |
+
+brygge's own exit code is the fidelity class `decode` would give for the encoded artifact (§4): `0`
+cleanly, `10` if it carries a recorded (non-representation) drop, `30` if it carries a flag.
 
 ## 4. Exit codes
 
