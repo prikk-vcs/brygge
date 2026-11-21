@@ -1,9 +1,9 @@
 name: Advisory watch
 
 # RFC 012 D-7, reframed by RFC 014 D-7. This workflow watches one external event: a new RustSec advisory
-# against a dependency (RUSTSEC-2026-0306 against `faster-hex` is one already in the tree, informational,
-# via `gix-hash`). Nothing in this repository can signal that event, and GitHub offers no event for it, so
-# this workflow polls.
+# against a dependency (the nine informational, unreachable advisories against `heapless` 0.8.0,
+# RUSTSEC-2026-0574 to 0582, via `gix-hash` → `faster-hex`, are already in the tree — see RR-1). Nothing in
+# this repository can signal that event, and GitHub offers no event for it, so this workflow polls.
 #
 # It is brygge's only scheduled workflow. Every other job runs because something changed (a push, the paths
 # it guards), because a release is cut, or on demand — see `GOVERNANCE.md`, "Work is triggered, never

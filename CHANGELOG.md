@@ -8,6 +8,11 @@ Every handoff adds its own entry in its own commit.
 
 ## [Unreleased]
 
+### Security
+
+- `faster-hex` 0.10.1, for RUSTSEC-2026-0306 (an informational, unsound-class advisory, reached only
+  through `gix-hash`).
+
 ## [0.7.1] — 2026-11-21
 
 **A patch for Rust 1.100 and the AUR.** Rust 1.100 changed where cargo writes test executables, and brygge's
