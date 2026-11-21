@@ -16,7 +16,9 @@ Every handoff adds its own entry in its own commit.
 ### Changed
 
 - CVS: with `--reconstruct-refs`, the main line is a derived branch ref, `trunk`, so every reconstructed
-  changeset is reachable from a ref.
+  changeset is reachable from a ref. An artifact that an earlier brygge decoded with `--reconstruct-refs`
+  now verifies as `not-checked` against its source, because a re-decode carries the new ref. Decode again
+  to verify it.
 
 ### Breaking
 
