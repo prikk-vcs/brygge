@@ -82,6 +82,53 @@ $f:$lineno: $line"
         exit 1
     fi
     echo "OK: $encode_git_dir imports nothing outside brygge_ir/std/core/alloc/super/crate::encode_git."
+
+    # Review 136 F-6: the check above reads only `use` lines, so a fully qualified path with no `use` at
+    # all (an inline `crate::plugin::find(...)` call, or `brygge_decode_git::decode(...)`) would bypass
+    # it. Scan every non-comment line in the directory instead, for: a bare `crate::` not followed by
+    # `encode_git`; the root of any *direct* dependency of the `brygge` crate other than `brygge_ir`
+    # (from `crates/brygge/Cargo.toml`'s own `[dependencies]`, hyphens turned into underscores — a crate
+    # `brygge` does not directly depend on cannot be named as a path root at all, so this list is already
+    # exhaustive); and `extern crate`. A `//`/`///`/`//!` line comment is skipped; a trailing comment on
+    # an otherwise-real code line, or a block comment, is not — this is a text scan, not a parser.
+    forbidden_deps=$(awk '/^\[dependencies\]/{f=1; next} /^\[/{f=0} f && /^[a-zA-Z0-9_-]+[[:space:]]*=/ {
+        sub(/[[:space:]]*=.*/, ""); gsub(/-/, "_"); if ($0 != "brygge_ir") print
+    }' crates/brygge/Cargo.toml | sort -u)
+    deep_violations=""
+    while IFS= read -r -d '' f; do
+        while IFS=: read -r lineno line; do
+            trimmed=$(echo "$line" | sed -E 's/^[[:space:]]*//')
+            case "$trimmed" in
+                //*) continue ;;
+            esac
+            if echo "$line" | grep -qE '(^|[^a-zA-Z0-9_:])crate::' && \
+                ! echo "$line" | grep -qE '(^|[^a-zA-Z0-9_:])crate::encode_git([^a-zA-Z0-9_]|$)'; then
+                deep_violations="$deep_violations
+$f:$lineno: $line"
+                continue
+            fi
+            if echo "$line" | grep -qE '(^|[^a-zA-Z0-9_])extern[[:space:]]+crate([^a-zA-Z0-9_]|$)'; then
+                deep_violations="$deep_violations
+$f:$lineno: $line"
+                continue
+            fi
+            for dep in $forbidden_deps; do
+                if echo "$line" | grep -qE "(^|[^a-zA-Z0-9_])${dep}::"; then
+                    deep_violations="$deep_violations
+$f:$lineno: $line"
+                    break
+                fi
+            done
+        done < <(grep -n '.' "$f")
+    done < <(find "$encode_git_dir" -name '*.rs' -print0)
+    if [ -n "$deep_violations" ]; then
+        echo "FAILED: $encode_git_dir has a fully qualified path outside its allowed closure" \
+            "(a bare crate::<x> other than crate::encode_git, a brygge dependency other than" \
+            "brygge_ir, or extern crate):"
+        echo "$deep_violations"
+        exit 1
+    fi
+    echo "OK: $encode_git_dir has no fully qualified path outside its allowed closure either."
 else
     echo "skip: $encode_git_dir does not exist yet"
 fi
