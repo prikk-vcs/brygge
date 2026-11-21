@@ -8,6 +8,41 @@ Every handoff adds its own entry in its own commit.
 
 ## [Unreleased]
 
+## [0.7.1] — 2026-11-21
+
+**A patch for Rust 1.100 and the AUR.** Rust 1.100 changed where cargo writes test executables, and brygge's
+plugin tests stopped finding the binaries they run. The `brygge` AUR package runs those tests when it builds, so
+installing `brygge` 0.7.0-1 from the AUR fails on Rust 1.100. 0.7.1 fixes the tests, and its AUR packages
+(0.7.1-1) build again. `brygge-bin`'s package metadata now names the aarch64 binary for aarch64. The binary that
+package installed was always the right one. brygge's behaviour, its artifacts and its output are unchanged.
+Install with `cargo install --locked brygge`, or download a binary from the GitHub release.
+
+The detailed changes that made up 0.7.1 follow.
+
+### Fixed
+
+- **The plugin integration tests failed to find their sibling binaries on Rust 1.100,** which moved cargo's test
+  executable layout and removed the `deps/` folder they were found by stepping past. They now derive the binary
+  directory from `CARGO_BIN_EXE_brygge`'s own parent, which cargo guarantees regardless of version.
+- **`brygge-bin`'s published `.SRCINFO` named the x86_64 tarball on its `source_aarch64` line,** because `$CARCH`
+  in a per-architecture source array is always evaluated on the x86_64 runner that renders it. Both lines now
+  name their architecture literally. The binary a build actually installed was always the right one; only the
+  metadata a tool reading `.SRCINFO` without building would see was wrong.
+- **The AUR build container could not reach the `.SRCINFO` check that catches the issue above,** because the
+  workflows mounted only one script file into it. They now mount the whole `tools/` directory read-only, so a
+  sibling script is always reachable.
+
+### Changed
+
+- **The AUR and crates.io package descriptions** follow the README's new opening: what brygge carries, and
+  between what systems.
+- **`homepage` is removed from every crate's metadata** (redundant with `repository`, which Rust 1.100 now
+  warns about).
+- **The README, the book and `HANDOFF.md` open with brygge's two halves, decode and encode,** rather than
+  decode alone.
+- **`rustix` 1.1.6** (RUSTSEC-2026-0486, unsound extended-attribute functions). Neither brygge nor its
+  dependencies call them, so brygge was not affected.
+
 ## [0.7.0] — 2026-10-30
 
 **Contract 0.3.0: compact artifacts, and transforms that record themselves.** Artifacts are compressed, and

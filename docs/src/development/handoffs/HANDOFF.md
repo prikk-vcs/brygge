@@ -5,7 +5,7 @@ map: what brygge is, the state at handover, the invariants you must never regres
 lives, how to build and gate it, and the prioritized backlog. Everything it references is in this
 repository; nothing load-bearing lives only in someone's head.
 
-**Date of handover:** 2026-09-12. **Updated for the 0.7.0 release, 2026-10-30.** **State:** brygge
+**Date of handover:** 2026-09-12. **Updated for the 0.7.1 release, 2026-11-21.** **State:** brygge
 **0.1.0 is released**: the decode → IR half for all four named sources, on IR contract **0.2.0**.
 **0.1.1** added Windows support and the release workflow (RFC 012), **0.2.0** bounds long Git and
 CVS histories (RFC 010), **0.3.0** reaches SVN delta dumps, Mercurial's hashed store paths and CVS branch
@@ -306,7 +306,7 @@ the team inherits the reasoning, not just the TODO. `ROADMAP.md` is authoritativ
   streams: RFC 010 increments 2 and 4 are deferred by measurement.
 - **No progress reporting or cancellation.** Interrupting a decode is safe (the artifact write is atomic),
   but it produces nothing.
-- The threat model is the living document, revisited every release (v0.3 for 0.1.0, v0.4 for 0.1.1, v0.5 for 0.2.0, v0.6 for 0.3.0, v0.7 for 0.3.1, v0.8 for 0.4.0, v0.9 for 0.5.0, v0.10 for 0.6.0, v0.11 for 0.7.0).
+- The threat model is the living document, revisited every release (v0.3 for 0.1.0, v0.4 for 0.1.1, v0.5 for 0.2.0, v0.6 for 0.3.0, v0.7 for 0.3.1, v0.8 for 0.4.0, v0.9 for 0.5.0, v0.10 for 0.6.0, v0.11 for 0.7.0, re-verified for 0.7.1).
 
 ---
 
