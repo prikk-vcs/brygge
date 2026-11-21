@@ -509,6 +509,15 @@ expect_ok "check-release-dev-deps: a path-only dev-dependency on the same crate 
     tools/check-release-dev-deps.sh "$devdeps"
 expect_ok "check-release-dev-deps: this repository's own manifests pass" tools/check-release-dev-deps.sh
 
+# ---- tools/aur-in-container.sh (review 123 U-2) -------------------------------------------------------
+# Review 123: a pinned container image ages while Arch's repositories move on, so `pacman -Sy` without
+# `-u` risks the partial-upgrade breakage pacman refuses to support (seen for real when Arch moved to
+# OpenSSL 4 after 0.7.0's image). Guard every tools/*.sh against reintroducing a bare -Sy.
+if grep -lE 'pacman[[:space:]]+-Sy([[:space:]]|$)' tools/*.sh; then
+    die "a tools/*.sh script syncs pacman's database without upgrading (review 123): use -Syu, not a bare sync"
+fi
+pass "no tools/*.sh script syncs pacman's database without upgrading"
+
 # ---- tools/aur-render.sh (RFC 016 D-1) ----------------------------------------------------------------
 # The local stand-in server (started above) still serves $scratch/www; a fake tag archive there stands in
 # for the GitHub tag archive the real script downloads and hashes itself.

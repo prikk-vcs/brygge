@@ -39,7 +39,14 @@ if [ "$(id -u)" -ne 0 ]; then
     exit 2
 fi
 
-pacman -Sy --noconfirm --needed namcap
+# Review 123: never -Sy without -u on Arch. The container image is pinned by digest, so its installed
+# packages age while the repositories move on; syncing the databases without upgrading what's already
+# installed invites exactly the partial-upgrade breakage pacman refuses to support (seen here when Arch
+# moved to OpenSSL 4 after 0.7.0's image: installing fresh dependencies from the new databases broke
+# already-installed packages still linked against the old one). -Syu upgrades the image in the same
+# transaction that installs namcap, so every later `pacman -S --needed` call lands on an up-to-date
+# system. The image pin itself stays: it fixes the starting point, not the packages on top of it.
+pacman -Syu --noconfirm --needed namcap
 
 useradd --create-home --shell /bin/bash builder
 passwd --delete builder >/dev/null
