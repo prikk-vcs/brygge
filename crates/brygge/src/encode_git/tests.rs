@@ -367,9 +367,8 @@ fn a_commit_carries_encoded_source_id_and_artifact_trailers() {
                 message: Some(Text::utf8("hello")),
             },
             // The real convention (machine-output.md): an SVN revision number as an 8-byte big-endian
-            // integer — mostly zero bytes, so genuinely not printable ASCII, unlike the literal text
-            // "42" (which source_id_text would correctly render as-is, not hex: not what this test
-            // means to exercise).
+            // integer, which review 137 F-7 renders as the readable "r42", not the literal text "42"
+            // (which would be a different, wrong 8-byte value) and not a hex dump either.
             source: source(SourceKind::Svn, &42u64.to_be_bytes()),
             status: brygge_ir::EpistemicStatus::Stated,
         })
@@ -396,9 +395,9 @@ fn a_commit_carries_encoded_source_id_and_artifact_trailers() {
     let text = String::from_utf8(out).unwrap();
     assert!(text.contains("Brygge-Encoded: brygge "), "{text}");
     assert!(text.contains("from svn"), "{text}");
-    // SVN's revision number (42, as an 8-byte big-endian integer per machine-output.md) is not
-    // printable ASCII, so it must be rendered as hex.
-    assert!(text.contains("Brygge-Source-Id: hex:"), "{text}");
+    // Review 137 F-7: an SVN revision (42, as an 8-byte big-endian integer per machine-output.md) is
+    // written as the readable `r<decimal>` a Subversion user would recognize, not a hex dump.
+    assert!(text.contains("Brygge-Source-Id: r42"), "{text}");
     assert!(
         text.contains("Brygge-Artifact: sha256:1111111111111111111111111111111111111111111111111111111111111111"),
         "{text}"

@@ -767,3 +767,93 @@ fn encoding_under_a_different_home_tz_and_locale_gives_the_same_ids() {
     let author = git_out(&out, &["log", "-1", "--format=%an <%ae>", "main"]);
     assert_ne!(author, "Hostile <hostile@example.com>");
 }
+
+// ---- review 137 F-7: a many-pair CVS id round-trips through git interpret-trailers --------------------
+
+#[test]
+fn a_forty_pair_cvs_changeset_id_round_trips_through_git_interpret_trailers() {
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let repo_dir = scratch_dir("cvs-repo-40");
+    // 40 files, all committed with the same author/date/log, so CVS's changeset reconstruction clusters
+    // them into one changeset — a 40-pair path@rev source id, each pair on its own line in the real
+    // RCS-derived bytes.
+    for i in 0..40 {
+        let vfile = repo_dir.join(format!("f{i}.c,v"));
+        std::fs::write(
+            &vfile,
+            cvs_single_rev("alice", "2024.01.01.12.00.00", "a 40-file commit", "x\n"),
+        )
+        .unwrap();
+    }
+    // One symbol, on f0, so --reconstruct-refs gives the result a real, reachable ref.
+    let symbol_file = repo_dir.join("f0.c,v");
+    std::fs::write(
+        &symbol_file,
+        cvs_single_rev_with_symbol("alice", "2024.01.01.12.00.00", "a 40-file commit", "x\n"),
+    )
+    .unwrap();
+
+    let ir = brygge_decode_cvs::decode(
+        &brygge_decode_cvs::Source::LocalRepo(repo_dir),
+        &brygge_decode_cvs::Options {
+            reconstruct_refs: true,
+            ..brygge_decode_cvs::Options::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        ir.atoms.len(),
+        1,
+        "all 40 files must cluster into one changeset"
+    );
+    assert_eq!(
+        ir.atoms[0]
+            .source
+            .atom_id
+            .iter()
+            .filter(|&&b| b == b'\n')
+            .count()
+            + 1,
+        40,
+        "the changeset's own source id must hold all 40 path@rev pairs"
+    );
+
+    let artifact = write_artifact(&ir);
+    let out = scratch_dir("result").join("repo");
+    let encoded = run_encode_git(&artifact, &out);
+    assert!(
+        encoded.status.success(),
+        "{}",
+        String::from_utf8_lossy(&encoded.stderr)
+    );
+
+    let message = git_out(&out, &["log", "-1", "--format=%B", "refs/tags/TAG1"]);
+    let child = Command::new("git")
+        .current_dir(&out)
+        .args(["interpret-trailers", "--parse"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn git interpret-trailers");
+    child
+        .stdin
+        .as_ref()
+        .unwrap()
+        .write_all(message.as_bytes())
+        .unwrap();
+    let parsed = child.wait_with_output().unwrap();
+    assert!(parsed.status.success());
+    let parsed_text = String::from_utf8_lossy(&parsed.stdout);
+    let source_id_line = parsed_text
+        .lines()
+        .find(|l| l.starts_with("Brygge-Source-Id:"))
+        .unwrap_or_else(|| panic!("no Brygge-Source-Id trailer: {parsed_text}"));
+    // git interpret-trailers --parse folds a multi-line trailer value onto one line, space-separated —
+    // confirming it really did read every continuation line as part of the one trailer, not 39 separate,
+    // broken ones.
+    let pair_count = source_id_line.matches(".c@1.1").count();
+    assert_eq!(pair_count, 40, "{source_id_line}");
+}

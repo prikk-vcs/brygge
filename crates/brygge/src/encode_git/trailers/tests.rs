@@ -244,23 +244,137 @@ fn a_derived_status_renders_its_kind_and_params() {
     );
 }
 
+// ---- review 137 F-7: one readable source-id form per source kind, with a hex: fallback -------------
+
 #[test]
-fn source_id_of_printable_ascii_is_written_as_is() {
-    assert_eq!(source_id_text(b"abcDEF-0123"), "abcDEF-0123");
+fn a_git_commit_id_is_forty_lowercase_hex_no_prefix() {
+    let id = [0x01u8; 20];
+    assert_eq!(
+        source_id_text(&SourceKind::Git, &id),
+        "0101010101010101010101010101010101010101"
+    );
 }
 
 #[test]
-fn source_id_of_non_printable_bytes_is_hex() {
-    // A Git commit SHA-1 or an hg node: raw bytes, not printable ASCII.
+fn an_hg_node_is_forty_lowercase_hex_no_prefix() {
+    let id = [0xabu8; 20];
+    assert_eq!(
+        source_id_text(&SourceKind::Hg, &id),
+        "abababababababababababababababababababab"
+    );
+}
+
+#[test]
+fn a_git_id_of_the_wrong_length_falls_back_to_hex_prefixed() {
+    assert_eq!(source_id_text(&SourceKind::Git, &[0x01, 0x02]), "hex:0102");
+}
+
+#[test]
+fn an_svn_revision_is_r_decimal() {
+    let id = 1234u64.to_be_bytes();
+    assert_eq!(source_id_text(&SourceKind::Svn, &id), "r1234");
+}
+
+#[test]
+fn an_svn_id_of_the_wrong_length_falls_back_to_hex_prefixed() {
+    assert_eq!(source_id_text(&SourceKind::Svn, &[0x00, 0x01]), "hex:0001");
+}
+
+#[test]
+fn a_cvs_branch_point_id_is_written_as_is() {
+    let id = b"branch-point:OPENBSD_2_0";
+    assert_eq!(
+        source_id_text(&SourceKind::Cvs, id),
+        "branch-point:OPENBSD_2_0"
+    );
+}
+
+#[test]
+fn a_cvs_changeset_id_is_one_pair_per_line_as_a_continuation() {
+    let id = b"a.c@1.1\nb.c@1.2";
+    assert_eq!(source_id_text(&SourceKind::Cvs, id), "a.c@1.1\n b.c@1.2");
+}
+
+#[test]
+fn a_cvs_changeset_id_with_many_pairs_continues_each_on_its_own_line() {
+    let id = b"a.c@1.1\nb.c@1.2\nc.c@1.3";
+    assert_eq!(
+        source_id_text(&SourceKind::Cvs, id),
+        "a.c@1.1\n b.c@1.2\n c.c@1.3"
+    );
+}
+
+#[test]
+fn a_non_utf8_cvs_id_falls_back_to_hex() {
+    let id = [0xffu8, 0xfeu8];
+    assert_eq!(source_id_text(&SourceKind::Cvs, &id), "hex:fffe");
+}
+
+#[test]
+fn a_cvs_pair_missing_an_at_sign_falls_back_to_hex() {
+    let id = b"not-a-pair";
+    let expected_hex: String = id.iter().map(|b| format!("{b:02x}")).collect();
+    assert_eq!(
+        source_id_text(&SourceKind::Cvs, id),
+        format!("hex:{expected_hex}")
+    );
+}
+
+#[test]
+fn a_cvs_pair_with_a_leading_space_falls_back_to_hex() {
+    let id = b"a.c@1.1\n b.c@1.2"; // the second "pair" already looks like a continuation line
+    let expected_hex: String = id.iter().map(|b| format!("{b:02x}")).collect();
+    assert_eq!(
+        source_id_text(&SourceKind::Cvs, id),
+        format!("hex:{expected_hex}")
+    );
+}
+
+#[test]
+fn an_empty_cvs_pair_falls_back_to_hex() {
+    let id = b"a.c@1.1\n\nb.c@1.2"; // two adjacent LFs: an empty "pair"
+    let expected_hex: String = id.iter().map(|b| format!("{b:02x}")).collect();
+    assert_eq!(
+        source_id_text(&SourceKind::Cvs, id),
+        format!("hex:{expected_hex}")
+    );
+}
+
+#[test]
+fn an_other_source_kind_uses_the_printable_ascii_or_hex_fallback() {
+    assert_eq!(
+        source_id_text(&SourceKind::Other("bzr".to_string()), b"abcDEF-0123"),
+        "abcDEF-0123"
+    );
     let id = [0x01u8, 0xffu8, 0x00u8, 0x41u8];
-    assert_eq!(source_id_text(&id), "hex:01ff0041");
+    assert_eq!(
+        source_id_text(&SourceKind::Other("bzr".to_string()), &id),
+        "hex:01ff0041"
+    );
 }
 
 #[test]
-fn source_id_of_empty_bytes_is_hex_not_an_empty_string() {
+fn an_empty_id_falls_back_to_hex_not_an_empty_string() {
     // An empty value is not "every byte printable ASCII" (vacuous truth) in a way that should ever print
     // as an empty, invisible trailer value — write it as hex (the empty string) explicitly instead.
-    assert_eq!(source_id_text(&[]), "hex:");
+    assert_eq!(
+        source_id_text(&SourceKind::Other("bzr".to_string()), &[]),
+        "hex:"
+    );
+}
+
+#[test]
+fn truncate_for_refusal_leaves_a_short_id_unchanged() {
+    assert_eq!(truncate_for_refusal("short"), "short");
+}
+
+#[test]
+fn truncate_for_refusal_cuts_a_long_cvs_id_to_eighty_chars_plus_ellipsis() {
+    let long_id: String = (0..200).map(|i| format!("f{i}.c@1.1\n")).collect();
+    let truncated = truncate_for_refusal(&long_id);
+    assert_eq!(truncated.chars().count(), 81);
+    assert!(truncated.ends_with('…'));
+    assert!(long_id.starts_with(&truncated[..truncated.len() - '…'.len_utf8()]));
 }
 
 #[test]

@@ -202,7 +202,10 @@ fn bad_modes(ir: &Ir) -> Vec<Refusal> {
             };
             if !is_writable_mode(mode) {
                 out.push(Refusal::BadMode {
-                    atom_source_id: trailers::source_id_text(&atom.source.atom_id),
+                    atom_source_id: trailers::truncate_for_refusal(&trailers::source_id_text(
+                        &atom.source.kind,
+                        &atom.source.atom_id,
+                    )),
                     path: path.clone(),
                     mode,
                 });
@@ -291,7 +294,12 @@ fn unreachable_atoms(ir: &Ir) -> Vec<Refusal> {
         first: unreachable
             .iter()
             .take(5)
-            .map(|a| trailers::source_id_text(&a.source.atom_id))
+            .map(|a| {
+                trailers::truncate_for_refusal(&trailers::source_id_text(
+                    &a.source.kind,
+                    &a.source.atom_id,
+                ))
+            })
             .collect(),
         fix: reachability_fix_hint(ir),
     }]
@@ -504,7 +512,7 @@ pub(crate) fn write_stream<W: Write>(
             .map(|t| t.bytes.clone())
             .unwrap_or_default();
 
-        let source_id = trailers::source_id_text(&atom.source.atom_id);
+        let source_id = trailers::source_id_text(&atom.source.kind, &atom.source.atom_id);
         let mut trailer_lines = vec![
             format!("Brygge-Encoded: brygge {brygge_version} from {source_label}"),
             format!("Brygge-Source-Id: {source_id}"),

@@ -59,7 +59,7 @@ fixed order (`git interpret-trailers --parse` reads it back):
 | Trailer | When | Says |
 |---|---|---|
 | `Brygge-Encoded: brygge <version> from <git\|hg\|svn\|cvs>` | always | this history was written by brygge from another source, not recorded natively here |
-| `Brygge-Source-Id: <id>` | commits only (a ref has no atom of its own) | the source's own id for this commit — printable ASCII as is, otherwise `hex:` and lowercase hex |
+| `Brygge-Source-Id: <id>` | commits only (a ref has no atom of its own) | the source's own id for this commit, in a form that source's own people would recognize |
 | `Brygge-Derived: <scope> <kind> <params>` | once per derived assertion the commit or one of its path operations carries | brygge's own judgment produced this, not the source's stated fact |
 | `Brygge-Transformed: <scope> <step> <name> <version> (<changed>)` | once per layer of a `Transformed` status | a transform changed this, naming which one and what it changed |
 | `Brygge-Supplied: <fields>` | when Git's format needed a value the IR did not carry | exactly what brygge invented to satisfy Git, never silently |
@@ -68,6 +68,20 @@ fixed order (`git interpret-trailers --parse` reads it back):
 
 A `Transformed` mark on a ref with no message of its own to carry it (a lightweight tag, or a branch,
 bookmark, named branch or `Other` ref) goes into the report instead, naming the ref.
+
+**`Brygge-Source-Id`'s form is specific to the source kind**, not a generic encoding of the raw id:
+
+| Source | Form | Example |
+|---|---|---|
+| git, hg | 40 lowercase hex characters, no prefix — the object id or node itself | `Brygge-Source-Id: 4b825dc642cb6eb9a060e54bf8d69288fbee4904` |
+| svn | `r<decimal>` — the revision number | `Brygge-Source-Id: r1234` |
+| cvs | one `path@rev` pair per line: the first right after the key, each later one on its own continuation line (so `git interpret-trailers --parse` still reads the whole thing as one value); or, for a branch-point atom, the literal `branch-point:<name>` | `Brygge-Source-Id: a.c@1.1`<br>` b.c@1.2` |
+| anything else | printable ASCII as is, otherwise `hex:` and lowercase hex | `Brygge-Source-Id: hex:01ff0041` |
+
+An id that does not fit its kind's form (the wrong length for git/hg/svn; anything malformed for cvs —
+not UTF-8, an empty pair, a pair with a leading or trailing space, or no `@` at all) falls back to the
+generic `hex:` form instead, so one bad id never breaks the rest. An id named in a refusal message is cut
+to 80 characters plus `…`, since a CVS changeset's id can otherwise run to a whole paragraph.
 
 **The field vocabulary in `Brygge-Supplied:`/`Brygge-Altered:`** is `author`, `author-email`,
 `author-time`, `author-time-zone`, `committer`, `committer-email`, `commit-time`,

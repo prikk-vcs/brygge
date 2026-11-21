@@ -21,15 +21,93 @@ pub(super) fn to_hex(bytes: &[u8]) -> String {
     out
 }
 
-/// `source.atom_id`, as `Brygge-Source-Id` must write it (RFC 019 D-2): as is, if every byte is
-/// printable ASCII (`0x21`–`0x7E`); otherwise `hex:` followed by lowercase hex. One rule, specified once
-/// here and in the guide.
-pub(super) fn source_id_text(atom_id: &[u8]) -> String {
+/// The fallback for [`source_id_text`], and for any source kind (`Other`) with no defined readable
+/// form: `source.atom_id` as is, if every byte is printable ASCII (`0x21`–`0x7E`); otherwise `hex:`
+/// followed by lowercase hex.
+fn printable_ascii_or_hex(atom_id: &[u8]) -> String {
     if !atom_id.is_empty() && atom_id.iter().all(|&b| (0x21..=0x7E).contains(&b)) {
         // Printable ASCII only, so this is also valid UTF-8.
         String::from_utf8(atom_id.to_vec()).unwrap_or_else(|_| format!("hex:{}", to_hex(atom_id)))
     } else {
         format!("hex:{}", to_hex(atom_id))
+    }
+}
+
+/// `source.atom_id`, as `Brygge-Source-Id` must write it (review 137 F-7): one readable form per source
+/// kind, read by the people who migrated the history, not brygge's own internal encoding of it —
+/// `r1234` for a Subversion revision, not a hex dump of its 8 big-endian bytes; a CVS id's `path@rev`
+/// pairs each on their own line, not one ~2 KB line of raw bytes. An id that does not have its kind's
+/// form (the wrong length for git/hg/svn; anything malformed for cvs) falls back to `hex:` plus lowercase
+/// hex, so one bad id never breaks the rest. Specified once here and in the guide; D-6 (batch G2) parses
+/// the same forms back.
+pub(super) fn source_id_text(kind: &SourceKind, atom_id: &[u8]) -> String {
+    match kind {
+        SourceKind::Git | SourceKind::Hg => {
+            // A 20-byte object id/node: 40 lowercase hex, no prefix — exactly what every other Git/hg
+            // tool already shows for one.
+            if atom_id.len() == 20 {
+                to_hex(atom_id)
+            } else {
+                format!("hex:{}", to_hex(atom_id))
+            }
+        }
+        SourceKind::Svn => {
+            // A revision as 8 big-endian bytes (machine-output.md's own convention): `r<decimal>`.
+            if let Ok(bytes) = <[u8; 8]>::try_from(atom_id) {
+                format!("r{}", u64::from_be_bytes(bytes))
+            } else {
+                format!("hex:{}", to_hex(atom_id))
+            }
+        }
+        SourceKind::Cvs => cvs_source_id_text(atom_id),
+        SourceKind::Other(_) => printable_ascii_or_hex(atom_id),
+    }
+}
+
+/// CVS's own two id shapes (`crates/brygge-decode-cvs/src/decode.rs`'s `changeset_atom_id`, and its
+/// `branch-point:<name>` atoms): a literal `branch-point:<name>` is written as is; a changeset's sorted
+/// `path@rev` pairs, joined by LF in the raw id, are written one pair per line — the first right after
+/// the trailer's key, each later one on its own continuation line (an LF, then exactly one space), which
+/// `git interpret-trailers --parse` reads back as the one trailer value it already is. Anything that does
+/// not cleanly fit either shape (not UTF-8, an empty pair, a pair with a leading/trailing space — which a
+/// continuation line could not be told apart from, or no `@` at all for the pairs form) falls back to
+/// `hex:`.
+fn cvs_source_id_text(atom_id: &[u8]) -> String {
+    let Ok(s) = std::str::from_utf8(atom_id) else {
+        return format!("hex:{}", to_hex(atom_id));
+    };
+    if let Some(name) = s.strip_prefix("branch-point:") {
+        if name.is_empty() || s.contains('\n') || s.starts_with(' ') || s.ends_with(' ') {
+            return format!("hex:{}", to_hex(atom_id));
+        }
+        return s.to_string();
+    }
+    let lines: Vec<&str> = s.split('\n').collect();
+    let well_formed = lines
+        .iter()
+        .all(|l| !l.is_empty() && !l.starts_with(' ') && !l.ends_with(' ') && l.contains('@'));
+    let Some((first, rest)) = lines.split_first().filter(|_| well_formed) else {
+        return format!("hex:{}", to_hex(atom_id));
+    };
+    let mut out = first.to_string();
+    for pair in rest {
+        out.push('\n');
+        out.push(' ');
+        out.push_str(pair);
+    }
+    out
+}
+
+/// Truncates `s` to 80 characters plus `…` for a refusal message (review 137 F-7): a CVS source id can
+/// be a whole changeset's worth of `path@rev` pairs, and a refusal naming one must stay one line a
+/// person can actually read, not reproduce it in full.
+pub(super) fn truncate_for_refusal(s: &str) -> String {
+    let mut chars = s.chars();
+    let head: String = chars.by_ref().take(80).collect();
+    if chars.next().is_some() {
+        format!("{head}…")
+    } else {
+        head
     }
 }
 
