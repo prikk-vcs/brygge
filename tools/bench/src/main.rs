@@ -10,6 +10,9 @@
 //!   brygge-bench                      # run the full matrix and print a table
 //!   brygge-bench run <scenario> <n>   # run one scenario at scale n; print a machine line (used internally)
 //!   brygge-bench corpus <scenario> <n> <dir>  # write a scenario's corpus into <dir> and stop (for A/B with the CLI)
+//!   brygge-bench real-fetch <real.toml> <cache-dir>   # fetch whatever real-corpus entry is missing (network)
+//!   brygge-bench real-check <real.toml> <cache-dir>   # verify every present entry's pin/hash (no network)
+//!   brygge-bench real <real.toml> <cache-dir>         # check (never fetch), decode and measure every entry
 //!
 //! Scenarios:
 //!   svn-revs <n>     — an SVN dump of ~n revisions with tiny per-revision content and one branch copy at
@@ -89,6 +92,36 @@ fn main() {
                 std::process::exit(2);
             };
             if !real::run(&toml_path, &cache_dir) {
+                std::process::exit(1);
+            }
+        }
+        // Review 123 F-1: fetching is separate from checking, and from `real`'s own decode/measure.
+        // `real-fetch` is the only subcommand that touches the network; it fetches whatever entry is
+        // missing and leaves every entry already present untouched. `real-check` verifies every present
+        // entry's pin/hash from disk alone, with no network, and reports an absent entry as absent.
+        Some("real-fetch") => {
+            let Some(toml_path) = args.get(2).map(PathBuf::from) else {
+                eprintln!("usage: brygge-bench real-fetch <real.toml> <cache-dir>");
+                std::process::exit(2);
+            };
+            let Some(cache_dir) = args.get(3).map(PathBuf::from) else {
+                eprintln!("usage: brygge-bench real-fetch <real.toml> <cache-dir>");
+                std::process::exit(2);
+            };
+            if !real::fetch(&toml_path, &cache_dir) {
+                std::process::exit(1);
+            }
+        }
+        Some("real-check") => {
+            let Some(toml_path) = args.get(2).map(PathBuf::from) else {
+                eprintln!("usage: brygge-bench real-check <real.toml> <cache-dir>");
+                std::process::exit(2);
+            };
+            let Some(cache_dir) = args.get(3).map(PathBuf::from) else {
+                eprintln!("usage: brygge-bench real-check <real.toml> <cache-dir>");
+                std::process::exit(2);
+            };
+            if !real::check(&toml_path, &cache_dir) {
                 std::process::exit(1);
             }
         }
