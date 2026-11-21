@@ -4,9 +4,21 @@
 # tables of `key = "value"` strings only, one entry per line, no nesting). Do not add types this parser
 # does not already handle without updating it.
 #
-# Git and hg: `pin` is the commit/node id alone — fetching and checking it out *is* the integrity
-# check. SVN and CVS have no single id, so `hash` is required: the SHA-256 of the dump file (SVN) or of
-# the sorted-path-and-content tree (CVS, `sha256sum` over each file's own hash, sorted by relative
+# Git and hg: `pin` is the commit/node id alone — fetching and checking it out *is part of* the
+# integrity check, but not all of it (review 128 G-1): the decoder also carries every `refs/heads/*` and
+# `refs/tags/*` it finds, and `pin` alone says nothing about those. So every git entry also carries
+# `refs`, the SHA-256 of `git for-each-ref --format='%(objectname) %(refname)'` **after** the fetch
+# normalizes the clone to exactly the pin (its branch reset to the pin, every remote removed, every tag
+# not merged into the pin deleted) — the same normalization `real-fetch` performs and `real-check`
+# re-verifies, so a tag added later to an old commit, or a moved branch, is refused loudly instead of
+# silently decoding more than the pin. hg entries need no equivalent field: `real-fetch` clones with
+# `hg clone -r <pin>` (pulling only the pin's ancestors) and deletes any bookmarks, and `.hgtags` is part
+# of the pinned history itself, so the pin alone already fixes what the decoder carries.
+#
+# SVN and CVS have no single id, so `hash` is required: the SHA-256 of the dump file (SVN, in its
+# **canonical** form — review 128 S-3: each revision's node records stable-sorted by `Node-path`, since
+# `svnrdump`'s own node order within a revision is not stable across runs even for identical content) or
+# of the sorted-path-and-content tree (CVS, `sha256sum` over each file's own hash, sorted by relative
 # path, hashed together). The runner refuses a cache mismatch rather than silently using stale data.
 #
 # Nothing here is committed into this repository. `cache_dir` (the runner's own argument) is the project's
@@ -20,7 +32,8 @@ name = "jq"
 url = "https://github.com/jqlang/jq.git"
 license = "MIT"
 pin = "34f7186b86743a083a589741b6cea95293524108"
-note = "tag jq-1.8.2; merges, both annotated and lightweight tags, confirmed renames"
+refs = "1dcdd2271db458d4d6dde0d1ebdbcbb4318df87e514334a426f8d5f0630c6e06"
+note = "tag jq-1.8.2; merges, both annotated and lightweight tags, confirmed renames; refs hash added (review 128 G-1), one tag (jq-1.5) not merged into the pin, deleted"
 
 [[entry]]
 kind = "git"
@@ -28,7 +41,8 @@ name = "fish-shell"
 url = "https://github.com/fish-shell/fish-shell.git"
 license = "GPL-2.0"
 pin = "6cf31373e9468f1a261319aceb8730e5d1c47e58"
-note = "tag 4.9.3; merges, annotated tags, far larger history (23.5k commits)"
+refs = "c6ac2bfcc017ffe35cab32bc20f8a361d10fdb4fb62a6e13a7e492bb5856d510"
+note = "tag 4.9.3; merges, annotated tags, far larger history (23.5k commits); refs hash added (review 128 G-1), four tags not merged into the pin, deleted"
 
 [[entry]]
 kind = "git"
@@ -36,7 +50,8 @@ name = "eza"
 url = "https://github.com/eza-community/eza.git"
 license = "EUPL-1.2"
 pin = "98442ab17c2c3738701b62a7e060b1431ae2d6ea"
-note = "tag v0.23.5; F-3 (jq's submodule stand-in): 689 merges, both annotated (76) and lightweight (20) tags, confirmed renames (R100), no submodules (confirmed: no .gitmodules, no mode-160000 tree entries at the pin)"
+refs = "c6927c6fc0393cd41517ca45e28f142bf82908f158eb3921aa1c9d8c6abfe716"
+note = "tag v0.23.5; F-3 (jq's submodule stand-in): 689 merges, both annotated (76) and lightweight (20) tags, confirmed renames (R100), no submodules (confirmed: no .gitmodules, no mode-160000 tree entries at the pin); refs hash added (review 128 G-1), one tag (v0.22.0) not merged into the pin, deleted"
 
 [[entry]]
 kind = "hg"
@@ -59,9 +74,9 @@ kind = "cvs"
 name = "openbsd-games"
 url = "rsync://anoncvs.eu.openbsd.org/OpenBSD-cvs/src/games/"
 license = "ISC/BSD-style (OpenBSD)"
-pin = "2026-10-20"
-hash = "6cea8515d49901a436745599746713d24b304f44549dbb2ceab87a16102c99ac"
-note = "723 ,v files, 16 MB; real branches and tags (OPENBSD_* symbols)"
+pin = "2026-11-21"
+hash = "20bc57ee35468afd4783d1a0cb44e5315b0221c7cdd15026ee83d47a699759fb"
+note = "723 ,v files, 16 MB; real branches and tags (OPENBSD_* symbols); re-pinned 2026-11-21 after an upstream commit (fortunes2-o,v, 2026-11-06), review 128"
 
 [[entry]]
 kind = "cvs"
@@ -87,5 +102,5 @@ name = "wordpress-core"
 url = "https://core.svn.wordpress.org"
 license = "GPL-2.0-or-later"
 pin = "2700"
-hash = "81cbbe3fcbcb2c55efdfd8fe60d182b2411a5b3d3a3f3c40776db9545700948f"
-note = "self-contained, standard trunk/branches/tags; dumped r0:2700 (past the first branch and tag); hash corrected (resumed session) against a freshly reproduced dump"
+hash = "a73201207b689470a4217bb271d5a11068806774d5ed9f35251ded8fcd4fc033"
+note = "self-contained, standard trunk/branches/tags; dumped r0:2700 (past the first branch and tag); re-pinned 2026-11-21 to the canonical dump hash (review 128 S-3): svnrdump's own node order within a revision is not stable across runs, even for byte-identical content (2,701 revisions, 6,602,004 bytes both times) — confirmed deterministic across three independent dumps before recording"
