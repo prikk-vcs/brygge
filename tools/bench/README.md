@@ -608,9 +608,10 @@ One row per release, for eza, fish-shell and TortoiseHg, measured on the release
 `docs/src/development/releasing.md`'s cut checklist, **only when a decoder, `brygge-ir`'s reader, writer
 or content store, or the CLI's decode path changed since the previous release** — otherwise the previous
 release's row is reused, stated as such rather than re-measured. For request 061's and review 100's
-earlier, differently-measured figures (contract 0.2.0 vs. 0.3.0, around the compact-artifacts batch),
-see those documents directly; they are not repeated here, since their method (`brygge-bench real`'s own
-in-process timing, before the artifact was written) is not this table's.
+earlier figures (contract 0.2.0 vs. 0.3.0, around the compact-artifacts batch), see those documents
+directly; they are not repeated here. Their method was the same as this table's (`os.wait4` per child on
+the real CLI, `measure2.py`) — what actually differs is the input (unpinned clones, carrying upstream's
+history as of the fetch date) and the code (`d635961`, several commits before 0.7.0).
 
 **The method, stated once:** `tools/bench/release-corpus.py <brygge-binary> fixtures/corpus
 tools/corpus/real.toml eza fish-shell tortoisehg-thg` (review 128 R-2: the kind for each name comes from
@@ -636,11 +637,12 @@ after `real-fetch` normalizes every Git clone's refs to exactly the pin (its def
 pin, every remote removed, every tag not merged into the pin deleted) and clones every hg entry with
 `hg clone -r <pin>` (no bookmarks, a single head). An earlier, unpinned measurement of this same binary
 against ordinary clones (jq 62 commits past its pin, fish-shell 166, eza 1) gave fish-shell 1,065,484,138
-bytes — **6.9% larger than the figure above** — because the clone still carried upstream's later commits
-and tags; it was never a decoder change or a measurement error, and is not repeated here now that the
-cause is known and fixed. eza's row (10,727,417 B) is close to, but not identical to, request 061's
-10,728,077 B: expected, since G-1 deletes one tag (`v0.22.0`) not merged into eza's pin that request
-061's own, unpinned clone still carried. tortoisehg-thg's row matches request 061's figure
+bytes — **7.5% larger than the figure above** (the difference taken against the smaller, pinned figure)
+— because the clone still carried upstream's later commits and tags; it was never a decoder change or a
+measurement error, and is not repeated here now that the cause is known and fixed. eza's row
+(10,727,417 B) is close to, but not identical to, request 061's 10,728,077 B: expected, since that
+unpinned clone's branch was one commit past eza's pin, and G-1 also deletes the `v0.22.0` tag, not
+merged into the pin, that the clone still carried. tortoisehg-thg's row matches request 061's figure
 (336,240,068 B) exactly, since hg's `heads(all())`/no-bookmarks check already held for that clone.
 
 **0.7.1's row stands for 0.7.0 too:** `git diff --stat 0.7.0 0.7.1 -- crates/` touches only
