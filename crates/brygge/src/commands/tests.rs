@@ -3201,6 +3201,141 @@ fn assert_version_note(fixture_version: &str, note: Option<String>) {
     }
 }
 
+/// Review 140: a decoder's floor is a fact about the decoder, not about the history (CR-07.6's pattern,
+/// generalized beyond `svnadmin`) — two decodes that both succeeded prove the source holds nothing
+/// either floor refuses, so `run_against_source` aligns `provenance.params["floor"]` exactly as it
+/// aligns `svnadmin_version`, and never lets a floor difference alone read as tampering.
+#[test]
+fn verify_against_source_reproduces_when_only_the_decoder_floor_changed() {
+    let repo = cvs_repo();
+    write_vfile(
+        &repo,
+        "a.c",
+        &cvs_single_rev("alice", "2024.01.01.12.00.00", "add", "aaa\n"),
+    );
+    write_vfile(
+        &repo,
+        "b.c",
+        &cvs_single_rev("alice", "2024.01.01.12.00.01", "add", "bbb\n"),
+    );
+
+    let mut ir1 = brygge_decode_cvs::decode(
+        &brygge_decode_cvs::Source::LocalRepo(repo.path().to_path_buf()),
+        &brygge_decode_cvs::Options::default(),
+    )
+    .unwrap();
+    let real_floor = ir1.provenance.params.get("floor").cloned().unwrap();
+    let older_floor: String = real_floor
+        .split(',')
+        .filter(|f| *f != "reconstruct-refs-trunk-collision")
+        .collect::<Vec<_>>()
+        .join(",");
+    assert_ne!(
+        older_floor, real_floor,
+        "the test needs a real floor item to remove"
+    );
+    ir1.provenance
+        .params
+        .insert("floor".to_string(), older_floor);
+
+    match run_against_source(&ir1, repo.path(), &brygge_ir::Storage::Memory) {
+        AgainstSourceOutcome::Reproduces(Some(note)) => {
+            assert!(note.contains("added"), "{note}");
+            assert!(note.contains("reconstruct-refs-trunk-collision"), "{note}");
+        }
+        other => panic!("expected Reproduces with a floor note, got {other:?}"),
+    }
+}
+
+/// Review 140: the floor note is informational only — when the history also genuinely differs, the
+/// outcome and its detail are exactly what the history difference alone gives, with no mention of the
+/// (aligned, so irrelevant) floor.
+#[test]
+fn verify_against_source_ignores_the_floor_note_when_the_history_also_differs() {
+    let repo = cvs_repo();
+    write_vfile(
+        &repo,
+        "a.c",
+        &cvs_single_rev("alice", "2024.01.01.12.00.00", "add", "aaa\n"),
+    );
+    write_vfile(
+        &repo,
+        "b.c",
+        &cvs_single_rev("alice", "2024.01.01.12.00.01", "add", "bbb\n"),
+    );
+
+    let mut ir1 = brygge_decode_cvs::decode(
+        &brygge_decode_cvs::Source::LocalRepo(repo.path().to_path_buf()),
+        &brygge_decode_cvs::Options::default(),
+    )
+    .unwrap();
+    let real_floor = ir1.provenance.params.get("floor").cloned().unwrap();
+    let older_floor: String = real_floor
+        .split(',')
+        .filter(|f| *f != "reconstruct-refs-trunk-collision")
+        .collect::<Vec<_>>()
+        .join(",");
+    ir1.provenance
+        .params
+        .insert("floor".to_string(), older_floor);
+    // A real history difference too: an extra ref nothing in the source has.
+    let target = ir1.atoms[0].id;
+    ir1.refs.push(RefRecord {
+        name: "bogus".to_string(),
+        kind: brygge_ir::RefKind::Tag,
+        target,
+        status: brygge_ir::EpistemicStatus::Stated,
+        source: None,
+        annotation: None,
+    });
+
+    match run_against_source(&ir1, repo.path(), &brygge_ir::Storage::Memory) {
+        AgainstSourceOutcome::DoesNotReproduce(detail) => {
+            assert!(detail.contains("refs differ"), "{detail}");
+            assert!(
+                !detail.contains("floor"),
+                "the floor difference must not appear: {detail}"
+            );
+        }
+        other => panic!("expected DoesNotReproduce from the real ref difference, got {other:?}"),
+    }
+}
+
+/// Review 140: `align_decoder_floor` touches only the `"floor"` key — every other `params` key (the
+/// decoder's actual options) still compares, and a change there is still a real difference.
+#[test]
+fn verify_against_source_still_differs_when_a_non_floor_option_changes() {
+    let repo = cvs_repo();
+    write_vfile(
+        &repo,
+        "a.c",
+        &cvs_single_rev("alice", "2024.01.01.12.00.00", "add", "aaa\n"),
+    );
+    write_vfile(
+        &repo,
+        "b.c",
+        &cvs_single_rev("alice", "2024.01.01.12.00.01", "add", "bbb\n"),
+    );
+
+    let mut ir1 = brygge_decode_cvs::decode(
+        &brygge_decode_cvs::Source::LocalRepo(repo.path().to_path_buf()),
+        &brygge_decode_cvs::Options::default(),
+    )
+    .unwrap();
+    ir1.provenance
+        .params
+        .insert("window_secs".to_string(), "not-a-real-value".to_string());
+
+    match run_against_source(&ir1, repo.path(), &brygge_ir::Storage::Memory) {
+        AgainstSourceOutcome::DoesNotReproduce(detail) => {
+            assert!(!detail.contains("floor"), "{detail}");
+        }
+        other => {
+            panic!("expected DoesNotReproduce (a non-floor param still differs), got {other:?}")
+        }
+    }
+}
+
 /// `crates/brygge/tests/data/contract-0.2.0-cvs-repro.ir`: review 106 V-2 — the architect's own runs
 /// (reviews 106/107) showed what this would prove; this test brings that proof into the permanent
 /// suite. Decoded by the 0.6.0 release's own `brygge` (commit `2f1e659`, built in a separate worktree)
@@ -3212,13 +3347,16 @@ fn assert_version_note(fixture_version: &str, note: Option<String>) {
 /// reconstructed changeset carries a `Derivation` (`by: "brygge-decode-cvs"`), so this exercises
 /// `restamped`'s `Derived`-restamping path, not only `Stated` content.
 ///
-/// Decoded with `--reconstruct-refs` (0 refs at 0.6.0: no symbol in this fixture resolves to anything).
-/// RFC 019's refinement (request 071) now gives the main line its own `trunk` ref whenever
-/// `--reconstruct-refs` is on and there is a main-line changeset — a real, intentional decoder
-/// difference from 0.6.0, so the outcome is honestly `NotChecked`, never a false `Reproduces` or a false
-/// `does-not-correspond`. This is V-1/V-2's own mechanism working as designed, not a regression.
+/// Decoded **without** `--reconstruct-refs` (`provenance.params["reconstruct_refs"] == "false"`, 0 refs
+/// at 0.6.0), so RFC 019's `trunk`-ref refinement (review 136 F-3) does not apply to this fixture at
+/// all — an earlier note here wrongly attributed this test's one-time `NotChecked` result to the trunk
+/// ref; the real cause was 071's own new floor item (review 140), changing
+/// `provenance.params["floor"]` for every CVS decode, not only `--reconstruct-refs` ones.
+/// `run_against_source` now aligns the decoder's `floor` param (review 140) exactly as it already
+/// aligned `svnadmin_version` (CR-07.6), so this real cross-version case correctly `Reproduces` again,
+/// with both the brygge-version note and the floor note.
 #[test]
-fn verify_against_source_is_not_checked_on_a_0_2_0_cvs_artifact_after_the_trunk_ref_was_added() {
+fn verify_against_source_reproduces_on_a_0_2_0_cvs_artifact_across_brygge_versions() {
     let repo = cvs_repo();
     write_vfile(
         &repo,
@@ -3235,17 +3373,73 @@ fn verify_against_source_is_not_checked_on_a_0_2_0_cvs_artifact_after_the_trunk_
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/contract-0.2.0-cvs-repro.ir");
     let decoded = brygge_ir::from_file(&fixture).unwrap();
     assert_eq!(decoded.contract, brygge_ir::ContractVersion::new(0, 2, 0));
+    assert_eq!(
+        decoded
+            .ir
+            .provenance
+            .params
+            .get("reconstruct_refs")
+            .map(String::as_str),
+        Some("false"),
+        "this fixture was made without --reconstruct-refs, so the trunk-ref refinement never applies to it"
+    );
+    assert!(decoded.ir.refs.is_empty());
+
+    match run_against_source(&decoded.ir, repo.path(), &brygge_ir::Storage::Memory) {
+        AgainstSourceOutcome::Reproduces(note) => {
+            let note = note.expect("both a version gap (0.6.0 vs 0.7.1) and a floor change apply");
+            assert!(note.contains("0.6.0"), "{note}");
+            assert!(note.contains("the history is identical"), "{note}");
+            assert!(note.contains("floor changed"), "{note}");
+            assert!(note.contains("reconstruct-refs-trunk-collision"), "{note}");
+        }
+        other => panic!("expected Reproduces across brygge versions, got {other:?}"),
+    }
+}
+
+/// `crates/brygge/tests/data/contract-0.3.0-cvs-repro-0.7.1.ir`: review 139/140 C-2 — the fixture above
+/// now documents a real, intentional decoder difference (the `trunk` ref, review 136 F-3), so this keeps
+/// a CVS cross-version case that still reproduces: decoded **without** `--reconstruct-refs`, which the
+/// main-line-ref change does not touch at all. Made with the published 0.7.1 binary
+/// (`fixtures/previous-release/0.7.1/brygge`, never a local rebuild, per review 111 N-1), from exactly
+/// the same repository as the test above: a plain directory with `a.c,v`/`b.c,v`, each
+/// `cvs_single_rev("alice", <date>, "add", <content>)` — `("alice", "2024.01.01.12.00.00", "add",
+/// "aaa\n")` and `("alice", "2024.01.01.12.00.01", "add", "bbb\n")`. Rebuild recipe: `fixtures/previous-
+/// release/0.7.1/brygge decode cvs <that repository> --out contract-0.3.0-cvs-repro-0.7.1.ir` (no
+/// `--reconstruct-refs`). This reproduces only because `run_against_source` now aligns the decoder's
+/// `floor` param (review 140): 071's own new floor item would otherwise have made even this
+/// mainline-only fixture diverge, on `main` today (equal version strings) as `does-not-reproduce`, and
+/// after the 0.8.0 bump as `not-checked` — neither of which is true of the history.
+#[test]
+fn verify_against_source_reproduces_on_a_0_3_0_cvs_artifact_made_without_reconstruct_refs() {
+    let repo = cvs_repo();
+    write_vfile(
+        &repo,
+        "a.c",
+        &cvs_single_rev("alice", "2024.01.01.12.00.00", "add", "aaa\n"),
+    );
+    write_vfile(
+        &repo,
+        "b.c",
+        &cvs_single_rev("alice", "2024.01.01.12.00.01", "add", "bbb\n"),
+    );
+
+    let fixture =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/contract-0.3.0-cvs-repro-0.7.1.ir");
+    let decoded = brygge_ir::from_file(&fixture).unwrap();
+    assert_eq!(decoded.contract, brygge_ir::ContractVersion::new(0, 3, 0));
     assert!(
         decoded.ir.refs.is_empty(),
-        "the 0.6.0 fixture has no refs; this test documents the trunk ref 0.7.1+ now adds"
+        "made without --reconstruct-refs: no refs, so the trunk-ref change cannot affect this fixture"
     );
 
     match run_against_source(&decoded.ir, repo.path(), &brygge_ir::Storage::Memory) {
-        AgainstSourceOutcome::NotChecked(detail) => {
-            assert!(detail.contains("0.6.0"), "{detail}");
-            assert!(detail.contains("decodes differently"), "{detail}");
+        AgainstSourceOutcome::Reproduces(note) => {
+            let note = note.expect("today's build still carries 0.7.1, but the floor differs");
+            assert!(note.contains("floor changed"), "{note}");
+            assert!(note.contains("reconstruct-refs-trunk-collision"), "{note}");
         }
-        other => panic!("expected NotChecked (a real decoder difference), got {other:?}"),
+        other => panic!("expected Reproduces across brygge versions, got {other:?}"),
     }
 }
 

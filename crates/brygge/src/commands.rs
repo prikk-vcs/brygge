@@ -1426,6 +1426,11 @@ fn run_against_source(ir1: &Ir, repo: &Path, storage: &brygge_ir::Storage) -> Ag
     // copy to keep; the note already carries everything the original value was needed for.
     let versions_differ = svn_version_note(ir1, &ir2);
     let ir2 = align_svnadmin_version(ir1, ir2);
+    // Review 140: a decoder's floor is a fact about the decoder, not the history — aligned the same way,
+    // before anything compares `ir1` and `ir2`, so a floor change (071 added one to CVS's) can never by
+    // itself make an otherwise-unchanged history read as tampering.
+    let floor_differs = decoder_floor_note(ir1, &ir2);
+    let ir2 = align_decoder_floor(ir1, ir2);
 
     // Review 106 V-1: which brygge *decoded* ir1 and ir2 is, like `svnadmin`'s own version, a fact
     // about the tool, never itself evidence of tampering (CR-07.6's pattern, generalized beyond
@@ -1469,11 +1474,13 @@ fn run_against_source(ir1: &Ir, repo: &Path, storage: &brygge_ir::Storage) -> Ag
                     ir1.transforms.len()
                 );
                 if digest == first.consumed {
-                    let note = if brygge_versions_differ {
-                        format!("{rerun_note}; {}", version_note())
-                    } else {
-                        rerun_note
-                    };
+                    let mut note = rerun_note;
+                    if brygge_versions_differ {
+                        note = format!("{note}; {}", version_note());
+                    }
+                    if let Some(f) = &floor_differs {
+                        note = format!("{note}; {f}");
+                    }
                     if is_cvs {
                         AgainstSourceOutcome::RootReproduces(note)
                     } else {
@@ -1514,16 +1521,19 @@ fn run_against_source(ir1: &Ir, repo: &Path, storage: &brygge_ir::Storage) -> Ag
         }
     };
     match (is_cvs, corresponds) {
-        (true, true) => AgainstSourceOutcome::Reproduces(brygge_versions_differ.then(version_note)),
+        (true, true) => AgainstSourceOutcome::Reproduces(combine_notes(vec![
+            brygge_versions_differ.then(version_note),
+            floor_differs.clone(),
+        ])),
         (true, false) => AgainstSourceOutcome::DoesNotReproduce(detail()),
         (false, true) => {
             let svn_note = versions_differ
                 .map(|v| format!("svnadmin versions differ ({v}); the history is identical"));
-            let note = match (brygge_versions_differ.then(version_note), svn_note) {
-                (Some(a), Some(b)) => Some(format!("{a}; {b}")),
-                (Some(a), None) => Some(a),
-                (None, b) => b,
-            };
+            let note = combine_notes(vec![
+                brygge_versions_differ.then(version_note),
+                svn_note,
+                floor_differs.clone(),
+            ]);
             AgainstSourceOutcome::Corresponds(note)
         }
         (false, false) => AgainstSourceOutcome::DoesNotCorrespond(detail()),
@@ -1597,6 +1607,65 @@ fn svn_version_note(ir1: &Ir, ir2: &Ir) -> Option<String> {
         return None;
     }
     Some(format!("{a} vs {b}"))
+}
+
+/// Set `ir2`'s `floor` provenance param to `ir1`'s (review 140, a refinement of C-3c): a decoder's floor
+/// — the list of features it refuses rather than approximates — is a fact about the decoder, exactly
+/// like `svnadmin`'s version (CR-07.6), never about the history it decoded. Two decodes that both
+/// *succeeded* prove the source holds nothing either floor refuses: an item added since the first decode
+/// did not fire on the re-decode, or the re-decode would have been refused outright; an item removed
+/// could only matter for a feature the first decode would itself have refused, and it did not. So a
+/// floor difference alone can never be evidence of tampering. A no-op unless both carry the param (every
+/// decoder that has a floor records one — `git`, `hg`, `svn` and `cvs` all do).
+fn align_decoder_floor(ir1: &Ir, mut ir2: Ir) -> Ir {
+    if let (Some(a), Some(_)) = (
+        ir1.provenance.params.get("floor"),
+        ir2.provenance.params.get("floor"),
+    ) {
+        let a = a.clone();
+        ir2.provenance.params.insert("floor".to_string(), a);
+    }
+    ir2
+}
+
+/// `Some(note)` when both decodes recorded a `floor` param and the sets of items actually differ — a
+/// hint at *why* two decodes might diverge, never a claim that the floor caused it, and not itself a
+/// reason to fail when the histories otherwise match (see [`align_decoder_floor`]).
+fn decoder_floor_note(ir1: &Ir, ir2: &Ir) -> Option<String> {
+    let a = ir1.provenance.params.get("floor")?;
+    let b = ir2.provenance.params.get("floor")?;
+    if a == b {
+        return None;
+    }
+    let a_items: std::collections::BTreeSet<&str> =
+        a.split(',').filter(|s| !s.is_empty()).collect();
+    let b_items: std::collections::BTreeSet<&str> =
+        b.split(',').filter(|s| !s.is_empty()).collect();
+    let added: Vec<&str> = b_items.difference(&a_items).copied().collect();
+    let removed: Vec<&str> = a_items.difference(&b_items).copied().collect();
+    let name = |items: &[&str]| {
+        if items.is_empty() {
+            "none".to_string()
+        } else {
+            items.join(", ")
+        }
+    };
+    Some(format!(
+        "the decoder's floor changed between the two decodes: added {}; removed {}",
+        name(&added),
+        name(&removed)
+    ))
+}
+
+/// Join every present note with `"; "`, in order; `None` if none are present (review 106 V-1 and review
+/// 140 both add an informational note that never changes a success verdict by itself).
+fn combine_notes(parts: Vec<Option<String>>) -> Option<String> {
+    let present: Vec<String> = parts.into_iter().flatten().collect();
+    if present.is_empty() {
+        None
+    } else {
+        Some(present.join("; "))
+    }
 }
 
 fn divergence(a: &Ir, b: &Ir) -> String {
