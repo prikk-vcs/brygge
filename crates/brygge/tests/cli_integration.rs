@@ -412,7 +412,7 @@ fn a_real_run_prints_only_rule_following_keys_one_atoms_line_and_the_exact_messa
     let verify_out = String::from_utf8(verify.stdout).unwrap();
     assert_keys_follow_the_rule(&verify_out, "verify");
     for line in [
-        "verify_version=4",
+        "verify_version=5",
         "verify.skipped_non_critical_fields=0",
         "verify.check.source_invariants=pass",
         "verify.check.loss_boundary=pass",

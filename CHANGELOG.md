@@ -12,6 +12,8 @@ Every handoff adds its own entry in its own commit.
 
 - `brygge encode git`: a supported encoder that writes a new bare Git repository from an artifact, every
   commit labelled with `Brygge-` trailers (RFC 019).
+- `encode git` checks its result against the artifact before writing it, and `verify --against-target
+  git` checks a kept repository the same way (RFC 019).
 
 ### Changed
 

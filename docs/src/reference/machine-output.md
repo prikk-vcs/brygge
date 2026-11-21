@@ -49,12 +49,12 @@ brygge release and of the IR contract**.
 |---|---|---|
 | `report_version` | the fidelity report: the lines `decode` and `inspect` print (§3.1) | `3` |
 | `inspect_version` | the transform-chain section (§3.2) and the per-atom listing `inspect --atoms` appends (§3.3) | `4` |
-| `verify_version` | `verify`'s lines (§3.4) | `4` |
+| `verify_version` | `verify`'s lines (§3.4) | `5` |
 | `encode_list_version` | `encode --list`'s lines (§3.5) | `2` |
 | `encode_version` | `encode`'s own banner and exit lines (§3.6) | `1` |
 | `transform_list_version` | `transform --list`'s lines (§3.7) | `1` |
 | `transform_version` | `transform`'s own banner, exit, and result lines (§3.8) | `1` |
-| `encode_git_version` | `encode git`'s pre-flight refusal lines and its `<dir>.brygge-report` sidecar (§3.9) | `1` |
+| `encode_git_version` | `encode git`'s pre-flight refusal lines and its `<dir>.brygge-report` sidecar (§3.9) | `2` |
 
 **The rule (normative):**
 - A version is **bumped** whenever any key or value domain of the output it governs changes:
@@ -163,7 +163,7 @@ all human output does.) An absent message and an empty one both print an empty v
 
 | Key | Value | Enc. |
 |---|---|---|
-| `verify_version` | `4` | |
+| `verify_version` | `5` | |
 | `verify.skipped_non_critical_fields` | fields from a newer IR contract this build skipped when reading the artifact (always printed; `0` when none) | |
 | `verify.check.<name>` | `pass`, `fail`, or `not-checked` (the check could not run). `<name>`, in this order: `integrity`, `structure`, `replay`, `derivations`, `source_invariants`, `provenance`, `loss_boundary` | |
 | `verify.check.<name>.detail` | printed right after its check's line, only when the check is not `pass`: why | ● |
@@ -172,11 +172,15 @@ all human output does.) An absent message and an empty one both print an empty v
 | `verify.against_source` | `not-run` (no `--against-source`); for Git, hg and SVN `corresponds` or `does-not-correspond`; for CVS `reproduces` or `does-not-reproduce`; `root-corresponds`/`root-reproduces` (RFC 018 D-5: the artifact has a non-empty transform chain, so only its chain's own *root* — `Ir.transforms[0].consumed` — was compared against a fresh decode, never the whole artifact); or `not-checked` (requested but could not run) | |
 | `verify.against_source.detail` | present only when `verify.against_source` is `does-not-correspond`, `does-not-reproduce` or `not-checked`: why — a version-across-brygge `not-checked` names the artifact's own version to re-run with (e.g. ``decoded by brygge <a>; this build (<b>) decodes differently, which a newer decoder may do legitimately; run `verify --against-source` with brygge <a> for a definite answer``) | ● |
 | `verify.against_source.note` | present only when the source comparison succeeded with something worth noting (e.g. `svnadmin versions differ (<a> vs <b>); the history is identical`; or `decoded by brygge <a>, re-derived by <b>; the history is identical` when the artifact was made by a different brygge version (RFC 018, review 106 V-1); or `the decoder's floor changed between the two decodes: added <items>; removed <items>` when the two decodes' `provenance.params["floor"]` differ — a decoder's floor is a fact about the decoder, never about the history, so it is aligned before comparing and only noted (review 140); or, for `root-corresponds`/`root-reproduces`, always: `<N> transform(s) after it were not re-run`, with the version note appended too when the versions differed). A note never means failure | ● |
-| `verify.result` | `pass`, `fail` (something that ran did not hold), or `incomplete` (a requested source comparison could not run, and nothing failed) | |
+| `verify.against_target` | `not-run` (no `--against-target`); `corresponds` or `does-not-correspond`; or `not-checked` (requested but could not run) — RFC 019 D-6: the same comparison `encode git` runs in process, over a kept repository instead | |
+| `verify.against_target.detail` | present only when `verify.against_target` is `does-not-correspond` or `not-checked`: why — for `does-not-correspond`, up to 20 differences, then a count of the rest | ● |
+| `verify.result` | `pass`, `fail` (something that ran did not hold), or `incomplete` (a requested comparison could not run, and nothing failed) | |
 
 The seven `verify.check.<name>` lines always appear, in the order above, each followed by its `.detail`
-when it did not pass. `not-run` (for `verify.against_source`) means "not requested"; `not-checked` means
-"requested or due, but could not run". `verify.result` is always last.
+when it did not pass. `not-run` (for `verify.against_source`/`verify.against_target`) means "not
+requested"; `not-checked` means "requested or due, but could not run". `--against-source` and
+`--against-target` are never both given in one run (a usage error), so at most one of the two is ever
+not `not-run`. `verify.result` is always last.
 
 ### 3.5 `encode --list` (governed by `encode_list_version`)
 
@@ -289,14 +293,21 @@ nothing at `<dir>`, prints this to stderr, and exits `2`:
 
 | Key | Value | Enc. |
 |---|---|---|
-| `encode_git_version` | `1` | |
+| `encode_git_version` | `2` | |
 | `encode_git.refusal.N` | one refusal's own text, naming the atom (by source id) or the ref | ● |
+
+**If the in-process check (RFC 019 D-6, batch G2) finds any difference** between the result and the
+artifact — after a real `git fast-import`, before anything is renamed into place — brygge removes the
+working directory, writes nothing at `<dir>` or its report, prints "the result does not match the
+artifact; refusing to write `<dir>`:" followed by up to 20 differences and then a count, and exits `1`.
+None of the keys below appear; the comparison itself is `verify --against-target`'s own (§3.4), which
+can run the same check again afterward over a repository brygge did write.
 
 **Otherwise, `<dir>` is written, and `<dir>.brygge-report` holds:**
 
 | Key | Value | Enc. |
 |---|---|---|
-| `encode_git_version` | `1` | |
+| `encode_git_version` | `2` | |
 | `encode_git.artifact_digest` | `sha256:<hex>` | |
 | `encode_git.brygge_version` | the `brygge` version that wrote it | |
 | `encode_git.default_branch` | the branch `--initial-branch` named (D-3) | ● |
@@ -304,6 +315,7 @@ nothing at `<dir>`, prints this to stderr, and exits `2`:
 | `encode_git.commits` | commits written | |
 | `encode_git.tags` | tags written (annotated or lightweight) | |
 | `encode_git.refs` | every ref written, tags included | |
+| `encode_git.check` | always `corresponds` — this report is only ever written once the in-process check above has already passed | |
 | `encode_git.dropped.<class>` | as `dropped.<class>` in the fidelity report (§3.1), for the artifact encoded | |
 | `encode_git.flagged.<kind>` | as `flagged.<kind>` in the fidelity report (§3.1) | |
 | `encode_git.supplied.<field>` | how many times that field was `Brygge-Supplied` | ● |
@@ -329,6 +341,12 @@ The exit code carries the outcome class, so a gate can branch without parsing ou
 | `2` | usage error: bad arguments, or an option given to a source kind it does not apply to | any command |
 
 When several classes apply to one `decode`, `30` takes precedence over `10`.
+
+**`encode git`'s in-process check (RFC 019 D-6, batch G2)** sits between the pre-flight and this table's
+own `0`/`10`/`30` exit: if it finds any difference, `encode git` exits `1`, the same runtime-failure code
+as any other reason it could not finish — nothing in this table's other rows is reached that run.
+**`verify --against-target`** follows `verify`'s own codes above exactly as `--against-source` does:
+`50` for `does-not-correspond`, `1` for `not-checked`.
 
 **`encode <target>`'s own exit code is not in this table:** if its mandatory verify-first check does not
 pass, it exits with `verify`'s own code above; otherwise it exits with the plugin's own code, unchanged
@@ -408,7 +426,7 @@ loss.2.what=reflogs
 `brygge verify repo.ir --against-source repo --format machine` (exit `0`):
 
 ```text
-verify_version=4
+verify_version=5
 verify.skipped_non_critical_fields=0
 verify.check.integrity=pass
 verify.check.structure=pass
@@ -420,13 +438,14 @@ verify.check.loss_boundary=pass
 verify.authorship=unverifiable
 verify.internal=pass
 verify.against_source=corresponds
+verify.against_target=not-run
 verify.result=pass
 ```
 
 The same artifact truncated to 200 bytes, `brygge verify truncated.ir --format machine` (exit `50`):
 
 ```text
-verify_version=4
+verify_version=5
 verify.skipped_non_critical_fields=0
 verify.check.integrity=fail
 verify.check.integrity.detail=brygge-ir%20integrity%20digest%20mismatch%20%28tampered%20or%20truncated%29
@@ -445,5 +464,6 @@ verify.check.loss_boundary.detail=the%20artifact%20failed%20to%20decode%3B%20thi
 verify.authorship=unverifiable
 verify.internal=fail
 verify.against_source=not-run
+verify.against_target=not-run
 verify.result=fail
 ```

@@ -234,7 +234,13 @@ fn verify_spill_dir_missing_is_a_usage_error() {
         exit::CLEAN
     );
     let missing = repo.dir.join("does-not-exist");
-    let code = run_verify(&out, Some(repo.path()), Some(&missing), Format::Machine);
+    let code = run_verify(
+        &out,
+        Some(repo.path()),
+        None,
+        Some(&missing),
+        Format::Machine,
+    );
     assert_eq!(code, exit::USAGE);
 }
 
@@ -260,7 +266,7 @@ fn verify_spill_dir_a_file_not_a_directory_is_a_usage_error() {
     );
     let file = repo.dir.join("a-plain-file");
     std::fs::write(&file, b"not a directory").unwrap();
-    let code = run_verify(&out, Some(repo.path()), Some(&file), Format::Machine);
+    let code = run_verify(&out, Some(repo.path()), None, Some(&file), Format::Machine);
     assert_eq!(code, exit::USAGE);
 }
 
@@ -287,8 +293,14 @@ fn verify_spill_dir_given_a_good_directory_is_used_and_left_empty_and_the_verdic
     let spill_dir = repo.dir.join("spill");
     std::fs::create_dir_all(&spill_dir).unwrap();
 
-    let without_spill_dir = run_verify(&out, Some(repo.path()), None, Format::Machine);
-    let with_spill_dir = run_verify(&out, Some(repo.path()), Some(&spill_dir), Format::Machine);
+    let without_spill_dir = run_verify(&out, Some(repo.path()), None, None, Format::Machine);
+    let with_spill_dir = run_verify(
+        &out,
+        Some(repo.path()),
+        None,
+        Some(&spill_dir),
+        Format::Machine,
+    );
     assert_eq!(
         without_spill_dir, with_spill_dir,
         "--spill-dir never changes the verdict"
@@ -325,9 +337,12 @@ fn decode_inspect_verify_roundtrip() {
     assert!(out.exists(), "the artifact was written");
     assert_eq!(run_inspect(&out, false, Format::Human), exit::CLEAN);
     assert_eq!(run_inspect(&out, true, Format::Machine), exit::CLEAN);
-    assert_eq!(run_verify(&out, None, None, Format::Machine), exit::CLEAN);
     assert_eq!(
-        run_verify(&out, Some(repo.path()), None, Format::Human),
+        run_verify(&out, None, None, None, Format::Machine),
+        exit::CLEAN
+    );
+    assert_eq!(
+        run_verify(&out, Some(repo.path()), None, None, Format::Human),
         exit::CLEAN,
         "the artifact corresponds to its source (VF-2)"
     );
@@ -360,7 +375,7 @@ fn verify_internal_catches_tamper_with_no_source() {
     std::fs::write(&out, &bytes).unwrap();
 
     assert_eq!(
-        run_verify(&out, None, None, Format::Machine),
+        run_verify(&out, None, None, None, Format::Machine),
         exit::VERIFY_FAILED,
         "a tampered artifact fails integrity, no source needed (VF-3)"
     );
@@ -390,7 +405,7 @@ fn verify_against_source_detects_a_mismatch() {
 
     // Verifying one repo's artifact against a different source must fail.
     assert_eq!(
-        run_verify(&other_out, Some(repo.path()), None, Format::Human),
+        run_verify(&other_out, Some(repo.path()), None, None, Format::Human),
         exit::VERIFY_FAILED
     );
 }
@@ -425,7 +440,7 @@ fn a_failing_internal_check_with_a_corresponding_source_still_reports_against_so
     // integrity failure means there is no decoded Ir to re-derive against, so against-source is not-run
     // and the overall result is still fail (exit 50) from the internal side alone.
     assert_eq!(
-        run_verify(&out, Some(repo.path()), None, Format::Human),
+        run_verify(&out, Some(repo.path()), None, None, Format::Human),
         exit::VERIFY_FAILED
     );
 }
@@ -452,7 +467,7 @@ fn against_source_with_a_nonexistent_path_is_not_checked_not_a_mismatch() {
     );
     let bogus = std::env::temp_dir().join("brygge-cli-does-not-exist-at-all");
     assert_eq!(
-        run_verify(&out, Some(&bogus), None, Format::Machine),
+        run_verify(&out, Some(&bogus), None, None, Format::Machine),
         exit::FAILURE,
         "a source that cannot be re-decoded is 'not checked' — a runtime failure (exit 1), never a \
          claimed mismatch (review 003 R-1)"
@@ -500,7 +515,7 @@ fn a_genuine_internal_failure_dominates_the_exit_even_when_against_source_is_als
 
     let bogus = std::env::temp_dir().join("brygge-cli-does-not-exist-at-all-2");
     assert_eq!(
-        run_verify(&path, Some(&bogus), None, Format::Machine),
+        run_verify(&path, Some(&bogus), None, None, Format::Machine),
         exit::VERIFY_FAILED,
         "a genuine internal failure dominates the exit class even though against-source also could \
          not be checked (review 003 R-1)"
@@ -549,7 +564,7 @@ fn decode_a_real_clone_succeeds_and_verifies_against_source() {
     );
     assert!(clone_out.exists());
     assert_eq!(
-        run_verify(&clone_out, Some(&clone_dir), None, Format::Human),
+        run_verify(&clone_out, Some(&clone_dir), None, None, Format::Human),
         exit::CLEAN,
         "verify --against-source succeeds on a real clone (CR-16)"
     );
@@ -692,7 +707,7 @@ fn missing_artifact_is_a_plain_failure() {
     let missing = std::env::temp_dir().join("brygge-cli-nope-does-not-exist.ir");
     assert_eq!(run_inspect(&missing, false, Format::Human), exit::FAILURE);
     assert_eq!(
-        run_verify(&missing, None, None, Format::Machine),
+        run_verify(&missing, None, None, None, Format::Machine),
         exit::FAILURE
     );
 }
@@ -1011,7 +1026,7 @@ fn stated_add(path: &str, blob: brygge_ir::BlobId) -> PathOp {
 fn verify_bytes(bytes: &[u8]) -> i32 {
     let path = tmp_ir_path("verify-check");
     std::fs::write(&path, bytes).unwrap();
-    let code = run_verify(&path, None, None, Format::Machine);
+    let code = run_verify(&path, None, None, None, Format::Machine);
     let _ = std::fs::remove_file(&path);
     code
 }
@@ -1735,9 +1750,12 @@ fn decode_svn_from_a_dumpfile_reconstructs_refs_and_verifies() {
     assert!(out.exists());
 
     assert_eq!(run_inspect(&out, false, Format::Human), exit::CLEAN);
-    assert_eq!(run_verify(&out, None, None, Format::Machine), exit::CLEAN);
     assert_eq!(
-        run_verify(&out, Some(&dump), None, Format::Human),
+        run_verify(&out, None, None, None, Format::Machine),
+        exit::CLEAN
+    );
+    assert_eq!(
+        run_verify(&out, Some(&dump), None, None, Format::Human),
         exit::CLEAN,
         "the artifact corresponds to its dumpfile (VF-2)"
     );
@@ -1827,7 +1845,10 @@ fn decode_svn_from_a_live_repository_via_svnadmin() {
         "unexpected exit {code}"
     );
     assert!(out.exists());
-    assert_eq!(run_verify(&out, None, None, Format::Machine), exit::CLEAN);
+    assert_eq!(
+        run_verify(&out, None, None, None, Format::Machine),
+        exit::CLEAN
+    );
 
     let _ = std::fs::remove_dir_all(&repo);
 }
@@ -1892,7 +1913,7 @@ fn cr_07_6_verifying_a_dumpfile_decode_against_a_live_repository_is_not_checked(
     // The artifact was decoded from a dumpfile (`source_form=dumpfile`); verifying it against the live
     // repository *directory* is a different form — `not-checked`, not a mismatch, exit 1/`incomplete`.
     assert_eq!(
-        run_verify(&out, Some(&repo), None, Format::Machine),
+        run_verify(&out, Some(&repo), None, None, Format::Machine),
         exit::FAILURE,
         "a cross-form comparison must be incomplete, never pass or fail"
     );
@@ -1906,7 +1927,7 @@ fn cr_07_6_verifying_a_dumpfile_decode_against_a_live_repository_is_not_checked(
         against.detail(),
         Some("the artifact was made from a dumpfile; verify against the same form")
     );
-    let verdict = Verdict::from(true, &against);
+    let verdict = Verdict::from(true, &against, &AgainstTargetOutcome::NotRun);
     assert_eq!(verdict.machine_label(), "incomplete");
 
     let _ = std::fs::remove_file(&dump);
@@ -1989,8 +2010,15 @@ fn a_version_note_on_success_is_its_own_key_never_a_failure_detail() {
     // the informational svnadmin-version note is `verify.against_source.note`, and no `.detail` appears.
     let checks: Vec<(&'static str, CheckOutcome)> = vec![("integrity", CheckOutcome::Pass)];
     let against = AgainstSourceOutcome::Corresponds(Some("1.14.1 vs 1.14.2".to_string()));
-    let verdict = Verdict::from(true, &against);
-    let lines = verify_machine_lines(&checks, true, &against, &verdict, 0);
+    let verdict = Verdict::from(true, &against, &AgainstTargetOutcome::NotRun);
+    let lines = verify_machine_lines(
+        &checks,
+        true,
+        &against,
+        &AgainstTargetOutcome::NotRun,
+        &verdict,
+        0,
+    );
     assert!(lines.contains(&"verify.against_source=corresponds".to_string()));
     assert!(lines.contains(&"verify.against_source.note=1.14.1%20vs%201.14.2".to_string()));
     assert!(lines.contains(&"verify.result=pass".to_string()));
@@ -2001,8 +2029,15 @@ fn a_version_note_on_success_is_its_own_key_never_a_failure_detail() {
 
     // A failure uses `.detail`, and carries no `note`.
     let against = AgainstSourceOutcome::DoesNotCorrespond("atom count differs".to_string());
-    let verdict = Verdict::from(true, &against);
-    let lines = verify_machine_lines(&checks, true, &against, &verdict, 0);
+    let verdict = Verdict::from(true, &against, &AgainstTargetOutcome::NotRun);
+    let lines = verify_machine_lines(
+        &checks,
+        true,
+        &against,
+        &AgainstTargetOutcome::NotRun,
+        &verdict,
+        0,
+    );
     assert!(
         lines
             .iter()
@@ -2068,9 +2103,12 @@ fn decode_cvs_reconstructs_derived_changesets_and_reproduces() {
     assert!(out.exists());
 
     assert_eq!(run_inspect(&out, false, Format::Human), exit::CLEAN);
-    assert_eq!(run_verify(&out, None, None, Format::Machine), exit::CLEAN);
     assert_eq!(
-        run_verify(&out, Some(repo.path()), None, Format::Human),
+        run_verify(&out, None, None, None, Format::Machine),
+        exit::CLEAN
+    );
+    assert_eq!(
+        run_verify(&out, Some(repo.path()), None, None, Format::Human),
         exit::CLEAN,
         "the CVS reconstruction reproduces from its repository (VF-1)"
     );
@@ -2122,7 +2160,7 @@ fn a_cvs_repository_with_a_branch_revision_verifies_its_own_artifact() {
             .any(|d| d.class == brygge_ir::model::LossClass::Other),
         "the branch revision is recorded as a drop"
     );
-    let code = run_verify(&out, None, None, Format::Machine);
+    let code = run_verify(&out, None, None, None, Format::Machine);
     assert!(
         code == exit::CLEAN || code == exit::RECORDED_LOSS,
         "verify must not fail integrity (exit 50): got {code}"
@@ -2198,9 +2236,12 @@ fn decode_cvs_nested_and_mixed_branches_reproduce_and_verify_against_source() {
         .unwrap()
         .ir;
     assert!(ir.refs.iter().any(|r| r.name == "NEST"));
-    assert_eq!(run_verify(&one, None, None, Format::Machine), exit::CLEAN);
     assert_eq!(
-        run_verify(&one, Some(repo.path()), None, Format::Human),
+        run_verify(&one, None, None, None, Format::Machine),
+        exit::CLEAN
+    );
+    assert_eq!(
+        run_verify(&one, Some(repo.path()), None, None, Format::Human),
         exit::CLEAN,
         "the branch reconstruction reproduces from its repository (VF-1)"
     );
@@ -2434,9 +2475,12 @@ fn decode_hg_and_verify_a_good_artifact_from_every_decoder() {
         "unexpected exit {code}"
     );
     assert!(out.exists());
-    assert_eq!(run_verify(&out, None, None, Format::Machine), exit::CLEAN);
     assert_eq!(
-        run_verify(&out, Some(repo.path()), None, Format::Human),
+        run_verify(&out, None, None, None, Format::Machine),
+        exit::CLEAN
+    );
+    assert_eq!(
+        run_verify(&out, Some(repo.path()), None, None, Format::Human),
         exit::CLEAN,
         "the artifact corresponds to its hg source (VF-2)"
     );
@@ -2677,8 +2721,15 @@ fn every_verify_line_shape() -> Vec<String> {
         })
         .collect();
     let against = AgainstSourceOutcome::Corresponds(Some("1.14.1 vs 1.14.2".to_string()));
-    let verdict = Verdict::from(false, &against);
-    verify_machine_lines(&checks, false, &against, &verdict, 2)
+    let verdict = Verdict::from(false, &against, &AgainstTargetOutcome::NotRun);
+    verify_machine_lines(
+        &checks,
+        false,
+        &against,
+        &AgainstTargetOutcome::NotRun,
+        &verdict,
+        2,
+    )
 }
 
 #[test]
@@ -2837,6 +2888,7 @@ fn part2_5_6_skipped_non_critical_fields_are_visible_to_machines() {
         &[("integrity", CheckOutcome::Pass)],
         true,
         &AgainstSourceOutcome::NotRun,
+        &AgainstTargetOutcome::NotRun,
         &Verdict::Pass,
         0,
     );
@@ -2868,8 +2920,8 @@ fn part2_5_7_other_is_not_flattened_the_label_is_other_and_the_name_has_a_compan
 fn part2_5_versions_are_bumped() {
     assert_eq!(brygge_ir::honesty::REPORT_VERSION, 3);
     assert_eq!(INSPECT_VERSION, 4);
-    assert_eq!(VERIFY_VERSION, 4);
-    assert!(every_verify_line_shape().contains(&"verify_version=4".to_string()));
+    assert_eq!(VERIFY_VERSION, 5);
+    assert!(every_verify_line_shape().contains(&"verify_version=5".to_string()));
     assert!(
         render_atoms_machine(&machine_output_fixture(), brygge_ir::version::CURRENT)
             .starts_with("inspect_version=4\n")
@@ -2982,7 +3034,7 @@ fn an_hg_artifacts_params_carry_no_rename_or_infer_keys() {
     );
     // And `verify --against-source` re-decodes it without reading any inference parameter.
     assert_eq!(
-        run_verify(&out, Some(&repo), None, Format::Machine),
+        run_verify(&out, Some(&repo), None, None, Format::Machine),
         exit::CLEAN
     );
     let _ = std::fs::remove_file(&out);
@@ -3158,7 +3210,7 @@ fn verify_against_source_corresponds_on_a_0_2_0_artifact() {
     );
 
     assert_eq!(
-        run_verify(&fixture, Some(r.path()), None, Format::Human),
+        run_verify(&fixture, Some(r.path()), None, None, Format::Human),
         exit::CLEAN,
         "verify --against-source corresponds on a 0.2.0 artifact, against the repository it was \
          decoded from (review 099 R-4)"
@@ -3637,8 +3689,14 @@ fn verify_against_source_root_corresponds_and_wrong_consumed_through_the_real_re
     let ir1 = read_ir(&honest).unwrap().ir;
     let against = run_against_source(&ir1, repo.path(), &brygge_ir::Storage::Memory);
     assert_eq!(against.machine_label(), "root-corresponds");
-    assert_eq!(Verdict::from(true, &against).machine_label(), "pass");
-    assert_eq!(Verdict::from(true, &against).exit_code(), exit::CLEAN);
+    assert_eq!(
+        Verdict::from(true, &against, &AgainstTargetOutcome::NotRun).machine_label(),
+        "pass"
+    );
+    assert_eq!(
+        Verdict::from(true, &against, &AgainstTargetOutcome::NotRun).exit_code(),
+        exit::CLEAN
+    );
     assert!(
         against
             .note()
@@ -3647,7 +3705,7 @@ fn verify_against_source_root_corresponds_and_wrong_consumed_through_the_real_re
         against.note()
     );
     assert_eq!(
-        run_verify(&honest, Some(repo.path()), None, Format::Machine),
+        run_verify(&honest, Some(repo.path()), None, None, Format::Machine),
         exit::CLEAN,
         "the real reader, check_structure, and the comparison together must still reach root-corresponds"
     );
@@ -3667,7 +3725,7 @@ fn verify_against_source_root_corresponds_and_wrong_consumed_through_the_real_re
         Some("the chain's root is not this source's decode")
     );
     assert_eq!(
-        run_verify(&wrong, Some(repo.path()), None, Format::Machine),
+        run_verify(&wrong, Some(repo.path()), None, None, Format::Machine),
         exit::VERIFY_FAILED
     );
 
@@ -3729,7 +3787,7 @@ fn verify_against_source_rejects_a_well_formed_artifact_that_lies_about_being_un
         "the content really did change, even though nothing in the artifact admits it"
     );
     assert_eq!(
-        run_verify(&lie, Some(repo.path()), None, Format::Machine),
+        run_verify(&lie, Some(repo.path()), None, None, Format::Machine),
         exit::VERIFY_FAILED
     );
 
@@ -3857,9 +3915,12 @@ fn verify_against_source_not_checked_when_recorded_version_differs_and_history_d
         detail.contains("run `verify --against-source` with brygge 0.0.1"),
         "says which brygge to re-run with: {detail:?}"
     );
-    assert_eq!(Verdict::from(true, &against).machine_label(), "incomplete");
     assert_eq!(
-        run_verify(&edited, Some(repo.path()), None, Format::Machine),
+        Verdict::from(true, &against, &AgainstTargetOutcome::NotRun).machine_label(),
+        "incomplete"
+    );
+    assert_eq!(
+        run_verify(&edited, Some(repo.path()), None, None, Format::Machine),
         exit::FAILURE,
         "incomplete is never pass (0), and never fail's exit 50 either"
     );
@@ -3917,9 +3978,12 @@ fn verify_against_source_root_corresponds_with_both_notes_across_brygge_versions
         "and adds the version note: {note:?}"
     );
     assert!(note.ends_with("the history is identical"), "{note:?}");
-    assert_eq!(Verdict::from(true, &against).machine_label(), "pass");
     assert_eq!(
-        run_verify(&honest, Some(repo.path()), None, Format::Machine),
+        Verdict::from(true, &against, &AgainstTargetOutcome::NotRun).machine_label(),
+        "pass"
+    );
+    assert_eq!(
+        run_verify(&honest, Some(repo.path()), None, None, Format::Machine),
         exit::CLEAN
     );
 
@@ -3967,7 +4031,7 @@ fn a_malformed_transform_chain_is_refused_by_the_reader_not_given_a_verdict() {
         other => panic!("expected a NonCanonical refusal, got {other:?}"),
     }
     assert_eq!(
-        run_verify(&bad, Some(repo.path()), None, Format::Machine),
+        run_verify(&bad, Some(repo.path()), None, None, Format::Machine),
         exit::VERIFY_FAILED,
         "a read failure must still exit as a failure, never silently as a verdict of any kind"
     );
@@ -4009,9 +4073,12 @@ fn verify_against_source_root_reproduces_for_cvs() {
     let ir1 = read_ir(&honest).unwrap().ir;
     let against = run_against_source(&ir1, repo.path(), &brygge_ir::Storage::Memory);
     assert_eq!(against.machine_label(), "root-reproduces");
-    assert_eq!(Verdict::from(true, &against).machine_label(), "pass");
     assert_eq!(
-        run_verify(&honest, Some(repo.path()), None, Format::Machine),
+        Verdict::from(true, &against, &AgainstTargetOutcome::NotRun).machine_label(),
+        "pass"
+    );
+    assert_eq!(
+        run_verify(&honest, Some(repo.path()), None, None, Format::Machine),
         exit::CLEAN
     );
 }
@@ -4051,4 +4118,163 @@ fn inspect_shows_the_transform_chain_overview() {
     // A decoder's own report (no chain) is unchanged: neither renderer prints anything at all.
     assert_eq!(render_transforms_human(&machine_output_fixture(), true), "");
     assert_eq!(render_transforms_machine(&machine_output_fixture()), "");
+}
+
+// ---- `encode git`'s in-process check (RFC 019 D-6, batch G2) ----------------------------------------
+
+/// A minimal, otherwise-valid one-atom Git-sourced artifact: one file, one branch ref — everything
+/// `encode git`'s own pre-flight accepts, so the only thing that can refuse it is the injected check.
+fn minimal_git_artifact_for_encode() -> brygge_ir::Ir {
+    let mut b = IrBuilder::new(blank_provenance(
+        brygge_ir::SourceKind::Git,
+        "brygge-decode-git",
+    ));
+    let blob = b.add_blob(b"hello\n".to_vec()).unwrap();
+    let atom = b
+        .add_atom(AtomDraft {
+            parents: vec![],
+            ops: vec![stated_add("f.txt", blob)],
+            copies: vec![],
+            metadata: MetadataClaims::default(),
+            source: src(brygge_ir::SourceKind::Git, b"c1"),
+            status: EpistemicStatus::Stated,
+        })
+        .unwrap();
+    b.add_ref(RefRecord {
+        name: "main".to_string(),
+        kind: RefKind::Branch,
+        target: atom,
+        status: EpistemicStatus::Stated,
+        source: None,
+        annotation: None,
+    })
+    .unwrap();
+    b.finish().unwrap()
+}
+
+/// RFC 019 D-6 §3: proves the refusal path through the internal seam (never an environment variable or
+/// a flag in the shipped product — [`run_encode_git`] always passes the real check; only this test
+/// injects a different one), with a real `git init`/`fast-import` underneath: a failed comparison must
+/// remove the partial working directory and write nothing at `<dir>` or `<dir>.brygge-report`.
+#[test]
+fn a_failed_check_removes_the_partial_directory_and_writes_nothing() {
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let ir = minimal_git_artifact_for_encode();
+    let artifact_path = tmp_ir_path("encode-git-check-refusal");
+    std::fs::write(&artifact_path, brygge_ir::to_bytes(&ir)).unwrap();
+
+    let dir = scratch_dir("encode-git-check-refusal");
+    let out = dir.join("repo.git");
+
+    let always_fails = |_ir: &Ir,
+                        _digest: &[u8; 32],
+                        _partial: &Path,
+                        _git: &Path,
+                        _env: &GitEnv,
+                        _default_branch_ref: &str| {
+        encode_git::Comparison::DoesNotCorrespond(vec!["a fake, injected difference".to_string()])
+    };
+    let code = run_encode_git_with_check(&artifact_path, &out, Format::Machine, always_fails);
+    assert_eq!(code, exit::FAILURE);
+    assert!(!out.exists(), "nothing must be written at <dir>");
+    let report_path = {
+        let mut p = out.as_os_str().to_os_string();
+        p.push(".brygge-report");
+        PathBuf::from(p)
+    };
+    assert!(
+        !report_path.exists(),
+        "nothing must be written at the report path either"
+    );
+
+    // No `.partial-*` sibling left behind either — the fake check's refusal must have cleaned it up,
+    // just as a real `does-not-correspond` from the production check would.
+    let entries: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name())
+        .collect();
+    assert!(
+        entries.is_empty(),
+        "a .partial directory was left behind: {entries:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The honest-copy path: when the injected check says `Corresponds`, the repository and report are
+/// written normally — proving the seam's two outcomes are both real, not just the refusal one.
+#[test]
+fn a_passing_check_writes_the_repository_and_report_normally() {
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let ir = minimal_git_artifact_for_encode();
+    let artifact_path = tmp_ir_path("encode-git-check-pass");
+    std::fs::write(&artifact_path, brygge_ir::to_bytes(&ir)).unwrap();
+
+    let dir = scratch_dir("encode-git-check-pass");
+    let out = dir.join("repo.git");
+
+    let always_passes =
+        |_ir: &Ir,
+         _digest: &[u8; 32],
+         _partial: &Path,
+         _git: &Path,
+         _env: &GitEnv,
+         _default_branch_ref: &str| encode_git::Comparison::Corresponds;
+    let code = run_encode_git_with_check(&artifact_path, &out, Format::Machine, always_passes);
+    assert!(out.exists(), "the repository must be written");
+    let report_path = {
+        let mut p = out.as_os_str().to_os_string();
+        p.push(".brygge-report");
+        PathBuf::from(p)
+    };
+    let report = std::fs::read_to_string(&report_path).expect("the report must be written");
+    assert!(report.contains("encode_git.check=corresponds"), "{report}");
+    assert_ne!(code, exit::FAILURE);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// RFC 019 D-6 §4 (batch G2): a self-measuring helper for the memory/time proof, run only when invoked
+/// by name (never part of the ordinary suite — it needs `BRYGGE_G2_MEASURE_ARTIFACT`/`_OUT` set to real
+/// paths). It calls [`run_encode_git_with_check`] with the check bypassed (the internal seam, never an
+/// environment variable or flag in the shipped product — only this test build reaches it), then prints
+/// its own peak RSS (`VmHWM`, from `/proc/self/status`; `brygge-ir` forbids `unsafe_code`, so this test
+/// binary cannot call `getrusage`/`wait4` either, the same reason `release-corpus.py` is Python) so a
+/// parent process measuring wall time around this one child gets both figures with no extra plumbing.
+#[test]
+fn g2_measure_encode_alone_check_bypassed() {
+    let Ok(artifact) = std::env::var("BRYGGE_G2_MEASURE_ARTIFACT") else {
+        return;
+    };
+    let out =
+        std::env::var("BRYGGE_G2_MEASURE_OUT").expect("BRYGGE_G2_MEASURE_OUT must be set too");
+    let bypass = |_ir: &Ir,
+                  _digest: &[u8; 32],
+                  _partial: &Path,
+                  _git: &Path,
+                  _env: &GitEnv,
+                  _default_branch_ref: &str| encode_git::Comparison::Corresponds;
+    let code = run_encode_git_with_check(
+        Path::new(&artifact),
+        Path::new(&out),
+        Format::Machine,
+        bypass,
+    );
+    assert_ne!(
+        code,
+        exit::FAILURE,
+        "the bypassed encode itself must still succeed"
+    );
+    let status = std::fs::read_to_string("/proc/self/status").expect("read /proc/self/status");
+    let peak_kib = status
+        .lines()
+        .find_map(|l| l.strip_prefix("VmHWM:"))
+        .and_then(|rest| rest.split_whitespace().next())
+        .expect("VmHWM line");
+    println!("g2_measure_peak_kib={peak_kib}");
 }

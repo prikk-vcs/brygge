@@ -74,16 +74,22 @@ pub enum Command {
         /// Output format.
         format: Format,
     },
-    /// `verify <artifact> [--against-source <source>] [--spill-dir <DIR>] [--format …]`
+    /// `verify <artifact> [--against-source <source> | --against-target git <repository>] [--spill-dir
+    /// <DIR>] [--format …]`
     Verify {
         /// The IR artifact to check.
         artifact: PathBuf,
         /// If given, additionally re-derive from this source and confirm correspondence (VF-2).
         against_source: Option<PathBuf>,
-        /// Where `--against-source`'s re-decode keeps file content while decoding, instead of in
-        /// memory (RFC 015 D-4, as `decode`'s own `--spill-dir`). Must already exist and be a
-        /// directory; `None` means the artifact's own directory. Meaningless, and rejected, without
-        /// `--against-source`.
+        /// If given, additionally decode this kept Git repository and check it against the artifact
+        /// (RFC 019 D-6). Mutually exclusive with `against_source` — one question per run. The CLI
+        /// syntax names the target (`git`, the only one D-6 defines) before the path; the parser
+        /// validates it and keeps only the path here.
+        against_target: Option<PathBuf>,
+        /// Where `--against-source`'s or `--against-target`'s re-decode keeps file content while
+        /// decoding, instead of in memory (RFC 015 D-4, as `decode`'s own `--spill-dir`). Must already
+        /// exist and be a directory; `None` means the artifact's own directory. Meaningless, and
+        /// rejected, without one of the two.
         spill_dir: Option<PathBuf>,
         /// Output format.
         format: Format,
@@ -178,7 +184,7 @@ brygge — carry version-control history into an intermediate representation (IR
 USAGE:
   brygge decode <git|hg|svn|cvs> <source> --out <artifact> [--infer-renames | --reconstruct-refs] [--spill-dir <DIR>] [--format human|machine]
   brygge inspect <artifact> [--atoms] [--format human|machine]
-  brygge verify <artifact> [--against-source <source> [--spill-dir <DIR>]] [--format human|machine]
+  brygge verify <artifact> [--against-source <source> | --against-target git <repository>] [--spill-dir <DIR>] [--format human|machine]
   brygge encode <target> <artifact> [--format human|machine] [-- <plugin arguments>…]
   brygge encode --list [--format human|machine]
   brygge transform <name> <artifact> --out <file> [--format human|machine] [-- <plugin arguments>…]
@@ -198,10 +204,13 @@ COMMANDS:
   inspect  print the fidelity report an artifact alone reproduces; --atoms adds the per-atom
            listing: epistemic status, source ids, derived parameters, and the loss boundary
   verify   the honesty checks any reader can run with no source (always); with --against-source, also
-           re-derive from the source and confirm correspondence — the two results are reported
-           separately, never merged. The re-derive's own file content is kept on disk the same way
-           decode's is; --spill-dir <DIR> chooses where (it must already exist, and only applies with
-           --against-source); the default is the artifact's own directory
+           re-derive from the source and confirm correspondence; with --against-target git
+           <repository>, instead check a kept Git repository against the artifact — the
+           two options may not be given together (one question per run), and either result is reported
+           separately from the internal checks, never merged. The re-derive's own file content is kept
+           on disk the same way decode's is; --spill-dir <DIR> chooses where (it must already exist,
+           and only applies with --against-source or --against-target); the default is the artifact's
+           own directory
   encode   run an external encoder plugin, `brygge-encode-<target>`, found on PATH only — never the
            bare name, never the current directory. brygge verifies the artifact first
            (the same checks as `verify`, without --against-source) and refuses to run the plugin on
@@ -464,6 +473,8 @@ fn parse_verify(args: &[String]) -> Result<Command, String> {
     let mut artifact: Option<PathBuf> = None;
     let mut against_source: Option<PathBuf> = None;
     let mut against_source_seen = false;
+    let mut against_target: Option<PathBuf> = None;
+    let mut against_target_seen = false;
     let mut spill_dir: Option<PathBuf> = None;
     let mut spill_dir_seen = false;
     let mut format = Format::Human;
@@ -479,6 +490,27 @@ fn parse_verify(args: &[String]) -> Result<Command, String> {
                 }
                 against_source_seen = true;
                 against_source = Some(need_value(&mut it, "--against-source", "verify")?);
+            }
+            "--against-target" => {
+                if against_target_seen {
+                    return Err(usage_error(
+                        "verify",
+                        "--against-target given more than once",
+                    ));
+                }
+                against_target_seen = true;
+                let target = need_value(&mut it, "--against-target", "verify")?;
+                if target.to_str() != Some("git") {
+                    return Err(usage_error(
+                        "verify",
+                        format!(
+                            "--against-target needs a target before the repository; 'git' is the \
+                             only one brygge checks (got '{}')",
+                            target.display()
+                        ),
+                    ));
+                }
+                against_target = Some(need_value(&mut it, "--against-target", "verify")?);
             }
             "--spill-dir" => {
                 if spill_dir_seen {
@@ -509,15 +541,23 @@ fn parse_verify(args: &[String]) -> Result<Command, String> {
         }
     }
     let artifact = artifact.ok_or_else(|| usage_error("verify", "verify needs an <artifact>"))?;
-    if spill_dir.is_some() && against_source.is_none() {
+    if against_source.is_some() && against_target.is_some() {
         return Err(usage_error(
             "verify",
-            "--spill-dir only applies with --against-source",
+            "--against-source and --against-target may not be given together (one question per \
+             run)",
+        ));
+    }
+    if spill_dir.is_some() && against_source.is_none() && against_target.is_none() {
+        return Err(usage_error(
+            "verify",
+            "--spill-dir only applies with --against-source or --against-target",
         ));
     }
     Ok(Command::Verify {
         artifact,
         against_source,
+        against_target,
         spill_dir,
         format,
     })

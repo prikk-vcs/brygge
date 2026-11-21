@@ -98,6 +98,113 @@ fn cvs_source_id_text(atom_id: &[u8]) -> String {
     out
 }
 
+/// Decodes a lowercase-hex string (exactly what [`to_hex`] writes) back to bytes. `None` on an odd
+/// length or any non-lowercase-hex character — this is the inverse of brygge's own writer, not a general
+/// hex parser, so it is deliberately strict.
+fn from_hex(s: &str) -> Option<Vec<u8>> {
+    if !s.len().is_multiple_of(2) || !s.is_ascii() {
+        return None;
+    }
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len() / 2);
+    for pair in bytes.chunks_exact(2) {
+        let a = *pair.first()?;
+        let b = *pair.get(1)?;
+        if a.is_ascii_uppercase() || b.is_ascii_uppercase() {
+            return None;
+        }
+        let hi = (a as char).to_digit(16)?;
+        let lo = (b as char).to_digit(16)?;
+        out.push((hi * 16 + lo) as u8);
+    }
+    Some(out)
+}
+
+/// The exact inverse of [`source_id_text`] (batch G2, D-6): given the artifact's own source kind (one
+/// IR, one import, one source kind) and the text a `Brygge-Source-Id:` trailer wrote, recovers the
+/// `source.atom_id` bytes it was written from — or `None` when the text fits neither that kind's form
+/// nor the `hex:` fallback, which the caller treats as "this commit names no atom in the artifact".
+pub(super) fn parse_source_id(kind: &SourceKind, text: &str) -> Option<Vec<u8>> {
+    if let Some(hex) = text.strip_prefix("hex:") {
+        return from_hex(hex);
+    }
+    match kind {
+        SourceKind::Git | SourceKind::Hg => from_hex(text).filter(|b| b.len() == 20),
+        SourceKind::Svn => {
+            let digits = text.strip_prefix('r')?;
+            if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+                return None;
+            }
+            let n: u64 = digits.parse().ok()?;
+            Some(n.to_be_bytes().to_vec())
+        }
+        SourceKind::Cvs => {
+            if let Some(name) = text.strip_prefix("branch-point:") {
+                return if name.is_empty() || name.contains('\n') {
+                    None
+                } else {
+                    Some(format!("branch-point:{name}").into_bytes())
+                };
+            }
+            let mut out = String::new();
+            for (i, line) in text.split('\n').enumerate() {
+                if i == 0 {
+                    out.push_str(line);
+                } else {
+                    let cont = line.strip_prefix(' ')?;
+                    out.push('\n');
+                    out.push_str(cont);
+                }
+            }
+            if out.is_empty() {
+                None
+            } else {
+                Some(out.into_bytes())
+            }
+        }
+        // `Other`'s forward direction (`printable_ascii_or_hex`) writes the id as is when every byte is
+        // printable ASCII; that text is already the id's own bytes.
+        SourceKind::Other(_) => Some(text.as_bytes().to_vec()),
+    }
+}
+
+/// Extracts one trailer's value from a raw commit/tag message (batch G2, D-6): the text after
+/// `"<key>: "` on the line where it starts, plus every immediately-following continuation line (one
+/// leading space, a marker that a line continues the value above it — never stripped: F-7's CVS pairs
+/// form embeds that space as part of the value [`source_id_text`] itself returned, so [`parse_source_id`]
+/// expects it back verbatim, exactly as git's own trailer parser would hand it back).
+///
+/// **Splits on raw LF bytes, never requiring the whole message to be UTF-8:** the source's own message
+/// text, which this encoder carries unchanged (RFC 011 D-2: "not assumed to be UTF-8 just because most
+/// sources are"), may hold a byte that is not valid UTF-8 anywhere before the trailer block — a real
+/// historic commit in fish-shell's own corpus does. Only the lines this function actually reads (the
+/// trailer this encoder itself appended, always valid UTF-8) are UTF-8-checked; nothing earlier in the
+/// message needs to be.
+///
+/// `None` if `key` does not appear, or if the lines read back are not UTF-8 (which this encoder never
+/// itself writes there, so that is always evidence of tampering, not a parsing gap).
+pub(super) fn extract_trailer(message: &[u8], key: &str) -> Option<String> {
+    let lines: Vec<&[u8]> = message.split(|&b| b == b'\n').collect();
+    let prefix = format!("{key}: ");
+    let prefix_bytes = prefix.as_bytes();
+    let idx = lines.iter().position(|l| l.starts_with(prefix_bytes))?;
+    let first_line = *lines.get(idx)?;
+    let mut out = std::str::from_utf8(first_line.get(prefix_bytes.len()..)?)
+        .ok()?
+        .to_string();
+    let mut i = idx + 1;
+    while let Some(line) = lines.get(i) {
+        if line.starts_with(b" ") {
+            out.push('\n');
+            out.push_str(std::str::from_utf8(line).ok()?);
+            i += 1;
+        } else {
+            break;
+        }
+    }
+    Some(out)
+}
+
 /// Truncates `s` to 80 characters plus `…` for a refusal message (review 137 F-7): a CVS source id can
 /// be a whole changeset's worth of `path@rev` pairs, and a refusal naming one must stay one line a
 /// person can actually read, not reproduce it in full.

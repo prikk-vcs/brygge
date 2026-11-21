@@ -100,11 +100,45 @@ IR stated no distinct committer; `<field>-email` means only the email was missin
 claim. The two are never conflated: a reader must be able to tell "brygge invented this person" from
 "brygge filled in an empty email" apart.
 
+## How brygge checks the result
+
+Before `encode git` writes anything, it decodes the repository it just wrote, in process, and compares
+it with the artifact. Any difference refuses the write: nothing is left at `--out`, and nothing at its
+report. The same comparison is also a standalone command, over a repository someone kept:
+
+```
+brygge verify <artifact> --against-target git <repository>
+```
+
+It is read-only (the repository's refs are listed the same way `encode git` itself runs `git`: no user
+configuration, no hooks), and it may not be combined with `--against-source` — a run answers one
+question, either "does this match the source" or "does this match the result", never both at once.
+
+**What is compared, and how:**
+
+- Each result commit is matched to one artifact atom by its `Brygge-Source-Id` trailer, read back with
+  the same per-source-kind form the trailer was written in.
+- **States, never ops.** The full path → content mapping after a commit must equal the full path →
+  content mapping after its matched atom. Two decoders can represent the identical resulting tree with
+  different operations — a Subversion replace against a Git modify, or a no-op modify Git never
+  records — so operations are never compared, only the state they leave behind.
+- Parents, author, committer and message are compared against exactly what this guide's own rules say
+  the writer would produce: a field this encoder supplied or altered is checked against the documented
+  replacement (`<>`, `+0000`, the author's own claim), never against the artifact's original, possibly
+  absent, claim.
+- Refs are compared by D-3's own mapping: names, kinds and targets, through the same atom matching; an
+  annotated tag's tagger, time and message follow the same rules as a commit's; `HEAD` must name the
+  default branch this guide's "The mapping" section describes.
+- **Nothing extra.** A commit, ref or tag in the result beyond this mapping does not correspond — even
+  one a later, unrelated branch added to a kept repository. A migrated repository that is still being
+  worked on is no longer being compared against the artifact that produced it; check it before anyone
+  builds on it.
+
+A difference reports what changed, up to 20 of them, then a count; `verify --against-target` exits with
+`verify`'s own failed-check code.
+
 ## What this does not do (yet)
 
-- **It does not check its own output** against the artifact (RFC 019 D-6, batch G2) — the one honesty
-  claim this page cannot yet make for you. Run `brygge verify <artifact> --against-source <repo>` on the
-  real source separately if you still have it.
 - **It does not map identities** (RFC 019 D-4, batch G3): Subversion and CVS commits, which carry an
   author name but no email, get `Brygge-Supplied: author-email` and `<>` for the email; since they also
   carry no distinct committer, the committer identity is copied from the author and marked

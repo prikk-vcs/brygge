@@ -21,8 +21,10 @@ use brygge_ir::{
     AtomId, BlobId, Ir, LossClass, PathOp, RefKind, RefRecord, SourceKind, TransformRecord,
 };
 
+mod check;
 mod trailers;
 
+pub(crate) use check::{Comparison, GitRef, GitRefTarget, compare_git_target};
 use trailers::{Altered, Supplied};
 
 /// The scratch ref every commit is written under, regardless of which real ref it ultimately belongs to

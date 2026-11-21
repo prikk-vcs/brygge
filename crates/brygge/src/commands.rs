@@ -26,7 +26,8 @@ use crate::exit;
 use crate::output;
 use crate::plugin;
 
-const VERIFY_VERSION: u32 = 4;
+// RFC 019 D-6 (batch G2): `verify.against_target`[.detail] is a new machine key.
+const VERIFY_VERSION: u32 = 5;
 const INSPECT_VERSION: u32 = 4;
 
 // ---- small shared renderers -------------------------------------------------------------------------
@@ -1668,6 +1669,188 @@ fn combine_notes(parts: Vec<Option<String>>) -> Option<String> {
     }
 }
 
+// ---- `verify --against-target` (RFC 019 D-6, batch G2) ----------------------------------------------
+
+/// The result of `--against-target git <repository>` (D-6), independent of `--against-source` — the
+/// CLI refuses the two together (one question per run). `NotChecked` is never a claim of tampering
+/// (review 003 R-1's rule, extended to this comparison): the comparison itself could not run.
+#[derive(Debug)]
+enum AgainstTargetOutcome {
+    Corresponds,
+    DoesNotCorrespond(Vec<String>),
+    NotChecked(String),
+    NotRun,
+}
+
+impl AgainstTargetOutcome {
+    fn machine_label(&self) -> &'static str {
+        match self {
+            Self::Corresponds => "corresponds",
+            Self::DoesNotCorrespond(_) => "does-not-correspond",
+            Self::NotChecked(_) => "not-checked",
+            Self::NotRun => "not-run",
+        }
+    }
+    fn human_label(&self) -> &'static str {
+        match self {
+            Self::Corresponds => "corresponds",
+            Self::DoesNotCorrespond(_) => "does not correspond",
+            Self::NotChecked(_) => "could not be checked",
+            Self::NotRun => "not run",
+        }
+    }
+    fn is_mismatch(&self) -> bool {
+        matches!(self, Self::DoesNotCorrespond(_))
+    }
+    fn is_not_checked(&self) -> bool {
+        matches!(self, Self::NotChecked(_))
+    }
+}
+
+/// `git for-each-ref` plus `HEAD` (RFC 019 D-6 §1: "listed with the §1 environment of G1", read-only, no
+/// user configuration), the ground truth [`encode_git::compare_git_target`] checks `refs/brygge/other/*`
+/// and `HEAD` against — namespaces `brygge_decode_git` itself never carries.
+fn list_git_refs(git: &Path, env: &GitEnv, repo: &Path) -> Result<Vec<encode_git::GitRef>, String> {
+    let mut cmd = Subprocess::new(git);
+    env.apply(&mut cmd);
+    cmd.current_dir(repo);
+    cmd.args(["for-each-ref", "--format=%(objectname) %(refname)"]);
+    cmd.stdin(Stdio::null()).stderr(Stdio::null());
+    let output = cmd
+        .output()
+        .map_err(|e| format!("cannot run git for-each-ref: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "git for-each-ref failed (exit {:?})",
+            output.status.code()
+        ));
+    }
+    let text = String::from_utf8(output.stdout)
+        .map_err(|_| "git for-each-ref printed non-UTF-8 output".to_string())?;
+    let mut refs = Vec::new();
+    for line in text.lines() {
+        let Some((oid_hex, name)) = line.split_once(' ') else {
+            continue;
+        };
+        let oid = hex20(oid_hex).ok_or_else(|| {
+            format!("git for-each-ref printed a malformed object id: {oid_hex:?}")
+        })?;
+        refs.push(encode_git::GitRef {
+            name: name.to_string(),
+            target: encode_git::GitRefTarget::Oid(oid),
+        });
+    }
+
+    let mut head_cmd = Subprocess::new(git);
+    env.apply(&mut head_cmd);
+    head_cmd.current_dir(repo);
+    head_cmd.args(["symbolic-ref", "--quiet", "HEAD"]);
+    head_cmd.stdin(Stdio::null()).stderr(Stdio::null());
+    let head_output = head_cmd
+        .output()
+        .map_err(|e| format!("cannot run git symbolic-ref: {e}"))?;
+    let head_target = if head_output.status.success() {
+        let name = String::from_utf8(head_output.stdout)
+            .map_err(|_| "git symbolic-ref printed non-UTF-8 output".to_string())?;
+        encode_git::GitRefTarget::Symbolic(name.trim().to_string())
+    } else {
+        let mut rev_cmd = Subprocess::new(git);
+        env.apply(&mut rev_cmd);
+        rev_cmd.current_dir(repo);
+        rev_cmd.args(["rev-parse", "--verify", "HEAD"]);
+        rev_cmd.stdin(Stdio::null()).stderr(Stdio::null());
+        let rev_output = rev_cmd
+            .output()
+            .map_err(|e| format!("cannot run git rev-parse: {e}"))?;
+        if rev_output.status.success() {
+            let hex_str = String::from_utf8(rev_output.stdout)
+                .map_err(|_| "git rev-parse printed non-UTF-8 output".to_string())?;
+            let oid = hex20(hex_str.trim())
+                .ok_or_else(|| "git rev-parse printed a malformed object id".to_string())?;
+            encode_git::GitRefTarget::Oid(oid)
+        } else {
+            return Err("HEAD names no ref and resolves to no commit (unborn)".to_string());
+        }
+    };
+    refs.push(encode_git::GitRef {
+        name: "HEAD".to_string(),
+        target: head_target,
+    });
+    Ok(refs)
+}
+
+fn hex20(s: &str) -> Option<Vec<u8>> {
+    if s.len() != 40 {
+        return None;
+    }
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(20);
+    for pair in bytes.chunks_exact(2) {
+        let hi = (*pair.first()? as char).to_digit(16)?;
+        let lo = (*pair.get(1)? as char).to_digit(16)?;
+        out.push((hi * 16 + lo) as u8);
+    }
+    Some(out)
+}
+
+/// Checks `ir` against a real Git repository someone kept (RFC 019 D-6): lists its refs, decodes it with
+/// `brygge-decode-git` (the CLI's own decode path, under `storage`'s spill rules — never all in
+/// memory), and runs the one shared comparison [`encode_git::compare_git_target`]. Shared with
+/// `encode_git`'s own in-process check (`run_encode_git_with_check`), so the two can never see a
+/// different rule for the same question.
+fn run_against_target(
+    ir: &Ir,
+    digest: &[u8; 32],
+    repo: &Path,
+    storage: &brygge_ir::Storage,
+) -> AgainstTargetOutcome {
+    let Some(git) = plugin::find_tool("git") else {
+        return AgainstTargetOutcome::NotChecked("git is not on PATH".to_string());
+    };
+    let env = match GitEnv::new() {
+        Ok(e) => e,
+        Err(e) => {
+            return AgainstTargetOutcome::NotChecked(format!(
+                "cannot prepare git's environment: {e}"
+            ));
+        }
+    };
+    let result_refs = match list_git_refs(&git, &env, repo) {
+        Ok(r) => r,
+        Err(e) => {
+            return AgainstTargetOutcome::NotChecked(format!(
+                "cannot list {}'s refs: {e}",
+                repo.display()
+            ));
+        }
+    };
+    let opts = SourceOpts {
+        infer_renames: false,
+        reconstruct_refs: false,
+        layout: LayoutPolicy::default(),
+        cvs_window: 0,
+        cvs_floor: 0,
+    };
+    let result_ir = match decode_source(SourceKind::Git, repo, &opts, storage) {
+        Ok(ir) => ir,
+        Err((_, msg)) => {
+            return AgainstTargetOutcome::NotChecked(format!(
+                "cannot decode {}: {msg}",
+                repo.display()
+            ));
+        }
+    };
+    let default_branch_ref = format!("refs/heads/{}", encode_git::choose_default_branch(ir).name);
+    match encode_git::compare_git_target(ir, digest, &result_ir, &result_refs, &default_branch_ref)
+    {
+        encode_git::Comparison::Corresponds => AgainstTargetOutcome::Corresponds,
+        encode_git::Comparison::DoesNotCorrespond(diffs) => {
+            AgainstTargetOutcome::DoesNotCorrespond(diffs)
+        }
+        encode_git::Comparison::NotChecked(reason) => AgainstTargetOutcome::NotChecked(reason),
+    }
+}
+
 fn divergence(a: &Ir, b: &Ir) -> String {
     if a.atoms.len() != b.atoms.len() {
         return format!(
@@ -1714,10 +1897,18 @@ enum Verdict {
 }
 
 impl Verdict {
-    fn from(internal_pass: bool, against: &AgainstSourceOutcome) -> Self {
-        if !internal_pass || against.is_mismatch() {
+    /// `against_target` is `--against-source`'s own CLI-enforced mutual exclusion with
+    /// `--against-target` (RFC 019 D-6: "one question per run") made visible here too: at most one of
+    /// the two is ever not [`AgainstSourceOutcome::NotRun`]/[`AgainstTargetOutcome::NotRun`] in the same
+    /// call.
+    fn from(
+        internal_pass: bool,
+        against: &AgainstSourceOutcome,
+        against_target: &AgainstTargetOutcome,
+    ) -> Self {
+        if !internal_pass || against.is_mismatch() || against_target.is_mismatch() {
             Self::Fail
-        } else if against.is_not_checked() {
+        } else if against.is_not_checked() || against_target.is_not_checked() {
             Self::Incomplete
         } else {
             Self::Pass
@@ -1798,28 +1989,39 @@ pub(crate) fn verify_internal_report(artifact: &Path, format: Format) -> (String
     }
     let (checks, internal_pass) = compute_internal_checks(&parsed);
     let against = AgainstSourceOutcome::NotRun;
-    let verdict = Verdict::from(internal_pass, &against);
+    let against_target = AgainstTargetOutcome::NotRun;
+    let verdict = Verdict::from(internal_pass, &against, &against_target);
     let skipped = parsed
         .as_ref()
         .map_or(0, |decoded| decoded.skipped_non_critical_fields);
-    let rendered =
-        format_verify_report(format, &checks, internal_pass, &against, &verdict, skipped);
+    let rendered = format_verify_report(
+        format,
+        &checks,
+        internal_pass,
+        &against,
+        &against_target,
+        &verdict,
+        skipped,
+    );
     (rendered, verdict.exit_code())
 }
 
-/// `verify <artifact> [--against-source <source>] [--spill-dir <DIR>]` (CL-04, CR-02): the internal
-/// checks always run; each can fail. With `--against-source`, additionally re-derive and report the two
-/// results separately (VF-4) — the re-decode spills file content to `spill_dir` (or, by default, the
-/// artifact's own directory), the same rule `decode`'s own `--spill-dir` follows (RFC 015 D-4), checked
-/// before any work starts. Exit `50` if anything fails; exit `1` if a requested `--against-source` could
-/// not be checked at all and nothing that ran failed (the three-valued verdict, review 003 R-5).
+/// `verify <artifact> [--against-source <source> | --against-target git <repository>] [--spill-dir
+/// <DIR>]` (CL-04, CR-02; `--against-target` is RFC 019 D-6): the internal checks always run; each can
+/// fail. With `--against-source` or `--against-target`, additionally re-derive and report that
+/// comparison separately (VF-4) — one question per run, enforced by the CLI parser, never both. The
+/// re-decode spills file content to `spill_dir` (or, by default, the artifact's own directory), the
+/// same rule `decode`'s own `--spill-dir` follows (RFC 015 D-4), checked before any work starts. Exit
+/// `50` if anything fails; exit `1` if a requested comparison could not be checked at all and nothing
+/// that ran failed (the three-valued verdict, review 003 R-5).
 pub fn run_verify(
     artifact: &Path,
     against_source: Option<&Path>,
+    against_target: Option<&Path>,
     spill_dir: Option<&Path>,
     format: Format,
 ) -> i32 {
-    let storage = if against_source.is_some() {
+    let storage = if against_source.is_some() || against_target.is_some() {
         let dir = match spill_dir {
             Some(dir) => {
                 if !dir.is_dir() {
@@ -1862,12 +2064,36 @@ pub fn run_verify(
         // arm is unreachable, kept only so the match stays exhaustive without a wildcard.
         (Some(_), Some(_), None) => unreachable!("storage is set whenever against_source is"),
     };
-    let verdict = Verdict::from(internal_pass, &against);
+    let against_target = match (against_target, ir_opt, &storage) {
+        (Some(repo), Some(ir), Some(storage)) => {
+            #[allow(clippy::expect_used)]
+            let digest = parsed
+                .as_ref()
+                .expect("ir_opt is Some only when parsed is Ok")
+                .digest;
+            run_against_target(ir, &digest, repo, storage)
+        }
+        (Some(_), None, _) => AgainstTargetOutcome::NotChecked(
+            "the artifact failed to decode; there is nothing to check against a repository"
+                .to_string(),
+        ),
+        (None, _, _) => AgainstTargetOutcome::NotRun,
+        (Some(_), Some(_), None) => unreachable!("storage is set whenever against_target is"),
+    };
+    let verdict = Verdict::from(internal_pass, &against, &against_target);
 
     let skipped = parsed
         .as_ref()
         .map_or(0, |decoded| decoded.skipped_non_critical_fields);
-    if let Some(code) = render_verify(format, &checks, internal_pass, &against, &verdict, skipped) {
+    if let Some(code) = render_verify(
+        format,
+        &checks,
+        internal_pass,
+        &against,
+        &against_target,
+        &verdict,
+        skipped,
+    ) {
         return code;
     }
     verdict.exit_code()
@@ -1887,6 +2113,7 @@ fn verify_machine_lines(
     checks: &[(&'static str, CheckOutcome)],
     internal_pass: bool,
     against: &AgainstSourceOutcome,
+    against_target: &AgainstTargetOutcome,
     verdict: &Verdict,
     skipped_non_critical_fields: u64,
 ) -> Vec<String> {
@@ -1922,8 +2149,33 @@ fn verify_machine_lines(
             display::machine_value(n)
         ));
     }
+    out.push(format!(
+        "verify.against_target={}",
+        against_target.machine_label()
+    ));
+    if let AgainstTargetOutcome::NotChecked(d) = against_target {
+        out.push(format!(
+            "verify.against_target.detail={}",
+            display::machine_value(d)
+        ));
+    }
+    if let AgainstTargetOutcome::DoesNotCorrespond(diffs) = against_target {
+        out.push(format!(
+            "verify.against_target.detail={}",
+            display::machine_value(&target_diff_summary(diffs))
+        ));
+    }
     out.push(format!("verify.result={}", verdict.machine_label()));
     out
+}
+
+/// At most 20 of `diffs`, then a count of the rest (RFC 019 D-6 §1), as one line for a `.detail` value.
+fn target_diff_summary(diffs: &[String]) -> String {
+    const SHOWN: usize = 20;
+    let Some(shown) = diffs.get(..SHOWN) else {
+        return diffs.join("; ");
+    };
+    format!("{}; and {} more", shown.join("; "), diffs.len() - SHOWN)
 }
 
 /// Renders the report into one string, then writes it in a single call (so a reader that closes the
@@ -1935,6 +2187,7 @@ fn render_verify(
     checks: &[(&'static str, CheckOutcome)],
     internal_pass: bool,
     against: &AgainstSourceOutcome,
+    against_target: &AgainstTargetOutcome,
     verdict: &Verdict,
     skipped_non_critical_fields: u64,
 ) -> Option<i32> {
@@ -1943,6 +2196,7 @@ fn render_verify(
         checks,
         internal_pass,
         against,
+        against_target,
         verdict,
         skipped_non_critical_fields,
     );
@@ -1956,6 +2210,7 @@ fn format_verify_report(
     checks: &[(&'static str, CheckOutcome)],
     internal_pass: bool,
     against: &AgainstSourceOutcome,
+    against_target: &AgainstTargetOutcome,
     verdict: &Verdict,
     skipped_non_critical_fields: u64,
 ) -> String {
@@ -1966,6 +2221,7 @@ fn format_verify_report(
                 checks,
                 internal_pass,
                 against,
+                against_target,
                 verdict,
                 skipped_non_critical_fields,
             ) {
@@ -2010,6 +2266,23 @@ fn format_verify_report(
                     let _ = writeln!(s, "      {}", display::human(d));
                 }
             }
+            match against_target {
+                AgainstTargetOutcome::NotRun => {}
+                AgainstTargetOutcome::NotChecked(reason) => {
+                    let _ = writeln!(
+                        s,
+                        "  against-target: could not be checked ({})",
+                        display::human(reason)
+                    );
+                }
+                AgainstTargetOutcome::Corresponds => {
+                    let _ = writeln!(s, "  against-target: {}", against_target.human_label());
+                }
+                AgainstTargetOutcome::DoesNotCorrespond(diffs) => {
+                    let _ = writeln!(s, "  against-target: {}", against_target.human_label());
+                    let _ = writeln!(s, "      {}", display::human(&target_diff_summary(diffs)));
+                }
+            }
             let _ = writeln!(s, "{}", verdict.human_line());
         }
     }
@@ -2023,7 +2296,8 @@ fn format_verify_report(
 // the built-in. That is a new meaning for `shadowed`/a new key, so this version bumps.
 const ENCODE_LIST_VERSION: u32 = 2;
 const ENCODE_VERSION: u32 = 1;
-const ENCODE_GIT_VERSION: u32 = 1;
+// RFC 019 D-6 (batch G2): `encode_git.check` is a new report key.
+const ENCODE_GIT_VERSION: u32 = 2;
 
 /// `encode --list [--format …]`: every `brygge-encode-*` plugin [`plugin::list`] finds on `PATH`.
 pub fn run_encode_list(format: Format) -> i32 {
@@ -2355,6 +2629,9 @@ fn render_encode_git_report(
     let _ = writeln!(s, "encode_git.commits={}", summary.commits);
     let _ = writeln!(s, "encode_git.tags={}", summary.tags);
     let _ = writeln!(s, "encode_git.refs={}", summary.refs);
+    // RFC 019 D-6 (batch G2): this report is only ever written after the in-process check has already
+    // passed — `run_encode_git_with_check` refuses to write anything, this sidecar included, otherwise.
+    let _ = writeln!(s, "encode_git.check=corresponds");
     for (class, count) in &fidelity.dropped {
         let _ = writeln!(s, "encode_git.dropped.{}={count}", key_segment(class));
     }
@@ -2389,7 +2666,86 @@ fn key_segment(label: &str) -> String {
 /// `<dir>.brygge-report` its sidecar record (D-2, OQ-1). On any failure after that point, nothing is
 /// left at `<dir>` (C-7): a temporary sibling directory is used throughout, renamed into place only once
 /// every check has passed.
+///
+/// RFC 019 D-6 (batch G2): after `fast-import` succeeds and before the partial directory is renamed
+/// into place, the result is decoded in-process and checked against the artifact
+/// ([`encode_git::compare_git_target`]); any difference refuses the write, exactly as a pre-flight
+/// refusal does, and nothing is left at `<dir>`.
 pub fn run_encode_git(artifact: &Path, out: &Path, format: Format) -> i32 {
+    run_encode_git_with_check(artifact, out, format, real_encode_git_check)
+}
+
+/// The real D-6 check: lists the partial repository's refs, decodes it in-process with
+/// `brygge-decode-git` under a throwaway spill directory (the CLI's own spill rules — never all in
+/// memory), and runs the one shared comparison. Factored out from [`run_encode_git_with_check`] so a
+/// test can inject a different closure here (RFC 019 D-6 §3: "an internal seam… never an environment
+/// variable or a flag in the shipped product") — [`run_encode_git`] always passes this one.
+fn real_encode_git_check(
+    ir: &Ir,
+    digest: &[u8; 32],
+    partial: &Path,
+    git: &Path,
+    env: &GitEnv,
+    default_branch_ref: &str,
+) -> encode_git::Comparison {
+    let result_refs = match list_git_refs(git, env, partial) {
+        Ok(r) => r,
+        Err(e) => {
+            return encode_git::Comparison::NotChecked(format!(
+                "cannot list the result's refs: {e}"
+            ));
+        }
+    };
+    let spill_dir = match encode_git_check_spill_dir() {
+        Ok(d) => d,
+        Err(e) => {
+            return encode_git::Comparison::NotChecked(format!(
+                "cannot prepare a spill directory for the check: {e}"
+            ));
+        }
+    };
+    let opts = SourceOpts {
+        infer_renames: false,
+        reconstruct_refs: false,
+        layout: LayoutPolicy::default(),
+        cvs_window: 0,
+        cvs_floor: 0,
+    };
+    let storage = brygge_ir::Storage::Spill(spill_dir.clone());
+    let result = decode_source(SourceKind::Git, partial, &opts, &storage);
+    let _ = std::fs::remove_dir_all(&spill_dir);
+    let result_ir = match result {
+        Ok(ir) => ir,
+        Err((_, msg)) => {
+            return encode_git::Comparison::NotChecked(format!(
+                "cannot decode the result for the check: {msg}"
+            ));
+        }
+    };
+    encode_git::compare_git_target(ir, digest, &result_ir, &result_refs, default_branch_ref)
+}
+
+fn encode_git_check_spill_dir() -> std::io::Result<PathBuf> {
+    const MAX_ATTEMPTS: u32 = 64;
+    for attempt in 0..MAX_ATTEMPTS {
+        let p = unique_temp_path("check-spill", attempt);
+        match std::fs::create_dir(&p) {
+            Ok(()) => return Ok(p),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(std::io::Error::other(
+        "could not create a temp spill directory",
+    ))
+}
+
+fn run_encode_git_with_check(
+    artifact: &Path,
+    out: &Path,
+    format: Format,
+    check: impl Fn(&Ir, &[u8; 32], &Path, &Path, &GitEnv, &str) -> encode_git::Comparison,
+) -> i32 {
     if out.symlink_metadata().is_ok() {
         output::stderr(&format!(
             "{} already exists; encode git refuses to overwrite it",
@@ -2556,6 +2912,42 @@ pub fn run_encode_git(artifact: &Path, out: &Path, format: Format) -> i32 {
             return exit::FAILURE;
         }
     };
+
+    // RFC 019 D-6 (batch G2): before the partial directory is renamed into place, decode it in-process
+    // and check it against the artifact. Any difference refuses the write, same as a pre-flight refusal.
+    let default_branch_ref = format!("refs/heads/{}", default_branch.name);
+    match check(
+        ir,
+        &decoded.digest,
+        &partial,
+        &git,
+        &env,
+        &default_branch_ref,
+    ) {
+        encode_git::Comparison::Corresponds => {}
+        encode_git::Comparison::DoesNotCorrespond(diffs) => {
+            cleanup(&partial);
+            output::stderr(&format!(
+                "the result does not match the artifact; refusing to write {}:",
+                out.display()
+            ));
+            const SHOWN: usize = 20;
+            for d in diffs.iter().take(SHOWN) {
+                output::stderr(&format!("  {}", display::human(d)));
+            }
+            if diffs.len() > SHOWN {
+                output::stderr(&format!("  …and {} more", diffs.len() - SHOWN));
+            }
+            return exit::FAILURE;
+        }
+        encode_git::Comparison::NotChecked(reason) => {
+            cleanup(&partial);
+            output::stderr(&format!(
+                "the result could not be checked against the artifact: {reason}"
+            ));
+            return exit::FAILURE;
+        }
+    }
 
     // Review 136 F-4: the report is written to a temporary sibling, and checked written, *before* the
     // repository is renamed into place — so a failure here still leaves nothing at `<dir>`, matching
