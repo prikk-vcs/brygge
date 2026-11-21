@@ -7,7 +7,17 @@ is a bare repository. Handoffs: `rfcs/handoffs/019-git-target/`. Proposed (2026-
 (`crates/brygge/src/encode_git/`), not a new crate. crates.io's trusted publishing cannot make a crate's first
 release, so a new crate would need a one-time manual publish with a token. The module keeps D-1's isolation: it
 uses `brygge-ir`'s public API and `std` only, and a check enforces this (handoff G1 §2). Everything else in D-1
-stands. It implements ROADMAP Phase B2
+stands.
+**Refinements at batch G1 (the architect, reviews 136–137):**
+- **D-7 gains a refusal:** every atom must be reachable from a ref, so a result never holds history that Git would
+  garbage-collect.
+- **`Brygge-Source-Id`'s form depends on the source kind:**
+  - Git and hg: 40 hexadecimal digits;
+  - Subversion: `r<N>`;
+  - CVS: one `path@rev` per trailer line;
+  - otherwise `hex:`.
+- **The CVS decoder's `--reconstruct-refs` adds the main line as a derived branch, `trunk`** (handoff
+  `cvs-main-line-ref-handoff-v1.md`). It implements ROADMAP Phase B2
 (the owner, 2026-11-14: "Migration support of both subversion to git and cvs to git … officially support them.
 However, less prioritized. Our primary target is prikk.").
 
