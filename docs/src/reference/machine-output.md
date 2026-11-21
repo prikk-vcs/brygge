@@ -320,9 +320,9 @@ The exit code carries the outcome class, so a gate can branch without parsing ou
 | Code | Meaning | From |
 |---|---|---|
 | `0` | clean: completed, with at most representation-class drops (storage layout, nothing of the history) | any command |
-| `10` | recorded loss: completed, and something other than representation was dropped and recorded | `decode` |
+| `10` | recorded loss: completed, and something other than representation was dropped and recorded | `decode`, `encode git` |
 | `20` | refused: a source feature brygge refuses rather than approximates (a floor feature, named in the message), an unsupported format, or a resource ceiling | `decode` |
-| `30` | flagged: completed, but a condition needs attention (an SVN layout brygge could not follow, or CVS reconstructions under the confidence floor) | `decode` |
+| `30` | flagged: completed, but a condition needs attention (an SVN layout brygge could not follow, or CVS reconstructions under the confidence floor) | `decode`, `encode git` |
 | `40` | reserved (partial or interrupted import); not produced by 0.1.0 | — |
 | `50` | `verify` result `fail` | `verify` |
 | `1` | runtime failure: unreadable input, I/O, an internal decoder fault; also `verify` result `incomplete`. They are told apart by stdout: a runtime failure prints nothing, while an `incomplete` verify prints its lines ending in `verify.result=incomplete` | any command |
@@ -341,6 +341,13 @@ source identity, `50`; otherwise the plugin runs, and a non-zero exit or a signa
 as `encode`'s does; on a clean plugin exit, `50` if the plugin's own output fails any check (§3.8), else
 the fidelity class `decode` would have given that same output (this table's `0`/`10`/`30` rows). A bad
 name, or a name not found on `PATH`, is `2`; `--out` naming the same file as `<artifact>` is also `2`.
+
+**`encode git`'s own exit code, unlike the plugin-based commands above, is in this table (§3.9):** if
+its mandatory verify-first check does not pass, `verify`'s own code; a pre-flight refusal (D-7) is `2`;
+otherwise `<dir>` is written, and the exit code is the fidelity class `decode` would give for the
+encoded artifact — this table's `0`/`10`/`30` rows, `encode git` added to their "From" column. A
+runtime failure (git missing, a subprocess that could not start, an I/O error) is `1`, as for any
+command.
 
 ## 5. Examples
 
