@@ -612,12 +612,14 @@ earlier, differently-measured figures (contract 0.2.0 vs. 0.3.0, around the comp
 see those documents directly; they are not repeated here, since their method (`brygge-bench real`'s own
 in-process timing, before the artifact was written) is not this table's.
 
-**The method, stated once:** `tools/bench/release-corpus.py <brygge-binary> fixtures/corpus eza
-fish-shell tortoisehg-thg`. For each repository it runs `brygge decode <kind> <source> --out <artifact>`
-then `brygge verify <artifact>`, each as **one child**, its own peak RSS taken with `os.wait4`'s
-`ru_maxrss` (never `RUSAGE_CHILDREN`'s running total across two calls — the review 099 lesson) and timed
-around the same call. Fetched and verified once into the project's own `fixtures/corpus` (review 111 N-1,
-review 127 F-1's `tools/bench real-fetch`/`real-check` split), never re-cloned per release. **Going
+**The method, stated once:** `tools/bench/release-corpus.py <brygge-binary> fixtures/corpus
+tools/corpus/real.toml eza fish-shell tortoisehg-thg` (review 128 R-2: the kind for each name comes from
+`real.toml` itself, not from scanning `fixtures/corpus`'s subdirectories). For each repository it runs
+`brygge decode <kind> <source> --out <artifact>` then `brygge verify <artifact>`, each as **one child**,
+its own peak RSS taken with `os.wait4`'s `ru_maxrss` (never `RUSAGE_CHILDREN`'s running total across two
+calls — the review 099 lesson) and timed around the same call. Fetched and verified once into the
+project's own `fixtures/corpus` (review 111 N-1, review 127 F-1's `tools/bench real-fetch`/`real-check`
+split, review 128 G-1's ref-normalized pins), never re-cloned per release. **Going
 forward** (`releasing.md`'s N-2 step), this script runs twice in one session — once with
 `fixtures/previous-release/<version>/brygge`, once with the new release build — so both rows can be
 compared under identical conditions; this table's 0.7.1 row is the first one, filled retroactively with
@@ -625,24 +627,21 @@ only the one binary that exists for it.
 
 | Release | Repository | Artifact size | Decode time | Decode peak RSS | `verify` time | `verify` peak RSS |
 |---|---|---:|---:|---:|---:|---:|
-| 0.7.1 | eza | 10,728,077 B | 2,024 ms | 105,500 KiB | 185 ms | 17,316 KiB |
-| 0.7.1 | fish-shell | 1,065,484,138 B | 60,308 ms | 451,304 KiB | 12,901 ms | 80,424 KiB |
-| 0.7.1 | tortoisehg-thg | *(blocked: see note)* | | | | |
+| 0.7.1 | eza | 10,727,417 B | 1,396 ms | 105,024 KiB | 151 ms | 16,712 KiB |
+| 0.7.1 | fish-shell | 991,301,357 B | 54,969 ms | 427,944 KiB | 9,933 ms | 80,444 KiB |
+| 0.7.1 | tortoisehg-thg | 336,240,068 B | 72,171 ms | 256,680 KiB | 3,458 ms | 57,264 KiB |
 
-**tortoisehg-thg is missing a row:** `hg` is not on this machine's `PATH`, so `tools/fixtures.sh fetch`
-could not fetch it (`spawn hg: No such file or directory`). This is a real, reported blocker, not a
-trimmed entry — the row is left to be filled once `hg` is installed and the fetch re-run, rather than
-guessed or omitted silently.
-
-**A discrepancy, reported, not resolved here:** eza's artifact size (10,728,077 B) matches request 061's
-figure exactly, cross-confirming the pin and the method. **fish-shell's does not**: 1,065,484,138 B here
-against 1,058,399,763 B there — about 0.6% larger, even though the pin (`6cf31373e9…`), the decode
-command and contract 0.3.0's compression are all unchanged and proven deterministic (RFC 018's golden-
-bytes tests). The artifact's own `inspect` reports 23,528 atoms and 108 refs, consistent with real.toml's
-own note ("far larger history (23.5k commits)"), so this is not an obviously wrong decode — but the exact
-cause of the size difference from request 061's session (a different git clone's ref set, a tool version
-difference, or something else) was not chased further here. Flagging for the architect rather than
-silently accepting or adjusting either figure.
+**From this row on, the pins fix the decoded history (review 128 G-1).** The row above was re-measured
+after `real-fetch` normalizes every Git clone's refs to exactly the pin (its default branch reset to the
+pin, every remote removed, every tag not merged into the pin deleted) and clones every hg entry with
+`hg clone -r <pin>` (no bookmarks, a single head). An earlier, unpinned measurement of this same binary
+against ordinary clones (jq 62 commits past its pin, fish-shell 166, eza 1) gave fish-shell 1,065,484,138
+bytes — **6.9% larger than the figure above** — because the clone still carried upstream's later commits
+and tags; it was never a decoder change or a measurement error, and is not repeated here now that the
+cause is known and fixed. eza's row (10,727,417 B) is close to, but not identical to, request 061's
+10,728,077 B: expected, since G-1 deletes one tag (`v0.22.0`) not merged into eza's pin that request
+061's own, unpinned clone still carried. tortoisehg-thg's row matches request 061's figure
+(336,240,068 B) exactly, since hg's `heads(all())`/no-bookmarks check already held for that clone.
 
 **0.7.1's row stands for 0.7.0 too:** `git diff --stat 0.7.0 0.7.1 -- crates/` touches only
 `crates/*/Cargo.toml` (the `homepage` removal), `crates/brygge/README.md`, and the two plugin integration

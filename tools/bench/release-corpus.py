@@ -7,10 +7,12 @@ Standard library only: brygge-ir's workspace forbids `unsafe_code`, so brygge-be
 every corpus figure accepted so far (review 099's `os.wait4` fix, approved by review 100): one child
 per measurement, its own `ru_maxrss` from `os.wait4`, never summed or subtracted across two calls.
 
-Usage: python3 -I tools/bench/release-corpus.py <brygge-binary> <cache-dir> <name>...
+Usage: python3 -I tools/bench/release-corpus.py <brygge-binary> <cache-dir> <real.toml> <name>...
 
 <cache-dir> is `fixtures/corpus` (tools/fixtures.sh's layout): <cache-dir>/<kind>/<name> for git, hg and
-cvs entries, <cache-dir>/svn/<name>.dump for svn. <name>... are the real.toml entry names to measure
+cvs entries, <cache-dir>/svn/<name>.dump for svn. <real.toml> (review 128 R-2: `tools/corpus/real.toml`)
+is read to find each name's own recorded `kind`, rather than guessing it from whichever directory under
+<cache-dir> happens to hold a matching name first. <name>... are the real.toml entry names to measure
 (for example: eza fish-shell tortoisehg-thg).
 
 For each name: `<brygge-binary> decode <kind> <source> --out <artifact>`, then `<brygge-binary> verify
@@ -26,16 +28,42 @@ import time
 from pathlib import Path
 
 
-def locate(cache_dir: Path, name: str) -> tuple[str, Path]:
-    for kind_dir in sorted(p for p in cache_dir.iterdir() if p.is_dir()):
-        kind = kind_dir.name
-        dump = kind_dir / f"{name}.dump"
-        if kind == "svn" and dump.exists():
-            return kind, dump
-        candidate = kind_dir / name
-        if candidate.exists():
-            return kind, candidate
-    raise SystemExit(f"release-corpus: no cached entry named {name!r} under {cache_dir}")
+def parse_real_toml_kinds(real_toml: Path) -> dict[str, str]:
+    """`{name: kind}` for every `[[entry]]` in real.toml — the same deliberately tiny subset of TOML
+    `tools/bench/src/real.rs`'s own parser reads (`key = "value"` lines, one `[[entry]]` per block)."""
+    kinds: dict[str, str] = {}
+    name = kind = None
+    for raw in real_toml.read_text().splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line == "[[entry]]":
+            if name is not None and kind is not None:
+                kinds[name] = kind
+            name = kind = None
+            continue
+        if "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key, value = key.strip(), value.strip().strip('"')
+        if key == "name":
+            name = value
+        elif key == "kind":
+            kind = value
+    if name is not None and kind is not None:
+        kinds[name] = kind
+    return kinds
+
+
+def locate(cache_dir: Path, name: str, kind: str) -> Path:
+    kind_dir = cache_dir / kind
+    dump = kind_dir / f"{name}.dump"
+    if kind == "svn" and dump.exists():
+        return dump
+    candidate = kind_dir / name
+    if candidate.exists():
+        return candidate
+    raise SystemExit(f"release-corpus: no cached {kind} entry named {name!r} under {cache_dir}")
 
 
 def run_one(
@@ -68,14 +96,19 @@ def run_one(
 
 
 def main() -> None:
-    if len(sys.argv) < 4:
-        raise SystemExit("usage: release-corpus.py <brygge-binary> <cache-dir> <name>...")
+    if len(sys.argv) < 5:
+        raise SystemExit("usage: release-corpus.py <brygge-binary> <cache-dir> <real.toml> <name>...")
     binary = str(Path(sys.argv[1]).resolve())
     cache_dir = Path(sys.argv[2]).resolve()
-    names = sys.argv[3:]
+    real_toml = Path(sys.argv[3]).resolve()
+    names = sys.argv[4:]
+    kinds = parse_real_toml_kinds(real_toml)
     print(f"# brygge binary: {binary}")
     for name in names:
-        kind, source = locate(cache_dir, name)
+        if name not in kinds:
+            raise SystemExit(f"release-corpus: {real_toml} has no entry named {name!r}")
+        kind = kinds[name]
+        source = locate(cache_dir, name, kind)
         with tempfile.TemporaryDirectory() as tmp:
             artifact = Path(tmp) / "artifact"
             decode_ms, decode_peak = run_one(

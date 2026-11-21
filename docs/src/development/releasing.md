@@ -61,7 +61,8 @@ Do these once, before the first automated release. Each is reversible in the sam
      commit, **when a decoder, `brygge-ir`'s reader, writer or content store, or the CLI's decode path
      changed since the previous release:** `tools/fixtures.sh fetch` (fetches whatever is missing, then
      verifies everything with no further network), then, **in one session on the same machine,**
-     `python3 -I tools/bench/release-corpus.py <binary> fixtures/corpus eza fish-shell tortoisehg-thg`
+     `python3 -I tools/bench/release-corpus.py <binary> fixtures/corpus tools/corpus/real.toml eza
+     fish-shell tortoisehg-thg`
      run **twice** — once with `fixtures/previous-release/<version>/brygge` (the previous release's real
      published binary, never a local rebuild), once with the new release build. Each run prints, per
      repository, the artifact's size, the decode's time and peak RSS, and `verify`'s time and peak RSS,
