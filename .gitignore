@@ -22,3 +22,7 @@ target
 
 # The built book (mdBook; RFC 012 D-11)
 docs/book/
+
+# The real-corpus cache and the previous release's published binary (review 111 N-1): fetched or built
+# once by tools/fixtures.sh, never committed. tools/fixtures.sha256 (the expected checksum) IS committed.
+/fixtures/

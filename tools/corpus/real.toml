@@ -9,8 +9,10 @@
 # the sorted-path-and-content tree (CVS, `sha256sum` over each file's own hash, sorted by relative
 # path, hashed together). The runner refuses a cache mismatch rather than silently using stale data.
 #
-# Nothing here is fetched automatically into this repository — `cache_dir` (the runner's own argument)
-# is always outside it, and nothing under it is committed.
+# Nothing here is committed into this repository. `cache_dir` (the runner's own argument) is the project's
+# own git-ignored `fixtures/corpus` (review 111 N-1, superseding RFC 014 D-4's "always outside this
+# repository"): fetched or dumped once by `tools/fixtures.sh fetch`, verified by `tools/fixtures.sh
+# verify`, so no task rebuilds its own cache in `/tmp` or elsewhere outside the project.
 
 [[entry]]
 kind = "git"

@@ -56,7 +56,25 @@ Do these once, before the first automated release. Each is reversible in the sam
      `mutation.yml` uses; the pinned thread count matters, because the cap covers the whole test process) locally, for every parser crate,
      and records the iterations, the time, and any finding in the cut request (RFC 014). This is a
      recorded step of the prep, not a new CI gate — `mutation.yml` already runs the same depth on every
-     push that touches a parser or `verify`'s own checks.
+     push that touches a parser or `verify`'s own checks;
+   - **the dev team runs the real corpus** (review 111 N-2), on the release commit, **when a decoder,
+     `brygge-ir`'s reader, writer or content store, or the CLI's decode path changed since the previous
+     release:** `tools/fixtures.sh verify` (fetching first with `tools/fixtures.sh fetch` if the cache is
+     empty), then `brygge-bench real tools/corpus/real.toml fixtures/corpus` with the release build, for
+     eza, fish-shell and TortoiseHg. Records size, decode wall time and peak RSS per repository, and
+     `verify`'s own wall time, one child per measurement on the same machine and pins as the previous
+     release's row (the `RUSAGE_CHILDREN` lesson of review 099), as a new row in `tools/bench/README.md`'s
+     per-release table. **When none of those changed,** state so in the cut request and reuse the previous
+     release's row rather than re-measuring (0.7.1 did this, over 0.7.0: no decoder changed in a
+     test-harness/AUR-only patch);
+   - **the dev team runs the cross-version `--against-source` check** (review 111 N-2), on the release
+     commit, **when the IR model, a decoder's derivation, or `--against-source` changed since the previous
+     release:** `tools/fixtures.sh verify` for the previous release's real published binary
+     (`fixtures/previous-release/<version>/brygge`, never a local rebuild), then decode one Git repository
+     (with `--infer-renames`) and one CVS repository with that binary, decode the same two with the new
+     release build, and run `verify --against-source` with the new build against the previous build's
+     artifacts. This is the level-3 confirmation of the level-2 proof V-1/V-2 already committed under
+     `crates/brygge/tests/data/`. Record the result in the cut request.
 2. **The implementer commits and pushes it,** and reports its CI result (all four platforms green).
 3. **The architect asks the owner for the go-ahead,** immediately before the tag, and records it. Then
    the architect pushes the annotated tag: `git tag -a X.Y.Z -m "brygge X.Y.Z"`, then

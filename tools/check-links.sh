@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Check that every relative markdown link in every *.md file under the repository (excluding
-# .git-exclude/ and target/) resolves to an existing file (RFC 009 project-hygiene handoff, CR-14).
+# .git-exclude/, target/ and fixtures/ — review 111 N-1: a real-corpus clone under fixtures/ holds
+# thousands of its own *.md files) resolves to an existing file (RFC 009 project-hygiene handoff, CR-14).
 #
 # A second rule (RFC 012 D-11): a relative link in a page of the book, `docs/src/**/*.md`, must resolve to a
 # file inside `docs/src/`. A link that leaves it resolves in the repository but is a 404 on the published site
@@ -65,7 +66,7 @@ while IFS= read -r -d '' file; do
             esac
         fi
     done < <(printf '%s\n' "$stripped" | grep -oP '(?<=\]\()[^)]+(?=\))' || true)
-done < <(find . -name '*.md' -not -path './.git-exclude/*' -not -path './target/*' -not -path './.git/*' -print0)
+done < <(find . -name '*.md' -not -path './.git-exclude/*' -not -path './target/*' -not -path './.git/*' -not -path './fixtures/*' -print0)
 
 if [ "$fail" -eq 0 ]; then
     echo "OK: $count relative link(s) checked across all *.md files, all resolve."
