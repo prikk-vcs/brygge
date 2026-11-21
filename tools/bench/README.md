@@ -602,34 +602,56 @@ slower", not as exact figures, so they are not repeated as numbers here):
 | `tortoisehg-thg` | P5 | 2,959 | 1,603 | −46% |
 
 
-## Result — per-release corpus (review 111 N-2)
+## Result — per-release corpus (review 111 N-2, review 127 F-2)
 
 One row per release, for eza, fish-shell and TortoiseHg, measured on the release commit per
 `docs/src/development/releasing.md`'s cut checklist, **only when a decoder, `brygge-ir`'s reader, writer
 or content store, or the CLI's decode path changed since the previous release** — otherwise the previous
-release's row is reused (stated below, not re-measured). The method: one child per measurement
-(`resource.getrusage(RUSAGE_CHILDREN).ru_maxrss` around a direct subprocess call — the `RUSAGE_CHILDREN`
-lesson of review 099, since it is the *largest child so far*, not a sum, so never subtracted across two
-calls), both builds in one session on the same machine, the same `tools/corpus/real.toml` pins. Fetched
-and verified once, inside the project's own `fixtures/corpus` (review 111 N-1), not re-cloned per release.
+release's row is reused, stated as such rather than re-measured. For request 061's and review 100's
+earlier, differently-measured figures (contract 0.2.0 vs. 0.3.0, around the compact-artifacts batch),
+see those documents directly; they are not repeated here, since their method (`brygge-bench real`'s own
+in-process timing, before the artifact was written) is not this table's.
+
+**The method, stated once:** `tools/bench/release-corpus.py <brygge-binary> fixtures/corpus eza
+fish-shell tortoisehg-thg`. For each repository it runs `brygge decode <kind> <source> --out <artifact>`
+then `brygge verify <artifact>`, each as **one child**, its own peak RSS taken with `os.wait4`'s
+`ru_maxrss` (never `RUSAGE_CHILDREN`'s running total across two calls — the review 099 lesson) and timed
+around the same call. Fetched and verified once into the project's own `fixtures/corpus` (review 111 N-1,
+review 127 F-1's `tools/bench real-fetch`/`real-check` split), never re-cloned per release. **Going
+forward** (`releasing.md`'s N-2 step), this script runs twice in one session — once with
+`fixtures/previous-release/<version>/brygge`, once with the new release build — so both rows can be
+compared under identical conditions; this table's 0.7.1 row is the first one, filled retroactively with
+only the one binary that exists for it.
 
 | Release | Repository | Artifact size | Decode time | Decode peak RSS | `verify` time | `verify` peak RSS |
 |---|---|---:|---:|---:|---:|---:|
-| 0.7.0 | eza | 10,728,077 B | 1,486 ms | 104,528 KiB | 140 ms | 16,268 KiB |
-| 0.7.0 | fish-shell | 1,058,399,763 B | 72,083 ms | 438,164 KiB | 10,261 ms | 79,512 KiB |
-| 0.7.0 | tortoisehg-thg | 336,240,068 B | 114,281 ms | 250,616 KiB | 4,536 ms | 55,116 KiB |
-| 0.7.1 | *(reused: see note)* | | | | | |
+| 0.7.1 | eza | 10,728,077 B | 2,024 ms | 105,500 KiB | 185 ms | 17,316 KiB |
+| 0.7.1 | fish-shell | 1,065,484,138 B | 60,308 ms | 451,304 KiB | 12,901 ms | 80,424 KiB |
+| 0.7.1 | tortoisehg-thg | *(blocked: see note)* | | | | |
 
-**0.7.0's row:** the artifact-size bytes are request 061's original §7 corpus table (independently
-confirmed exact by review 099: "eza's 0.3.0 artifact is 10,728,077 bytes, the request's figure exactly;
-fish-shell's is 1,058,399,763 bytes" — unaffected by the peak-measurement defect below, since byte counts
-don't go through `RUSAGE_CHILDREN`). Decode time, decode peak RSS and `verify` time/peak are request 061's
-**corrected** re-measurement ("Review 099 fixes" §R-5/R-6, approved by review 100) — the first measurement
-session used `RUSAGE_CHILDREN` subtraction across two calls and reported numbers the architect found to be
-nonsensical (review 099 R-5); these are the ones measured with `os.wait4` per child instead and approved as
-final. Machine: AMD Ryzen 9 9950X, 32 threads, 59 GiB RAM, release build.
+**tortoisehg-thg is missing a row:** `hg` is not on this machine's `PATH`, so `tools/fixtures.sh fetch`
+could not fetch it (`spawn hg: No such file or directory`). This is a real, reported blocker, not a
+trimmed entry — the row is left to be filled once `hg` is installed and the fetch re-run, rather than
+guessed or omitted silently.
 
-**0.7.1's row is 0.7.0's, unmeasured again:** 0.7.1 was a test-harness/AUR-packaging patch (Rust 1.100's
-test-binary layout, `.SRCINFO` architectures, a container mount) — no decoder, `brygge-ir` reader/writer/
-content-store code, or CLI decode path changed between 0.7.0 and 0.7.1. Per `releasing.md`'s N-2 step,
-this cut therefore reused 0.7.0's row rather than re-running the corpus (review 125).
+**A discrepancy, reported, not resolved here:** eza's artifact size (10,728,077 B) matches request 061's
+figure exactly, cross-confirming the pin and the method. **fish-shell's does not**: 1,065,484,138 B here
+against 1,058,399,763 B there — about 0.6% larger, even though the pin (`6cf31373e9…`), the decode
+command and contract 0.3.0's compression are all unchanged and proven deterministic (RFC 018's golden-
+bytes tests). The artifact's own `inspect` reports 23,528 atoms and 108 refs, consistent with real.toml's
+own note ("far larger history (23.5k commits)"), so this is not an obviously wrong decode — but the exact
+cause of the size difference from request 061's session (a different git clone's ref set, a tool version
+difference, or something else) was not chased further here. Flagging for the architect rather than
+silently accepting or adjusting either figure.
+
+**0.7.1's row stands for 0.7.0 too:** `git diff --stat 0.7.0 0.7.1 -- crates/` touches only
+`crates/*/Cargo.toml` (the `homepage` removal), `crates/brygge/README.md`, and the two plugin integration
+test files (`encode_integration.rs`, `transform_integration.rs`, Rust 1.100's test-binary-layout fix) —
+no decoder, `brygge-ir`, or CLI decode-path source file. So 0.7.0's own corpus figures would be identical
+to 0.7.1's within run-to-run noise; this table records 0.7.1's real measurement once, rather than two
+runs that could never meaningfully differ.
+
+Machine: AMD Ryzen 9 9950X (16 cores), 59 GiB RAM, x86_64 Linux. Measured once, with
+`fixtures/previous-release/0.7.1/brygge` — 0.7.1's own published Linux binary (`tools/fixtures.sh
+fetch`'d and checksum-verified, never a local rebuild), not a second build of this tree: the measurement
+is 0.7.1's, and it stands for 0.7.0 as explained above.

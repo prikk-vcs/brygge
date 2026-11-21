@@ -57,19 +57,23 @@ Do these once, before the first automated release. Each is reversible in the sam
      and records the iterations, the time, and any finding in the cut request (RFC 014). This is a
      recorded step of the prep, not a new CI gate — `mutation.yml` already runs the same depth on every
      push that touches a parser or `verify`'s own checks;
-   - **the dev team runs the real corpus** (review 111 N-2), on the release commit, **when a decoder,
-     `brygge-ir`'s reader, writer or content store, or the CLI's decode path changed since the previous
-     release:** `tools/fixtures.sh verify` (fetching first with `tools/fixtures.sh fetch` if the cache is
-     empty), then `brygge-bench real tools/corpus/real.toml fixtures/corpus` with the release build, for
-     eza, fish-shell and TortoiseHg. Records size, decode wall time and peak RSS per repository, and
-     `verify`'s own wall time, one child per measurement on the same machine and pins as the previous
-     release's row (the `RUSAGE_CHILDREN` lesson of review 099), as a new row in `tools/bench/README.md`'s
-     per-release table. **When none of those changed,** state so in the cut request and reuse the previous
-     release's row rather than re-measuring (0.7.1 did this, over 0.7.0: no decoder changed in a
-     test-harness/AUR-only patch);
+   - **the dev team runs the real corpus** (review 111 N-2; the method, review 127 F-2), on the release
+     commit, **when a decoder, `brygge-ir`'s reader, writer or content store, or the CLI's decode path
+     changed since the previous release:** `tools/fixtures.sh fetch` (fetches whatever is missing, then
+     verifies everything with no further network), then, **in one session on the same machine,**
+     `python3 -I tools/bench/release-corpus.py <binary> fixtures/corpus eza fish-shell tortoisehg-thg`
+     run **twice** — once with `fixtures/previous-release/<version>/brygge` (the previous release's real
+     published binary, never a local rebuild), once with the new release build. Each run prints, per
+     repository, the artifact's size, the decode's time and peak RSS, and `verify`'s time and peak RSS,
+     with `os.wait4` giving each child's own `ru_maxrss` (never `RUSAGE_CHILDREN`'s running total across
+     two calls — the review 099 lesson). Both rows go in `tools/bench/README.md`'s per-release table, so
+     the previous release's row is re-measured on this machine too and machine drift between cycles
+     cannot fake a regression. `brygge-bench real` (fetching aside) stays the RFC 014 D-4 shape-and-
+     correctness run; it is not this step. **When none of those changed,** state so in the cut request
+     and reuse the previous release's row rather than re-measuring (stated, not silently copied);
    - **the dev team runs the cross-version `--against-source` check** (review 111 N-2), on the release
      commit, **when the IR model, a decoder's derivation, or `--against-source` changed since the previous
-     release:** `tools/fixtures.sh verify` for the previous release's real published binary
+     release:** `tools/fixtures.sh fetch` for the previous release's real published binary
      (`fixtures/previous-release/<version>/brygge`, never a local rebuild), then decode one Git repository
      (with `--infer-renames`) and one CVS repository with that binary, decode the same two with the new
      release build, and run `verify --against-source` with the new build against the previous build's
