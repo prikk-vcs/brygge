@@ -128,7 +128,8 @@ impl std::fmt::Display for Refusal {
             }
             Self::UnreachableAtoms { count, first, fix } => write!(
                 f,
-                "{count} atom(s) are not reachable from any ref, starting with {first:?} — {fix}"
+                "{count} atom(s) are not reachable from any ref, starting with {} — {fix}",
+                first.join(", ")
             ),
         }
     }
@@ -243,21 +244,13 @@ fn non_utf8_tag_messages(ir: &Ir) -> Vec<Refusal> {
 fn reachability_fix_hint(ir: &Ir) -> String {
     let refs_present = !ir.refs.is_empty();
     match &ir.provenance.source.kind {
-        SourceKind::Svn => {
+        SourceKind::Svn | SourceKind::Cvs => {
+            // Review 136 F-3: CVS's main line now gets its own `trunk` ref whenever
+            // `--reconstruct-refs` is on and there is a main-line changeset, so the SVN and CVS hints
+            // are now the same shape: no reconstruction, or a reconstruction that still misses these
+            // atoms (for example a branch whose own symbol does not resolve to anything).
             if refs_present {
                 "no reconstructed ref reaches these atoms".to_string()
-            } else {
-                "decode with --reconstruct-refs, which is needed to give this history any ref at all"
-                    .to_string()
-            }
-        }
-        SourceKind::Cvs => {
-            if refs_present {
-                // The one case the guide documents today (F-3, request 071, not yet landed): CVS's
-                // --reconstruct-refs gives every branch a ref, but not the main line itself.
-                "no reconstructed ref reaches these atoms — the main line has none of its own until \
-                 request 071 (F-3) lands"
-                    .to_string()
             } else {
                 "decode with --reconstruct-refs, which is needed to give this history any ref at all"
                     .to_string()

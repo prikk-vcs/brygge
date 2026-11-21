@@ -50,20 +50,15 @@ hint depends on whether the artifact has any ref at all:
   its refs in the first place. For Git or Mercurial (which always carry the source's own refs): a
   transform removed the one that would have reached these atoms, named by step when known.
 - **Refs exist, but some atoms still are not reached by any of them**: `--reconstruct-refs` was already
-  given and already worked, so the refusal does not suggest it again. For CVS specifically, this is the
-  known main-line case below; a later fix (request 071) is expected to close it.
+  given and already worked, so the refusal does not suggest it again; it says plainly that no
+  reconstructed ref reaches these atoms.
 
 For Git or Mercurial this split does not change the hint: a removed ref is the only way an atom there goes
 unreached, whether or not other refs still exist.
 
-**Two known limits:**
-
-- A Subversion repository with no `trunk`/`branches`/`tags` layout gets no refs at all, even with
-  `--reconstruct-refs` — there is no convention to reconstruct one from. Such a repository cannot be
-  encoded to Git in 0.8.0.
-- A CVS repository's main line (the files' trunk revisions, outside any branch) is not given a ref of
-  its own by `--reconstruct-refs` — only branches and tags are. A main line whose own atoms are not
-  reached by any branch or tag is refused, naming this case, until a fix for it (request 071) lands.
+**One known limit:** a Subversion repository with no `trunk`/`branches`/`tags` layout gets no refs at all,
+even with `--reconstruct-refs` — there is no convention to reconstruct one from. Such a repository cannot
+be encoded to Git in 0.8.0.
 
 ## The trailers
 

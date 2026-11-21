@@ -19,6 +19,9 @@ about 100 MiB more memory than before (not growing with the repository), and mak
 - The main line's full per-file content and history, reconstructed into changesets (every changeset atom
   is `Derived(ReconstructedChangeset)` — CVS has no atomic commit, so brygge's grouping is its own
   judgment, carried with its clustering parameters and a confidence).
+- **The main line itself, as the branch `trunk`, with `--reconstruct-refs`** (see below): a `Derived`
+  branch ref at the main line's last changeset, so every reconstructed main-line changeset is reachable
+  from a ref.
 - Main-line tags, with `--reconstruct-refs`.
 - **Branches, with `--reconstruct-refs`** (see below): a ref of kind branch, and the branch's own changesets.
 
@@ -28,6 +31,12 @@ A CVS branch is not one line of history: each file has its own branch, cut at it
 says which commits belong together. A branch is *identified by its symbol name* (`cvs tag -b BR`), so branches
 are imported only with `--reconstruct-refs`, and only the ones that have a name.
 
+- **The main line is the branch `trunk`.** With `--reconstruct-refs`, brygge adds one `Derived` branch
+  ref named `trunk`, at the main line's last changeset — the same name the Subversion decoder uses for
+  its own reconstructed main line, so one name serves both sources. A CVS symbol also named `trunk`
+  refuses the decode, naming the symbol and the first file that carries it: the name is reserved for the
+  main line. A repository with no main-line changeset at all (every file starts on a branch) gets no
+  `trunk` ref.
 - **The branch tree.** The branch's changesets are clustered from that branch's revisions alone (the same
   rules as the main line), and each is a `Derived(ReconstructedChangeset)`. A branch's ref points at its last
   changeset; a branch with no commits is a ref at its parent.

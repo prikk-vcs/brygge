@@ -22,6 +22,10 @@ pub(crate) const NON_UTF8_SYMBOL_NAME: &str = "non-utf8-symbol-name";
 /// branch point (`cvs admin -b`) — its main line is ambiguous, and brygge refuses to guess (corrections
 /// handoff §2.4, review 008 R-5).
 pub(crate) const DEFAULT_BRANCH_WITH_LATER_TRUNK: &str = "default-branch-with-later-trunk";
+/// With `--reconstruct-refs`, `trunk` is the reserved name for the main line's own ref (RFC 019
+/// refinement, review 136 F-3). A CVS symbol also named `trunk` would collide with it; brygge refuses
+/// rather than picking a loser silently.
+pub(crate) const RECONSTRUCT_REFS_TRUNK_COLLISION: &str = "reconstruct-refs-trunk-collision";
 
 /// Every refused feature, in the order this module declares them. This is the list recorded into
 /// provenance (`params["floor"]`) and the list an architect review changes to change the floor.
@@ -33,6 +37,7 @@ pub(crate) const ALL: &[&str] = &[
     NON_UTF8_PATH,
     NON_UTF8_SYMBOL_NAME,
     DEFAULT_BRANCH_WITH_LATER_TRUNK,
+    RECONSTRUCT_REFS_TRUNK_COLLISION,
 ];
 
 /// The floor as a single comma-joined string, for `params["floor"]` (PR-5).

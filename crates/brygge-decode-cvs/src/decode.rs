@@ -343,7 +343,50 @@ pub fn decode_with_storage(
 
     let mut ref_stats = RefStats::default();
     if opts.reconstruct_refs {
+        if let Some(sym) = symbols::collect(&files)
+            .into_iter()
+            .find(|s| s.name == "trunk")
+        {
+            let first_file = sym
+                .named
+                .first()
+                .map(|(path, _)| path.as_str())
+                .unwrap_or("?");
+            return Err(Error::FloorRefusal {
+                feature: floor::RECONSTRUCT_REFS_TRUNK_COLLISION.to_string(),
+                reason: format!(
+                    "a CVS symbol named 'trunk' ({first_file}) conflicts with the reconstructed \
+                     main-line ref of the same name"
+                ),
+            });
+        }
         ref_stats = add_refs(&files, &rev_to_atom, &imported_branches, &mut builder)?;
+
+        // RFC 019 refinement (review 136 F-3): the main line (trunk, plus the vendor branch while it is
+        // the default) gets its own ref, `trunk`, so every reconstructed main-line changeset is reachable
+        // from a ref, matching the Subversion decoder's reconstructed `trunk`. A repository with no
+        // main-line changeset at all (every file starts on a branch) gets no `trunk` ref.
+        if let Some(&target) = line_atoms
+            .get(&branches::LineRef::Main)
+            .and_then(|v| v.last())
+        {
+            let mut params = BTreeMap::new();
+            params.insert("source".to_string(), "cvs-main-line".to_string());
+            builder.add_ref(RefRecord {
+                name: "trunk".to_string(),
+                kind: RefKind::Branch,
+                target,
+                status: EpistemicStatus::Derived(Derivation {
+                    kind: DerivationKind::ReconstructedBranch,
+                    by: DECODER.to_string(),
+                    decoder_version: decoder_version().to_string(),
+                    params,
+                    confidence: None,
+                }),
+                source: None,
+                annotation: None,
+            })?;
+        }
     }
 
     let mut boundary = loss.into_boundary();

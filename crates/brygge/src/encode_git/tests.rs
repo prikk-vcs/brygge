@@ -935,7 +935,7 @@ fn svn_with_refs_present_says_no_reconstructed_ref_reaches_not_reconstruct_refs(
 }
 
 #[test]
-fn cvs_with_refs_present_names_the_main_line_case_until_request_071() {
+fn cvs_with_refs_present_says_no_reconstructed_ref_reaches_these_atoms() {
     let mut builder = IrBuilder::new(provenance(SourceKind::Cvs));
     let blob1 = builder.add_blob(b"one\n".to_vec()).unwrap();
     let reachable_id = builder
@@ -985,8 +985,6 @@ fn cvs_with_refs_present_names_the_main_line_case_until_request_071() {
     match &refusals[0] {
         Refusal::UnreachableAtoms { fix, .. } => {
             assert!(fix.contains("no reconstructed ref reaches"), "{fix}");
-            assert!(fix.contains("main line"), "{fix}");
-            assert!(fix.contains("request 071"), "{fix}");
             assert!(!fix.contains("--reconstruct-refs"), "{fix}");
         }
         other => panic!("expected UnreachableAtoms, got {other:?}"),

@@ -576,6 +576,58 @@ fn a_cvs_fixture_encodes_with_derived_trailers() {
     assert!(message.contains("committer"), "{message}");
 }
 
+/// Review 136 F-3 (request 071): a CVS fixture with a branch cut from the main line. `encode git`
+/// writes `refs/heads/trunk` for the main line's own ref, `HEAD` points to it (the default branch), and
+/// `git fsck --strict` is clean — the level-2 proof the handoff asks for.
+#[test]
+fn a_cvs_fixture_with_a_branch_writes_a_trunk_ref_as_the_default_branch() {
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let repo_dir = scratch_dir("cvs-repo-branch");
+    let vfile = repo_dir.join("f.c,v");
+    // f.c: REL_1 tags 1.1; DEV branches at 1.2.2.1 (a magic branch number); the trunk is just 1.1..1.2.
+    let content =
+        b"head\t1.2;\naccess;\nsymbols\n\tREL_1:1.1\n\tDEV:1.2.0.2;\nlocks; strict;\n\n\n\
+1.2\ndate\t2024.01.02.00.00.00;\tauthor alice;\tstate Exp;\nbranches\n\t1.2.2.1;\nnext\t1.1;\n\n\
+1.2.2.1\ndate\t2024.01.02.12.00.00;\tauthor alice;\tstate Exp;\nbranches;\nnext\t;\n\n\
+1.1\ndate\t2024.01.01.00.00.00;\tauthor alice;\tstate Exp;\nbranches;\nnext\t;\n\n\n\
+desc\n@@\n\n\n\
+1.2\nlog\n@r2@\ntext\n@v1\nv2\n@\n\n\n\
+1.2.2.1\nlog\n@branch@\ntext\n@d1 2\na2 1\nbranch content\n@\n\n\n\
+1.1\nlog\n@r1@\ntext\n@d2 1\n@\n";
+    std::fs::write(&vfile, content).unwrap();
+
+    let ir = brygge_decode_cvs::decode(
+        &brygge_decode_cvs::Source::LocalRepo(repo_dir),
+        &brygge_decode_cvs::Options {
+            reconstruct_refs: true,
+            ..brygge_decode_cvs::Options::default()
+        },
+    )
+    .unwrap();
+    assert!(
+        ir.refs.iter().any(|r| r.name == "trunk"),
+        "the main line gets its own trunk ref"
+    );
+
+    let artifact = write_artifact(&ir);
+    let out = scratch_dir("result").join("repo");
+    let encoded = run_encode_git(&artifact, &out);
+    assert!(
+        encoded.status.success(),
+        "{}",
+        String::from_utf8_lossy(&encoded.stderr)
+    );
+
+    let refs = git_out(&out, &["for-each-ref", "--format=%(refname)"]);
+    assert!(refs.contains("refs/heads/trunk"), "{refs}");
+    let head = git_out(&out, &["symbolic-ref", "HEAD"]);
+    assert_eq!(head, "refs/heads/trunk");
+    git_out(&out, &["fsck", "--strict"]);
+}
+
 // ---- reachability (review 136 F-2) -------------------------------------------------------------------
 
 #[test]
@@ -586,8 +638,10 @@ fn an_artifact_with_zero_refs_is_refused_not_warned_about() {
     }
     let repo_dir = scratch_dir("cvs-repo-norefs");
     let vfile = repo_dir.join("a.c,v");
-    // No symbols at all: even --reconstruct-refs reconstructs no branch or tag, so the IR has atoms but
-    // zero refs — every commit would be unreachable once written. This must now refuse, not warn.
+    // --reconstruct-refs is off: the CVS decoder reconstructs no ref at all without it (not even the
+    // main line's own trunk ref, RFC 019 refinement/review 136 F-3, which only applies when the flag is
+    // on), so the IR has an atom but zero refs — every commit would be unreachable once written. This
+    // must now refuse, not warn.
     std::fs::write(
         &vfile,
         cvs_single_rev("alice", "2024.01.01.12.00.00", "add a.c", "aaa\n"),
@@ -597,7 +651,7 @@ fn an_artifact_with_zero_refs_is_refused_not_warned_about() {
     let ir = brygge_decode_cvs::decode(
         &brygge_decode_cvs::Source::LocalRepo(repo_dir),
         &brygge_decode_cvs::Options {
-            reconstruct_refs: true,
+            reconstruct_refs: false,
             ..brygge_decode_cvs::Options::default()
         },
     )

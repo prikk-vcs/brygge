@@ -349,6 +349,153 @@ fn ref_reconstruction_is_opt_in_and_derived() {
     let rel = ir_on.refs.iter().find(|r| r.name == "REL_1").unwrap();
     assert!(rel.status.is_derived());
     assert_eq!(rel.kind, brygge_ir::RefKind::Tag);
+
+    // Review 136 F-3: the main line itself gets a `trunk` ref too, on (never off).
+    assert!(ir_off.refs.is_empty(), "off: no trunk ref either");
+    let trunk = ir_on
+        .refs
+        .iter()
+        .find(|r| r.name == "trunk")
+        .expect("the main line's own ref");
+    assert_eq!(trunk.kind, brygge_ir::RefKind::Branch);
+    assert!(trunk.status.is_derived());
+}
+
+/// Every atom in `ir` is reachable by walking parents from every ref's own target (the same rule
+/// `brygge encode git`'s pre-flight enforces, RFC 019 D-7).
+fn every_atom_is_reachable(ir: &brygge_ir::Ir) {
+    use std::collections::HashSet;
+    let by_id: std::collections::HashMap<_, _> = ir.atoms.iter().map(|a| (a.id, a)).collect();
+    let mut reachable: HashSet<_> = HashSet::new();
+    let mut stack: Vec<_> = ir.refs.iter().map(|r| r.target).collect();
+    while let Some(id) = stack.pop() {
+        if reachable.insert(id) {
+            if let Some(atom) = by_id.get(&id) {
+                stack.extend(atom.parents.iter().copied());
+            }
+        }
+    }
+    let unreachable: Vec<_> = ir
+        .atoms
+        .iter()
+        .filter(|a| !reachable.contains(&a.id))
+        .collect();
+    assert!(
+        unreachable.is_empty(),
+        "every atom must be reachable from a ref: {} of {} are not",
+        unreachable.len(),
+        ir.atoms.len()
+    );
+}
+
+#[test]
+fn trunk_ref_targets_the_last_main_line_changeset_with_a_branch_cut_from_it() {
+    // f.c: REL_1 tags 1.1; DEV branches at 1.2.2.1; the trunk continues to 1.3 after the branch point.
+    let r = Repo::new();
+    let content =
+        b"head\t1.3;\naccess;\nsymbols\n\tREL_1:1.1\n\tDEV:1.2.0.2;\nlocks; strict;\n\n\n\
+1.3\ndate\t2024.01.03.00.00.00;\tauthor alice;\tstate Exp;\nbranches;\nnext\t1.2;\n\n\
+1.2\ndate\t2024.01.02.00.00.00;\tauthor alice;\tstate Exp;\nbranches\n\t1.2.2.1;\nnext\t1.1;\n\n\
+1.2.2.1\ndate\t2024.01.02.12.00.00;\tauthor alice;\tstate Exp;\nbranches;\nnext\t;\n\n\
+1.1\ndate\t2024.01.01.00.00.00;\tauthor alice;\tstate Exp;\nbranches;\nnext\t;\n\n\n\
+desc\n@@\n\n\n\
+1.3\nlog\n@r3@\ntext\n@v1\nv2\nv3\n@\n\n\n\
+1.2\nlog\n@r2@\ntext\n@d3 1\n@\n\n\n\
+1.2.2.1\nlog\n@branch@\ntext\n@d1 2\na2 1\nbranch content\n@\n\n\n\
+1.1\nlog\n@r1@\ntext\n@d2 1\n@\n";
+    r.write_vfile("f.c", content);
+    let opts = Options {
+        reconstruct_refs: true,
+        ..Options::default()
+    };
+    let ir = decode(&Source::LocalRepo(r.path().to_path_buf()), &opts).unwrap();
+
+    let trunk = ir.refs.iter().find(|r| r.name == "trunk").unwrap();
+    let dev = ir
+        .refs
+        .iter()
+        .find(|r| r.name == "DEV")
+        .expect("the branch ref still reconstructs");
+    assert!(
+        ir.refs.iter().any(|r| r.name == "REL_1"),
+        "the main-line tag still reconstructs"
+    );
+
+    // Three main-line changesets (1.1, 1.2, 1.3) and one branch changeset (1.2.2.1): four atoms total.
+    // `trunk` must reach only the three main-line ones (never the branch atom, since the branch is a
+    // separate line); together with `DEV`, every atom is reachable.
+    assert_eq!(ir.atoms.len(), 4);
+    let by_id: std::collections::HashMap<_, _> = ir.atoms.iter().map(|a| (a.id, a)).collect();
+    let walk = |start: brygge_ir::AtomId| -> std::collections::HashSet<brygge_ir::AtomId> {
+        let mut seen = std::collections::HashSet::new();
+        let mut stack = vec![start];
+        while let Some(id) = stack.pop() {
+            if seen.insert(id) {
+                if let Some(a) = by_id.get(&id) {
+                    stack.extend(a.parents.iter().copied());
+                }
+            }
+        }
+        seen
+    };
+    let from_trunk = walk(trunk.target);
+    assert_eq!(
+        from_trunk.len(),
+        3,
+        "trunk reaches exactly the three main-line changesets"
+    );
+    assert!(
+        !from_trunk.contains(&dev.target),
+        "trunk's walk must not include the branch's own changeset"
+    );
+    every_atom_is_reachable(&ir);
+}
+
+#[test]
+fn vendor_branch_main_line_gets_a_trunk_ref() {
+    let r = Repo::new();
+    r.write_vfile("f.c", &vendor_import_fixture());
+    let opts = Options {
+        reconstruct_refs: true,
+        ..Options::default()
+    };
+    let ir = decode(&Source::LocalRepo(r.path().to_path_buf()), &opts).unwrap();
+
+    let trunk = ir
+        .refs
+        .iter()
+        .find(|r| r.name == "trunk")
+        .expect("the vendor-branch-as-main-line still gets a trunk ref");
+    assert_eq!(trunk.kind, brygge_ir::RefKind::Branch);
+    every_atom_is_reachable(&ir);
+}
+
+#[test]
+fn a_cvs_symbol_named_trunk_is_refused() {
+    let r = Repo::new();
+    r.write_vfile(
+        "a.c",
+        &single_rev(
+            "alice",
+            "2024.01.01.12.00.00",
+            "add",
+            "aaa\n",
+            &[("trunk", "1.1")],
+        ),
+    );
+    let opts = Options {
+        reconstruct_refs: true,
+        ..Options::default()
+    };
+    let err = decode(&Source::LocalRepo(r.path().to_path_buf()), &opts).unwrap_err();
+    match err {
+        crate::Error::FloorRefusal { feature, reason } => {
+            assert_eq!(feature, "reconstruct-refs-trunk-collision");
+            assert!(reason.contains("trunk"), "{reason}");
+            assert!(reason.contains("a.c"), "names the first file: {reason}");
+        }
+        other => panic!("expected FloorRefusal, got {other:?}"),
+    }
 }
 
 #[test]
@@ -771,12 +918,15 @@ fn a_literal_vendor_branch_symbol_and_its_tag_are_both_counted_not_silently_skip
     let ir = decode(&Source::LocalRepo(r.path().to_path_buf()), &opts).unwrap();
 
     // Neither symbol is reconstructed as a ref: VENDOR names branch 1.1.1, whose revisions are all
-    // excluded (the vendor branch was cleared); REL names 1.1.1.1, also excluded.
-    assert!(
-        ir.refs.is_empty(),
-        "no ref should be fabricated: {:?}",
+    // excluded (the vendor branch was cleared); REL names 1.1.1.1, also excluded. The main line still
+    // gets its own `trunk` ref (RFC 019 refinement, review 136 F-3), since it has trunk changesets.
+    assert_eq!(
+        ir.refs.len(),
+        1,
+        "only the main line's own trunk ref, no fabricated symbol ref: {:?}",
         ir.refs
     );
+    assert_eq!(ir.refs[0].name, "trunk");
 
     let branch_drop = ir
         .loss

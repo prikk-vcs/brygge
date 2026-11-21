@@ -3211,8 +3211,14 @@ fn assert_version_note(fixture_version: &str, note: Option<String>) {
 /// cvs <that repository> --out contract-0.2.0-cvs-repro.ir`, run from a `2f1e659` worktree. CVS's
 /// reconstructed changeset carries a `Derivation` (`by: "brygge-decode-cvs"`), so this exercises
 /// `restamped`'s `Derived`-restamping path, not only `Stated` content.
+///
+/// Decoded with `--reconstruct-refs` (0 refs at 0.6.0: no symbol in this fixture resolves to anything).
+/// RFC 019's refinement (request 071) now gives the main line its own `trunk` ref whenever
+/// `--reconstruct-refs` is on and there is a main-line changeset — a real, intentional decoder
+/// difference from 0.6.0, so the outcome is honestly `NotChecked`, never a false `Reproduces` or a false
+/// `does-not-correspond`. This is V-1/V-2's own mechanism working as designed, not a regression.
 #[test]
-fn verify_against_source_reproduces_on_a_0_2_0_cvs_artifact_across_brygge_versions() {
+fn verify_against_source_is_not_checked_on_a_0_2_0_cvs_artifact_after_the_trunk_ref_was_added() {
     let repo = cvs_repo();
     write_vfile(
         &repo,
@@ -3229,10 +3235,17 @@ fn verify_against_source_reproduces_on_a_0_2_0_cvs_artifact_across_brygge_versio
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/contract-0.2.0-cvs-repro.ir");
     let decoded = brygge_ir::from_file(&fixture).unwrap();
     assert_eq!(decoded.contract, brygge_ir::ContractVersion::new(0, 2, 0));
+    assert!(
+        decoded.ir.refs.is_empty(),
+        "the 0.6.0 fixture has no refs; this test documents the trunk ref 0.7.1+ now adds"
+    );
 
     match run_against_source(&decoded.ir, repo.path(), &brygge_ir::Storage::Memory) {
-        AgainstSourceOutcome::Reproduces(note) => assert_version_note("0.6.0", note),
-        other => panic!("expected Reproduces across brygge versions, got {other:?}"),
+        AgainstSourceOutcome::NotChecked(detail) => {
+            assert!(detail.contains("0.6.0"), "{detail}");
+            assert!(detail.contains("decodes differently"), "{detail}");
+        }
+        other => panic!("expected NotChecked (a real decoder difference), got {other:?}"),
     }
 }
 

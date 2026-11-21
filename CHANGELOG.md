@@ -13,6 +13,11 @@ Every handoff adds its own entry in its own commit.
 - `brygge encode git`: a supported encoder that writes a new bare Git repository from an artifact, every
   commit labelled with `Brygge-` trailers (RFC 019).
 
+### Changed
+
+- CVS: with `--reconstruct-refs`, the main line is a derived branch ref, `trunk`, so every reconstructed
+  changeset is reachable from a ref.
+
 ### Breaking
 
 - `examples/encode-git` is removed, and a `brygge-encode-git` plugin is no longer run: `git` is now a
