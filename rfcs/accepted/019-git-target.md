@@ -168,6 +168,65 @@ However, less prioritized. Our primary target is prikk.").
   - Each passes D-6. Time and peak are measured with `release-corpus.py`'s method and recorded in
     `tools/bench/README.md`.
 
+## Amendment A — Subversion branch lines (D-9; accepted 2026-11-22)
+
+**Accepted by the owner (2026-11-22):** "Yes. Accepted." The handoff is `branch-lines-handoff-v1.md` (batch G5). **Refinement at handoff (the architect):** no new `DerivationKind` variant (an unknown variant fails an older reader's read). A line atom is `ReconstructedBranch` with `{layout, root, line: "true"}`, so the contract is unchanged.
+
+**Why.** Encoding wordpress-core showed that RFC 019 as accepted gives Subversion an unusable Git result.
+- **What happens:** every commit holds the whole Subversion tree (`branches/`, `tags/`, `trunk/` at the root), and
+  the `1.5` branch is a pointer into that one linear history.
+- **Why:** the Subversion decoder imports SVN's stated layer, one linear chain of whole-repository revisions, and
+  derives refs on top of it (RFC 006 D-4). `encode git` writes that faithfully, and G2's check confirms it.
+- **What a migration means instead:** each Git branch holds only its own directory's files, with its own line of
+  commits.
+- CVS, Mercurial and Git are not affected: their branches already have their own trees. The architect missed this
+  in the RFC, and records it here.
+
+### D-9 — `decode svn --branch-lines`: one line of history per branch, as a marked derivation
+
+- **Where:** a new option of the Subversion decoder. It is the derived layer of RFC 006 D-4, widened from "which
+  directory is a branch" to "which revisions form that branch's line". It is opt-in and always marked, as
+  `--reconstruct-refs` is, which it implies. The default decode (the stated spine) is unchanged.
+- **The layout:** the existing layout policy (standard `trunk`/`branches/*`/`tags/*` by default). Each directory the
+  policy names is a **root**.
+- **Atoms:**
+  - each revision gives **one atom per root it touches**, in canonical root order;
+  - each atom's ops are that root's ops, with the root's prefix removed, so a branch's files sit at the top of its
+    tree;
+  - a revision that touches no root gives no atom, and is counted: a representation-class drop, "revisions with no
+    branch change (N)". A revision that touches paths outside every root records them as the existing flag
+    already does, plus a drop of those ops.
+- **Parents:**
+  - the previous atom on the same root's line;
+  - **a root created by a copy** (`svn cp <src>@<rev> <root>`, the way SVN branches and tags) gets as its first
+    parent the newest atom on `<src>`'s line at or before `<rev>`, and its tree starts as that atom's tree. That is
+    the branch point;
+  - a root created without a copy starts a new line, with no parent.
+  - Merges are not inferred (`svn:mergeinfo` stays a recorded property drop, as today).
+- **Refs:**
+  - each live root gets a ref, as `--reconstruct-refs` gives today (`trunk` and branches as branches, tags as
+    tags), targeting its line's last atom;
+  - **a root that was deleted** (and each earlier life of a root that was deleted and later re-created) gets a ref
+    of kind `Other`, named `<root>@r<last revision it existed>`. `encode git` writes it under `refs/brygge/other/`
+    (D-3). Its history stays reachable without reading as a live branch. This settles review 137's deleted-branch
+    risk: nothing is unreachable.
+- **Marks:**
+  - every atom is `Derived`, with a new kind `ReconstructedBranchLine` and params `{layout, root}`;
+  - the source id is the revision plus its root, written by `Brygge-Source-Id` as `r<N> <root>` (for example
+    `r1234 branches/1.5`). This extends F-7's Subversion form.
+- **Verification:** `--against-source` re-derives with the options recorded in the artifact, including
+  `branch_lines`, as for every other derived layer. `encode git`'s check (G2) needs no change.
+- **The contract:** unchanged. The IR already has every field this uses. The new `DerivationKind` variant is
+  additive under RFC 011's rules, and must be checked to be so; if it is not, contract 0.3.1 carries it.
+- **The guide:** for Subversion → Git, `--branch-lines` is the documented path. A decode without it still encodes
+  (the whole-tree form) where every atom is reachable, and the guide says what that form is.
+
+### The release plan, amended
+
+- **Batch G5,** the Subversion decoder's `--branch-lines` (D-9), comes before G4.
+- **G4's Subversion evidence** uses it: wordpress-core, plus a repository with a deleted branch.
+- **0.8.0 is cut after G4,** as planned.
+
 ## Non-goals (0.8.0)
 
 - **Not in this release:**
