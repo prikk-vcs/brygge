@@ -292,6 +292,63 @@ fn deleted_then_recreated_gives_two_lives_with_distinct_refs() {
     assert_eq!(dead.target, ir.atoms[1].id);
 }
 
+/// Review 147 F-4: the subdirectory-copy sub-case of D-9's parent rule — a new line created by
+/// copying a *subdirectory* of another root, not the whole root. The handoff's §2 claims the parent is
+/// still that whole root's atom, and the ops "make up the difference" between inheriting its full tree
+/// and the subdirectory's content alone; this proves both halves for real.
+#[test]
+fn a_branch_created_from_a_subdirectory_of_another_root_has_that_roots_atom_as_parent() {
+    let mut d = DumpBuilder::new();
+    d.revision(0, &[("svn:date", &date(0))]);
+    d.revision(1, &[("svn:log", "add"), ("svn:date", &date(1))]);
+    d.add_dir("trunk");
+    d.add_dir("trunk/sub");
+    d.add_file("trunk/sub/file1.txt", b"one\n");
+    d.add_dir("trunk/other");
+    d.add_file("trunk/other/file2.txt", b"two\n");
+    d.add_dir("branches");
+    d.revision(
+        2,
+        &[
+            ("svn:log", "branch from a subdirectory"),
+            ("svn:date", &date(2)),
+        ],
+    );
+    d.copy_dir("branches/fromsub", (1, "trunk/sub"));
+
+    let ir = decode_dump(&d.buf, &branch_lines_opts()).unwrap();
+    assert_eq!(ir.atoms.len(), 2); // trunk@1, branches/fromsub@2
+    let trunk_atom = &ir.atoms[0];
+    let fromsub_atom = &ir.atoms[1];
+    assert_eq!(atom_root(&ir, 1), "branches/fromsub");
+
+    // "the parent still is that root's atom": trunk's whole atom, not a synthetic subdirectory node.
+    assert_eq!(fromsub_atom.parents.len(), 1);
+    assert_eq!(fromsub_atom.parents[0], trunk_atom.id);
+
+    // "the ops make up the difference": inheriting trunk's *whole* tree (both files, under their
+    // trunk-relative paths) down to just the subdirectory's content (one file, relativized) means
+    // deleting both of trunk's paths and adding the one the branch actually has.
+    let mut deletes: Vec<&str> = Vec::new();
+    let mut adds: Vec<&str> = Vec::new();
+    for op in &fromsub_atom.ops {
+        match op {
+            PathOp::Delete { path, .. } => deletes.push(path.as_str()),
+            PathOp::Add { path, .. } => adds.push(path.as_str()),
+            other => panic!("expected only Add/Delete ops, got {other:?}"),
+        }
+    }
+    deletes.sort_unstable();
+    adds.sort_unstable();
+    assert_eq!(
+        deletes,
+        ["other/file2.txt", "sub/file1.txt"],
+        "{:?}",
+        fromsub_atom.ops
+    );
+    assert_eq!(adds, ["file1.txt"], "{:?}", fromsub_atom.ops);
+}
+
 #[test]
 fn a_file_copied_across_branches_is_an_add_with_a_copy_record() {
     let mut d = DumpBuilder::new();

@@ -280,6 +280,28 @@ fn an_svn_id_of_the_wrong_length_falls_back_to_hex_prefixed() {
     assert_eq!(source_id_text(&SourceKind::Svn, &[0x00, 0x01]), "hex:0001");
 }
 
+/// Review 147 F-4: `--branch-lines`' extended SVN form, `r<N> <root>` — round trips through
+/// `parse_source_id`, the exact inverse `source_id_text` is specified against.
+#[test]
+fn an_svn_branch_lines_id_round_trips_with_its_root() {
+    let mut id = 1234u64.to_be_bytes().to_vec();
+    id.extend_from_slice(b"branches/1.5");
+    let text = source_id_text(&SourceKind::Svn, &id);
+    assert_eq!(text, "r1234 branches/1.5");
+    assert_eq!(parse_source_id(&SourceKind::Svn, &text), Some(id));
+}
+
+/// The one fallback the handoff names explicitly: a root containing a space (which the `r<N> <root>`
+/// form's own separator could not be told apart from) falls back to `hex:`, and still round trips.
+#[test]
+fn an_svn_branch_lines_root_with_a_space_falls_back_to_hex() {
+    let mut id = 5u64.to_be_bytes().to_vec();
+    id.extend_from_slice(b"branches/with space");
+    let text = source_id_text(&SourceKind::Svn, &id);
+    assert!(text.starts_with("hex:"), "{text}");
+    assert_eq!(parse_source_id(&SourceKind::Svn, &text), Some(id));
+}
+
 #[test]
 fn a_cvs_branch_point_id_is_written_as_is() {
     let id = b"branch-point:OPENBSD_2_0";
