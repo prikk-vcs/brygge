@@ -60,6 +60,12 @@ unreached, whether or not other refs still exist.
 even with `--reconstruct-refs` — there is no convention to reconstruct one from. Such a repository cannot
 be encoded to Git in 0.8.0.
 
+**For Subversion, the documented path is** `decode svn --branch-lines`, then `inspect --authors`, then
+`transform authors`, then `encode git` (see "Mapping authors" below for the middle two steps).
+`--branch-lines` (RFC 019 Amendment A) gives each branch and tag its own line of history, with its own
+files at the root of its tree — **without it, the result keeps the whole repository tree in every
+commit**, which is faithful but not a usable migration.
+
 ## The trailers
 
 Every commit, and every annotated tag, ends with one block of trailers after a blank line, in this
@@ -83,7 +89,7 @@ bookmark, named branch or `Other` ref) goes into the report instead, naming the 
 | Source | Form | Example |
 |---|---|---|
 | git, hg | 40 lowercase hex characters, no prefix — the object id or node itself | `Brygge-Source-Id: 4b825dc642cb6eb9a060e54bf8d69288fbee4904` |
-| svn | `r<decimal>` — the revision number | `Brygge-Source-Id: r1234` |
+| svn | `r<decimal>`, or `r<decimal> <root>` for a `--branch-lines` atom (the revision, then its own branch/tag's root) | `Brygge-Source-Id: r1234`<br>`Brygge-Source-Id: r1234 branches/1.5` |
 | cvs | one `path@rev` pair per line: the first right after the key, each later one on its own continuation line (so `git interpret-trailers --parse` still reads the whole thing as one value); or, for a branch-point atom, the literal `branch-point:<name>` | `Brygge-Source-Id: a.c@1.1`<br>` b.c@1.2` |
 | anything else | printable ASCII as is, otherwise `hex:` and lowercase hex | `Brygge-Source-Id: hex:01ff0041` |
 
@@ -145,7 +151,8 @@ author onto the committer (marked `Brygge-Supplied: committer, commit-time`, the
 transform authors` gives them real Git identities first (RFC 019 D-4):
 
 ```
-brygge inspect --authors repo.ir > authors.map    # then fill in each right-hand side
+brygge decode svn repo --out repo.ir --branch-lines   # Subversion only; see above
+brygge inspect --authors repo.ir > authors.map         # then fill in each right-hand side
 brygge transform authors repo.ir --map authors.map --out mapped.ir --require-all
 brygge encode git mapped.ir --out repo.git
 ```

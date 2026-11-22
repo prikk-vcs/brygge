@@ -48,6 +48,12 @@ pub(crate) fn decode_with(
     limits: &Limits,
     storage: &Storage,
 ) -> Result<Ir, Error> {
+    // RFC 019 Amendment A: `--branch-lines` replaces the single whole-repository spine below with one
+    // line of history per branch/tag root — a completely different atom shape, so it is its own module,
+    // not a variant woven through this function. Without it, nothing here changes, byte for byte.
+    if opts.branch_lines {
+        return crate::branch_lines::decode_with(source, opts, limits, storage);
+    }
     let bytes = source.load_with(limits)?;
     let dump = dumpstream::parse_dump_with(&bytes, limits)?;
     // The dump is parsed; nothing below reads the raw bytes again (the parsed dump holds its own copies).

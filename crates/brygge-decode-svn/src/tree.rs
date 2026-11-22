@@ -107,6 +107,15 @@ fn blob_for(
 /// The repository tree at a point: repo-relative file path → file. `BTreeMap` for deterministic order.
 pub type Tree = BTreeMap<String, FileEntry>;
 
+/// Where a revision's copy records go as they are found: the destination-relative pairs the
+/// single-spine path reads directly, and each one's source revision, which only `--branch-lines`
+/// reads (to re-resolve `from_atom` against a root's own line history instead of a single per-revision
+/// atom). Bundled into one parameter so `apply_file`/`apply_dir` stay under the usual argument count.
+struct CopyOut<'a> {
+    copies: &'a mut Vec<CopyRecord>,
+    source_revs: &'a mut Vec<u64>,
+}
+
 /// The outcome of applying one revision's node records.
 pub struct Applied {
     /// The tree after the revision.
@@ -115,6 +124,11 @@ pub struct Applied {
     pub ops: Vec<PathOp>,
     /// Source-recorded copies as `Stated` copy records, each naming the correct source atom.
     pub copies: Vec<CopyRecord>,
+    /// Each `copies` entry's source revision (`copyfrom-rev`), positionally paired — RFC 019 Amendment
+    /// A: `--branch-lines` has no single per-revision atom to resolve `from_atom` against, so it
+    /// re-resolves each copy against the source path's own root-line atom at this revision instead. The
+    /// single-spine path (this struct's only other reader) ignores it.
+    pub copy_source_revs: Vec<u64>,
     /// Which loss categories the revision's node properties touched.
     pub prop_loss: props::PropLoss,
     /// How many directories added or replaced this revision (by `add`, `replace` or copy) ended up with
@@ -164,6 +178,11 @@ pub fn apply_revision(
 
     let mut tree = prev.clone();
     let mut copies = Vec::new();
+    let mut copy_source_revs = Vec::new();
+    let mut copy_out = CopyOut {
+        copies: &mut copies,
+        source_revs: &mut copy_source_revs,
+    };
     let mut prop_loss = props::PropLoss::default();
 
     for node in nodes {
@@ -193,12 +212,12 @@ pub fn apply_revision(
                 }
                 match node.kind {
                     Some(NodeKind::Dir) => {
-                        apply_dir(&mut tree, &mut copies, kept, revnum_to_atom, node)?;
+                        apply_dir(&mut tree, &mut copy_out, kept, revnum_to_atom, node)?;
                     }
                     Some(NodeKind::File) => {
                         apply_file(
                             &mut tree,
-                            &mut copies,
+                            &mut copy_out,
                             kept,
                             revnum_to_atom,
                             builder,
@@ -212,7 +231,7 @@ pub fn apply_revision(
                         if tree.contains_key(&node.path) {
                             apply_file(
                                 &mut tree,
-                                &mut copies,
+                                &mut copy_out,
                                 kept,
                                 revnum_to_atom,
                                 builder,
@@ -243,6 +262,7 @@ pub fn apply_revision(
         tree,
         ops,
         copies,
+        copy_source_revs,
         prop_loss,
         empty_dirs,
     })
@@ -295,7 +315,7 @@ fn verify_sum(
 /// ceasing to be special makes the target the whole text.
 fn apply_file(
     tree: &mut Tree,
-    copies: &mut Vec<CopyRecord>,
+    copy_out: &mut CopyOut<'_>,
     kept: &HashMap<u64, Tree>,
     revnum_to_atom: &HashMap<u64, AtomId>,
     builder: &mut IrBuilder,
@@ -428,12 +448,13 @@ fn apply_file(
     };
 
     if let Some((crev, cpath)) = &node.copyfrom {
-        copies.push(CopyRecord {
+        copy_out.copies.push(CopyRecord {
             from: cpath.clone(),
             from_atom: atom_for(revnum_to_atom, *crev)?,
             to: node.path.clone(),
             status: EpistemicStatus::Stated,
         });
+        copy_out.source_revs.push(*crev);
     }
     tree.insert(
         node.path,
@@ -488,7 +509,7 @@ fn verify_content(path: &str, sums: &Checksums, text: &[u8]) -> Result<(), Error
 /// empty-directory accounting happens once, after the whole revision, from the final tree.
 fn apply_dir(
     tree: &mut Tree,
-    copies: &mut Vec<CopyRecord>,
+    copy_out: &mut CopyOut<'_>,
     kept: &HashMap<u64, Tree>,
     revnum_to_atom: &HashMap<u64, AtomId>,
     node: NodeRecord,
@@ -512,12 +533,13 @@ fn apply_dir(
         additions.push((spath.clone(), new_path, sentry.clone()));
     }
     for (from, to, entry) in additions {
-        copies.push(CopyRecord {
+        copy_out.copies.push(CopyRecord {
             from,
             from_atom,
             to: to.clone(),
             status: EpistemicStatus::Stated,
         });
+        copy_out.source_revs.push(*crev);
         tree.insert(to, entry);
     }
     Ok(())

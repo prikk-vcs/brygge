@@ -47,7 +47,7 @@ impl SourceKind {
 /// A parsed command.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
-    /// `decode <git|hg|svn|cvs> <source> --out <artifact> [--infer-renames | --reconstruct-refs] [--spill-dir <DIR>] [--format …]`
+    /// `decode <git|hg|svn|cvs> <source> --out <artifact> [--infer-renames | --reconstruct-refs | --branch-lines] [--spill-dir <DIR>] [--format …]`
     Decode {
         /// Which source decoder to use.
         kind: SourceKind,
@@ -59,6 +59,9 @@ pub enum Command {
         infer_renames: bool,
         /// Reconstruct branch/tag refs by convention or symbol, marking each `Derived` (svn/cvs only).
         reconstruct_refs: bool,
+        /// One line of history per branch/tag root, instead of the single whole-repository spine
+        /// (svn only; RFC 019 Amendment A). Implies `reconstruct_refs`.
+        branch_lines: bool,
         /// Where to keep file content while decoding, instead of in memory (RFC 015 D-3/D-3a). Must
         /// already exist and be a directory; `None` means the output artifact's own directory.
         spill_dir: Option<PathBuf>,
@@ -210,7 +213,7 @@ pub const USAGE: &str = "\
 brygge — carry version-control history into an intermediate representation (IR).
 
 USAGE:
-  brygge decode <git|hg|svn|cvs> <source> --out <artifact> [--infer-renames | --reconstruct-refs] [--spill-dir <DIR>] [--format human|machine]
+  brygge decode <git|hg|svn|cvs> <source> --out <artifact> [--infer-renames | --reconstruct-refs | --branch-lines] [--spill-dir <DIR>] [--format human|machine]
   brygge inspect <artifact> [--atoms] [--format human|machine]
   brygge inspect --authors <artifact> [--format human|machine]
   brygge verify <artifact> [--against-source <source> | --against-target git <repository>] [--spill-dir <DIR>] [--format human|machine]
@@ -226,7 +229,9 @@ COMMANDS:
            For svn, <source> is a repository directory (dumped read-only via `svnadmin dump`) or a
            dumpfile; for cvs, a local repository directory of RCS ,v files. --infer-renames (git) and
            --reconstruct-refs (svn/cvs) each turn on an opt-in, always-marked derived layer; giving either
-           to a source kind it does not apply to is a usage error. File content is kept on disk while
+           to a source kind it does not apply to is a usage error. --branch-lines (svn only) implies
+           --reconstruct-refs, and gives each branch/tag its own line of history instead of the single
+           whole-repository spine. File content is kept on disk while
            decoding, in a private file removed when brygge exits — --spill-dir <DIR> chooses where (it
            must already exist); the default is --out's own directory. The option never changes the
            artifact; a RAM-backed directory (tmpfs) moves the memory cost rather than removing it.
@@ -365,6 +370,8 @@ fn parse_decode(args: &[String]) -> Result<Command, String> {
     let mut infer_renames_seen = false;
     let mut reconstruct_refs = false;
     let mut reconstruct_refs_seen = false;
+    let mut branch_lines = false;
+    let mut branch_lines_seen = false;
     let mut spill_dir: Option<PathBuf> = None;
     let mut spill_dir_seen = false;
     let mut format = Format::Human;
@@ -405,6 +412,13 @@ fn parse_decode(args: &[String]) -> Result<Command, String> {
                 reconstruct_refs_seen = true;
                 reconstruct_refs = true;
             }
+            "--branch-lines" => {
+                if branch_lines_seen {
+                    return Err(usage_error("decode", "--branch-lines given more than once"));
+                }
+                branch_lines_seen = true;
+                branch_lines = true;
+            }
             "--format" => {
                 if format_seen {
                     return Err(usage_error("decode", "--format given more than once"));
@@ -442,6 +456,14 @@ fn parse_decode(args: &[String]) -> Result<Command, String> {
             inapplicable_option("reconstruct-refs", "svn, cvs", kind),
         ));
     }
+    if branch_lines && !matches!(kind, SourceKind::Svn) {
+        return Err(usage_error(
+            "decode",
+            inapplicable_option("branch-lines", "svn", kind),
+        ));
+    }
+    // RFC 019 Amendment A, D-9: --branch-lines implies --reconstruct-refs (the same layout policy).
+    let reconstruct_refs = reconstruct_refs || branch_lines;
 
     Ok(Command::Decode {
         kind,
@@ -449,6 +471,7 @@ fn parse_decode(args: &[String]) -> Result<Command, String> {
         out,
         infer_renames,
         reconstruct_refs,
+        branch_lines,
         spill_dir,
         format,
     })

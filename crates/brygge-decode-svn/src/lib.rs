@@ -19,6 +19,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+mod branch_lines;
 mod checksum;
 mod decode;
 mod dumpstream;

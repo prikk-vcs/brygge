@@ -135,6 +135,7 @@ fn spill_dir_missing_is_a_usage_error() {
         &out,
         false,
         false,
+        false,
         Some(&missing),
         Format::Machine,
     );
@@ -156,6 +157,7 @@ fn spill_dir_a_file_not_a_directory_is_a_usage_error() {
         SourceKind::Git,
         repo.path(),
         &out,
+        false,
         false,
         false,
         Some(&file),
@@ -184,8 +186,9 @@ fn spill_dir_given_a_good_directory_is_used_and_the_artifact_is_byte_identical()
             &default_out,
             false,
             false,
+            false,
             None,
-            Format::Machine,
+            Format::Machine
         ),
         exit::CLEAN
     );
@@ -196,8 +199,9 @@ fn spill_dir_given_a_good_directory_is_used_and_the_artifact_is_byte_identical()
             &spill_out,
             false,
             false,
+            false,
             Some(&spill_dir),
-            Format::Machine,
+            Format::Machine
         ),
         exit::CLEAN
     );
@@ -226,6 +230,7 @@ fn verify_spill_dir_missing_is_a_usage_error() {
             SourceKind::Git,
             repo.path(),
             &out,
+            false,
             false,
             false,
             None,
@@ -259,6 +264,7 @@ fn verify_spill_dir_a_file_not_a_directory_is_a_usage_error() {
             &out,
             false,
             false,
+            false,
             None,
             Format::Machine
         ),
@@ -283,6 +289,7 @@ fn verify_spill_dir_given_a_good_directory_is_used_and_left_empty_and_the_verdic
             SourceKind::Git,
             repo.path(),
             &out,
+            false,
             false,
             false,
             None,
@@ -329,6 +336,7 @@ fn decode_inspect_verify_roundtrip() {
             &out,
             false,
             false,
+            false,
             None,
             Format::Machine
         ),
@@ -361,6 +369,7 @@ fn verify_internal_catches_tamper_with_no_source() {
             SourceKind::Git,
             repo.path(),
             &out,
+            false,
             false,
             false,
             None,
@@ -397,6 +406,7 @@ fn verify_against_source_detects_a_mismatch() {
             &other_out,
             false,
             false,
+            false,
             None,
             Format::Machine
         ),
@@ -423,6 +433,7 @@ fn a_failing_internal_check_with_a_corresponding_source_still_reports_against_so
             SourceKind::Git,
             repo.path(),
             &out,
+            false,
             false,
             false,
             None,
@@ -458,6 +469,7 @@ fn against_source_with_a_nonexistent_path_is_not_checked_not_a_mismatch() {
             SourceKind::Git,
             repo.path(),
             &out,
+            false,
             false,
             false,
             None,
@@ -556,6 +568,7 @@ fn decode_a_real_clone_succeeds_and_verifies_against_source() {
             &clone_out,
             false,
             false,
+            false,
             None,
             Format::Machine
         ),
@@ -575,6 +588,7 @@ fn decode_a_real_clone_succeeds_and_verifies_against_source() {
             SourceKind::Git,
             origin.path(),
             &origin_out,
+            false,
             false,
             false,
             None,
@@ -650,6 +664,7 @@ fn decode_of_a_submodule_exits_floor_refusal() {
             SourceKind::Git,
             repo.path(),
             &out,
+            false,
             false,
             false,
             None,
@@ -772,6 +787,7 @@ fn a_pre_existing_artifact_survives_a_failing_decode_and_leaves_no_temp_file() {
             &out,
             false,
             false,
+            false,
             None,
             Format::Machine
         ),
@@ -800,6 +816,7 @@ fn a_pre_existing_artifact_survives_a_failing_decode_and_leaves_no_temp_file() {
             SourceKind::Git,
             repo.path(),
             &out,
+            false,
             false,
             false,
             None,
@@ -834,6 +851,7 @@ fn a_successful_decode_replaces_the_existing_artifact_and_leaves_no_temp_file() 
             &out,
             false,
             false,
+            false,
             None,
             Format::Machine
         ),
@@ -847,6 +865,7 @@ fn a_successful_decode_replaces_the_existing_artifact_and_leaves_no_temp_file() 
             SourceKind::Git,
             repo.path(),
             &out,
+            false,
             false,
             false,
             None,
@@ -874,6 +893,7 @@ fn inspect_default_equals_decodes_end_of_run_report() {
             SourceKind::Git,
             repo.path(),
             &out,
+            false,
             false,
             false,
             None,
@@ -909,6 +929,7 @@ fn inspect_atoms_adds_the_listing_and_reads_the_artifact_once() {
             &out,
             false,
             false,
+            false,
             None,
             Format::Machine
         ),
@@ -941,6 +962,7 @@ fn inspect_report_says_unverifiable_never_unverified() {
             &out,
             false,
             false,
+            false,
             None,
             Format::Machine
         ),
@@ -967,6 +989,7 @@ fn representation_drops_appear_only_on_the_not_history_line() {
             SourceKind::Git,
             repo.path(),
             &out,
+            false,
             false,
             false,
             None,
@@ -1740,6 +1763,7 @@ fn decode_svn_from_a_dumpfile_reconstructs_refs_and_verifies() {
         &out,
         false,
         true,
+        false,
         None,
         Format::Machine,
     );
@@ -1788,6 +1812,7 @@ fn decode_svn_flat_layout_with_reconstruct_is_a_convention_violation() {
         &out,
         false,
         true,
+        false,
         None,
         Format::Machine,
     );
@@ -1837,6 +1862,7 @@ fn decode_svn_from_a_live_repository_via_svnadmin() {
         &out,
         false,
         true,
+        false,
         None,
         Format::Machine,
     );
@@ -1870,6 +1896,7 @@ fn cr_07_6_verifying_a_dumpfile_decode_against_a_live_repository_is_not_checked(
         &out,
         false,
         true,
+        false,
         None,
         Format::Machine,
     );
@@ -1948,6 +1975,7 @@ fn cr_07_6_r1_an_svnadmin_version_difference_alone_does_not_fail_verification() 
         &out,
         false,
         true,
+        false,
         None,
         Format::Machine,
     );
@@ -2093,6 +2121,7 @@ fn decode_cvs_reconstructs_derived_changesets_and_reproduces() {
         &out,
         false,
         false,
+        false,
         None,
         Format::Machine,
     );
@@ -2141,6 +2170,7 @@ fn a_cvs_repository_with_a_branch_revision_verifies_its_own_artifact() {
         SourceKind::Cvs,
         repo.path(),
         &out,
+        false,
         false,
         false,
         None,
@@ -2218,6 +2248,7 @@ fn decode_cvs_nested_and_mixed_branches_reproduce_and_verify_against_source() {
             out,
             false,
             true,
+            false,
             None,
             Format::Machine,
         );
@@ -2265,6 +2296,7 @@ fn decode_cvs_whole_import_under_floor_is_refused() {
         &out,
         false,
         false,
+        false,
         None,
         Format::Machine,
     );
@@ -2308,6 +2340,7 @@ fn decode_cvs_partial_under_floor_imports_and_exits_convention_violation() {
         &out,
         false,
         false,
+        false,
         None,
         Format::Machine,
     );
@@ -2340,6 +2373,7 @@ desc\n@@\n\n\n\
         SourceKind::Cvs,
         repo.path(),
         &out,
+        false,
         false,
         false,
         None,
@@ -2465,6 +2499,7 @@ fn decode_hg_and_verify_a_good_artifact_from_every_decoder() {
         SourceKind::Hg,
         repo.path(),
         &out,
+        false,
         false,
         false,
         None,
@@ -3010,6 +3045,7 @@ fn an_hg_artifacts_params_carry_no_rename_or_infer_keys() {
             &out,
             false,
             false,
+            false,
             None,
             Format::Machine
         ),
@@ -3046,6 +3082,7 @@ fn plain_opts() -> SourceOpts {
     SourceOpts {
         infer_renames: false,
         reconstruct_refs: false,
+        branch_lines: false,
         layout: LayoutPolicy::default(),
         cvs_window: 300,
         cvs_floor: 50,
@@ -3668,6 +3705,7 @@ fn verify_against_source_root_corresponds_and_wrong_consumed_through_the_real_re
         &out,
         false,
         false,
+        false,
         None,
         Format::Machine,
     );
@@ -3752,6 +3790,7 @@ fn verify_against_source_rejects_a_well_formed_artifact_that_lies_about_being_un
         SourceKind::Git,
         repo.path(),
         &out,
+        false,
         false,
         false,
         None,
@@ -3882,6 +3921,7 @@ fn verify_against_source_not_checked_when_recorded_version_differs_and_history_d
         &out,
         false,
         false,
+        false,
         None,
         Format::Machine,
     );
@@ -3942,6 +3982,7 @@ fn verify_against_source_root_corresponds_with_both_notes_across_brygge_versions
         SourceKind::Git,
         repo.path(),
         &out,
+        false,
         false,
         false,
         None,
@@ -4010,6 +4051,7 @@ fn a_malformed_transform_chain_is_refused_by_the_reader_not_given_a_verdict() {
         &out,
         false,
         false,
+        false,
         None,
         Format::Machine,
     );
@@ -4053,6 +4095,7 @@ fn verify_against_source_root_reproduces_for_cvs() {
         SourceKind::Cvs,
         repo.path(),
         &out,
+        false,
         false,
         false,
         None,

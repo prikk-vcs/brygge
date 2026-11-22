@@ -51,17 +51,35 @@ pub(super) fn source_id_text(kind: &SourceKind, atom_id: &[u8]) -> String {
                 format!("hex:{}", to_hex(atom_id))
             }
         }
-        SourceKind::Svn => {
-            // A revision as 8 big-endian bytes (machine-output.md's own convention): `r<decimal>`.
-            if let Ok(bytes) = <[u8; 8]>::try_from(atom_id) {
-                format!("r{}", u64::from_be_bytes(bytes))
-            } else {
-                format!("hex:{}", to_hex(atom_id))
-            }
-        }
+        SourceKind::Svn => svn_source_id_text(atom_id),
         SourceKind::Cvs => cvs_source_id_text(atom_id),
         SourceKind::Other(_) => printable_ascii_or_hex(atom_id),
     }
+}
+
+/// Subversion's two id shapes: a plain revision (8 big-endian bytes) as `r<decimal>`, same as before
+/// batch G5; and, since RFC 019 Amendment A's `--branch-lines`, a revision followed by its root's own
+/// bytes as `r<decimal> <root>` (for example `r1234 branches/1.5`) — one space, since the digits can
+/// never contain one. Falls back to `hex:` when the root is not printable ASCII (`0x21`–`0x7E`,
+/// disallowing a literal space, which the separator already uses, and a newline, which a trailer line
+/// cannot carry).
+fn svn_source_id_text(atom_id: &[u8]) -> String {
+    if let Ok(bytes) = <[u8; 8]>::try_from(atom_id) {
+        return format!("r{}", u64::from_be_bytes(bytes));
+    }
+    if atom_id.len() > 8 {
+        let (rev_bytes, root_bytes) = atom_id.split_at(8);
+        if let Ok(rev) = <[u8; 8]>::try_from(rev_bytes) {
+            let printable =
+                !root_bytes.is_empty() && root_bytes.iter().all(|&b| (0x21..=0x7E).contains(&b));
+            if printable {
+                if let Ok(root) = std::str::from_utf8(root_bytes) {
+                    return format!("r{} {root}", u64::from_be_bytes(rev));
+                }
+            }
+        }
+    }
+    format!("hex:{}", to_hex(atom_id))
 }
 
 /// CVS's own two id shapes (`crates/brygge-decode-cvs/src/decode.rs`'s `changeset_atom_id`, and its
@@ -131,12 +149,23 @@ pub(super) fn parse_source_id(kind: &SourceKind, text: &str) -> Option<Vec<u8>> 
     match kind {
         SourceKind::Git | SourceKind::Hg => from_hex(text).filter(|b| b.len() == 20),
         SourceKind::Svn => {
-            let digits = text.strip_prefix('r')?;
+            let rest = text.strip_prefix('r')?;
+            let (digits, root) = match rest.split_once(' ') {
+                Some((d, r)) => (d, Some(r)),
+                None => (rest, None),
+            };
             if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
                 return None;
             }
             let n: u64 = digits.parse().ok()?;
-            Some(n.to_be_bytes().to_vec())
+            let mut out = n.to_be_bytes().to_vec();
+            if let Some(root) = root {
+                if root.is_empty() {
+                    return None;
+                }
+                out.extend_from_slice(root.as_bytes());
+            }
+            Some(out)
         }
         SourceKind::Cvs => {
             if let Some(name) = text.strip_prefix("branch-point:") {

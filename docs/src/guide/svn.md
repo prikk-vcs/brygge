@@ -122,6 +122,40 @@ Each ref points at the last revision that touched its directory. Every reconstru
 Without `--reconstruct-refs`, no refs are produced, and the history is carried as the plain directory
 tree it is.
 
+## One line of history per branch (`--branch-lines`)
+
+Without `--branch-lines`, every commit's tree is the *whole* repository — `trunk/`, `branches/x/`,
+`tags/y/`, all under one root — because that is what a Subversion revision actually is: one state of
+the whole tree. That is faithful, but it is not a usable migration: a branch's own history, compared
+against its own files at the root of its tree, is what a Git user expects.
+
+`--branch-lines` (RFC 019 Amendment A) implies `--reconstruct-refs`, and changes what an atom *is*:
+instead of one atom per revision for the whole repository, there is one atom per revision **per branch
+or tag it touches**, holding only that root's own files, at the root of its tree.
+
+- **Parents.** A branch/tag's atoms chain to the previous atom on its own line. The line's first atom,
+  when the branch was created by copying another branch or tag (`svn cp <src> <new-branch>`), has that
+  source's own atom (at the copied revision) as its parent — so the new line starts from the copied
+  content, not from nothing. A branch created with no copy (a plain `mkdir`) starts a line with no
+  parent.
+- **Every line gets a ref**, live or not:
+  - a **live** line (the branch/tag still exists in the final revision) gets the ordinary ref a branch
+    or tag always gets;
+  - a **dead** line (an earlier life of a branch that was deleted and recreated, or a branch deleted and
+    never recreated) gets its own ref too, named `<branch-or-tag>@r<its last revision>` (for example
+    `branches/foo@r812`) — so no reconstructed history is silently lost to Git's garbage collector.
+    `deleted or moved branches/tags not represented (N)` therefore never fires under `--branch-lines`:
+    every line, live or dead, has a ref.
+- **A file copied from one branch to another** is carried as an addition with a copy record naming the
+  source branch's own atom, not a separate unrelated history.
+- **A revision that touches no branch or tag** (revision 0 is the usual case) gives no atom at all; it
+  is counted as `revisions with no branch change (N)`.
+- **Paths outside every branch/tag** (an explicit flag already covers the layout as a whole) are also
+  recorded one at a time, naming the revision and the path, since they belong to no line.
+- **One known limit:** a repository with no `trunk`/`branches`/`tags` layout at all gets no refs even
+  with `--reconstruct-refs`, so `--branch-lines` has nothing to build lines from either — it is not
+  encodable to Git with brygge 0.8.0.
+
 ## Repositories brygge refuses
 
 A refusal exits `20` and says why; nothing is written.

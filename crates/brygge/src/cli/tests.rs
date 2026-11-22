@@ -47,10 +47,12 @@ fn decode_git_full() {
             out,
             infer_renames,
             reconstruct_refs,
+            branch_lines,
             spill_dir,
             format,
         } => {
             assert_eq!(kind, SourceKind::Git);
+            assert!(!branch_lines);
             assert_eq!(source, PathBuf::from("/repo"));
             assert_eq!(out, PathBuf::from("out.ir"));
             assert!(infer_renames);

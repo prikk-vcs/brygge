@@ -63,6 +63,7 @@ fn run(cmd: Command) -> i32 {
             out,
             infer_renames,
             reconstruct_refs,
+            branch_lines,
             spill_dir,
             format,
         } => commands::run_decode(
@@ -71,6 +72,7 @@ fn run(cmd: Command) -> i32 {
             &out,
             infer_renames,
             reconstruct_refs,
+            branch_lines,
             spill_dir.as_deref(),
             format,
         ),

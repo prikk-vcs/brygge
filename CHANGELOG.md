@@ -17,8 +17,18 @@ Every handoff adds its own entry in its own commit.
 - `brygge transform authors`: a built-in transform that maps source identities to Git identities from a
   map file, recorded as a transform step, and `brygge inspect --authors`, which writes the starting map
   (RFC 019).
+- `decode svn --branch-lines`: each branch and tag becomes its own line of history, with its own files
+  at the root of its tree, as a marked derivation. Deleted branches keep their history under
+  `refs/brygge/other/` in Git (RFC 019 Amendment A).
 
 ### Fixed
+
+- `encode git`'s check against the artifact (`verify --against-target git` included): an atom reachable
+  only from an `Other`-kind ref (a `--branch-lines` dead/earlier-life root) was wrongly reported as
+  missing from the result, because `brygge_decode_git` never carries `refs/brygge/other/*` (its own
+  stated namespace policy, unrelated to this check) and so can never surface that commit for matching.
+  The check no longer requires a result commit for an atom the Git decoder structurally cannot see;
+  found by `--branch-lines`'s own real-corpus proof.
 
 - `brygge_ir::transform::Edit` (0.7.0 and 0.7.1): a transform that changed an atom with a later copy from
   it was refused at `finish`, with "copy … names from_atom … which was not already added". Nothing wrong

@@ -68,6 +68,10 @@ pub struct Options {
     pub reconstruct_refs: bool,
     /// The layout convention to assume when `reconstruct_refs` is on (RFC 006 OQ-C).
     pub layout: LayoutPolicy,
+    /// One line of history per branch/tag root, each with its own files at the root of its tree, instead
+    /// of the single whole-repository spine (RFC 019 Amendment A, D-9). Implies `reconstruct_refs`.
+    /// **Off by default** — with it off, nothing about the single-spine decode changes, byte for byte.
+    pub branch_lines: bool,
 }
 
 impl Options {
@@ -81,6 +85,9 @@ impl Options {
         );
         if self.reconstruct_refs {
             m.insert("layout".to_string(), self.layout.label());
+        }
+        if self.branch_lines {
+            m.insert("branch_lines".to_string(), "true".to_string());
         }
         m
     }

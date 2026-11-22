@@ -233,6 +233,15 @@ fn reconstruct_refs_from_provenance(ir: &Ir) -> bool {
         .unwrap_or(false)
 }
 
+/// Whether the IR's provenance says its SVN source was decoded with `--branch-lines`.
+fn branch_lines_from_provenance(ir: &Ir) -> bool {
+    ir.provenance
+        .params
+        .get("branch_lines")
+        .map(|v| v == "true")
+        .unwrap_or(false)
+}
+
 /// The SVN layout policy recorded in the IR's provenance (default if absent/unparsable).
 fn layout_from_provenance(ir: &Ir) -> LayoutPolicy {
     ir.provenance
@@ -248,6 +257,7 @@ fn layout_from_provenance(ir: &Ir) -> LayoutPolicy {
 struct SourceOpts {
     infer_renames: bool,
     reconstruct_refs: bool,
+    branch_lines: bool,
     layout: LayoutPolicy,
     cvs_window: u64,
     cvs_floor: u8,
@@ -383,6 +393,7 @@ fn decode_source(
             let svn = SvnOptions {
                 reconstruct_refs: opts.reconstruct_refs,
                 layout: opts.layout.clone(),
+                branch_lines: opts.branch_lines,
             };
             guard_decoder(|| brygge_decode_svn::decode_with_storage(&src, &svn, storage))
                 .map_err(|fault| (exit::FAILURE, fault))?
@@ -484,12 +495,15 @@ fn atomic_write(
 /// D-3/D-3a). Content is always kept in a private spill file while decoding, never in memory: in
 /// `spill_dir` if given, else `out`'s own directory. `spill_dir`, if given, must already exist and be a
 /// directory — never created silently (a usage error, exit 2, otherwise).
+#[allow(clippy::too_many_arguments)] // one parameter per `Command::Decode` field (cli.rs); no fewer
+// would still say what each one means at the call site.
 pub fn run_decode(
     kind: SourceKind,
     source: &Path,
     out: &Path,
     infer_renames: bool,
     reconstruct_refs: bool,
+    branch_lines: bool,
     spill_dir: Option<&Path>,
     format: Format,
 ) -> i32 {
@@ -521,6 +535,7 @@ pub fn run_decode(
         &SourceOpts {
             infer_renames,
             reconstruct_refs,
+            branch_lines,
             layout: LayoutPolicy::default(),
             cvs_window: default_cvs.window_secs,
             cvs_floor: default_cvs.confidence_floor,
@@ -1315,11 +1330,33 @@ fn check_source_invariants(ir: &Ir) -> CheckOutcome {
             }
         }
         brygge_ir::SourceKind::Svn => {
+            // RFC 019 Amendment A: with `--branch-lines`, every atom is one root's own line, a
+            // reconstructed judgment of which revisions belong to it — `Derived(ReconstructedBranch)`,
+            // marked `line: "true"` — rather than the single whole-repository spine's `Stated` atoms.
+            let branch_lines = ir
+                .provenance
+                .params
+                .get("branch_lines")
+                .map(|v| v == "true")
+                .unwrap_or(false);
             for atom in &ir.atoms {
-                if innermost_status(&atom.status).is_derived() {
-                    return CheckOutcome::Fail(
-                        "an SVN atom is Derived; SVN's revision spine is always Stated".to_string(),
-                    );
+                let ok = if branch_lines {
+                    matches!(
+                        innermost_status(&atom.status),
+                        EpistemicStatus::Derived(d)
+                            if d.kind == DerivationKind::ReconstructedBranch
+                                && d.params.get("line").map(String::as_str) == Some("true")
+                    )
+                } else {
+                    !innermost_status(&atom.status).is_derived()
+                };
+                if !ok {
+                    return CheckOutcome::Fail(if branch_lines {
+                        "a --branch-lines SVN atom is not Derived(ReconstructedBranch, line=true)"
+                            .to_string()
+                    } else {
+                        "an SVN atom is Derived; SVN's revision spine is always Stated".to_string()
+                    });
                 }
                 if atom.parents.len() > 1 {
                     return CheckOutcome::Fail(
@@ -1495,6 +1532,7 @@ fn run_against_source(ir1: &Ir, repo: &Path, storage: &brygge_ir::Storage) -> Ag
         // Only Git infers renames; no other artifact records the parameter, so none is read.
         infer_renames: kind == SourceKind::Git && infer_renames_from_provenance(ir1),
         reconstruct_refs: reconstruct_refs_from_provenance(ir1),
+        branch_lines: kind == SourceKind::Svn && branch_lines_from_provenance(ir1),
         layout: layout_from_provenance(ir1),
         cvs_window: cvs_window_from_provenance(ir1),
         cvs_floor: cvs_floor_from_provenance(ir1),
@@ -1916,6 +1954,7 @@ fn run_against_target(
     let opts = SourceOpts {
         infer_renames: false,
         reconstruct_refs: false,
+        branch_lines: false,
         layout: LayoutPolicy::default(),
         cvs_window: 0,
         cvs_floor: 0,
@@ -2796,6 +2835,7 @@ fn real_encode_git_check(
     let opts = SourceOpts {
         infer_renames: false,
         reconstruct_refs: false,
+        branch_lines: false,
         layout: LayoutPolicy::default(),
         cvs_window: 0,
         cvs_floor: 0,
