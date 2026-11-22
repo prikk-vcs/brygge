@@ -152,6 +152,9 @@ or tag it touches**, holding only that root's own files, at the root of its tree
   is counted as `revisions with no branch change (N)`.
 - **Paths outside every branch/tag** (an explicit flag already covers the layout as a whole) are also
   recorded one at a time, naming the revision and the path, since they belong to no line.
+- **A branch or tag copied from a path outside every root** (not from another branch or tag) starts a
+  fresh line, with no parent, and its first atom is exactly the copied content — counted in the same
+  convention-violation flag as "a root created from outside the layout (N)".
 - **One known limit:** a repository with no `trunk`/`branches`/`tags` layout at all gets no refs even
   with `--reconstruct-refs`, so `--branch-lines` has nothing to build lines from either — it is not
   encodable to Git with brygge 0.8.0.

@@ -115,6 +115,10 @@ pub(crate) fn decode_with(
     let mut dead_lives: Vec<DeadLife> = Vec::new();
     let mut outside_drops: Vec<DropRecord> = Vec::new();
     let mut revisions_with_no_branch_change: u64 = 0u64;
+    // D-9 §2 / review 147 F-3: a root's first atom, created by copying from a path outside every
+    // recognized root. The behaviour (a fresh line, no parent) is unchanged; this only counts it, into
+    // the existing convention-violation flag's own detail (`layout_honesty`).
+    let mut roots_created_from_outside_the_layout: u64 = 0;
 
     for rev in dump.revisions {
         let metadata = metadata_from_props(&rev.props, &mut loss.unparseable_dates);
@@ -232,9 +236,13 @@ pub(crate) fn decode_with(
                             .unwrap_or_default();
                         (parent, start)
                     }
-                    // The copy source is not under any recognized root: no line to inherit from.
-                    // Documented limitation (request 074) — treated as a fresh line.
-                    None => (None, RelTree::new()),
+                    // The copy source is not under any recognized root: no line to inherit from,
+                    // so a fresh line starts with no parent, and its ops (below) become exactly the
+                    // copied content (diffed against the empty starting tree) — review 147 F-3.
+                    None => {
+                        roots_created_from_outside_the_layout += 1;
+                        (None, RelTree::new())
+                    }
                 }
             } else {
                 (None, RelTree::new())
@@ -258,10 +266,11 @@ pub(crate) fn decode_with(
                 resolve_copies(
                     &applied.copies,
                     &applied.copy_source_revs,
+                    number,
                     &root,
                     &opts.layout,
                     &history,
-                )
+                )?
             } else {
                 Vec::new()
             };
@@ -376,7 +385,12 @@ pub(crate) fn decode_with(
                 annotation: None,
             })?;
         }
-        layout_honesty(&prev_tree, opts, &mut builder);
+        layout_honesty(
+            &prev_tree,
+            opts,
+            roots_created_from_outside_the_layout,
+            &mut builder,
+        );
     }
 
     loss.outside_root_ops = outside_drops;
@@ -515,15 +529,26 @@ fn op_path(op: &PathOp) -> &str {
 /// Re-resolve `applied.copies` for one continuing root's atom: each copy's `from_atom` was computed
 /// against the single-spine `revnum_to_atom`, which branch-lines mode leaves empty, so it is recomputed
 /// here from `from`'s own enclosing root's line history at `copy_source_revs`. A copy whose `to` is not
-/// under `root`, or whose `from` resolves to no known root/atom at that revision, is left out — the
-/// latter is a documented limitation (request 074), not a silent majority case in practice.
+/// under `root` belongs to a different atom and is simply not this atom's; one whose `from` is under no
+/// recognized root is the documented outside-the-layout case (D-9 §2, review 147 F-3) and is left out,
+/// not an error.
+///
+/// # Errors
+/// [`Error::Ir`] (wrapping [`brygge_ir::Error::Invariant`]) if `from`'s enclosing root is found, but that
+/// root has no recorded atom at or before the copy's own source revision (review 147 F-2) — this
+/// "should not occur" for any dump D-9 describes: a copy's source content can only be read from a
+/// retained snapshot (`tree::apply_file`/`apply_dir`'s own `kept`), which requires that content to have
+/// already been tracked by some earlier, already-processed revision — i.e. for `history` to already hold
+/// an entry. No hand-built dumpstream in this module's tests reaches it, for the same reason; it fails
+/// closed rather than being silently dropped, per the honesty rule copies are already held to.
 fn resolve_copies(
     copies: &[CopyRecord],
     source_revs: &[u64],
+    revision: u64,
     root: &Root,
     policy: &crate::options::LayoutPolicy,
     history: &HashMap<String, BTreeMap<u64, AtomId>>,
-) -> Vec<CopyRecord> {
+) -> Result<Vec<CopyRecord>, Error> {
     let dir_prefix = format!("{}/", root.prefix);
     let mut out = Vec::new();
     for (copy, crev) in copies.iter().zip(source_revs.iter()) {
@@ -542,7 +567,11 @@ fn resolve_copies(
             .and_then(|h| h.range(..=*crev).next_back())
             .map(|(_, a)| *a)
         else {
-            continue;
+            return Err(Error::Ir(brygge_ir::Error::Invariant(format!(
+                "r{revision}: a copy into '{}' names source '{}' (at r{crev}), whose root \
+                 '{}' has no recorded line atom at or before that revision",
+                copy.to, copy.from, from_root.prefix
+            ))));
         };
         let from_dir_prefix = format!("{}/", from_root.prefix);
         let from_rel = copy
@@ -556,7 +585,7 @@ fn resolve_copies(
             status: EpistemicStatus::Stated,
         });
     }
-    out
+    Ok(out)
 }
 
 /// Remove duplicate roots by prefix (several nodes under one root in the same revision), keeping the
@@ -582,16 +611,29 @@ fn sort_roots_canonically(roots: &mut [Root], trunk_prefix: &str) {
 
 /// Count files in the final tree outside every root the layout recognizes, same as the single-spine
 /// path's own check — the aggregate flag `--branch-lines` keeps alongside the per-change drops above.
-fn layout_honesty(final_tree: &Tree, opts: &Options, builder: &mut IrBuilder) {
+fn layout_honesty(
+    final_tree: &Tree,
+    opts: &Options,
+    roots_created_from_outside_the_layout: u64,
+    builder: &mut IrBuilder,
+) {
     let outside = final_tree
         .keys()
         .filter(|path| layout::classify(path, &opts.layout).is_none())
-        .count();
-    if outside > 0 {
+        .count() as u64;
+    if outside > 0 || roots_created_from_outside_the_layout > 0 {
+        let what = if roots_created_from_outside_the_layout > 0 {
+            format!(
+                "paths outside the trunk/branches/tags layout ({outside}); a root created from \
+                 outside the layout ({roots_created_from_outside_the_layout})"
+            )
+        } else {
+            format!("paths outside the trunk/branches/tags layout ({outside})")
+        };
         builder.add_flag(Flag {
             kind: FlagKind::ConventionViolation,
-            what: format!("paths outside the trunk/branches/tags layout ({outside})"),
-            count: outside as u64,
+            what,
+            count: outside + roots_created_from_outside_the_layout,
             reason: "the repository partly follows the layout; these paths belong to no \
                      reconstructed branch or tag"
                 .to_string(),

@@ -345,6 +345,52 @@ fn op_path_eq(op: &PathOp, want: &str) -> bool {
     }
 }
 
+/// Review 147 F-3: a root created by copying from a path outside every recognized root. The behaviour
+/// is unchanged (a fresh line, no parent) — this proves its first atom's ops really are `Add`s of
+/// exactly the copied content, and that the count lands in the existing convention-violation flag.
+#[test]
+fn a_root_created_from_outside_the_layout_gives_adds_of_the_copied_content() {
+    let mut d = DumpBuilder::new();
+    d.revision(0, &[("svn:date", &date(0))]);
+    d.revision(1, &[("svn:log", "add"), ("svn:date", &date(1))]);
+    d.add_dir("trunk");
+    d.add_file("trunk/a.txt", b"one\n");
+    d.add_dir("branches");
+    d.add_dir("random");
+    d.add_file("random/x.txt", b"from outside\n");
+    d.add_file("random/y.txt", b"also from outside\n");
+    d.revision(
+        2,
+        &[("svn:log", "branch from outside"), ("svn:date", &date(2))],
+    );
+    d.copy_dir("branches/odd", (1, "random"));
+
+    let ir = decode_dump(&d.buf, &branch_lines_opts()).unwrap();
+    // trunk@1, branches/odd@2 — "random" is not a recognized root, so it gets no atom of its own.
+    assert_eq!(ir.atoms.len(), 2);
+    let odd_atom = &ir.atoms[1];
+    assert_eq!(atom_root(&ir, 1), "branches/odd");
+    assert!(odd_atom.parents.is_empty(), "no root to inherit from");
+    let mut adds: Vec<&str> = odd_atom
+        .ops
+        .iter()
+        .map(|o| match o {
+            PathOp::Add { path, .. } => path.as_str(),
+            other => panic!("expected only Add ops, got {other:?}"),
+        })
+        .collect();
+    adds.sort_unstable();
+    assert_eq!(adds, ["x.txt", "y.txt"]);
+
+    assert!(
+        ir.flags.iter().any(|f| f
+            .what
+            .contains("a root created from outside the layout (1)")),
+        "{:?}",
+        ir.flags
+    );
+}
+
 #[test]
 fn a_revision_touching_no_root_is_counted_not_an_atom() {
     let mut d = DumpBuilder::new();
