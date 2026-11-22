@@ -251,13 +251,18 @@ fn layout_from_provenance(ir: &Ir) -> LayoutPolicy {
         .unwrap_or_default()
 }
 
-/// The per-source knobs a decode needs: git uses `infer_renames`; svn uses `reconstruct_refs`/`layout`;
-/// cvs uses `reconstruct_refs`/`cvs_window`/`cvs_floor`. Built from CLI flags (decode) or from the
-/// artifact's provenance (against-source, so a re-decode reproduces the recorded import).
+/// The per-source knobs a decode needs: git uses `infer_renames`/`carry_extra_namespaces`; svn uses
+/// `reconstruct_refs`/`layout`/`branch_lines`; cvs uses `reconstruct_refs`/`cvs_window`/`cvs_floor`.
+/// Built from CLI flags (decode) or from the artifact's provenance (against-source, so a re-decode
+/// reproduces the recorded import) — `carry_extra_namespaces` is the one field never driven by either:
+/// it is never a CLI flag or a provenance param, only set by RFC 019 D-6's own check (below), which
+/// needs the Git decoder to see `refs/brygge/other/*` too, to compare a `--branch-lines` dead line's
+/// commits — nothing an ordinary `decode git` or `--against-source` re-derivation should carry.
 struct SourceOpts {
     infer_renames: bool,
     reconstruct_refs: bool,
     branch_lines: bool,
+    carry_extra_namespaces: Vec<String>,
     layout: LayoutPolicy,
     cvs_window: u64,
     cvs_floor: u8,
@@ -403,6 +408,7 @@ fn decode_source(
             let git = brygge_decode_git::Options {
                 infer_renames: opts.infer_renames,
                 rename_threshold: 100,
+                carry_extra_namespaces: opts.carry_extra_namespaces.clone(),
             };
             guard_decoder(|| brygge_decode_git::decode_with_storage(repo, &git, storage))
                 .map_err(|fault| (exit::FAILURE, fault))?
@@ -536,6 +542,7 @@ pub fn run_decode(
             infer_renames,
             reconstruct_refs,
             branch_lines,
+            carry_extra_namespaces: Vec::new(),
             layout: LayoutPolicy::default(),
             cvs_window: default_cvs.window_secs,
             cvs_floor: default_cvs.confidence_floor,
@@ -1533,6 +1540,8 @@ fn run_against_source(ir1: &Ir, repo: &Path, storage: &brygge_ir::Storage) -> Ag
         infer_renames: kind == SourceKind::Git && infer_renames_from_provenance(ir1),
         reconstruct_refs: reconstruct_refs_from_provenance(ir1),
         branch_lines: kind == SourceKind::Svn && branch_lines_from_provenance(ir1),
+        // Re-deriving the *source*, never a Git target: the recorded import never carried this.
+        carry_extra_namespaces: Vec::new(),
         layout: layout_from_provenance(ir1),
         cvs_window: cvs_window_from_provenance(ir1),
         cvs_floor: cvs_floor_from_provenance(ir1),
@@ -1955,6 +1964,10 @@ fn run_against_target(
         infer_renames: false,
         reconstruct_refs: false,
         branch_lines: false,
+        // RFC 019 D-6's check (review 147 F-1): the Git decoder must see a `--branch-lines` dead
+        // line's commits too, under refs/brygge/other/*, to compare them like any other commit —
+        // never exposed on the CLI, only this internal re-decode asks for it.
+        carry_extra_namespaces: vec![encode_git::OTHER_NAMESPACE.to_string()],
         layout: LayoutPolicy::default(),
         cvs_window: 0,
         cvs_floor: 0,
@@ -2836,6 +2849,10 @@ fn real_encode_git_check(
         infer_renames: false,
         reconstruct_refs: false,
         branch_lines: false,
+        // RFC 019 D-6's check (review 147 F-1): the Git decoder must see a `--branch-lines` dead
+        // line's commits too, under refs/brygge/other/*, to compare them like any other commit —
+        // never exposed on the CLI, only this internal re-decode asks for it.
+        carry_extra_namespaces: vec![encode_git::OTHER_NAMESPACE.to_string()],
         layout: LayoutPolicy::default(),
         cvs_window: 0,
         cvs_floor: 0,

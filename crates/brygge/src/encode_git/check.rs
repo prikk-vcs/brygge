@@ -188,34 +188,6 @@ impl<'a> Side<'a> {
     }
 }
 
-/// Every atom reachable (through `parents`) from a `Branch`- or `Tag`-kind ref's target — the only
-/// atoms a result commit could ever be found for. `brygge_decode_git` carries only `refs/heads/*` and
-/// `refs/tags/*` (CR-05, its own stated namespace policy, unrelated to this module): an atom reachable
-/// only from an `Other`-kind ref (RFC 019 Amendment A's dead/earlier-life branch-line roots, written to
-/// `refs/brygge/other/*`) is written correctly by `write_stream`, but the Git decoder structurally
-/// cannot see it, so it can never appear in `result.atoms` for any source. [`compare_atoms`] excludes
-/// these from the per-atom "no commit names it" check; [`compare_refs`] still checks the `Other` ref
-/// itself exists and names a plausible target, from `result_refs` directly.
-fn atoms_reachable_from_branch_or_tag(ir: &Ir) -> std::collections::HashSet<AtomId> {
-    let by_id: HashMap<AtomId, &ChangeAtom> = ir.atoms.iter().map(|a| (a.id, a)).collect();
-    let mut seen = std::collections::HashSet::new();
-    let mut stack: Vec<AtomId> = ir
-        .refs
-        .iter()
-        .filter(|rf| matches!(rf.kind, RefKind::Branch | RefKind::Tag))
-        .map(|rf| rf.target)
-        .collect();
-    while let Some(id) = stack.pop() {
-        if !seen.insert(id) {
-            continue;
-        }
-        if let Some(atom) = by_id.get(&id) {
-            stack.extend(atom.parents.iter().copied());
-        }
-    }
-    seen
-}
-
 /// Compares atoms (RFC 019 D-6 §2's "matching" and per-matched-pair rows), producing both sides' tree
 /// states in lockstep (one atom per side per round) so a matched pair is compared, and its states freed,
 /// as soon as both are ready — never holding a side's whole history of states at once.
@@ -285,9 +257,8 @@ fn compare_atoms(ir: &Ir, result: &Ir, digest_hex: &str, diffs: &mut Vec<String>
         }
         result_to_artifact.insert(commit.id, artifact_id);
     }
-    let checkable = atoms_reachable_from_branch_or_tag(ir);
     for atom in &ir.atoms {
-        if !artifact_to_result.contains_key(&atom.id) && checkable.contains(&atom.id) {
+        if !artifact_to_result.contains_key(&atom.id) {
             diffs.push(format!(
                 "{}: no commit in the result names it",
                 diff_source_label(&ir.provenance.source.kind, &atom.source.atom_id)
@@ -580,7 +551,6 @@ fn compare_refs(
     artifact_to_result: &HashMap<AtomId, AtomId>,
     diffs: &mut Vec<String>,
 ) {
-    let checkable = atoms_reachable_from_branch_or_tag(ir);
     let result_by_name: HashMap<&str, &GitRef> =
         result_refs.iter().map(|r| (r.name.as_str(), r)).collect();
     let result_annotated: HashMap<&str, &RefRecord> = result
@@ -603,14 +573,7 @@ fn compare_refs(
             // An annotated tag's ref points at the tag object, not the commit — that object's own
             // identity (tagger/time/message) is checked separately below, not by the oid here.
             (GitRefTarget::Oid(_), Some(_)) => true,
-            // A ref whose target the Git decoder structurally cannot see (an Other-kind,
-            // dead/earlier-life root under refs/brygge/other/*, RFC 019 Amendment A) has no
-            // `expected_target` to compare against — not a mismatch, just unverifiable at the
-            // per-commit level; its mere presence (checked by `result_by_name.get` above) is what
-            // this run can confirm.
-            (GitRefTarget::Oid(oid), None) => {
-                !checkable.contains(&rf.target) || commit_oid_matches(result, expected_target, oid)
-            }
+            (GitRefTarget::Oid(oid), None) => commit_oid_matches(result, expected_target, oid),
             (GitRefTarget::Symbolic(_), _) => false,
         };
         if !matches_target {

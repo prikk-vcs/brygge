@@ -18,6 +18,7 @@ fn main() {
     let opts = brygge_decode_git::Options {
         infer_renames,
         rename_threshold: 100,
+        carry_extra_namespaces: Vec::new(),
     };
 
     match brygge_decode_git::decode(std::path::Path::new(&path), &opts) {

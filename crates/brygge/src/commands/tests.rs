@@ -3083,6 +3083,7 @@ fn plain_opts() -> SourceOpts {
         infer_renames: false,
         reconstruct_refs: false,
         branch_lines: false,
+        carry_extra_namespaces: Vec::new(),
         layout: LayoutPolicy::default(),
         cvs_window: 300,
         cvs_floor: 50,

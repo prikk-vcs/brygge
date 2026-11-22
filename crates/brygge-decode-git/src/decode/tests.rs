@@ -243,6 +243,7 @@ fn renames_off_by_default_on_marks_derived() {
     let opts = Options {
         infer_renames: true,
         rename_threshold: 100,
+        carry_extra_namespaces: Vec::new(),
     };
     let ir = decode(r.path(), &opts).unwrap();
     let move_atom = ir
@@ -766,6 +767,7 @@ fn ambiguous_identical_content_move_is_not_marked() {
     let opts = Options {
         infer_renames: true,
         rename_threshold: 100,
+        carry_extra_namespaces: Vec::new(),
     };
     let ir = decode(r.path(), &opts).unwrap();
     // A 2->2 identical-content shuffle is ambiguous: brygge does not guess which became which.

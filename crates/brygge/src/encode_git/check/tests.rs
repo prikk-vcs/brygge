@@ -417,13 +417,13 @@ fn a_result_commit_naming_an_unknown_atom_is_a_difference() {
     assert_one_diff_containing(&base, &result, &refs, "names no atom in the artifact");
 }
 
-/// RFC 019 Amendment A: an atom reachable only from an `Other`-kind ref (a dead/earlier-life
-/// branch-line root), with no `Branch`/`Tag` ref reaching it, is never named by any commit
-/// `brygge_decode_git` can produce — its own namespace policy (CR-05) never carries
-/// `refs/brygge/other/*`. This must not be treated as a difference: `write_stream` still writes that
-/// commit for real, this check simply cannot verify it atom-by-atom.
-#[test]
-fn an_atom_reachable_only_from_an_other_ref_is_not_a_difference() {
+const DEAD_ARTIFACT_ATOM_ID: [u8; 20] = [9; 20];
+const DEAD_RESULT_COMMIT_ID: [u8; 20] = [8; 20];
+
+/// An artifact with a live atom (on `refs/heads/main`) and a dead/earlier-life one (on an `Other` ref,
+/// `dead@r1`) — RFC 019 Amendment A's `--branch-lines` shape: a line whose history Git would otherwise
+/// garbage-collect, kept alive under `refs/brygge/other/`.
+fn baseline_with_a_dead_line() -> Baseline {
     let mut builder = IrBuilder::new(provenance());
     let blob = builder.add_blob(b"hello\n".to_vec()).unwrap();
     let live_atom = builder
@@ -436,8 +436,6 @@ fn an_atom_reachable_only_from_an_other_ref_is_not_a_difference() {
                 status: brygge_ir::EpistemicStatus::Stated,
             }],
             copies: Vec::new(),
-            // Matches `matching_result`'s own hardcoded identity/time/message exactly, so the live
-            // atom is a genuine matching pair — this test is about the *dead* atom below, not this one.
             metadata: MetadataClaims {
                 author: Some(Identity {
                     name: Text::utf8("A U Thor"),
@@ -461,7 +459,6 @@ fn an_atom_reachable_only_from_an_other_ref_is_not_a_difference() {
             status: brygge_ir::EpistemicStatus::Stated,
         })
         .unwrap();
-    let dead_source = [9u8; 20];
     let dead_atom = builder
         .add_atom(AtomDraft {
             parents: Vec::new(),
@@ -473,13 +470,25 @@ fn an_atom_reachable_only_from_an_other_ref_is_not_a_difference() {
             }],
             copies: Vec::new(),
             metadata: MetadataClaims {
-                author: None,
-                author_time: None,
-                committer: None,
-                commit_time: None,
-                message: None,
+                author: Some(Identity {
+                    name: Text::utf8("A U Thor"),
+                    email: Some(Text::utf8("a@example.com")),
+                }),
+                author_time: Some(Time {
+                    seconds: 1_000,
+                    offset_minutes: Some(0),
+                }),
+                committer: Some(Identity {
+                    name: Text::utf8("C O Mitter"),
+                    email: Some(Text::utf8("c@example.com")),
+                }),
+                commit_time: Some(Time {
+                    seconds: 2_000,
+                    offset_minutes: Some(60),
+                }),
+                message: Some(Text::utf8("gone but not forgotten")),
             },
-            source: git_source(&dead_source),
+            source: git_source(&DEAD_ARTIFACT_ATOM_ID),
             status: brygge_ir::EpistemicStatus::Stated,
         })
         .unwrap();
@@ -504,21 +513,164 @@ fn an_atom_reachable_only_from_an_other_ref_is_not_a_difference() {
         })
         .unwrap();
     let artifact = builder.finish().unwrap();
-    let base = Baseline { artifact, blob };
+    Baseline { artifact, blob }
+}
 
-    // The result the real Git decoder would actually produce: only the live commit (the dead one is
-    // written for real but reachable from no refs/heads/*, refs/tags/* ref the decoder carries).
-    let (result, mut refs) = matching_result(&base);
-    // The real repository's own raw ref listing *does* carry the Other ref, pointing at some commit
-    // the decoder never surfaced (a synthetic oid stands in for it here).
-    refs.push(GitRef {
-        name: "refs/brygge/other/dead@r1".to_string(),
-        target: GitRefTarget::Oid([7u8; 20].to_vec()),
-    });
+/// A result matching `baseline_with_a_dead_line()` exactly, if `dead_tree_matches`; otherwise the dead
+/// line's own commit gets a different tree (review 147 F-1: this must be *caught*, not exempted).
+/// Review 147 F-1: `brygge_decode_git`'s `carry_extra_namespaces` makes this decode really see the dead
+/// line's commit (a real repository's `refs/brygge/other/*`), so both commits appear in `result.atoms`
+/// here exactly as a real check run would get them — this test proves `compare_git_target`'s own logic,
+/// not the decoder wiring (level 2 proves that, for real, against a real `svnadmin`/`git` repository).
+fn result_with_a_dead_line(base: &Baseline, dead_tree_matches: bool) -> (Ir, Vec<GitRef>) {
+    let mut builder = IrBuilder::new(provenance());
+    let live_blob = builder.add_blob(b"hello\n".to_vec()).unwrap();
+    assert_eq!(live_blob, base.blob);
+    let digest_hex = trailers::to_hex(&DIGEST);
+    let live_source_hex = trailers::to_hex(&ARTIFACT_ATOM_ID);
+    let live_message = format!("hello\n\n{}", trailer_block(&live_source_hex, &digest_hex));
+    let live_commit = builder
+        .add_atom(AtomDraft {
+            parents: Vec::new(),
+            ops: vec![PathOp::Add {
+                path: "f.txt".to_string(),
+                blob: live_blob,
+                mode: 0o100_644,
+                status: brygge_ir::EpistemicStatus::Stated,
+            }],
+            copies: Vec::new(),
+            metadata: MetadataClaims {
+                author: Some(Identity {
+                    name: Text::utf8("A U Thor"),
+                    email: Some(Text::utf8("a@example.com")),
+                }),
+                author_time: Some(Time {
+                    seconds: 1_000,
+                    offset_minutes: Some(0),
+                }),
+                committer: Some(Identity {
+                    name: Text::utf8("C O Mitter"),
+                    email: Some(Text::utf8("c@example.com")),
+                }),
+                commit_time: Some(Time {
+                    seconds: 2_000,
+                    offset_minutes: Some(60),
+                }),
+                message: Some(Text::utf8(&live_message)),
+            },
+            source: git_source(&RESULT_COMMIT_ID),
+            status: brygge_ir::EpistemicStatus::Stated,
+        })
+        .unwrap();
 
+    let dead_path = if dead_tree_matches {
+        "dead.txt"
+    } else {
+        "tampered.txt"
+    };
+    let dead_source_hex = trailers::to_hex(&DEAD_ARTIFACT_ATOM_ID);
+    let dead_message = format!(
+        "gone but not forgotten\n\n{}",
+        trailer_block(&dead_source_hex, &digest_hex)
+    );
+    let dead_commit = builder
+        .add_atom(AtomDraft {
+            parents: Vec::new(),
+            ops: vec![PathOp::Add {
+                path: dead_path.to_string(),
+                blob: live_blob,
+                mode: 0o100_644,
+                status: brygge_ir::EpistemicStatus::Stated,
+            }],
+            copies: Vec::new(),
+            metadata: MetadataClaims {
+                author: Some(Identity {
+                    name: Text::utf8("A U Thor"),
+                    email: Some(Text::utf8("a@example.com")),
+                }),
+                author_time: Some(Time {
+                    seconds: 1_000,
+                    offset_minutes: Some(0),
+                }),
+                committer: Some(Identity {
+                    name: Text::utf8("C O Mitter"),
+                    email: Some(Text::utf8("c@example.com")),
+                }),
+                commit_time: Some(Time {
+                    seconds: 2_000,
+                    offset_minutes: Some(60),
+                }),
+                message: Some(Text::utf8(&dead_message)),
+            },
+            source: git_source(&DEAD_RESULT_COMMIT_ID),
+            status: brygge_ir::EpistemicStatus::Stated,
+        })
+        .unwrap();
+
+    builder
+        .add_ref(RefRecord {
+            name: "main".to_string(),
+            kind: RefKind::Branch,
+            target: live_commit,
+            status: brygge_ir::EpistemicStatus::Stated,
+            source: None,
+            annotation: None,
+        })
+        .unwrap();
+    builder
+        .add_ref(RefRecord {
+            name: "dead@r1".to_string(),
+            kind: RefKind::Other("carry-extra-namespaces".to_string()),
+            target: dead_commit,
+            status: brygge_ir::EpistemicStatus::Stated,
+            source: None,
+            annotation: None,
+        })
+        .unwrap();
+    let result = builder.finish().unwrap();
+    let refs = vec![
+        GitRef {
+            name: "refs/heads/main".to_string(),
+            target: GitRefTarget::Oid(RESULT_COMMIT_ID.to_vec()),
+        },
+        GitRef {
+            name: "refs/brygge/other/dead@r1".to_string(),
+            target: GitRefTarget::Oid(DEAD_RESULT_COMMIT_ID.to_vec()),
+        },
+        GitRef {
+            name: "HEAD".to_string(),
+            target: GitRefTarget::Symbolic("refs/heads/main".to_string()),
+        },
+    ];
+    (result, refs)
+}
+
+/// Review 147 F-1: a dead line's own commit, decoded for real (via `carry_extra_namespaces`), is
+/// compared just like any other commit — not exempted.
+#[test]
+fn a_dead_line_with_a_matching_commit_corresponds() {
+    let base = baseline_with_a_dead_line();
+    let (result, refs) = result_with_a_dead_line(&base, true);
     match run(&base, &result, &refs) {
         Comparison::Corresponds => {}
         other => panic!("expected Corresponds, got {other:?}"),
+    }
+}
+
+/// The other half of F-1: a *wrong* tree on the dead line's own commit must be caught, exactly as it
+/// would be for a live one — this is the gap `e1e4c0e`'s exemption approach left open.
+#[test]
+fn a_dead_line_with_a_different_tree_does_not_correspond() {
+    let base = baseline_with_a_dead_line();
+    let (result, refs) = result_with_a_dead_line(&base, false);
+    match run(&base, &result, &refs) {
+        Comparison::DoesNotCorrespond(diffs) => {
+            assert!(
+                diffs.iter().any(|d| d.contains("tree differs")),
+                "{diffs:?}"
+            );
+        }
+        other => panic!("expected DoesNotCorrespond, got {other:?}"),
     }
 }
 

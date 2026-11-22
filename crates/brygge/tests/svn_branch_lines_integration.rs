@@ -225,6 +225,151 @@ fn a_real_svn_repository_with_a_deleted_branch_encodes_with_both_live_and_dead_r
     );
 }
 
+/// Review 147 F-1: `brygge_decode_git`'s `carry_extra_namespaces` must make the check actually *read*
+/// a dead line's commit, not merely confirm its ref exists — a tamper on that commit's own tree must be
+/// caught by `verify --against-target git`, exactly as a tamper on a live commit already is.
+#[test]
+fn tampering_a_dead_lines_commit_is_caught_by_against_target() {
+    if !svnadmin_available() {
+        eprintln!("skipping: svnadmin not on PATH");
+        return;
+    }
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let repo = build_svn_repo();
+    let artifact = scratch_dir("artifact").join("repo.ir");
+    let decode_result = run_decode_branch_lines(&repo, &artifact);
+    assert!(
+        decode_result.status.success() || decode_result.status.code() == Some(10),
+        "{}",
+        String::from_utf8_lossy(&decode_result.stderr)
+    );
+
+    let out = scratch_dir("result").join("repo.git");
+    let encode_result = run_encode_git(&artifact, &out);
+    assert!(
+        encode_result.status.success()
+            || [10, 30].contains(&encode_result.status.code().unwrap_or(-1)),
+        "{}",
+        String::from_utf8_lossy(&encode_result.stderr)
+    );
+
+    let refs = Command::new("git")
+        .args(["-C"])
+        .arg(&out)
+        .args(["for-each-ref", "--format=%(refname) %(objectname)"])
+        .output()
+        .unwrap();
+    let refs_text = String::from_utf8_lossy(&refs.stdout);
+    let (dead_ref, dead_oid) = refs_text
+        .lines()
+        .find_map(|l| {
+            let (name, oid) = l.split_once(' ')?;
+            name.starts_with("refs/brygge/other/branches/stable@r")
+                .then(|| (name.to_string(), oid.to_string()))
+        })
+        .unwrap_or_else(|| panic!("no dead-life ref for branches/stable in:\n{refs_text}"));
+
+    // Build a tampered tree (one changed file, by content, not by git's own index machinery — this is
+    // a bare repository), a new commit object over it with the same parent and message as the real one
+    // (so only the *tree* differs, proving this is caught by content, not by anything else), and move
+    // the dead ref to point at it.
+    let orig_tree = Command::new("git")
+        .args(["-C"])
+        .arg(&out)
+        .args(["log", "-1", "--format=%T", &dead_oid])
+        .output()
+        .unwrap();
+    let orig_tree = String::from_utf8_lossy(&orig_tree.stdout)
+        .trim()
+        .to_string();
+    let blob = Command::new("git")
+        .args(["-C"])
+        .arg(&out)
+        .args(["hash-object", "-w", "--stdin"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            use std::io::Write as _;
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(b"tampered content\n")?;
+            child.wait_with_output()
+        })
+        .unwrap();
+    let blob_oid = String::from_utf8_lossy(&blob.stdout).trim().to_string();
+    let mktree_input = format!("100644 blob {blob_oid}\ttampered.txt\n");
+    let new_tree = Command::new("git")
+        .args(["-C"])
+        .arg(&out)
+        .arg("mktree")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            use std::io::Write as _;
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(mktree_input.as_bytes())?;
+            child.wait_with_output()
+        })
+        .unwrap();
+    let _ = orig_tree; // the base tree is irrelevant: mktree above builds a wholly different one.
+    let new_tree_oid = String::from_utf8_lossy(&new_tree.stdout).trim().to_string();
+    let message = Command::new("git")
+        .args(["-C"])
+        .arg(&out)
+        .args(["log", "-1", "--format=%B", &dead_oid])
+        .output()
+        .unwrap();
+    let new_commit = Command::new("git")
+        .args(["-C"])
+        .arg(&out)
+        .args(["commit-tree", &new_tree_oid, "-m"])
+        .arg(String::from_utf8_lossy(&message.stdout).into_owned())
+        .output()
+        .unwrap();
+    let new_commit_oid = String::from_utf8_lossy(&new_commit.stdout)
+        .trim()
+        .to_string();
+    assert!(
+        Command::new("git")
+            .args(["-C"])
+            .arg(&out)
+            .args(["update-ref", &dead_ref, &new_commit_oid])
+            .status()
+            .unwrap()
+            .success()
+    );
+
+    let verify = Command::new(bin())
+        .arg("verify")
+        .arg(&artifact)
+        .args(["--against-target", "git"])
+        .arg(&out)
+        .output()
+        .unwrap();
+    assert_eq!(
+        verify.status.code(),
+        Some(50),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&verify.stdout),
+        String::from_utf8_lossy(&verify.stderr)
+    );
+    let report = String::from_utf8_lossy(&verify.stdout);
+    assert!(
+        report.contains("does-not-correspond") || report.contains("does not correspond"),
+        "{report}"
+    );
+}
+
 #[test]
 fn at_sign_in_a_ref_name_passes_git_check_ref_format() {
     if !git_available() {

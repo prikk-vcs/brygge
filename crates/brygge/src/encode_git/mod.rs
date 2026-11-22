@@ -157,6 +157,13 @@ fn is_branch_like(kind: &RefKind) -> bool {
     )
 }
 
+/// The namespace `Other`-kind refs live under in Git — outside both the branch and tag namespaces, so
+/// it never reads as either (unlike the retired example, which flattened `Other` into `refs/heads/*`
+/// too). Also the one prefix `commands.rs` asks `brygge_decode_git`'s `carry_extra_namespaces` to carry,
+/// for RFC 019 D-6's check (review 147 F-1) — one constant, so the writer's namespace and the check's
+/// own re-decode of it can never drift apart.
+pub(crate) const OTHER_NAMESPACE: &str = "refs/brygge/other/";
+
 /// The Git ref an IR ref maps to (RFC 019 D-3's table): `Tag` to `refs/tags/<name>`;
 /// `Branch`/`Bookmark`/`NamedBranch` to `refs/heads/<name>`; `Other` to `refs/brygge/other/<name>`,
 /// outside both the branch and tag namespaces, so it never reads as either (unlike the retired example,
@@ -167,7 +174,7 @@ pub(crate) fn git_ref_path(rf: &RefRecord) -> String {
         RefKind::Branch | RefKind::Bookmark | RefKind::NamedBranch => {
             format!("refs/heads/{}", rf.name)
         }
-        RefKind::Other(_) => format!("refs/brygge/other/{}", rf.name),
+        RefKind::Other(_) => format!("{OTHER_NAMESPACE}{}", rf.name),
     }
 }
 

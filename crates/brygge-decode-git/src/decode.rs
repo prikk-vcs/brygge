@@ -156,7 +156,7 @@ pub(crate) fn decode_with(
     open::check_repo_floor(&repo)?;
 
     let (refs, symbolic_ref_count, nested_tag_objects, tagger_time_counts) =
-        scan_refs(&repo, limits)?;
+        scan_refs(&repo, limits, opts)?;
 
     // CR-05: walk tips come only from carried refs (non-symbolic refs/heads/* and refs/tags/*,
     // a tag peeled to its commit). Compute this set first — before anything is read for atoms —
@@ -165,7 +165,12 @@ pub(crate) fn decode_with(
     // the walk, before any atom is built.
     let carried_tips: Vec<ObjectId> = refs
         .iter()
-        .filter(|r| matches!(r.kind, ScannedKind::Branch(_) | ScannedKind::Tag(_)))
+        .filter(|r| {
+            matches!(
+                r.kind,
+                ScannedKind::Branch(_) | ScannedKind::Tag(_) | ScannedKind::Extra(_)
+            )
+        })
         .filter_map(|r| r.commit)
         .collect();
     let mut set: BTreeSet<ObjectId> = BTreeSet::new();
@@ -353,6 +358,22 @@ pub(crate) fn decode_with(
                 // CR-06: peeled to a tree or blob, not a commit — recorded, not silently skipped.
                 None => non_commit_refs += 1,
             },
+            ScannedKind::Extra(name) => {
+                match r.commit.and_then(|c| sha_to_atom.get(&c).copied()) {
+                    Some(target) => {
+                        builder.add_ref(RefRecord {
+                            name: name.clone(),
+                            kind: RefKind::Other("carry-extra-namespaces".to_string()),
+                            target,
+                            status: EpistemicStatus::Stated,
+                            source: None,
+                            annotation: None,
+                        })?;
+                    }
+                    // CR-06: peeled to a tree or blob, not a commit — recorded, not silently skipped.
+                    None => non_commit_refs += 1,
+                }
+            }
             ScannedKind::Dropped(ns) => {
                 *dropped_namespace_counts.entry(ns).or_insert(0) += 1;
             }
@@ -431,6 +452,9 @@ struct ScannedRef {
 enum ScannedKind {
     Branch(String),
     Tag(String),
+    /// A ref under one of `Options::carry_extra_namespaces`'s prefixes — carried like a branch (a walk
+    /// tip, no annotation), named by the part of the ref name after the matched prefix.
+    Extra(String),
     Dropped(&'static str),
 }
 
@@ -444,6 +468,7 @@ const TAGS_PREFIX: &[u8] = b"refs/tags/";
 fn scan_refs(
     repo: &gix::Repository,
     limits: &Limits,
+    opts: &Options,
 ) -> Result<(Vec<ScannedRef>, u64, u64, ParseCounts), Error> {
     let mut out = Vec::new();
     let mut symbolic_refs = 0u64;
@@ -482,10 +507,28 @@ fn scan_refs(
         // CR-03/D-3(i): a carried ref's name (after its namespace prefix) must be valid UTF-8, never
         // converted lossily. Namespace classification itself only compares the ASCII prefix bytes, so
         // it is unaffected by what follows.
-        let carried_suffix: Option<(&[u8], bool)> = if raw_name.starts_with(HEADS_PREFIX) {
-            Some((raw_name.get(HEADS_PREFIX.len()..).unwrap_or(&[]), true))
+        #[derive(Clone, Copy)]
+        enum Carried {
+            Branch,
+            Tag,
+            Extra,
+        }
+        let carried_suffix: Option<(&[u8], Carried)> = if raw_name.starts_with(HEADS_PREFIX) {
+            Some((
+                raw_name.get(HEADS_PREFIX.len()..).unwrap_or(&[]),
+                Carried::Branch,
+            ))
         } else if raw_name.starts_with(TAGS_PREFIX) {
-            Some((raw_name.get(TAGS_PREFIX.len()..).unwrap_or(&[]), false))
+            Some((
+                raw_name.get(TAGS_PREFIX.len()..).unwrap_or(&[]),
+                Carried::Tag,
+            ))
+        } else if let Some(prefix) = opts
+            .carry_extra_namespaces
+            .iter()
+            .find(|p| raw_name.starts_with(p.as_bytes()))
+        {
+            Some((raw_name.get(prefix.len()..).unwrap_or(&[]), Carried::Extra))
         } else {
             None
         };
@@ -502,23 +545,32 @@ fn scan_refs(
         }
 
         let mut tag_identity = None;
-        let (kind, commit) = if let Some((suffix, is_branch)) = carried_suffix {
+        let (kind, commit) = if let Some((suffix, carried)) = carried_suffix {
             // Checked valid UTF-8 just above.
             let suffix_str = std::str::from_utf8(suffix).unwrap_or_default().to_string();
-            if is_branch {
-                // A branch carries no annotation, so a tag object it points at (via `update-ref`) has its
-                // tagger/message/signature dropped: every hop is counted (review 011 F-2).
-                let (commit, nested) = peel_carried(repo, direct, limits, false)?;
-                nested_tag_objects += nested;
-                (ScannedKind::Branch(suffix_str), commit)
-            } else {
-                let (identity, counts) = annotated_tag_identity(repo, direct)?;
-                tag_identity = identity;
-                tagger_time_counts.unparseable_times += counts.unparseable_times;
-                tagger_time_counts.unparseable_offsets += counts.unparseable_offsets;
-                let (commit, nested) = peel_carried(repo, direct, limits, true)?;
-                nested_tag_objects += nested;
-                (ScannedKind::Tag(suffix_str), commit)
+            match carried {
+                Carried::Branch | Carried::Extra => {
+                    // A branch (or an extra carried namespace) carries no annotation, so a tag object it
+                    // points at (via `update-ref`) has its tagger/message/signature dropped: every hop
+                    // is counted (review 011 F-2).
+                    let (commit, nested) = peel_carried(repo, direct, limits, false)?;
+                    nested_tag_objects += nested;
+                    let kind = if matches!(carried, Carried::Branch) {
+                        ScannedKind::Branch(suffix_str)
+                    } else {
+                        ScannedKind::Extra(suffix_str)
+                    };
+                    (kind, commit)
+                }
+                Carried::Tag => {
+                    let (identity, counts) = annotated_tag_identity(repo, direct)?;
+                    tag_identity = identity;
+                    tagger_time_counts.unparseable_times += counts.unparseable_times;
+                    tagger_time_counts.unparseable_offsets += counts.unparseable_offsets;
+                    let (commit, nested) = peel_carried(repo, direct, limits, true)?;
+                    nested_tag_objects += nested;
+                    (ScannedKind::Tag(suffix_str), commit)
+                }
             }
         } else {
             // Dropped namespaces are peeled leniently: they contribute no atom and no hard error, only
