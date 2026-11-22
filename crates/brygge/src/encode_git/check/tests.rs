@@ -36,6 +36,16 @@ const DIGEST: [u8; 32] = [0x11; 32];
 const ARTIFACT_ATOM_ID: [u8; 20] = [1; 20];
 const RESULT_COMMIT_ID: [u8; 20] = [2; 20];
 
+/// The label a matched-pair difference must carry (review 142 N-1): the artifact's own
+/// `Brygge-Source-Id`, never the IR's internal `AtomId`, plus the result's own commit id.
+fn expected_label() -> String {
+    format!(
+        "source {} (commit {})",
+        trailers::to_hex(&ARTIFACT_ATOM_ID),
+        trailers::to_hex(&RESULT_COMMIT_ID)
+    )
+}
+
 fn trailer_block(source_id_hex: &str, digest_hex: &str) -> String {
     format!(
         "Brygge-Encoded: brygge {} from git\nBrygge-Source-Id: {source_id_hex}\nBrygge-Artifact: \
@@ -303,7 +313,12 @@ fn a_different_tree_is_caught() {
             status: brygge_ir::EpistemicStatus::Stated,
         }];
     });
-    assert_one_diff_containing(&base, &result, &refs, "tree differs");
+    assert_one_diff_containing(
+        &base,
+        &result,
+        &refs,
+        &format!("{}: the resulting tree differs", expected_label()),
+    );
 }
 
 #[test]
@@ -316,7 +331,12 @@ fn a_different_author_is_caught() {
             email: Some(Text::utf8("else@example.com")),
         });
     });
-    assert_one_diff_containing(&base, &result, &refs, "author differs");
+    assert_one_diff_containing(
+        &base,
+        &result,
+        &refs,
+        &format!("{}: author differs", expected_label()),
+    );
 }
 
 #[test]
@@ -329,7 +349,12 @@ fn a_different_committer_is_caught() {
             email: Some(Text::utf8("else@example.com")),
         });
     });
-    assert_one_diff_containing(&base, &result, &refs, "committer differs");
+    assert_one_diff_containing(
+        &base,
+        &result,
+        &refs,
+        &format!("{}: committer differs", expected_label()),
+    );
 }
 
 #[test]
@@ -344,7 +369,12 @@ fn a_different_message_is_caught() {
         );
         draft.metadata.message = Some(Text::utf8(&wrong));
     });
-    assert_one_diff_containing(&base, &result, &refs, "message");
+    assert_one_diff_containing(
+        &base,
+        &result,
+        &refs,
+        &format!("{}: message (with its trailers) differs", expected_label()),
+    );
 }
 
 #[test]
@@ -353,7 +383,15 @@ fn a_result_commit_with_no_trailer_is_a_difference() {
     let (result, refs) = perturbed_atom(&base, "unused", |draft| {
         draft.metadata.message = Some(Text::utf8("hello\n"));
     });
-    assert_one_diff_containing(&base, &result, &refs, "no Brygge-Source-Id trailer");
+    assert_one_diff_containing(
+        &base,
+        &result,
+        &refs,
+        &format!(
+            "commit {}: has no Brygge-Source-Id trailer",
+            trailers::to_hex(&RESULT_COMMIT_ID)
+        ),
+    );
 }
 
 #[test]
@@ -367,7 +405,16 @@ fn a_result_commit_naming_an_unknown_atom_is_a_difference() {
         );
         draft.metadata.message = Some(Text::utf8(&message));
     });
-    assert_one_diff_containing(&base, &result, &refs, "names no atom");
+    assert_one_diff_containing(
+        &base,
+        &result,
+        &refs,
+        &format!(
+            "commit {}: its Brygge-Source-Id ",
+            trailers::to_hex(&RESULT_COMMIT_ID)
+        ),
+    );
+    assert_one_diff_containing(&base, &result, &refs, "names no atom in the artifact");
 }
 
 #[test]
@@ -375,7 +422,63 @@ fn an_artifact_atom_with_no_matching_commit_is_a_difference() {
     let base = baseline_artifact();
     // An empty result (no commits, no refs): the artifact's one atom is never named.
     let empty = IrBuilder::new(provenance()).finish().unwrap();
-    assert_one_diff_containing(&base, &empty, &[], "no commit in the result names it");
+    assert_one_diff_containing(
+        &base,
+        &empty,
+        &[],
+        &format!(
+            "source {}: no commit in the result names it",
+            trailers::to_hex(&ARTIFACT_ATOM_ID)
+        ),
+    );
+}
+
+#[test]
+fn two_result_commits_claiming_the_same_artifact_atom_are_named_by_their_own_commit_ids() {
+    // Review 142 N-1: this row used to name the two result commits by their internal `AtomId`s. It must
+    // instead name the claimed artifact atom by its source id, and each claimant by its own real commit
+    // id (here, each result atom's own `source.atom_id` — the two are deliberately distinct from each
+    // other and from `RESULT_COMMIT_ID`, so a passing assertion cannot be satisfied by an unrelated id).
+    let base = baseline_artifact();
+    let digest_hex = trailers::to_hex(&DIGEST);
+    let source_id_hex = trailers::to_hex(&ARTIFACT_ATOM_ID);
+    let mut builder = IrBuilder::new(provenance());
+    let blob_a = builder.add_blob(b"hello\n".to_vec()).unwrap();
+    let message = format!("hello\n\n{}", trailer_block(&source_id_hex, &digest_hex));
+    let claimant = |blob: BlobId, commit_atom_id: &[u8; 20]| AtomDraft {
+        parents: Vec::new(),
+        ops: vec![PathOp::Add {
+            path: "f.txt".to_string(),
+            blob,
+            mode: 0o100_644,
+            status: brygge_ir::EpistemicStatus::Stated,
+        }],
+        copies: Vec::new(),
+        metadata: MetadataClaims {
+            message: Some(Text::utf8(&message)),
+            ..MetadataClaims::default()
+        },
+        source: git_source(commit_atom_id),
+        status: brygge_ir::EpistemicStatus::Stated,
+    };
+    const FIRST_CLAIMANT: [u8; 20] = [7; 20];
+    const SECOND_CLAIMANT: [u8; 20] = [8; 20];
+    builder.add_atom(claimant(blob_a, &FIRST_CLAIMANT)).unwrap();
+    let blob_b = builder.add_blob(b"hello\n".to_vec()).unwrap();
+    builder
+        .add_atom(claimant(blob_b, &SECOND_CLAIMANT))
+        .unwrap();
+    let result = builder.finish().unwrap();
+    assert_one_diff_containing(
+        &base,
+        &result,
+        &[],
+        &format!(
+            "source {source_id_hex}: two result commits both claim it, commit {} and commit {}",
+            trailers::to_hex(&FIRST_CLAIMANT),
+            trailers::to_hex(&SECOND_CLAIMANT),
+        ),
+    );
 }
 
 #[test]
@@ -549,10 +652,12 @@ fn a_different_parent_is_caught() {
     ];
     match compare_git_target(&artifact, &digest, &result, &refs, "refs/heads/main") {
         Comparison::DoesNotCorrespond(diffs) => {
-            assert!(
-                diffs.iter().any(|d| d.contains("parents differ")),
-                "{diffs:?}"
+            let expected = format!(
+                "source {} (commit {}): parents differ",
+                trailers::to_hex(&[3u8; 20]),
+                trailers::to_hex(&[3u8; 20])
             );
+            assert!(diffs.iter().any(|d| d.contains(&expected)), "{diffs:?}");
         }
         other => panic!("expected DoesNotCorrespond, got {other:?}"),
     }

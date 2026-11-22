@@ -44,6 +44,27 @@ pub(crate) enum GitRefTarget {
     Symbolic(String),
 }
 
+/// Names a difference the way a person investigating it can actually look it up (review 142 N-1): the
+/// artifact's own `Brygge-Source-Id`, in F-7's readable form and truncated exactly as a refusal message
+/// is (`trailers::truncate_for_refusal`) — never the IR's internal `AtomId`, which nobody outside brygge
+/// itself can look up at all.
+fn diff_source_label(source_kind: &SourceKind, source_atom_id: &[u8]) -> String {
+    format!(
+        "source {}",
+        trailers::truncate_for_refusal(&trailers::source_id_text(source_kind, source_atom_id))
+    )
+}
+
+/// The result's own commit id (always Git, in this module), named the same truncated way, as a suffix
+/// onto [`diff_source_label`] when a result commit is actually known for the row (review 142 N-1: "add
+/// the result's commit id where there is one").
+fn diff_commit_suffix(commit_atom_id: &[u8]) -> String {
+    format!(
+        " (commit {})",
+        trailers::truncate_for_refusal(&trailers::to_hex(commit_atom_id))
+    )
+}
+
 /// The result of [`compare_git_target`].
 #[derive(Debug)]
 pub(crate) enum Comparison {
@@ -182,6 +203,10 @@ fn compare_atoms(ir: &Ir, result: &Ir, digest_hex: &str, diffs: &mut Vec<String>
     for atom in &ir.atoms {
         by_source_id.insert(atom.source.atom_id.clone(), atom.id);
     }
+    // Resolves a result `AtomId` back to its own real Git commit id, for naming a second result commit
+    // that claims an already-claimed artifact atom (review 142 N-1) — never the internal `AtomId` itself.
+    let result_by_id: HashMap<AtomId, &ChangeAtom> =
+        result.atoms.iter().map(|a| (a.id, a)).collect();
 
     for commit in &result.atoms {
         let message = commit
@@ -193,7 +218,10 @@ fn compare_atoms(ir: &Ir, result: &Ir, digest_hex: &str, diffs: &mut Vec<String>
         let label = || {
             format!(
                 "commit {}",
-                trailers::source_id_text(&SourceKind::Git, &commit.source.atom_id)
+                trailers::truncate_for_refusal(&trailers::source_id_text(
+                    &SourceKind::Git,
+                    &commit.source.atom_id
+                ))
             )
         };
         let Some(value) = trailers::extract_trailer(message, "Brygge-Source-Id") else {
@@ -215,9 +243,15 @@ fn compare_atoms(ir: &Ir, result: &Ir, digest_hex: &str, diffs: &mut Vec<String>
             continue;
         };
         if let Some(existing) = artifact_to_result.insert(artifact_id, commit.id) {
+            #[allow(clippy::expect_used)]
+            // `existing` was inserted from `result.atoms` just above, in an earlier iteration of this
+            // same loop; it cannot have been removed since.
+            let existing_atom = result_by_id.get(&existing).expect("result's own atom id");
             diffs.push(format!(
-                "two result commits both name the same artifact atom: {existing} and {}",
-                commit.id
+                "{}: two result commits both claim it, commit {} and commit {}",
+                diff_source_label(&ir.provenance.source.kind, &bytes),
+                trailers::truncate_for_refusal(&trailers::to_hex(&existing_atom.source.atom_id)),
+                trailers::truncate_for_refusal(&trailers::to_hex(&commit.source.atom_id)),
             ));
             continue;
         }
@@ -226,8 +260,8 @@ fn compare_atoms(ir: &Ir, result: &Ir, digest_hex: &str, diffs: &mut Vec<String>
     for atom in &ir.atoms {
         if !artifact_to_result.contains_key(&atom.id) {
             diffs.push(format!(
-                "artifact atom {}: no commit in the result names it",
-                trailers::source_id_text(&ir.provenance.source.kind, &atom.source.atom_id)
+                "{}: no commit in the result names it",
+                diff_source_label(&ir.provenance.source.kind, &atom.source.atom_id)
             ));
         }
     }
@@ -432,7 +466,11 @@ fn compare_matched_pair(
     digest_hex: &str,
     diffs: &mut Vec<String>,
 ) {
-    let label = trailers::source_id_text(&artifact_atom.source.kind, &artifact_atom.source.atom_id);
+    let label = format!(
+        "{}{}",
+        diff_source_label(&artifact_atom.source.kind, &artifact_atom.source.atom_id),
+        diff_commit_suffix(&result_atom.source.atom_id)
+    );
 
     let mapped_parents: Vec<Option<AtomId>> = artifact_atom
         .parents
@@ -446,16 +484,16 @@ fn compare_matched_pair(
             .zip(result_parents)
             .any(|(expected, actual)| expected.as_ref() != Some(actual))
     {
-        diffs.push(format!("atom {label}: parents differ"));
+        diffs.push(format!("{label}: parents differ"));
     }
 
     if a_state != r_state {
-        diffs.push(format!("atom {label}: the resulting tree differs"));
+        diffs.push(format!("{label}: the resulting tree differs"));
     }
 
     let expected_author = expected_identity(artifact_atom.metadata.author.as_ref(), "author");
     if !identity_matches(result_atom.metadata.author.as_ref(), &expected_author) {
-        diffs.push(format!("atom {label}: author differs"));
+        diffs.push(format!("{label}: author differs"));
     }
     let expected_author_when = expected_when(
         artifact_atom.metadata.author_time,
@@ -463,7 +501,7 @@ fn compare_matched_pair(
         "author-time-zone",
     );
     if !when_matches(result_atom.metadata.author_time, expected_author_when) {
-        diffs.push(format!("atom {label}: author time differs"));
+        diffs.push(format!("{label}: author time differs"));
     }
 
     let (expected_committer, expected_commit_when) = match (
@@ -485,10 +523,10 @@ fn compare_matched_pair(
         ),
     };
     if !identity_matches(result_atom.metadata.committer.as_ref(), &expected_committer) {
-        diffs.push(format!("atom {label}: committer differs"));
+        diffs.push(format!("{label}: committer differs"));
     }
     if !when_matches(result_atom.metadata.commit_time, expected_commit_when) {
-        diffs.push(format!("atom {label}: commit time differs"));
+        diffs.push(format!("{label}: commit time differs"));
     }
 
     let result_message = result_atom
@@ -499,7 +537,7 @@ fn compare_matched_pair(
         .unwrap_or(&[]);
     let expected = expected_message(artifact_atom, transforms, source_kind, digest_hex);
     if result_message != expected.as_slice() {
-        diffs.push(format!("atom {label}: message (with its trailers) differs"));
+        diffs.push(format!("{label}: message (with its trailers) differs"));
     }
 }
 
@@ -623,8 +661,14 @@ pub(crate) fn compare_git_target(
         if let Some(first) = seen.insert(&atom.source.atom_id, atom) {
             return Comparison::NotChecked(format!(
                 "two atoms in the artifact share one source id: {} and {}",
-                trailers::source_id_text(&ir.provenance.source.kind, &first.source.atom_id),
-                trailers::source_id_text(&ir.provenance.source.kind, &atom.source.atom_id),
+                trailers::truncate_for_refusal(&trailers::source_id_text(
+                    &ir.provenance.source.kind,
+                    &first.source.atom_id
+                )),
+                trailers::truncate_for_refusal(&trailers::source_id_text(
+                    &ir.provenance.source.kind,
+                    &atom.source.atom_id
+                )),
             ));
         }
     }
