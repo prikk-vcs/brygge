@@ -417,6 +417,111 @@ fn a_result_commit_naming_an_unknown_atom_is_a_difference() {
     assert_one_diff_containing(&base, &result, &refs, "names no atom in the artifact");
 }
 
+/// RFC 019 Amendment A: an atom reachable only from an `Other`-kind ref (a dead/earlier-life
+/// branch-line root), with no `Branch`/`Tag` ref reaching it, is never named by any commit
+/// `brygge_decode_git` can produce — its own namespace policy (CR-05) never carries
+/// `refs/brygge/other/*`. This must not be treated as a difference: `write_stream` still writes that
+/// commit for real, this check simply cannot verify it atom-by-atom.
+#[test]
+fn an_atom_reachable_only_from_an_other_ref_is_not_a_difference() {
+    let mut builder = IrBuilder::new(provenance());
+    let blob = builder.add_blob(b"hello\n".to_vec()).unwrap();
+    let live_atom = builder
+        .add_atom(AtomDraft {
+            parents: Vec::new(),
+            ops: vec![PathOp::Add {
+                path: "f.txt".to_string(),
+                blob,
+                mode: 0o100_644,
+                status: brygge_ir::EpistemicStatus::Stated,
+            }],
+            copies: Vec::new(),
+            // Matches `matching_result`'s own hardcoded identity/time/message exactly, so the live
+            // atom is a genuine matching pair — this test is about the *dead* atom below, not this one.
+            metadata: MetadataClaims {
+                author: Some(Identity {
+                    name: Text::utf8("A U Thor"),
+                    email: Some(Text::utf8("a@example.com")),
+                }),
+                author_time: Some(Time {
+                    seconds: 1_000,
+                    offset_minutes: Some(0),
+                }),
+                committer: Some(Identity {
+                    name: Text::utf8("C O Mitter"),
+                    email: Some(Text::utf8("c@example.com")),
+                }),
+                commit_time: Some(Time {
+                    seconds: 2_000,
+                    offset_minutes: Some(60),
+                }),
+                message: Some(Text::utf8("hello")),
+            },
+            source: git_source(&ARTIFACT_ATOM_ID),
+            status: brygge_ir::EpistemicStatus::Stated,
+        })
+        .unwrap();
+    let dead_source = [9u8; 20];
+    let dead_atom = builder
+        .add_atom(AtomDraft {
+            parents: Vec::new(),
+            ops: vec![PathOp::Add {
+                path: "dead.txt".to_string(),
+                blob,
+                mode: 0o100_644,
+                status: brygge_ir::EpistemicStatus::Stated,
+            }],
+            copies: Vec::new(),
+            metadata: MetadataClaims {
+                author: None,
+                author_time: None,
+                committer: None,
+                commit_time: None,
+                message: None,
+            },
+            source: git_source(&dead_source),
+            status: brygge_ir::EpistemicStatus::Stated,
+        })
+        .unwrap();
+    builder
+        .add_ref(RefRecord {
+            name: "main".to_string(),
+            kind: RefKind::Branch,
+            target: live_atom,
+            status: brygge_ir::EpistemicStatus::Stated,
+            source: None,
+            annotation: None,
+        })
+        .unwrap();
+    builder
+        .add_ref(RefRecord {
+            name: "dead@r1".to_string(),
+            kind: RefKind::Other("deleted-branch".to_string()),
+            target: dead_atom,
+            status: brygge_ir::EpistemicStatus::Stated,
+            source: None,
+            annotation: None,
+        })
+        .unwrap();
+    let artifact = builder.finish().unwrap();
+    let base = Baseline { artifact, blob };
+
+    // The result the real Git decoder would actually produce: only the live commit (the dead one is
+    // written for real but reachable from no refs/heads/*, refs/tags/* ref the decoder carries).
+    let (result, mut refs) = matching_result(&base);
+    // The real repository's own raw ref listing *does* carry the Other ref, pointing at some commit
+    // the decoder never surfaced (a synthetic oid stands in for it here).
+    refs.push(GitRef {
+        name: "refs/brygge/other/dead@r1".to_string(),
+        target: GitRefTarget::Oid([7u8; 20].to_vec()),
+    });
+
+    match run(&base, &result, &refs) {
+        Comparison::Corresponds => {}
+        other => panic!("expected Corresponds, got {other:?}"),
+    }
+}
+
 #[test]
 fn an_artifact_atom_with_no_matching_commit_is_a_difference() {
     let base = baseline_artifact();
