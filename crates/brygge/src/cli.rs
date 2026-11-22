@@ -74,6 +74,15 @@ pub enum Command {
         /// Output format.
         format: Format,
     },
+    /// `inspect --authors <artifact> [--format …]` (RFC 019 D-4): every distinct identity the artifact
+    /// carries, already in map-file form. Replaces the default fidelity report; mutually exclusive with
+    /// `--atoms` (one question per run, as `verify`'s two re-derivation options are).
+    InspectAuthors {
+        /// The IR artifact to read.
+        artifact: PathBuf,
+        /// Output format.
+        format: Format,
+    },
     /// `verify <artifact> [--against-source <source> | --against-target git <repository>] [--spill-dir
     /// <DIR>] [--format …]`
     Verify {
@@ -140,6 +149,20 @@ pub enum Command {
         /// Output format.
         format: Format,
     },
+    /// `transform authors <artifact> --map <file> --out <file> [--require-all] [--format …]` (RFC 019
+    /// D-4): the built-in authors transform, never looked up on `PATH`.
+    TransformAuthors {
+        /// The IR artifact to transform.
+        artifact: PathBuf,
+        /// The map file (§2): one `<source> = <target>` mapping per line.
+        map: PathBuf,
+        /// Where to write the transformed artifact. Must not be the same file as `<artifact>`.
+        out: PathBuf,
+        /// Refuse (exit 2) and write nothing if any identity in the artifact is left unmapped.
+        require_all: bool,
+        /// Output format.
+        format: Format,
+    },
     /// `--version`.
     Version,
     /// `--help`, `<command> --help`, or no arguments.
@@ -152,6 +175,11 @@ pub const PRIKK_TARGET: &str = "prikk";
 /// The target name reserved for the built-in Git encoder (RFC 019 D-1): never looked up on `PATH`.
 /// `encode --list` still shows a `brygge-encode-git` found there, marked shadowed by the built-in.
 pub const GIT_TARGET: &str = "git";
+
+/// The name reserved for the built-in authors transform (RFC 019 D-4): never looked up on `PATH`.
+/// `transform --list` still shows a `brygge-transform-authors` found there, marked shadowed by the
+/// built-in. `examples/transform-authors` stays the plugin reference example, under its own name.
+pub const AUTHORS_TRANSFORM: &str = "authors";
 
 /// Today's message for `encode prikk` (kept until Track B1 lands): a usage error, not a lookup failure.
 pub const PRIKK_NOT_AVAILABLE: &str = "'encode prikk' is not available yet: the prikk encoder follows \
@@ -184,10 +212,12 @@ brygge — carry version-control history into an intermediate representation (IR
 USAGE:
   brygge decode <git|hg|svn|cvs> <source> --out <artifact> [--infer-renames | --reconstruct-refs] [--spill-dir <DIR>] [--format human|machine]
   brygge inspect <artifact> [--atoms] [--format human|machine]
+  brygge inspect --authors <artifact> [--format human|machine]
   brygge verify <artifact> [--against-source <source> | --against-target git <repository>] [--spill-dir <DIR>] [--format human|machine]
   brygge encode <target> <artifact> [--format human|machine] [-- <plugin arguments>…]
   brygge encode --list [--format human|machine]
   brygge transform <name> <artifact> --out <file> [--format human|machine] [-- <plugin arguments>…]
+  brygge transform authors <artifact> --map <file> --out <file> [--require-all] [--format human|machine]
   brygge transform --list [--format human|machine]
   brygge --version | --help | <command> --help
 
@@ -202,7 +232,10 @@ COMMANDS:
            artifact; a RAM-backed directory (tmpfs) moves the memory cost rather than removing it.
            Artifacts are compressed (contract 0.3.0)
   inspect  print the fidelity report an artifact alone reproduces; --atoms adds the per-atom
-           listing: epistemic status, source ids, derived parameters, and the loss boundary
+           listing: epistemic status, source ids, derived parameters, and the loss boundary.
+           --authors lists every distinct author/committer/tagger identity instead, already in map-file
+           form, so it can be redirected to a file and filled in for `transform authors`; mutually
+           exclusive with --atoms
   verify   the honesty checks any reader can run with no source (always); with --against-source, also
            re-derive from the source and confirm correspondence; with --against-target git
            <repository>, instead check a kept Git repository against the artifact — the
@@ -231,7 +264,11 @@ COMMANDS:
            (silently, atomically overwritten if it already exists); it must not be the same file as
            <artifact>. Arguments after -- are passed to the plugin verbatim, with no shell. The plugin is
            not part of brygge. `transform --list` shows every brygge-transform-* plugin found on PATH, in
-           PATH order, marking one shadowed by an earlier directory's plugin of the same name
+           PATH order, marking one shadowed by an earlier directory's plugin of the same name.
+           `transform authors` is the one built-in transform: it maps source identities to Git identities
+           from a --map file (see `inspect --authors`), in-process, with no plugin — the name is reserved,
+           and a brygge-transform-authors on PATH is shadowed by it. --require-all refuses (exit 2) if any
+           identity in the artifact is left unmapped
 
 VOCABULARY: artifact, source, stated, derived, dropped, flagged, refused, Unverifiable.";
 
@@ -425,6 +462,8 @@ fn parse_inspect(args: &[String]) -> Result<Command, String> {
     let mut artifact: Option<PathBuf> = None;
     let mut atoms = false;
     let mut atoms_seen = false;
+    let mut authors = false;
+    let mut authors_seen = false;
     let mut format = Format::Human;
     let mut format_seen = false;
     while let Some(arg) = it.next() {
@@ -435,6 +474,13 @@ fn parse_inspect(args: &[String]) -> Result<Command, String> {
                 }
                 atoms_seen = true;
                 atoms = true;
+            }
+            "--authors" => {
+                if authors_seen {
+                    return Err(usage_error("inspect", "--authors given more than once"));
+                }
+                authors_seen = true;
+                authors = true;
             }
             "--format" => {
                 if format_seen {
@@ -458,6 +504,15 @@ fn parse_inspect(args: &[String]) -> Result<Command, String> {
         }
     }
     let artifact = artifact.ok_or_else(|| usage_error("inspect", "inspect needs an <artifact>"))?;
+    if authors && atoms {
+        return Err(usage_error(
+            "inspect",
+            "--authors and --atoms may not be given together (one question per run)",
+        ));
+    }
+    if authors {
+        return Ok(Command::InspectAuthors { artifact, format });
+    }
     Ok(Command::Inspect {
         artifact,
         atoms,
@@ -750,6 +805,9 @@ fn parse_transform(args: &[String]) -> Result<Command, String> {
         return Err(usage_error("transform", format!("unknown flag '{first}'")));
     }
     let name = first.clone();
+    if name == AUTHORS_TRANSFORM {
+        return parse_transform_authors(args.get(1..).unwrap_or(&[]));
+    }
     if !is_valid_target(&name) {
         return Err(usage_error(
             "transform",
@@ -843,6 +901,86 @@ fn parse_transform_list(args: &[String]) -> Result<Command, String> {
         }
     }
     Ok(Command::TransformList { format })
+}
+
+/// `transform authors <artifact> --map <file> --out <file> [--require-all] [--format …]` (RFC 019
+/// D-4). No `--`/plugin-argument syntax: the built-in transform is not a plugin.
+fn parse_transform_authors(args: &[String]) -> Result<Command, String> {
+    let mut it = args.iter();
+    let mut artifact: Option<PathBuf> = None;
+    let mut map: Option<PathBuf> = None;
+    let mut map_seen = false;
+    let mut out: Option<PathBuf> = None;
+    let mut out_seen = false;
+    let mut require_all = false;
+    let mut require_all_seen = false;
+    let mut format = Format::Human;
+    let mut format_seen = false;
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--map" => {
+                if map_seen {
+                    return Err(usage_error("transform", "--map given more than once"));
+                }
+                map_seen = true;
+                map = Some(need_value(&mut it, "--map", "transform")?);
+            }
+            "--out" => {
+                if out_seen {
+                    return Err(usage_error("transform", "--out given more than once"));
+                }
+                out_seen = true;
+                out = Some(need_value(&mut it, "--out", "transform")?);
+            }
+            "--require-all" => {
+                if require_all_seen {
+                    return Err(usage_error(
+                        "transform",
+                        "--require-all given more than once",
+                    ));
+                }
+                require_all_seen = true;
+                require_all = true;
+            }
+            "--format" => {
+                if format_seen {
+                    return Err(usage_error("transform", "--format given more than once"));
+                }
+                format_seen = true;
+                format = parse_format(&mut it, "transform")?;
+            }
+            other if other.starts_with('-') => {
+                return Err(usage_error("transform", format!("unknown flag '{other}'")));
+            }
+            other => {
+                if artifact.is_some() {
+                    return Err(usage_error(
+                        "transform",
+                        format!("unexpected extra argument '{other}'"),
+                    ));
+                }
+                artifact = Some(PathBuf::from(other));
+            }
+        }
+    }
+    let artifact = artifact.ok_or_else(|| {
+        usage_error(
+            "transform",
+            "transform authors needs an <artifact>: transform authors <artifact> --map <file> --out \
+             <file>",
+        )
+    })?;
+    let map =
+        map.ok_or_else(|| usage_error("transform", "transform authors needs --map <file>"))?;
+    let out =
+        out.ok_or_else(|| usage_error("transform", "transform authors needs --out <file>"))?;
+    Ok(Command::TransformAuthors {
+        artifact,
+        map,
+        out,
+        require_all,
+        format,
+    })
 }
 
 #[cfg(test)]

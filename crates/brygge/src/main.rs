@@ -15,6 +15,7 @@
 //! head`) cannot turn into a panic (`cli-broken-pipe-handoff-v1.md`).
 #![deny(clippy::print_stdout, clippy::print_stderr)]
 
+mod authors;
 mod cli;
 mod commands;
 mod display;
@@ -78,6 +79,9 @@ fn run(cmd: Command) -> i32 {
             atoms,
             format,
         } => commands::run_inspect(&artifact, atoms, format),
+        Command::InspectAuthors { artifact, format } => {
+            commands::run_inspect_authors(&artifact, format)
+        }
         Command::Verify {
             artifact,
             against_source,
@@ -111,5 +115,12 @@ fn run(cmd: Command) -> i32 {
             format,
         } => commands::run_transform(&name, &artifact, &out, &plugin_args, format),
         Command::TransformList { format } => commands::run_transform_list(format),
+        Command::TransformAuthors {
+            artifact,
+            map,
+            out,
+            require_all,
+            format,
+        } => commands::run_transform_authors(&artifact, &map, &out, require_all, format),
     }
 }

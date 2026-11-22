@@ -229,6 +229,52 @@ fn an_honest_author_change_via_edit_passes_check() {
     assert_eq!(summary.dropped, 0);
 }
 
+/// A real bug found by RFC 019 batch G3's corpus run (request 073): `Edit::finish` cloned a surviving
+/// copy's `from_atom` verbatim, in the *input's* id-space. The atom it names keeps its id only while
+/// nothing about it changes; editing `root`'s own author here changes `root`'s id, and `tip`'s copy
+/// (never removed, unlike the stress test above) must follow it — `check`'s own copy comparison
+/// (`transform.rs`) already expected this remapping; only `Edit::finish` had not done it, so a real
+/// transform over a real history (many an atom edited, far more copies surviving) hit `IrBuilder`'s own
+/// "copy from an atom not yet added" invariant before `check` ever ran.
+#[test]
+fn a_surviving_copy_follows_its_from_atom_s_new_id() {
+    let input = richer_decoded_fixture();
+    let root_in = input
+        .ir
+        .atoms
+        .iter()
+        .find(|a| a.source == src("c1"))
+        .unwrap()
+        .id;
+    let mut edit = Edit::begin(&input, "authors-fixer", "1.0.0", BTreeMap::new());
+    edit.atom_mut(0).unwrap().set_author(Some(Identity {
+        name: Text::utf8("A. Alias"),
+        email: Some(Text::utf8("alias@example.com")),
+    }));
+    let output_ir = edit.finish().unwrap();
+    let output = from_bytes(&to_bytes(&output_ir)).unwrap();
+    let summary = check(&input, &output, "authors-fixer").unwrap();
+    assert_eq!(summary.atoms_changed, 1, "only root's own claim changed");
+
+    let root_out = output
+        .ir
+        .atoms
+        .iter()
+        .find(|a| a.source == src("c1"))
+        .unwrap();
+    assert_ne!(root_out.id, root_in, "root's own content changed its id");
+    let tip = output
+        .ir
+        .atoms
+        .iter()
+        .find(|a| a.source == src("c3"))
+        .unwrap();
+    assert_eq!(
+        tip.copies[0].from_atom, root_out.id,
+        "the surviving copy must follow root's new id, not the stale input one"
+    );
+}
+
 #[test]
 fn an_honest_no_op_edit_passes_check_as_a_zero_change_step() {
     let input = decoded_fixture();

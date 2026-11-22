@@ -19,7 +19,8 @@ use brygge_ir::model::{AtomId, ChangedPart, FlagKind, PathOp, RefKind, Text};
 use brygge_ir::status::{Derivation, DerivationKind, EpistemicStatus};
 use brygge_ir::{Decoded, Ir, LossClass};
 
-use crate::cli::{Format, GIT_TARGET, SourceKind};
+use crate::authors;
+use crate::cli::{AUTHORS_TRANSFORM, Format, GIT_TARGET, SourceKind};
 use crate::display;
 use crate::encode_git;
 use crate::exit;
@@ -29,6 +30,8 @@ use crate::plugin;
 // RFC 019 D-6 (batch G2): `verify.against_target`[.detail] is a new machine key.
 const VERIFY_VERSION: u32 = 5;
 const INSPECT_VERSION: u32 = 4;
+// RFC 019 D-4 (batch G3): `inspect --authors`'s own machine form, independent of `inspect`'s own report.
+const INSPECT_AUTHORS_VERSION: u32 = 1;
 
 // ---- small shared renderers -------------------------------------------------------------------------
 
@@ -618,6 +621,92 @@ pub fn run_inspect(artifact: &Path, atoms: bool, format: Format) -> i32 {
         return code;
     }
     exit::CLEAN
+}
+
+/// `inspect --authors` (RFC 019 D-4 §1): every distinct identity the artifact carries, already in
+/// map-file form — redirect it to a file and fill in each right-hand side for `transform authors`.
+/// Replaces the default fidelity report entirely; unlike `inspect`'s own report, there is nothing to
+/// decode beyond the artifact itself, so a read failure here is the only way this can fail.
+pub fn run_inspect_authors(artifact: &Path, format: Format) -> i32 {
+    let decoded = match read_ir(artifact) {
+        Ok(d) => d,
+        Err(e) => {
+            output::stderr(&display::human(&e));
+            return exit::FAILURE;
+        }
+    };
+    let identities = authors::collect_identities(&decoded.ir);
+    let rendered = match format {
+        Format::Human => render_inspect_authors_human(&identities),
+        Format::Machine => render_inspect_authors_machine(&identities),
+    };
+    if let Some(code) = output::stdout(&rendered) {
+        return code;
+    }
+    exit::CLEAN
+}
+
+fn render_inspect_authors_human(identities: &[authors::IdentityCount]) -> String {
+    let mut s = String::new();
+    let n = identities.len();
+    let _ = writeln!(
+        s,
+        "# brygge inspect --authors: {n} identit{}; fill in each right-hand side, delete lines you do \
+         not want to map",
+        if n == 1 { "y" } else { "ies" }
+    );
+    let prefixes: Vec<String> = identities
+        .iter()
+        .map(|ic| {
+            format!(
+                "{} =",
+                display::human(&authors::identity_as_map_source(&ic.identity))
+            )
+        })
+        .collect();
+    let max_len = prefixes
+        .iter()
+        .map(|p| p.chars().count())
+        .max()
+        .unwrap_or(0);
+    for (ic, prefix) in identities.iter().zip(&prefixes) {
+        let pad = (max_len + 2).saturating_sub(prefix.chars().count());
+        let mut counts = Vec::new();
+        if ic.author > 0 {
+            counts.push(format!("{} author", ic.author));
+        }
+        if ic.committer > 0 {
+            counts.push(format!("{} committer", ic.committer));
+        }
+        if ic.tagger > 0 {
+            counts.push(format!("{} tagger", ic.tagger));
+        }
+        let _ = writeln!(s, "{prefix}{}# {}", " ".repeat(pad), counts.join(", "));
+    }
+    s
+}
+
+fn render_inspect_authors_machine(identities: &[authors::IdentityCount]) -> String {
+    let mut s = String::new();
+    let _ = writeln!(s, "inspect_authors_version={INSPECT_AUTHORS_VERSION}");
+    for (i, ic) in identities.iter().enumerate() {
+        let _ = writeln!(
+            s,
+            "authors.{i}.name={}",
+            display::machine_bytes(&ic.identity.name.bytes)
+        );
+        if let Some(email) = &ic.identity.email {
+            let _ = writeln!(
+                s,
+                "authors.{i}.email={}",
+                display::machine_bytes(&email.bytes)
+            );
+        }
+        let _ = writeln!(s, "authors.{i}.count.author={}", ic.author);
+        let _ = writeln!(s, "authors.{i}.count.committer={}", ic.committer);
+        let _ = writeln!(s, "authors.{i}.count.tagger={}", ic.tagger);
+    }
+    s
 }
 
 /// RFC 018 D-5, `inspect` §5: the transform chain's own overview — shown whenever the chain is
@@ -3034,8 +3123,13 @@ fn run_encode_git_with_check(
 
 // ---- transform (RFC 018 D-6) -----------------------------------------------------------------------
 
-const TRANSFORM_LIST_VERSION: u32 = 1;
+// RFC 019 D-4 (batch G3): bumped for `transformer.N.shadowed_by`, added when `authors` became a
+// built-in — the same bump `ENCODE_LIST_VERSION` got for `git`.
+const TRANSFORM_LIST_VERSION: u32 = 2;
 const TRANSFORM_VERSION: u32 = 1;
+// RFC 019 D-4 (batch G3): the built-in `transform authors` has no plugin banner to carry
+// `transform_version`'s own line, so it gets its own version instead of silently going unversioned.
+const TRANSFORM_AUTHORS_VERSION: u32 = 1;
 
 /// `transform --list [--format …]`: every `brygge-transform-*` plugin [`plugin::list`] finds on `PATH`.
 pub fn run_transform_list(format: Format) -> i32 {
@@ -3058,7 +3152,9 @@ fn render_transform_list_human(plugins: &[plugin::Listed]) -> String {
     }
     for p in plugins {
         let _ = write!(s, "{}  {}", p.name, p.path.display());
-        if p.shadowed {
+        if p.name == AUTHORS_TRANSFORM {
+            let _ = write!(s, "  (shadowed by the built-in)");
+        } else if p.shadowed {
             let _ = write!(s, "  (shadowed)");
         }
         let _ = writeln!(s);
@@ -3080,7 +3176,17 @@ fn render_transform_list_machine(plugins: &[plugin::Listed]) -> String {
             "transformer.{i}.path={}",
             display::machine_value(&p.path.display().to_string())
         );
-        let _ = writeln!(s, "transformer.{i}.shadowed={}", p.shadowed);
+        // `authors` is always shadowed (the built-in always wins), regardless of plugin::list's own
+        // PATH-position-based `shadowed` computation, which knows nothing of the reservation — the same
+        // treatment `encode`'s `git` target gets in `render_encode_list_machine`.
+        let _ = writeln!(
+            s,
+            "transformer.{i}.shadowed={}",
+            p.shadowed || p.name == AUTHORS_TRANSFORM
+        );
+        if p.name == AUTHORS_TRANSFORM {
+            let _ = writeln!(s, "transformer.{i}.shadowed_by=built_in");
+        }
     }
     s
 }
@@ -3339,6 +3445,263 @@ pub fn run_transform(
                 return exit::FAILURE;
             }
             output::stderr(&transform_result_text(format, &summary));
+            final_exit
+        }
+        Err(violation) => {
+            let _ = std::fs::remove_file(&tmp);
+            output::stderr(&display::human(&format!(
+                "the transform's output was refused: {violation}"
+            )));
+            exit::VERIFY_FAILED
+        }
+    }
+}
+
+/// One identity `transform authors` could not map, as a unit it lists on stderr.
+fn unmapped_line(identity_count: &authors::IdentityCount) -> String {
+    let mut counts = Vec::new();
+    if identity_count.author > 0 {
+        counts.push(format!("{} author", identity_count.author));
+    }
+    if identity_count.committer > 0 {
+        counts.push(format!("{} committer", identity_count.committer));
+    }
+    if identity_count.tagger > 0 {
+        counts.push(format!("{} tagger", identity_count.tagger));
+    }
+    format!(
+        "  {}  ({})",
+        display::human(&authors::identity_as_map_source(&identity_count.identity)),
+        counts.join(", ")
+    )
+}
+
+/// As [`transform_result_text`], for the built-in `authors` transform (RFC 019 D-4 §3): the same
+/// `transform.*` keys, plus `transform.authors.mapped`/`.unmapped` — the distinct-identity counts no
+/// other transform reports.
+fn transform_authors_result_text(
+    format: Format,
+    summary: &brygge_ir::transform::StepSummary,
+    mapped: u64,
+    unmapped: u64,
+) -> String {
+    match format {
+        Format::Human => format!(
+            "step {}: {} atom(s) changed, {} ref(s) changed, {} dropped; {} identit{} mapped, {} left \
+             unmapped",
+            summary.step,
+            summary.atoms_changed,
+            summary.refs_changed,
+            summary.dropped,
+            mapped,
+            if mapped == 1 { "y" } else { "ies" },
+            unmapped
+        ),
+        Format::Machine => format!(
+            "transform_authors_version={TRANSFORM_AUTHORS_VERSION}\ntransform.step={}\n\
+             transform.atoms_changed={}\ntransform.ops_changed={}\ntransform.refs_changed={}\n\
+             transform.dropped={}\ntransform.authors.mapped={mapped}\n\
+             transform.authors.unmapped={unmapped}",
+            summary.step,
+            summary.atoms_changed,
+            summary.ops_changed,
+            summary.refs_changed,
+            summary.dropped,
+        ),
+    }
+}
+
+/// `transform authors <artifact> --map <file> --out <file> [--require-all]` (RFC 019 D-4 §3): the one
+/// built-in transform, run in-process through [`brygge_ir::transform::Edit`] exactly as a plugin would
+/// build its own output — never a subprocess, never a temp file for the *input* side, but still the
+/// same output check, atomic write, and `--out` rules `transform`'s plugin path uses.
+pub fn run_transform_authors(
+    artifact: &Path,
+    map_path: &Path,
+    out: &Path,
+    require_all: bool,
+    format: Format,
+) -> i32 {
+    if same_file_as(out, artifact) {
+        output::stderr("--out must not be the same file as <artifact>");
+        return exit::USAGE;
+    }
+
+    let map_bytes = match std::fs::read(map_path) {
+        Ok(b) => b,
+        Err(e) => {
+            output::stderr(&format!("cannot read {}: {e}", map_path.display()));
+            return exit::FAILURE;
+        }
+    };
+    let map = match authors::parse_map(&map_bytes) {
+        Ok(m) => m,
+        Err(problems) => {
+            for p in &problems {
+                output::stderr(p);
+            }
+            return exit::USAGE;
+        }
+    };
+
+    let input = match brygge_ir::from_file(artifact) {
+        Ok(d) => d,
+        Err(e) => {
+            output::stderr(&display::human(&format!(
+                "cannot read {}: {e}",
+                artifact.display()
+            )));
+            return exit::FAILURE;
+        }
+    };
+    if let Some(dup) = brygge_ir::transform::duplicate_source_identity(&input) {
+        output::stderr(&display::human(&format!(
+            "refused: the input has two atoms with the same source identity ({dup:?}) — a transform \
+             cannot match atoms by it at all"
+        )));
+        return exit::VERIFY_FAILED;
+    }
+
+    let identities = authors::collect_identities(&input.ir);
+    let mut hits = vec![0u64; map.mappings.len()];
+    let mut unmapped = Vec::new();
+    for ic in &identities {
+        match authors::lookup(&map, &ic.identity).and_then(|idx| hits.get_mut(idx)) {
+            Some(hit) => *hit += 1,
+            None => unmapped.push(ic),
+        }
+    }
+    if !unmapped.is_empty() {
+        output::stderr(&format!(
+            "{} identit{} left unmapped:",
+            unmapped.len(),
+            if unmapped.len() == 1 { "y" } else { "ies" }
+        ));
+        for ic in &unmapped {
+            output::stderr(&unmapped_line(ic));
+        }
+    }
+    if require_all && !unmapped.is_empty() {
+        output::stderr(
+            "refused: --require-all needs every identity mapped (see the list above); nothing written",
+        );
+        return exit::USAGE;
+    }
+    for (mapping, hit) in map.mappings.iter().zip(&hits) {
+        if *hit == 0 {
+            output::stderr(&format!(
+                "warning: map line {} matched nothing",
+                mapping.line
+            ));
+        }
+    }
+    let mapped_count = (identities.len() - unmapped.len()) as u64;
+
+    let mut params = std::collections::BTreeMap::new();
+    params.insert(
+        "map_sha256".to_string(),
+        brygge_ir::BlobId::of(&map_bytes).to_hex(),
+    );
+    params.insert("require_all".to_string(), require_all.to_string());
+
+    let mut edit =
+        brygge_ir::transform::Edit::begin(&input, "authors", env!("CARGO_PKG_VERSION"), params);
+    for (in_atom, atom_edit) in input.ir.atoms.iter().zip(edit.atoms()) {
+        if let Some(author) = &in_atom.metadata.author {
+            if let Some(target) = authors::remap(&map, author) {
+                atom_edit.set_author(Some(target.clone()));
+            }
+        }
+        if let Some(committer) = &in_atom.metadata.committer {
+            if let Some(target) = authors::remap(&map, committer) {
+                atom_edit.set_committer(Some(target.clone()));
+            }
+        }
+    }
+    for r in &input.ir.refs {
+        let Some(tagger) = r.annotation.as_ref().and_then(|a| a.tagger.as_ref()) else {
+            continue;
+        };
+        let Some(target) = authors::remap(&map, tagger) else {
+            continue;
+        };
+        let mut new_annotation = r.annotation.clone().unwrap_or_default();
+        new_annotation.tagger = Some(target.clone());
+        if let Ok(mut ref_edit) = edit.ref_mut(r.kind.clone(), &r.name) {
+            ref_edit.set_annotation(Some(new_annotation));
+        }
+    }
+
+    let output_ir = match edit.finish() {
+        Ok(ir) => ir,
+        Err(e) => {
+            output::stderr(&display::human(&format!(
+                "the transform's own output was refused: {e}"
+            )));
+            return exit::FAILURE;
+        }
+    };
+
+    let dir = out
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let tmp = match create_transform_temp(dir) {
+        Ok(p) => p,
+        Err(e) => {
+            output::stderr(&format!(
+                "cannot create a temp file in {}: {e}",
+                dir.display()
+            ));
+            return exit::FAILURE;
+        }
+    };
+    if let Err(e) = std::fs::write(&tmp, brygge_ir::to_bytes(&output_ir)) {
+        let _ = std::fs::remove_file(&tmp);
+        output::stderr(&format!(
+            "cannot write a temp file in {}: {e}",
+            dir.display()
+        ));
+        return exit::FAILURE;
+    }
+
+    let parsed_output = brygge_ir::from_file(&tmp);
+    let (checks, internal_pass) = compute_internal_checks(&parsed_output);
+    if !internal_pass {
+        let _ = std::fs::remove_file(&tmp);
+        let detail = checks
+            .iter()
+            .find_map(|(name, outcome)| match outcome {
+                CheckOutcome::Fail(d) => Some(format!("{name}: {d}")),
+                _ => None,
+            })
+            .unwrap_or_else(|| "an internal check failed".to_string());
+        output::stderr(&display::human(&format!(
+            "the transform's output was refused: {detail}"
+        )));
+        return exit::VERIFY_FAILED;
+    }
+    let Ok(output_decoded) = parsed_output else {
+        // Unreachable, as in `run_transform`: `internal_pass` is only true on `Ok(_)`.
+        let _ = std::fs::remove_file(&tmp);
+        return exit::FAILURE;
+    };
+
+    match brygge_ir::transform::check(&input, &output_decoded, "authors") {
+        Ok(summary) => {
+            let final_exit = fidelity_exit_class(&output_decoded.ir);
+            drop(output_decoded);
+            if let Err(e) = std::fs::rename(&tmp, out) {
+                let _ = std::fs::remove_file(&tmp);
+                output::stderr(&format!("cannot write {}: {e}", out.display()));
+                return exit::FAILURE;
+            }
+            output::stderr(&transform_authors_result_text(
+                format,
+                &summary,
+                mapped_count,
+                unmapped.len() as u64,
+            ));
             final_exit
         }
         Err(violation) => {

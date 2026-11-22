@@ -150,7 +150,10 @@ to a file, and brygge checks it before accepting it.
   same name may exist as both a `brygge-encode-<name>` and a `brygge-transform-<name>` plugin with no
   conflict — the two are looked up under different prefixes.
 - **The name is `[a-z0-9][a-z0-9-]*`, at most 64 bytes.** Anything else is a usage error before any
-  lookup happens.
+  lookup happens. **`authors` is reserved** for the built-in transform (RFC 019 D-4) and is never looked
+  up on `PATH`, even if a `brygge-transform-authors` exists there — `transform --list` still shows it,
+  marked shadowed by the built-in. `examples/transform-authors` stays the plugin reference example,
+  under its own name.
 - **The arguments you receive:** `brygge-transform-<name> --artifact <artifact> --out <tmp-file>
   [<plugin arguments>…]`. `<tmp-file>` is a private, already-reserved path — write your output there
   directly (truncate-and-write is fine; brygge reserved the name, not the writing). `<plugin arguments>`

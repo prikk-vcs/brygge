@@ -137,12 +137,45 @@ question, either "does this match the source" or "does this match the result", n
 A difference reports what changed, up to 20 of them, then a count; `verify --against-target` exits with
 `verify`'s own failed-check code.
 
+## Mapping authors
+
+Subversion and CVS carry an author name but no email, and no distinct committer at all: without
+mapping, `encode git` supplies a `<>` email (marked `Brygge-Supplied: author-email`) and copies the
+author onto the committer (marked `Brygge-Supplied: committer, commit-time`, the whole identity). `brygge
+transform authors` gives them real Git identities first (RFC 019 D-4):
+
+```
+brygge inspect --authors repo.ir > authors.map    # then fill in each right-hand side
+brygge transform authors repo.ir --map authors.map --out mapped.ir --require-all
+brygge encode git mapped.ir --out repo.git
+```
+
+- **`inspect --authors`** lists every distinct identity the artifact carries — as an atom's author or
+  committer, or an annotated ref's tagger — already in the map file's own form, one line per identity,
+  with its counts per role: redirect it to a file and fill in each right-hand side.
+- **The map file:** one `<source> = <Name> <<email>>` mapping per line. `#` starts a comment, to the end
+  of the line; blank lines are ignored.
+  - **`<source>`** is a **bare name**, matching an identity with exactly that name and no email (the
+    Subversion/CVS case), or `<Name> <<email>>`, matching exactly that name and email (Git/hg). Neither
+    form ever matches the other — a bare name never matches an identity that has an email, and the
+    reverse, and both sides compare by exact bytes.
+  - **The target side** needs a non-empty name and a non-empty email, and may not contain a newline,
+    `<`, `>` or NUL — the same rule `encode git` itself applies to a written identity, so a mapped
+    identity is never altered later.
+- **`transform authors <artifact> --map <file> --out <file> [--require-all]`** is the one built-in
+  transform (`authors` is reserved like `encode`'s `git`: a `brygge-transform-authors` on `PATH` is never
+  run, and `transform --list` shows it shadowed by the built-in). It changes only an atom's author and
+  committer, and an annotated ref's tagger; every change it makes is marked `Transformed`, by RFC 018
+  D-5's own rule. An identity the map does not cover is listed on stderr with its counts;
+  `--require-all` refuses the whole transform (exit 2, nothing written) if any is left unmapped. A
+  mapping line that matched nothing gives a warning naming the line — it is not an error, since one map
+  may cover several repositories.
+- **Every mapped commit says so:** `encode git`'s own trailers carry `Brygge-Transformed: atom <k>
+  authors <version> (author)` (and `committer`, when that claim also changed) — nothing new in the
+  encoder, since it is just rendering the mark the transform already wrote. Once a mapping supplies a
+  real email, the `Brygge-Supplied: author-email` mark is gone, because the email now exists.
+
 ## What this does not do (yet)
 
-- **It does not map identities** (RFC 019 D-4, batch G3): Subversion and CVS commits, which carry an
-  author name but no email, get `Brygge-Supplied: author-email` and `<>` for the email; since they also
-  carry no distinct committer, the committer identity is copied from the author and marked
-  `Brygge-Supplied: committer, commit-time` (the whole identity, not just its email). Run `brygge
-  transform authors` first to give them real Git identities instead.
 - Incremental or continuous synchronization, pushing to a hosting service, `git-svn` metadata, submodules
   and LFS, and SHA-256 object-format repositories are all out of scope for this release.

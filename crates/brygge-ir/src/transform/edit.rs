@@ -517,10 +517,31 @@ impl<'a> Edit<'a> {
                 }
             };
 
+            // A copy's `from_atom` is an id in the *input's* id-space. The atom it names keeps the
+            // same id in the output only while nothing about it, or anything it depends on, changes;
+            // the moment it does (here: this very edit, touching some earlier atom's own claims), its
+            // id changes too, and a copy still carrying the old one would point at nothing in the
+            // output — exactly the `IrBuilder` invariant (`from_atom` already added) this bug tripped,
+            // found by a real corpus run (RFC 019 G3, request 073) once an edit reached far enough
+            // back in history for a later copy to outlive it. `id_map` already holds every earlier
+            // atom's mapping by the time this one is built (atoms are added in canonical, topological
+            // order), so a present mapping is exactly the new id to use; one absent (the referenced
+            // atom was itself removed) keeps the original id unchanged, the same as before this fix —
+            // `remove_atom` combined with a surviving copy from the removed atom is not exercised by
+            // any transform built with `Edit` today, and is left for whoever adds the first one.
+            let copies = edit
+                .copies
+                .iter()
+                .map(|c| CopyRecord {
+                    from_atom: id_map.get(&c.from_atom).copied().unwrap_or(c.from_atom),
+                    ..c.clone()
+                })
+                .collect();
+
             let new_id = builder.add_atom(AtomDraft {
                 parents,
                 ops: final_ops,
-                copies: edit.copies.clone(),
+                copies,
                 metadata: edit.metadata.clone(),
                 source: in_atom.source.clone(),
                 status,

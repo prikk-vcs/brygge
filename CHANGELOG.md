@@ -14,6 +14,15 @@ Every handoff adds its own entry in its own commit.
   commit labelled with `Brygge-` trailers (RFC 019).
 - `encode git` checks its result against the artifact before writing it, and `verify --against-target
   git` checks a kept repository the same way (RFC 019).
+- `brygge transform authors`: a built-in transform that maps source identities to Git identities from a
+  map file, recorded as a transform step, and `brygge inspect --authors`, which writes the starting map
+  (RFC 019).
+
+### Fixed
+
+- `brygge_ir::transform::Edit` (0.7.0 and 0.7.1): a transform that changed an atom with a later copy from
+  it was refused at `finish`, with "copy … names from_atom … which was not already added". Nothing wrong
+  was ever written; such a transform now succeeds.
 
 ### Changed
 

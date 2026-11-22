@@ -112,14 +112,37 @@ fn list_human_empty_says_so() {
 #[test]
 fn list_machine_has_the_version_and_shadowed_flag() {
     let plugins = vec![Listed {
+        name: "mailmap-example".to_string(),
+        path: PathBuf::from("/x/brygge-transform-mailmap-example"),
+        shadowed: false,
+    }];
+    let s = render_transform_list_machine(&plugins);
+    // RFC 019: the list's version bumped to 2 (an `authors` plugin is now always shown shadowed by the
+    // built-in, a new meaning for the `shadowed` key and a new `shadowed_by` key).
+    assert!(s.starts_with("transform_list_version=2\n"));
+    assert!(s.contains("transformer.0.name=mailmap-example"));
+    assert!(s.contains("transformer.0.shadowed=false"));
+}
+
+#[test]
+fn an_authors_plugin_on_path_is_always_shown_shadowed_by_the_built_in() {
+    // Even though plugin::list's own `shadowed` is false here (no earlier PATH entry of this name), a
+    // `brygge-transform-authors` plugin can never run: `authors` is the built-in, reserved name
+    // (RFC 019 D-4).
+    let plugins = vec![Listed {
         name: "authors".to_string(),
         path: PathBuf::from("/x/brygge-transform-authors"),
         shadowed: false,
     }];
-    let s = render_transform_list_machine(&plugins);
-    assert!(s.starts_with("transform_list_version=1\n"));
-    assert!(s.contains("transformer.0.name=authors"));
-    assert!(s.contains("transformer.0.shadowed=false"));
+    let human = render_transform_list_human(&plugins);
+    assert!(human.contains("shadowed by the built-in"), "{human}");
+
+    let machine = render_transform_list_machine(&plugins);
+    assert!(machine.contains("transformer.0.shadowed=true"), "{machine}");
+    assert!(
+        machine.contains("transformer.0.shadowed_by=built_in"),
+        "{machine}"
+    );
 }
 
 #[test]

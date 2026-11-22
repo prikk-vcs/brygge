@@ -4278,3 +4278,200 @@ fn g2_measure_encode_alone_check_bypassed() {
         .expect("VmHWM line");
     println!("g2_measure_peak_kib={peak_kib}");
 }
+
+// ---- transform authors (RFC 019 D-4, batch G3): level 1, hand-built Irs --------------------------
+
+/// A one-atom `Ir` with a bare-name (no email) author claim — the Subversion/CVS shape, built on
+/// `SourceKind::Git` so the hand-built atom needs no `Derived` status of its own (the model requires
+/// every CVS-kind atom to be `Derived(ReconstructedChangeset|ReconstructedBranch)`; the source kind
+/// itself is incidental to what this test exercises — the map's bare-name matching rule).
+fn bare_author_atom_ir(name: &str) -> Ir {
+    let mut b = IrBuilder::new(blank_provenance(
+        brygge_ir::SourceKind::Git,
+        "brygge-decode-git",
+    ));
+    let blob = b.add_blob(b"x".to_vec()).unwrap();
+    b.add_atom(AtomDraft {
+        parents: vec![],
+        ops: vec![stated_add("a", blob)],
+        copies: vec![],
+        metadata: MetadataClaims {
+            author: Some(Identity {
+                name: Text::utf8(name),
+                email: None,
+            }),
+            ..MetadataClaims::default()
+        },
+        source: src(brygge_ir::SourceKind::Git, b"c1"),
+        status: EpistemicStatus::Stated,
+    })
+    .unwrap();
+    b.finish().unwrap()
+}
+
+fn write_map(contents: &str) -> PathBuf {
+    let path = tmp_ir_path("authors-map").with_extension("map");
+    std::fs::write(&path, contents).unwrap();
+    path
+}
+
+#[test]
+fn transform_authors_maps_a_bare_name_identity() {
+    let ir = bare_author_atom_ir("alice");
+    let artifact = tmp_ir_path("authors-in");
+    std::fs::write(&artifact, brygge_ir::to_bytes(&ir)).unwrap();
+    let map = write_map("alice = Alice Example <alice@example.invalid>\n");
+    let out = tmp_ir_path("authors-out");
+
+    let code = run_transform_authors(&artifact, &map, &out, true, Format::Human);
+    assert_ne!(
+        code,
+        exit::USAGE,
+        "a full map must not refuse --require-all"
+    );
+    assert!(out.exists(), "the mapped artifact must be written");
+
+    let output = brygge_ir::from_file(&out).unwrap();
+    let atom = &output.ir.atoms[0];
+    let author = atom.metadata.author.as_ref().unwrap();
+    assert_eq!(author.name.as_utf8(), Some("Alice Example"));
+    assert_eq!(
+        author.email.as_ref().and_then(Text::as_utf8),
+        Some("alice@example.invalid")
+    );
+    match &atom.status {
+        EpistemicStatus::Transformed { changed, .. } => {
+            assert_eq!(changed, &vec![ChangedPart::Author]);
+        }
+        other => panic!("expected Transformed, got {other:?}"),
+    }
+
+    let _ = std::fs::remove_file(&artifact);
+    let _ = std::fs::remove_file(&map);
+    let _ = std::fs::remove_file(&out);
+}
+
+#[test]
+fn transform_authors_require_all_refuses_an_unmapped_identity_and_writes_nothing() {
+    let ir = bare_author_atom_ir("bob");
+    let artifact = tmp_ir_path("authors-in-unmapped");
+    std::fs::write(&artifact, brygge_ir::to_bytes(&ir)).unwrap();
+    // A map with no entry for "bob" at all.
+    let map = write_map("alice = Alice Example <alice@example.invalid>\n");
+    let out = tmp_ir_path("authors-out-unmapped");
+
+    let code = run_transform_authors(&artifact, &map, &out, true, Format::Human);
+    assert_eq!(
+        code,
+        exit::USAGE,
+        "--require-all must refuse an unmapped identity"
+    );
+    assert!(!out.exists(), "nothing must be written on refusal");
+
+    let _ = std::fs::remove_file(&artifact);
+    let _ = std::fs::remove_file(&map);
+}
+
+#[test]
+fn transform_authors_without_require_all_writes_the_unmapped_identity_unchanged() {
+    let ir = bare_author_atom_ir("bob");
+    let artifact = tmp_ir_path("authors-in-partial");
+    std::fs::write(&artifact, brygge_ir::to_bytes(&ir)).unwrap();
+    let map = write_map("alice = Alice Example <alice@example.invalid>\n");
+    let out = tmp_ir_path("authors-out-partial");
+
+    let code = run_transform_authors(&artifact, &map, &out, false, Format::Human);
+    assert_ne!(code, exit::USAGE);
+    assert!(
+        out.exists(),
+        "the artifact is still written without --require-all"
+    );
+
+    let output = brygge_ir::from_file(&out).unwrap();
+    let atom = &output.ir.atoms[0];
+    // "bob" was never touched, so it keeps its original (unmarked) status.
+    assert_eq!(atom.status, EpistemicStatus::Stated);
+    let author = atom.metadata.author.as_ref().unwrap();
+    assert_eq!(author.name.as_utf8(), Some("bob"));
+    assert_eq!(author.email, None);
+
+    let _ = std::fs::remove_file(&artifact);
+    let _ = std::fs::remove_file(&map);
+    let _ = std::fs::remove_file(&out);
+}
+
+#[test]
+fn render_inspect_authors_human_is_already_in_map_file_form() {
+    let identities = vec![
+        authors::IdentityCount {
+            identity: Identity {
+                name: Text::utf8("deraadt"),
+                email: None,
+            },
+            author: 812,
+            committer: 812,
+            tagger: 0,
+        },
+        authors::IdentityCount {
+            identity: Identity {
+                name: Text::utf8("Alice Example"),
+                email: Some(Text::utf8("alice@example.org")),
+            },
+            author: 4,
+            committer: 0,
+            tagger: 0,
+        },
+    ];
+    let s = render_inspect_authors_human(&identities);
+    assert!(
+        s.starts_with("# brygge inspect --authors: 2 identities;"),
+        "{s}"
+    );
+    assert!(s.contains("deraadt ="), "{s}");
+    assert!(s.contains("812 author, 812 committer"), "{s}");
+    assert!(s.contains("Alice Example <alice@example.org> ="), "{s}");
+    assert!(s.contains("4 author"), "{s}");
+    // Already in map-file form: fill in each right side and it parses straight back.
+    let filled = s.replace("deraadt =", "deraadt = Theo <t@x>").replace(
+        "Alice Example <alice@example.org> =",
+        "Alice Example <alice@example.org> = Alice A. <a@x>",
+    );
+    let map = crate::authors::parse_map(filled.as_bytes()).unwrap();
+    assert_eq!(map.mappings.len(), 2);
+}
+
+#[test]
+fn render_inspect_authors_machine_carries_the_counts_per_role() {
+    let identities = vec![authors::IdentityCount {
+        identity: Identity {
+            name: Text::utf8("deraadt"),
+            email: None,
+        },
+        author: 812,
+        committer: 3,
+        tagger: 1,
+    }];
+    let s = render_inspect_authors_machine(&identities);
+    assert!(s.starts_with("inspect_authors_version=1\n"), "{s}");
+    assert!(s.contains("authors.0.name=deraadt"), "{s}");
+    assert!(!s.contains("authors.0.email="), "no email, no key: {s}");
+    assert!(s.contains("authors.0.count.author=812"), "{s}");
+    assert!(s.contains("authors.0.count.committer=3"), "{s}");
+    assert!(s.contains("authors.0.count.tagger=1"), "{s}");
+}
+
+#[test]
+fn transform_authors_result_text_machine_is_keyed_and_versioned() {
+    let summary = brygge_ir::transform::StepSummary {
+        step: 0,
+        atoms_changed: 1,
+        ops_changed: 0,
+        refs_changed: 0,
+        dropped: 0,
+    };
+    let s = transform_authors_result_text(Format::Machine, &summary, 1, 0);
+    assert!(s.contains("transform_authors_version=1"), "{s}");
+    assert!(s.contains("transform.step=0"), "{s}");
+    assert!(s.contains("transform.authors.mapped=1"), "{s}");
+    assert!(s.contains("transform.authors.unmapped=0"), "{s}");
+}

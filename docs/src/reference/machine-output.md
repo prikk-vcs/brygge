@@ -52,9 +52,11 @@ brygge release and of the IR contract**.
 | `verify_version` | `verify`'s lines (§3.4) | `5` |
 | `encode_list_version` | `encode --list`'s lines (§3.5) | `2` |
 | `encode_version` | `encode`'s own banner and exit lines (§3.6) | `1` |
-| `transform_list_version` | `transform --list`'s lines (§3.7) | `1` |
+| `transform_list_version` | `transform --list`'s lines (§3.7) | `2` |
 | `transform_version` | `transform`'s own banner, exit, and result lines (§3.8) | `1` |
 | `encode_git_version` | `encode git`'s pre-flight refusal lines and its `<dir>.brygge-report` sidecar (§3.9) | `2` |
+| `inspect_authors_version` | `inspect --authors`'s lines (§3.10) | `1` |
+| `transform_authors_version` | the built-in `transform authors`'s own result lines (§3.11) | `1` |
 
 **The rule (normative):**
 - A version is **bumped** whenever any key or value domain of the output it governs changes:
@@ -228,15 +230,21 @@ the line after it ends are.
 
 | Key | Value | Enc. |
 |---|---|---|
-| `transform_list_version` | `1` | |
+| `transform_list_version` | `2` | |
 | `transformer.N.name` | the plugin's own name | ● |
 | `transformer.N.path` | its resolved, absolute path | ● |
-| `transformer.N.shadowed` | `true` if an earlier `PATH` directory already has a plugin of this name (brygge would never run this one); else `false` | |
+| `transformer.N.shadowed` | `true` if an earlier `PATH` directory already has a plugin of this name, or if the name is `authors` (brygge would never run either); else `false` | |
+| `transformer.N.shadowed_by` | present, `built_in`, only when `transformer.N.name` is `authors` (RFC 019 D-4: `authors` is a reserved, built-in transform, never a plugin, regardless of `PATH` position) | |
 
 The same shape §3.5 (`encode --list`) uses, over `brygge-transform-*` plugins instead of
-`brygge-encode-*` ones. On stdout; `transform --list` runs no plugin.
+`brygge-encode-*` ones. On stdout; `transform --list` runs no plugin. (Version 2: `authors`'s entry, if
+one is found, is now always `shadowed`, with the new `shadowed_by` key; version 1 had neither.)
 
 ### 3.8 `transform <name>` (governed by `transform_version`)
+
+**This section is for an external plugin only.** The built-in `transform authors` (`authors` is
+reserved; §3.11) never runs a plugin, so none of this section's keys apply to it — it has its own
+version and its own, shorter set of result keys instead.
 
 `transform <name>`'s own status — like `encode <target>` (§3.6) — goes to **stderr, not stdout**: the
 plugin's own stdout/stderr are inherited and untouched for the whole run.
@@ -325,6 +333,67 @@ can run the same check again afterward over a repository brygge did write.
 brygge's own exit code is the fidelity class `decode` would give for the encoded artifact (§4): `0`
 cleanly, `10` if it carries a recorded (non-representation) drop, `30` if it carries a flag.
 
+### 3.10 `inspect --authors` (governed by `inspect_authors_version`)
+
+`inspect --authors <artifact>` replaces the default fidelity report (§3.1) entirely — there is nothing
+else to decode beyond the artifact itself. Identities are sorted by total count (descending), then by
+their own bytes (name, then email), for a deterministic order when counts tie.
+
+| Key | Value | Enc. |
+|---|---|---|
+| `inspect_authors_version` | `1` | |
+| `authors.N.name` | the identity's claimed name | ● |
+| `authors.N.email` | the identity's claimed email, present only when the identity has one | ● |
+| `authors.N.count.author` | how many atoms claim it as their author | |
+| `authors.N.count.committer` | how many atoms claim it as their committer | |
+| `authors.N.count.tagger` | how many annotated refs claim it as their tagger | |
+
+The human form is already in the map file's own line form (§3.11; `<source> = `, then a comment with
+the non-zero counts): redirect it to a file and fill in each right-hand side.
+
+### 3.11 `transform authors` (governed by `transform_authors_version`)
+
+`brygge transform authors <artifact> --map <file> --out <file> [--require-all]` (RFC 019 D-4) is the
+one built-in transform — `authors` is reserved and never looked up as a plugin. Unlike `transform
+<name>`'s own banner/exit lines (§3.8), there is no plugin to bracket with a banner, so this section has
+no "before"/"after" split: either the transform is refused before anything runs, or it completes and
+writes this section's keys.
+
+**If the mandatory verify-first check does not pass, or the input has two atoms sharing one source
+identity,** brygge prints `verify`'s own lines (§3.4) — or, for the source-identity refusal, a single
+line starting `refused:` — and none of this section's keys appear.
+
+**If the map file itself is malformed,** brygge prints each problem, one per line, naming it by its
+1-based line number, and exits `2`. Plain text, in both formats — a map file is user input, read before
+anything about the artifact's own output format matters.
+
+**If any identity the artifact carries is left unmapped,** brygge lists it on stderr, with its
+per-role counts, in both formats, before anything else runs — `authors.N.*`'s own shape (§3.10), without
+the `inspect_authors_version` line, since this is a diagnostic aside, not an output block. With
+`--require-all`, this is followed by a refusal and exit `2`, and nothing below is printed.
+
+**A mapping that matched no identity at all** gives one warning line, naming the line, in both formats.
+It is not a refusal — a shared map may cover several repositories — and does not stop the run.
+
+**Once the transform completes and is accepted** (the same output check `transform <name>` itself runs,
+§3.8):
+
+| Key | Value | Enc. |
+|---|---|---|
+| `transform_authors_version` | `1` | |
+| `transform.step` | the new transform record's own index | |
+| `transform.atoms_changed` | how many atoms this step changed | |
+| `transform.ops_changed` | always `0` — `authors` never touches an op | |
+| `transform.refs_changed` | how many refs this step changed | |
+| `transform.dropped` | always `0` — `authors` never removes anything | |
+| `transform.authors.mapped` | how many distinct identities the artifact carries were found in the map | |
+| `transform.authors.unmapped` | how many distinct identities were not | |
+
+If the transform's own output somehow fails `brygge_ir::transform::check` (not expected in practice,
+since `Edit` passes it by construction), brygge prints the same `the transform's output was refused:
+<why>` line `transform <name>` does, deletes its temp file, leaves `--out` untouched, and exits `50` —
+none of the keys above appear.
+
 ## 4. Exit codes
 
 The exit code carries the outcome class, so a gate can branch without parsing output.
@@ -332,9 +401,9 @@ The exit code carries the outcome class, so a gate can branch without parsing ou
 | Code | Meaning | From |
 |---|---|---|
 | `0` | clean: completed, with at most representation-class drops (storage layout, nothing of the history) | any command |
-| `10` | recorded loss: completed, and something other than representation was dropped and recorded | `decode`, `encode git` |
+| `10` | recorded loss: completed, and something other than representation was dropped and recorded | `decode`, `encode git`, `transform authors` |
 | `20` | refused: a source feature brygge refuses rather than approximates (a floor feature, named in the message), an unsupported format, or a resource ceiling | `decode` |
-| `30` | flagged: completed, but a condition needs attention (an SVN layout brygge could not follow, or CVS reconstructions under the confidence floor) | `decode`, `encode git` |
+| `30` | flagged: completed, but a condition needs attention (an SVN layout brygge could not follow, or CVS reconstructions under the confidence floor) | `decode`, `encode git`, `transform authors` |
 | `40` | reserved (partial or interrupted import); not produced by 0.1.0 | — |
 | `50` | `verify` result `fail` | `verify` |
 | `1` | runtime failure: unreadable input, I/O, an internal decoder fault; also `verify` result `incomplete`. They are told apart by stdout: a runtime failure prints nothing, while an `incomplete` verify prints its lines ending in `verify.result=incomplete` | any command |
@@ -366,6 +435,15 @@ otherwise `<dir>` is written, and the exit code is the fidelity class `decode` w
 encoded artifact — this table's `0`/`10`/`30` rows, `encode git` added to their "From" column. A
 runtime failure (git missing, a subprocess that could not start, an I/O error) is `1`, as for any
 command.
+
+**`transform authors`'s own exit code is also in this table, and simpler than any plugin-based
+command's (§3.11):** verify-first failure or a duplicate source identity follow `transform <name>`'s own
+rule above; a malformed map file, or `--require-all` refusing an unmapped identity, is `2`; `50` if its
+own output somehow fails `transform::check`; otherwise this table's `0`/`10`/`30` rows, `transform
+authors` added to their "From" column. There is no plugin to spawn, so there is no signal or
+could-not-start case — a runtime failure here is only an I/O error (reading the artifact or the map,
+or writing `--out`), `1` as for any command. `--out` naming the same file as `<artifact>` is `2`, as for
+`transform <name>`.
 
 ## 5. Examples
 
