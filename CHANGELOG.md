@@ -26,6 +26,8 @@ Every handoff adds its own entry in its own commit.
 - `brygge_ir::transform::Edit` (0.7.0 and 0.7.1): a transform that changed an atom with a later copy from
   it was refused at `finish`, with "copy … names from_atom … which was not already added". Nothing wrong
   was ever written; such a transform now succeeds.
+- `brygge_ir`'s builder refuses a repeated copy record, so an artifact its reader would reject can no
+  longer be written.
 
 ### Changed
 

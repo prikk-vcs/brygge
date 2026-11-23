@@ -181,6 +181,45 @@ fn a_copy_from_an_atom_not_yet_added_is_rejected() {
 }
 
 #[test]
+fn two_copy_records_with_the_same_to_from_from_atom_are_rejected() {
+    let mut b = IrBuilder::new(provenance());
+    let blob = b.add_blob(b"content".to_vec()).unwrap();
+    let root = b
+        .add_atom(draft(
+            vec![],
+            b"aaa",
+            vec![PathOp::Add {
+                path: "readme".into(),
+                blob,
+                mode: 0o100_644,
+                status: EpistemicStatus::Stated,
+            }],
+            vec![],
+        ))
+        .unwrap();
+    let err = b.add_atom(draft(
+        vec![root],
+        b"bbb",
+        vec![],
+        vec![
+            CopyRecord {
+                from: "readme".into(),
+                from_atom: root,
+                to: "docs/readme".into(),
+                status: EpistemicStatus::Stated,
+            },
+            CopyRecord {
+                from: "readme".into(),
+                from_atom: root,
+                to: "docs/readme".into(),
+                status: EpistemicStatus::Stated,
+            },
+        ],
+    ));
+    assert!(err.is_err());
+}
+
+#[test]
 fn finish_prunes_a_blob_no_op_references() {
     let mut b = IrBuilder::new(provenance());
     let referenced = b.add_blob(b"kept".to_vec()).unwrap();

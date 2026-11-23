@@ -105,8 +105,8 @@ impl IrBuilder {
     /// Add an atom, canonicalizing its operations and copies and computing its id.
     ///
     /// # Errors
-    /// [`Error::Invariant`] if two ops in `draft.ops` share a path, or a copy's `from_atom` is not an
-    /// atom already added.
+    /// [`Error::Invariant`] if two ops in `draft.ops` share a path, two copies share the same `(to,
+    /// from, from_atom)`, or a copy's `from_atom` is not an atom already added.
     pub fn add_atom(&mut self, draft: AtomDraft) -> Result<AtomId> {
         let mut ops = draft.ops;
         ops.sort_by(|a, b| a.path().cmp(b.path()));
@@ -120,6 +120,14 @@ impl IrBuilder {
         }
         let mut copies = draft.copies;
         copies.sort_by(|a, b| (&a.to, &a.from, a.from_atom).cmp(&(&b.to, &b.from, b.from_atom)));
+        for (a, b) in copies.iter().zip(copies.iter().skip(1)) {
+            if (&a.to, &a.from, a.from_atom) == (&b.to, &b.from, b.from_atom) {
+                return Err(Error::Invariant(format!(
+                    "two copy records with the same (to, from, from_atom): ({:?}, {:?}, {})",
+                    a.to, a.from, a.from_atom
+                )));
+            }
+        }
         for copy in &copies {
             if !self.known.contains(&copy.from_atom) {
                 return Err(Error::Invariant(format!(
