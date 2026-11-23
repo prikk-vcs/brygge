@@ -141,6 +141,13 @@ Track-B prikk-encoder RFC; its design begins when prikk's import foundations exi
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo test --workspace --locked
+
+# The no-identity run (a missing git identity has broken CI twice this way: request 068, then 074).
+# CI's runners carry no git config at all; a developer's own machine usually does, which lets a test
+# that commits into a scratch repository pass locally and fail only in CI. Run this once, before
+# filing any request, and report its sum:
+GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null HOME="$(mktemp -d)" cargo test --workspace --locked
+
 cargo deny check                  # advisories, licenses, banned/duplicate crates (INV-4)
 cargo audit                       # known vulnerabilities in the dependency tree
 ./tools/check-ir-isolation.sh     # brygge-ir's dependency closure matches its allowlist (RFC 009 D-7)

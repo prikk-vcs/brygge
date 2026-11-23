@@ -19,6 +19,48 @@ shadowed by the built-in).
   every drop, flag, supplied and altered field the result carries. Keep it with the artifact and the
   repository.
 
+## Migrating from each source
+
+**Git and Mercurial** carry their own author, committer and time already, so there is nothing to map:
+
+```
+brygge decode git <source> --out repo.ir     # or: brygge decode hg <source> --out repo.ir
+brygge encode git repo.ir --out repo.git
+```
+
+**CVS** has no Git-shaped branch history without `--reconstruct-refs`, and no email at all, so both
+steps below matter:
+
+```
+brygge decode cvs <source> --out repo.ir --reconstruct-refs
+brygge inspect --authors repo.ir > authors.map   # then fill in each right-hand side
+brygge transform authors repo.ir --map authors.map --out mapped.ir --require-all
+brygge encode git mapped.ir --out repo.git
+```
+
+**Subversion** needs `--branch-lines` for the same reason CVS needs `--reconstruct-refs` — see "The
+mapping" below for why — and the same author step, since Subversion also carries no email:
+
+```
+brygge decode svn <source> --out repo.ir --branch-lines
+brygge inspect --authors repo.ir > authors.map   # then fill in each right-hand side
+brygge transform authors repo.ir --map authors.map --out mapped.ir --require-all
+brygge encode git mapped.ir --out repo.git
+```
+
+## What the result is
+
+- **The commit ids are new.** `encode git` writes its own commits; it cannot and does not reproduce the
+  source's own hashes (a Git source included — its SHA-1s depend on its own commit format, not the
+  IR's).
+- **Every commit, and every annotated tag, carries a trailer block** naming the source, what brygge
+  supplied or altered, and the artifact it came from — see "The trailers" below.
+- **A ref that does not fit Git's branch or tag namespace** (an `Other` ref: a Mercurial bookmark kept as
+  such, or a Subversion branch's earlier, deleted life under `--branch-lines`) lives under
+  `refs/brygge/other/`, outside both, so it never reads as either.
+- **A sidecar report is written beside the repository** (`<dir>.brygge-report`) — see above.
+- **The repository is bare.** Clone or push it; it has no working tree of its own.
+
 ## The mapping
 
 | IR | Git |
@@ -56,9 +98,8 @@ hint depends on whether the artifact has any ref at all:
 For Git or Mercurial this split does not change the hint: a removed ref is the only way an atom there goes
 unreached, whether or not other refs still exist.
 
-**One known limit:** a Subversion repository with no `trunk`/`branches`/`tags` layout gets no refs at all,
-even with `--reconstruct-refs` — there is no convention to reconstruct one from. Such a repository cannot
-be encoded to Git in 0.8.0.
+**One known limit** of a Subversion repository with no `trunk`/`branches`/`tags` layout at all is covered
+in "Limits in 0.8.0" below.
 
 **For Subversion, the documented path is** `decode svn --branch-lines`, then `inspect --authors`, then
 `transform authors`, then `encode git` (see "Mapping authors" below for the middle two steps).
@@ -143,6 +184,12 @@ question, either "does this match the source" or "does this match the result", n
 A difference reports what changed, up to 20 of them, then a count; `verify --against-target` exits with
 `verify`'s own failed-check code.
 
+**The cost:** the check about doubles the time `encode git` would otherwise take, since it decodes the
+repository it just wrote and compares it in full — measured on fish-shell (review 142), 78.4 s with the
+check against 40.0 s without. Memory stays close to a plain decode's own peak (0.86×–1.02× across every
+repository measured; see "Evidence" below), because the check holds one tree state at a time, in
+canonical order, the same way the decoder itself does.
+
 ## Mapping authors
 
 Subversion and CVS carry an author name but no email, and no distinct committer at all: without
@@ -182,7 +229,26 @@ brygge encode git mapped.ir --out repo.git
   encoder, since it is just rendering the mark the transform already wrote. Once a mapping supplies a
   real email, the `Brygge-Supplied: author-email` mark is gone, because the email now exists.
 
-## What this does not do (yet)
+## Limits in 0.8.0
 
-- Incremental or continuous synchronization, pushing to a hosting service, `git-svn` metadata, submodules
-  and LFS, and SHA-256 object-format repositories are all out of scope for this release.
+- **A Subversion repository with no `trunk`/`branches`/`tags` layout at all:** under `--branch-lines`,
+  `decode svn` refuses — every revision would touch no root, so the decode would yield no atoms, and a
+  decode that turns a whole history into nothing is never a success. Decode without `--branch-lines`
+  instead: the result is still faithful, it just keeps the whole repository tree in every commit (see
+  "The mapping" above).
+- **Merges are not inferred.** Subversion's `svn:mergeinfo` is not read; a merge commit is not detected,
+  and no Git merge commit is written. Each branch line is a plain, single-parent chain.
+- **Non-UTF-8 annotated-tag messages are refused,** named in the pre-flight report before anything is
+  written: `git fast-import` has no `encoding` command for a tag, unlike a commit message.
+- **Not supported:** submodules, LFS, SHA-256 object-format repositories, incremental or continuous
+  synchronization, pushing to a hosting service, and `git-svn` metadata. All are out of scope for this
+  release.
+
+## Evidence
+
+The full corpus run — every source kind, against a real repository, with `encode git`'s own check and a
+real `git fsck --strict` — is in `tools/bench/README.md`, "Result — Git target (RFC 019 D-8)". In
+summary: every run's check gave `corresponds`, every `fsck` was clean, and for Git and Subversion the
+result's trees, authors, committers and times were independently compared against the source and found
+identical (differing only by Subversion's `svn:keywords` expansion, which is expected). The table also
+has the method, so a later run can be compared under the same conditions.

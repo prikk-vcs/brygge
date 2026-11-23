@@ -7,7 +7,8 @@ Standard library only: brygge-ir's workspace forbids `unsafe_code`, so brygge-be
 every corpus figure accepted so far (review 099's `os.wait4` fix, approved by review 100): one child
 per measurement, its own `ru_maxrss` from `os.wait4`, never summed or subtracted across two calls.
 
-Usage: python3 -I tools/bench/release-corpus.py <brygge-binary> <cache-dir> <real.toml> <name>...
+Usage: python3 -I tools/bench/release-corpus.py <brygge-binary> <cache-dir> <real.toml>
+           [--decode-args "<args>"] [--encode-git] <name>...
 
 <cache-dir> is `fixtures/corpus` (tools/fixtures.sh's layout): <cache-dir>/<kind>/<name> for git, hg and
 cvs entries, <cache-dir>/svn/<name>.dump for svn. <real.toml> (review 128 R-2: `tools/corpus/real.toml`)
@@ -15,10 +16,20 @@ is read to find each name's own recorded `kind`, rather than guessing it from wh
 <cache-dir> happens to hold a matching name first. <name>... are the real.toml entry names to measure
 (for example: eza fish-shell tortoisehg-thg).
 
-For each name: `<brygge-binary> decode <kind> <source> --out <artifact>`, then `<brygge-binary> verify
-<artifact>` — the same two command lines request 061's figures used. Prints one line per name: the
-artifact's size in bytes, the decode's time (ms) and peak RSS (KiB), and verify's time (ms) and peak RSS
-(KiB).
+For each name: `<brygge-binary> decode <kind> <source> --out <artifact> [<decode-args>]`, then
+`<brygge-binary> verify <artifact>` — the same two command lines request 061's figures used. Prints one
+line per name: the artifact's size in bytes, the decode's time (ms) and peak RSS (KiB), and verify's
+time (ms) and peak RSS (KiB). This is unchanged when neither new flag is given.
+
+**`--decode-args "<args>"`** (RFC 019 D-8, batch G4): a whitespace-split string of extra decode flags
+(for example `"--branch-lines"` or `"--reconstruct-refs"`), appended after `--out <artifact>`.
+
+**`--encode-git`** (RFC 019 D-8, batch G4): after `verify`, run `<brygge-binary> encode git <artifact>
+--out <repo>` into a temporary directory, as one more child under `os.wait4` — the same measurement
+discipline as decode and verify, never summed or subtracted. Prints three more fields:
+`encode_time_ms`, `encode_peak_kib`, and the result's own `<repo>.brygge-report` sidecar's
+`encode_git.check` and `encode_git.commits` (read back, not re-derived), so a mismatch between what the
+report says and what this script measured would show up as a parse failure, not a silent guess.
 """
 
 import os
@@ -95,13 +106,45 @@ def run_one(
     return elapsed_ms, rusage.ru_maxrss
 
 
+def parse_report(report_path: Path) -> dict[str, str]:
+    """`<dir>.brygge-report`'s own `key=value` lines (always the machine format, RFC 019 D-2 OQ-1)."""
+    fields: dict[str, str] = {}
+    for raw in report_path.read_text().splitlines():
+        key, _, value = raw.partition("=")
+        if key:
+            fields[key] = value
+    return fields
+
+
 def main() -> None:
     if len(sys.argv) < 5:
-        raise SystemExit("usage: release-corpus.py <brygge-binary> <cache-dir> <real.toml> <name>...")
+        raise SystemExit(
+            "usage: release-corpus.py <brygge-binary> <cache-dir> <real.toml> "
+            '[--decode-args "<args>"] [--encode-git] <name>...'
+        )
     binary = str(Path(sys.argv[1]).resolve())
     cache_dir = Path(sys.argv[2]).resolve()
     real_toml = Path(sys.argv[3]).resolve()
-    names = sys.argv[4:]
+
+    rest = sys.argv[4:]
+    decode_args: list[str] = []
+    encode_git = False
+    names: list[str] = []
+    i = 0
+    while i < len(rest):
+        if rest[i] == "--decode-args":
+            i += 1
+            if i >= len(rest):
+                raise SystemExit("release-corpus: --decode-args needs a value")
+            decode_args = rest[i].split()
+            i += 1
+        elif rest[i] == "--encode-git":
+            encode_git = True
+            i += 1
+        else:
+            names.append(rest[i])
+            i += 1
+
     kinds = parse_real_toml_kinds(real_toml)
     print(f"# brygge binary: {binary}")
     for name in names:
@@ -112,7 +155,7 @@ def main() -> None:
         with tempfile.TemporaryDirectory() as tmp:
             artifact = Path(tmp) / "artifact"
             decode_ms, decode_peak = run_one(
-                [binary, "decode", kind, str(source), "--out", str(artifact)],
+                [binary, "decode", kind, str(source), "--out", str(artifact), *decode_args],
                 f"{name}: decode",
                 Path(tmp) / "decode.log",
                 allow_exit={0, 10, 30},
@@ -123,11 +166,26 @@ def main() -> None:
                 f"{name}: verify",
                 Path(tmp) / "verify.log",
             )
-        print(
-            f"name={name} kind={kind} artifact_bytes={size} "
-            f"decode_time_ms={decode_ms} decode_peak_kib={decode_peak} "
-            f"verify_time_ms={verify_ms} verify_peak_kib={verify_peak}"
-        )
+            line = (
+                f"name={name} kind={kind} artifact_bytes={size} "
+                f"decode_time_ms={decode_ms} decode_peak_kib={decode_peak} "
+                f"verify_time_ms={verify_ms} verify_peak_kib={verify_peak}"
+            )
+            if encode_git:
+                repo = Path(tmp) / "repo"
+                encode_ms, encode_peak = run_one(
+                    [binary, "encode", "git", str(artifact), "--out", str(repo)],
+                    f"{name}: encode git",
+                    Path(tmp) / "encode.log",
+                    allow_exit={0, 10, 30},
+                )
+                report = parse_report(Path(f"{repo}.brygge-report"))
+                line += (
+                    f" encode_time_ms={encode_ms} encode_peak_kib={encode_peak} "
+                    f"encode_git_check={report['encode_git.check']} "
+                    f"encode_git_commits={report['encode_git.commits']}"
+                )
+            print(line)
 
 
 if __name__ == "__main__":

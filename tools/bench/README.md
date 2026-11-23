@@ -656,3 +656,101 @@ Machine: AMD Ryzen 9 9950X (16 cores), 59 GiB RAM, x86_64 Linux. Measured once, 
 `fixtures/previous-release/0.7.1/brygge` — 0.7.1's own published Linux binary (`tools/fixtures.sh
 fetch`'d and checksum-verified, never a local rebuild), not a second build of this tree: the measurement
 is 0.7.1's, and it stands for 0.7.0 as explained above.
+
+## Result — Git target (RFC 019 D-8)
+
+One row per run: the real decode (and, where the handoff's §1 "Before encoding" step applies,
+`transform authors --require-all` with a placeholder map — see the notes below each decode kind) into
+an artifact, then `encode git` (with its own check against the artifact), then a real `git fsck
+--strict` on the result. The method is `tools/bench/release-corpus.py`'s `os.wait4`-per-child discipline
+(review 127 F-2), extended with `--decode-args` and `--encode-git` (RFC 019 D-8, batch G4): one child per
+measurement, one session, one machine, the same as every other table in this file.
+
+| Source | Repository | Decode args | Commits | Refs | `encode git` check | Decode time | Decode peak RSS | Encode (+check) time | Encode (+check) peak RSS | `git fsck --strict` |
+|---|---|---|---:|---:|---|---:|---:|---:|---:|---|
+| Git → Git | eza | (default) | 3,372 | 96 | `corresponds` | 1,653 ms | 109,904 KiB | 2,447 ms | 62,420 KiB | clean |
+| Git → Git | fish-shell | (default) | 23,270 | 104 | `corresponds` | 64,287 ms | 429,456 KiB | 94,343 ms | 369,520 KiB | clean |
+| Mercurial → Git | tortoisehg-thg | (default) | 20,596 | 4 | `corresponds` | 78,294 ms | 254,240 KiB | 35,291 ms | 258,796 KiB | clean |
+| Subversion → Git | wordpress-core | `--branch-lines` | 2,697 | 7 | `corresponds` | 655 ms | 104,600 KiB | 1,325 ms | 42,256 KiB | clean |
+| CVS → Git | openbsd-games | `--reconstruct-refs` | 1,430 | 123 | `corresponds` | 1,806 ms | 164,988 KiB | 5,331 ms | 114,948 KiB | clean |
+| CVS → Git | openbsd-cpio | `--reconstruct-refs` | 7 | 5 | `corresponds` | 18 ms | 9,168 KiB | 30 ms | 8,932 KiB | clean |
+| CVS without `--reconstruct-refs` | openbsd-cpio | (default) | — | — | refused | 15 ms | 9,180 KiB | — (refused before writing) | — | — |
+
+**Every peak stayed well under the 1.5× bound** (the highest ratio, tortoisehg-thg's, is 1.02×; every
+other row is 0.40×–0.86×). No run's check failed, and no `git fsck --strict` complained about anything.
+
+- **Subversion and CVS rows** show the decode's own figures (`decode`, `verify`, `encode git`, without
+  the authors step, which `release-corpus.py` does not yet instrument). The real author-mapping
+  workflow — `inspect --authors`, filling in each right-hand side with a placeholder
+  `<name>@example.invalid` address, `transform authors --require-all`, then `encode git` on the mapped
+  artifact — was run by hand for both: `transform authors` mapped all 97 identities for openbsd-games
+  and all 6 for openbsd-cpio, with none left unmapped, and `encode git` on each mapped artifact still
+  gave `corresponds` with a clean `fsck`, the same commit/ref counts as the table (openbsd-cpio's row
+  above already uses `--reconstruct-refs`; `transform authors` does not change counts).
+- **`CVS without --reconstruct-refs`:** `decode` succeeds (exit 10, "recorded loss") with 0 refs, exactly
+  as it would without this batch. `encode git` then refuses, naming every unreachable atom and the fix:
+
+  ```
+  the artifact cannot be written as Git:
+    7 atom(s) are not reachable from any ref, starting with COPYING.LIB@1.1\u{000a} COPYING@1.1\u{000a}
+    ChangeLog@1.1\u{000a} Makefile@1.1\u{000a} NEWS@1.1\u{000a} README@1.1\u{000a}…, main.c@1.2,
+    Makefile@1.2, fnmatch.h@1.2, COPYING.LIB@1.2\u{000a} ChangeLog@1.2\u{000a} Makefile@1.3\u{000a}
+    NEWS@1.2\u{000a} README@1.2\u{000a} VERSION@1.2\u{000a}… — decode with --reconstruct-refs, which is
+    needed to give this history any ref at all
+  ```
+
+**The strongest check** (the architect's method, review 136): for eza and fish-shell, every result
+commit's tree, author, committer and time were compared against the source commit its own
+`Brygge-Source-Id` trailer names, over the real source repositories in `fixtures/corpus`:
+
+| Repository | Commits compared | Mismatches |
+|---|---:|---:|
+| eza | 3,372 | 0 |
+| fish-shell | 23,270 | 0 |
+
+**The Subversion tree comparison** (as request 074 did, over the same corpus entry): `wordpress-core`'s
+`trunk` tip (`r2700`) and `1.5` tip (`r2690`, `branches/1.5`) were each exported from a local load of the
+real dump (`svnadmin load`, then `svn export file://… <path>@<rev>`) and compared against the matching
+Git tree (`git archive`). The only files that differ are `wp-includes/class-pop3.php` and
+`wp-includes/functions-compat.php`, both only in their `$Id$`/`$Id: … $` line — Subversion's
+`svn:keywords` expansion, which Git has no equivalent of and the IR does not carry; confirmed by reading
+the property directly (`svn:keywords` on that path is `Author Date Id Revision`). No other file differs,
+on either branch.
+
+**The deleted-branch Subversion repository, searched for properly this time (RFC 019 Amendment A,
+review 149):** two real, public candidates were found and confirmed to really have one, with real
+`svnrdump`/`svn log` queries against their live hosts, not from memory:
+
+- **Apache's `jakarta/oro`** (`https://svn.apache.org/repos/asf/jakarta/oro/`, Apache License 2.0):
+  `branches/oro`, created in r54271 (copied from `trunk@54270`) and deleted in r54630. **Not used:**
+  `svn.apache.org` is one shared repository across every Apache project, so `svnrdump dump` over this
+  subtree still has to walk the *global* revision counter for the whole range — a test dump of
+  `r0:5000` (of the ~54,630 needed) fetched only 72 KiB in 60 s before being stopped; the project's own
+  commit rate afterward would not fix that, since the overhead is per global revision, not per commit
+  touching the path.
+- **SourceForge's `codeblocks`** (`https://svn.code.sf.net/p/codeblocks/code/`, GPL-3.0-or-later): its
+  own, dedicated revision counter (not shared), several real deleted or deleted-then-renamed branches
+  (`branches/codecompletion_refactoring`, deleted r6220, the earliest; also `release-16.xx`,
+  `release-17.xx`, `release-18.xx`, `release-20.xx`, `release-24.12`, `release-25.01`, each deleted or
+  renamed-and-deleted between r11258 and r13623). **Fetched for real:** `svnrdump dump
+  https://svn.code.sf.net/p/codeblocks/code -r 0:6220` (`codecompletion_refactoring`, the earliest and
+  so the cheapest range), 6,221 revisions, 170 MB, ~22 minutes. Loaded locally and confirmed the
+  deletion is really there at r6220.
+
+  **Not added to `real.toml`: a real decoder bug, found here, blocks it.** `decode svn --branch-lines`
+  on this real dump writes an artifact that fails its own canonical-form check on read-back:
+  `ChangeAtom.copies are not strictly ascending by (to, from, from_atom)`. Traced to
+  `branch_lines.rs`'s `resolve_copies`: it can emit two copy records with an identical
+  `(to, from, from_atom)` triple for one atom (a real revision in this history has more than one copy
+  into the same root that resolve to the same normalized record), and nothing deduplicates them.
+  `IrBuilder::add_atom` sorts `copies` but has no check for this kind of duplicate (only for a
+  duplicate op *path*), so the write itself succeeds silently; only a strict read-back (what `verify`,
+  `encode git` and `--against-source` all do) catches it. No fixture in this batch's own tests, or in
+  the existing corpus (`wordpress-core`, `openbsd-games`, `openbsd-cpio`), is large or varied enough to
+  trigger this — it took a real, 6,221-revision history to surface it. Not fixed here: a decoder-layer
+  correctness bug deserves its own review, not a one-shot patch under this batch's time budget. The
+  dump itself was not kept anywhere durable past this session; re-fetching with the command above
+  reproduces it exactly.
+
+**Memory:** AMD Ryzen 9 9950X (16 cores), 59 GiB RAM, x86_64 Linux — the same machine and method as
+every other table here.

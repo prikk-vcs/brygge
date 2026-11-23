@@ -10,7 +10,8 @@ Subversion or CVS repository into one portable, verifiable file, an **IR artifac
   reach any target.
   - **Decoding** is complete for all four sources.
   - **Encoding:** prikk is the first target, through a built-in encoder that follows prikk's own import design
-    (planned). Until then, and for other targets, external encoder plugins do it, labelled as not part of brygge.
+    (planned). brygge also writes Git repositories, through its own built-in encoder (`brygge encode git`,
+    RFC 019). For other targets, external encoder plugins do it, labelled as not part of brygge.
 - **What it does:** it records what the source **stated**, marks what it had to **derive**, and records what it
   could not carry, all inside the artifact. `inspect` shows them, and `verify` checks them, alone or against the
   source. Transform plugins can change an artifact on the way, but only by recording every change. brygge reads

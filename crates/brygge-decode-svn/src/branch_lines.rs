@@ -326,14 +326,10 @@ pub(crate) fn decode_with(
     }
 
     if live.is_empty() && dead_lives.is_empty() {
-        builder.add_flag(Flag {
-            kind: FlagKind::ConventionViolation,
-            what: "trunk/branches/tags layout not found".to_string(),
-            count: 1,
-            reason: "branch-line reconstruction was requested but the repository does not follow \
-                     the convention; no branch or tag ref was fabricated"
-                .to_string(),
-        });
+        // RFC 019 Amendment A §1: every revision touched no root, so this decode would yield no atoms.
+        // Turning a whole history into nothing is never a success — refuse instead of returning an
+        // empty artifact with only a flag to say why.
+        return Err(Error::BranchLinesNoLayout);
     } else {
         for (_, line) in live {
             let mut params = BTreeMap::new();

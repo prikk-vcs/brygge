@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use brygge_ir::model::{PathOp, RefKind};
 use brygge_ir::status::EpistemicStatus;
 
-use crate::{Options, Source};
+use crate::{Error, Options, Source};
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -498,4 +498,27 @@ fn without_branch_lines_nothing_changes() {
     );
     // the single-spine path's own shape still holds: one atom per revision.
     assert_eq!(before.atoms.len(), 2);
+}
+
+#[test]
+fn branch_lines_refuses_a_flat_repository_with_no_layout_at_all() {
+    // RFC 019 Amendment A §1 (review 149): a decode that turns a whole history into nothing is never
+    // a success, so `--branch-lines` refuses here instead of returning an empty, flagged artifact.
+    let mut d = DumpBuilder::new();
+    d.revision(0, &[("svn:date", &date(0))]);
+    d.revision(1, &[("svn:log", "flat"), ("svn:date", &date(1))]);
+    // no trunk/branches/tags — a flat layout.
+    d.add_file("main.c", b"x\n");
+    d.add_file("readme", b"y\n");
+
+    let err = decode_dump(&d.buf, &branch_lines_opts()).unwrap_err();
+    assert!(
+        matches!(err, Error::BranchLinesNoLayout),
+        "expected BranchLinesNoLayout, got {err:?}"
+    );
+    assert_eq!(
+        err.to_string(),
+        "the trunk/branches/tags layout was not found, so `--branch-lines` has no branch to follow; \
+         decode without it"
+    );
 }

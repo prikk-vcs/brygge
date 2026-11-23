@@ -34,6 +34,9 @@ Every handoff adds its own entry in its own commit.
   now verifies as `not-checked` against its source, because a re-decode carries the new ref. Decode again
   to verify it. A change to a decoder's floor no longer stops an earlier artifact from verifying against
   its source.
+- `decode svn --branch-lines` on a repository with no `trunk`/`branches`/`tags` layout at all now refuses
+  (exit 20), instead of silently writing an artifact with no atoms. Decode without `--branch-lines`
+  instead; the whole-tree result is still faithful (RFC 019 Amendment A).
 
 ### Breaking
 

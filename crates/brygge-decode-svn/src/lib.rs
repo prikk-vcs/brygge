@@ -78,6 +78,10 @@ pub enum Error {
     },
     /// The assembled IR violated a `brygge-ir` invariant (a decoder bug, not bad input).
     Ir(brygge_ir::Error),
+    /// `--branch-lines` found no `trunk`/`branches`/`tags` layout at all, so every revision touched no
+    /// root and the decode would yield no atoms (RFC 019 Amendment A §1). A decode that turns a whole
+    /// history into nothing is never a success, so this is refused rather than returned empty.
+    BranchLinesNoLayout,
 }
 
 impl std::fmt::Display for Error {
@@ -98,6 +102,11 @@ impl std::fmt::Display for Error {
                 write!(f, "refused: {what} exceeds brygge's ceiling ({ceiling})")
             }
             Self::Ir(e) => write!(f, "IR assembly failed: {e}"),
+            Self::BranchLinesNoLayout => write!(
+                f,
+                "the trunk/branches/tags layout was not found, so `--branch-lines` has no branch to \
+                 follow; decode without it"
+            ),
         }
     }
 }

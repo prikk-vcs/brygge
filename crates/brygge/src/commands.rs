@@ -328,6 +328,7 @@ fn map_svn_error(e: SvnError) -> (i32, String) {
         SvnError::ResourceLimit { what, ceiling } => {
             (exit::FLOOR_REFUSAL, resource_limit_message(&what, &ceiling))
         }
+        e @ SvnError::BranchLinesNoLayout => (exit::FLOOR_REFUSAL, e.to_string()),
         other => (exit::FAILURE, format!("decode failed: {other}")),
     }
 }
