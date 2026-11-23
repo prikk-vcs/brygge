@@ -675,11 +675,20 @@ measurement, one session, one machine, the same as every other table in this fil
 | CVS → Git | openbsd-games | `--reconstruct-refs` | 1,430 | 123 | `corresponds` | 1,806 ms | 164,988 KiB | 5,331 ms | 114,948 KiB | clean |
 | CVS → Git | openbsd-cpio | `--reconstruct-refs` | 7 | 5 | `corresponds` | 18 ms | 9,168 KiB | 30 ms | 8,932 KiB | clean |
 | CVS without `--reconstruct-refs` | openbsd-cpio | (default) | — | — | refused | 15 ms | 9,180 KiB | — (refused before writing) | — | — |
-| Subversion → Git, deleted branch | codeblocks | `--branch-lines` | 6,115 | 40 | `corresponds` | 159,935 ms | 1,459,908 KiB | 26,783 ms | 192,924 KiB | clean |
+| Subversion → Git, deleted branch | codeblocks | `--branch-lines` | 6,115 | 40 | `corresponds` | 107,380 ms | 1,456,268 KiB | 23,349 ms | 185,040 KiB | clean |
 
 **Every peak stayed well under the 1.5× bound** (the highest ratio among the first seven rows,
 tortoisehg-thg's, is 1.02×; codeblocks's is 0.13×; every other row is 0.40×–0.86×). No run's check
 failed, and no `git fsck --strict` complained about anything.
+
+**Memory, against the published 0.7.1's plain decode of the same dump** (review 151 D-4, `os.wait4` per
+child, this machine): codeblocks `--branch-lines`, with this request's fix, peaks at 1,456,268 KiB (this
+run) / 1,457,836 KiB (the architect's); 0.7.1 plain peaks at 1,506,448 KiB (this run) / 1,505,576 KiB
+(the architect's) — the two independent measurements agree to within 0.1%. **G5's bound (1.5× plain)
+holds**, at about 0.97×. **About 1.5 GB of peak for 640 MB of content is above RFC 015's "memory tracks
+metadata."** It is likely the per-live-line snapshot retention (§3) for codeblocks' unusually large
+number of tag copies, and is **pre-existing, not 0.8.0's** — the architect will plan it as a scale item;
+not tuned here.
 
 - **Subversion and CVS rows** show the decode's own figures (`decode`, `verify`, `encode git`, without
   the authors step, which `release-corpus.py` does not yet instrument). The real author-mapping
@@ -739,31 +748,49 @@ review 149):** two real, public candidates were found and confirmed to really ha
   so the cheapest range), 6,221 revisions, 170 MB, ~22 minutes. Loaded locally and confirmed the
   deletion is really there.
 
-  **The real decoder bug this dump surfaced is now fixed (request 076), and the entry is added.**
-  `decode svn --branch-lines` on this real dump wrote an artifact that failed its own canonical-form
-  check on read-back: `ChangeAtom.copies are not strictly ascending by (to, from, from_atom)`. Two real
-  faults, both fixed:
+  **The real decoder bug this dump surfaced is now fixed (review 151, request 076), and the entry is
+  added.** `decode svn --branch-lines` on this real dump wrote an artifact that failed its own
+  canonical-form check on read-back: `ChangeAtom.copies are not strictly ascending by (to, from,
+  from_atom)`. Worse than first understood: the **default** (single-spine) and `--reconstruct-refs`
+  decodes of this same dump had the identical fault — since 0.1.0, any revision that copies a directory
+  and also restates a file inside it as its own copy wrote an artifact its own reader rejected. It
+  failed closed, so nothing wrong was ever written, but the repository could not be decoded at all; the
+  published 0.7.1 itself hits it (`decode` exits 10 and writes the artifact, then `verify` gives
+  `internal: fail`, FAIL).
+
+  Two real faults, both fixed:
   - `IrBuilder::add_atom` sorted `copies` but had no check for a duplicate `(to, from, from_atom)`
     triple (only for a duplicate op *path*), so the write itself succeeded silently; only a strict
     read-back (what `verify`, `encode git` and `--against-source` all do) caught it.
     `IrBuilder::add_atom` now refuses such a duplicate, naming the triple, for every decoder and every
     `Edit`-based transform;
-  - `branch_lines.rs`'s `resolve_copies`, diagnosed on this exact dump: r5310 adds
+  - the duplicate is made in `tree.rs`'s shared, single-spine copy tracking (read by both the default
+    decode and `--branch-lines`), diagnosed on this exact dump: r5310 adds
     `branches/scintilla/src/plugins/contrib/IncrementalSearch` as a whole-directory copy from
     `trunk/.../IncrementalSearch@5309`, and the same revision separately restates every one of that
     directory's files (and its `images/`/`images/16x16/` subdirectories) with its own explicit
-    delete-then-add, copying from the identical source path at the identical source revision. Both the
-    directory-snapshot expansion and the explicit-node handling pushed their own, equal `CopyRecord`
-    for the same 49 files — two observations of one fact, not a real disagreement (both records are
-    `Stated`, and both dump nodes had already passed `apply_file`'s own checksum verification against
-    the identical copy source). `resolve_copies` now collapses two such equal records into one.
+    delete-then-add, copying from the identical source path at the identical source revision. The
+    directory-snapshot expansion and the explicit-node handling each pushed their own `CopyRecord` for
+    the same 49 files — two records for one destination. An earlier fix collapsed two *equal* records
+    in `branch_lines.rs`'s `resolve_copies` alone, which happened to hold for this one case but is the
+    wrong place and the wrong rule: it covers neither the default/`--reconstruct-refs` decodes nor the
+    general case of a directory copy later replaced by a copy from a *different* source (which is not
+    a duplicate to collapse — it is a false second copy claim). The real fix, in `tree.rs`'s
+    `apply_revision`: within one revision, a node that **deletes or replaces** a path voids every
+    earlier copy record of that revision under that path — SVN's own meaning, since the explicit
+    delete-then-add restates the path, so an earlier directory-copy record no longer describes the
+    result. Each destination then keeps exactly one record per revision: the last node's. No collapse
+    needed anywhere.
 
   With both fixes, `codeblocks` (`r0:6220`) is now added to `real.toml`, with the S-3 canonical dump
-  hash. `decode svn --branch-lines`, `verify`, `verify --against-source` (`corresponds`) and `encode
-  git` (with G2's check, `corresponds`) all succeed; its deleted branch appears as
-  `refs/brygge/other/branches/codecompletion_refactoring@r5769` (the branch's actual last revision,
-  not r6220 — r6220 is only the end of the dumped range), and `git fsck --strict` is clean. Its row is
-  in the table above.
+  hash. All three Subversion decode modes now succeed and `verify` cleanly: plain, `--reconstruct-refs`
+  and `--branch-lines`, each `verify`/`verify --against-source` giving `corresponds`. `encode git` (with
+  G2's check, `corresponds`) succeeds on the `--branch-lines` artifact; its deleted branch appears as
+  `refs/brygge/other/branches/codecompletion_refactoring@r5769` (the branch's actual last revision, not
+  r6220 — r6220 is only the end of the dumped range), and `git fsck --strict` is clean. Its row is in
+  the table above. The full real corpus (`brygge-bench real tools/corpus/real.toml fixtures/corpus`,
+  every entry, every variant, internal `verify` and `--against-source`) was also re-run under the new
+  guard: every row `ok` (jq's two variants fail only on the pre-existing, unrelated submodule refusal).
 
 **Memory:** AMD Ryzen 9 9950X (16 cores), 59 GiB RAM, x86_64 Linux — the same machine and method as
 every other table here.

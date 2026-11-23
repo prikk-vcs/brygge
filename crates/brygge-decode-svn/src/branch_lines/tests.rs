@@ -383,12 +383,12 @@ fn a_file_copied_across_branches_is_an_add_with_a_copy_record() {
     assert_eq!(trunk2.copies[0].to, "b.txt");
 }
 
-/// Review 150 decision 2/3: a directory add-with-copyfrom, whose dump *also* restates one of its own
-/// files as its own explicit delete-then-add-with-copyfrom, from the same source revision throughout —
-/// the shape diagnosed on a real repository (codeblocks r5310: a directory copy of `IncrementalSearch`
-/// whose dump separately re-states every file under it with its own delete+add-copyfrom pair, same
-/// source revision). Both observations describe the same fact; they must collapse into one copy
-/// record, not two (which the builder would otherwise refuse as a non-canonical duplicate).
+/// Review 151 D-1: a directory add-with-copyfrom, whose dump *also* restates one of its own files as
+/// its own explicit delete-then-add-with-copyfrom, from the same source revision throughout — the shape
+/// diagnosed on a real repository (codeblocks r5310: a directory copy of `IncrementalSearch` whose dump
+/// separately re-states every file under it with its own delete+add-copyfrom pair, same source
+/// revision). `tree.rs::apply_revision`'s delete-or-replace-voids-earlier-copies rule (not a collapse by
+/// equality here, in `resolve_copies`) gives exactly one record, from the later, explicit node.
 #[test]
 fn a_redundant_per_file_copyfrom_under_a_directory_copy_gives_one_copy_record() {
     let mut d = DumpBuilder::new();

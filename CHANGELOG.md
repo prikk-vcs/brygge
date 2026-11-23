@@ -28,6 +28,10 @@ Every handoff adds its own entry in its own commit.
   was ever written; such a transform now succeeds.
 - `brygge_ir`'s builder refuses a repeated copy record, so an artifact its reader would reject can no
   longer be written.
+- `decode svn`: a revision that copied a directory and also restated files inside it as copies wrote an
+  artifact that its own `verify` rejected (`internal: fail`). Such a repository now decodes and
+  verifies; decode it again. A file replaced inside a copied directory no longer also claims the
+  directory's copy.
 
 ### Changed
 

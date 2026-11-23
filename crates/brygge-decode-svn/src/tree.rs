@@ -116,6 +116,27 @@ struct CopyOut<'a> {
     source_revs: &'a mut Vec<u64>,
 }
 
+/// Review 151 D-1: within one revision, a node that **deletes or replaces** a path `P` voids every
+/// earlier copy record of this revision whose `to` is `P` or under `P`. SVN's own meaning: the explicit
+/// delete-then-add (or delete) restates the path, so an earlier record from a directory copy's snapshot
+/// expansion no longer describes the result. So each destination keeps exactly one record per revision:
+/// the last node's. Without this, a directory copy whose dump also restates a file inside it as its own
+/// copy (same source, or a different one) left two records for the same destination — a non-canonical
+/// duplicate when the sources agreed, and a false second copy claim when they did not (confirmed on a
+/// real repository: codeblocks r5310).
+fn void_copies_under(copy_out: &mut CopyOut<'_>, path: &str) {
+    let prefix = format!("{path}/");
+    let kept: Vec<(CopyRecord, u64)> = std::mem::take(copy_out.copies)
+        .into_iter()
+        .zip(std::mem::take(copy_out.source_revs))
+        .filter(|(c, _)| !(c.to == *path || c.to.starts_with(&prefix)))
+        .collect();
+    for (copy, rev) in kept {
+        copy_out.copies.push(copy);
+        copy_out.source_revs.push(rev);
+    }
+}
+
 /// The outcome of applying one revision's node records.
 pub struct Applied {
     /// The tree after the revision.
@@ -205,9 +226,13 @@ pub fn apply_revision(
             prop_loss.custom |= l.custom;
         }
         match node.action {
-            NodeAction::Delete => remove_subtree(&mut tree, &node.path),
+            NodeAction::Delete => {
+                void_copies_under(&mut copy_out, &node.path);
+                remove_subtree(&mut tree, &node.path);
+            }
             NodeAction::Add | NodeAction::Change | NodeAction::Replace => {
                 if node.action == NodeAction::Replace {
+                    void_copies_under(&mut copy_out, &node.path);
                     remove_subtree(&mut tree, &node.path);
                 }
                 match node.kind {

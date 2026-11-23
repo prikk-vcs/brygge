@@ -51,6 +51,18 @@ fn dir_copy(path: &str, from_rev: u64, from_path: &str) -> NodeRecord {
     }
 }
 
+fn file_replace_with_copy(path: &str, from_rev: u64, from_path: &str) -> NodeRecord {
+    NodeRecord {
+        path: path.to_string(),
+        kind: Some(NodeKind::File),
+        action: NodeAction::Replace,
+        copyfrom: Some((from_rev, from_path.to_string())),
+        props: Some(PropBlock::Full(Vec::new())),
+        text: None,
+        checksums: Checksums::default(),
+    }
+}
+
 fn added_paths(ops: &[PathOp]) -> Vec<String> {
     ops.iter()
         .filter_map(|o| match o {
@@ -230,4 +242,106 @@ fn a_copy_from_an_older_revision_resolves_to_the_correct_from_atom() {
     assert_eq!(r3.copies[0].from_atom, r0_atom);
     assert_eq!(r3.copies[0].from, "trunk/a.txt");
     assert_eq!(r3.copies[0].to, "trunk/copy-of-a.txt");
+}
+
+/// Review 151 D-1 (a): a directory copy's snapshot expansion pushes a copy record for a file, and the
+/// same revision also restates that exact file with its own explicit `replace`-with-copyfrom, from the
+/// identical source revision and path (the shape diagnosed on a real repository: codeblocks r5310). The
+/// explicit node's `Replace` action voids the directory-expansion's earlier record for that path before
+/// `apply_file` pushes its own — so exactly one record survives, not two (which `IrBuilder::add_atom`
+/// would otherwise refuse as a non-canonical duplicate).
+#[test]
+fn a_same_source_replace_under_a_directory_copy_gives_one_copy_record() {
+    let mut b = builder();
+    let r0 = apply_revision(
+        &Tree::new(),
+        vec![file_node("trunk/a.txt", NodeAction::Add, Some(b"a"))],
+        &HashMap::new(),
+        &HashMap::new(),
+        &mut b,
+        &mut Budget::new(&Limits::default()),
+    )
+    .unwrap();
+    let r0_atom = AtomId([1u8; 32]);
+    let mut kept: HashMap<u64, Tree> = HashMap::new();
+    kept.insert(0u64, r0.tree.clone());
+    let mut revnum_to_atom: HashMap<u64, AtomId> = HashMap::new();
+    revnum_to_atom.insert(0, r0_atom);
+
+    // r1: copy trunk -> branches/x (pushes one copy record for a.txt), then the same revision also
+    // explicitly replaces branches/x/a.txt with its own copyfrom from the identical source.
+    let r1 = apply_revision(
+        &r0.tree,
+        vec![
+            dir_copy("branches/x", 0, "trunk"),
+            file_replace_with_copy("branches/x/a.txt", 0, "trunk/a.txt"),
+        ],
+        &kept,
+        &revnum_to_atom,
+        &mut b,
+        &mut Budget::new(&Limits::default()),
+    )
+    .unwrap();
+
+    assert_eq!(r1.copies.len(), 1, "{:?}", r1.copies);
+    assert_eq!(r1.copies[0].from, "trunk/a.txt");
+    assert_eq!(r1.copies[0].to, "branches/x/a.txt");
+    assert_eq!(r1.copies[0].from_atom, r0_atom);
+}
+
+/// Review 151 D-1 (b): the case a collapse-by-equality rule cannot cover. A directory copy's snapshot
+/// expansion pushes a record for a file from source A, and the same revision explicitly replaces that
+/// file with a copy from a *different* source B. Only B describes the result — the directory-copy's
+/// record for that path must be voided, not kept alongside the new one (which would be two different
+/// `from`s for one destination: a false second copy claim, not a duplicate).
+#[test]
+fn a_different_source_replace_under_a_directory_copy_keeps_only_the_replacement() {
+    let mut b = builder();
+    let r0 = apply_revision(
+        &Tree::new(),
+        vec![file_node("trunk/a.txt", NodeAction::Add, Some(b"a"))],
+        &HashMap::new(),
+        &HashMap::new(),
+        &mut b,
+        &mut Budget::new(&Limits::default()),
+    )
+    .unwrap();
+    let r0_atom = AtomId([1u8; 32]);
+    let mut kept: HashMap<u64, Tree> = HashMap::new();
+    kept.insert(0u64, r0.tree.clone());
+    let mut revnum_to_atom: HashMap<u64, AtomId> = HashMap::new();
+    revnum_to_atom.insert(0, r0_atom);
+
+    let r1 = apply_revision(
+        &r0.tree,
+        vec![file_node("other/b.txt", NodeAction::Add, Some(b"b"))],
+        &kept,
+        &revnum_to_atom,
+        &mut b,
+        &mut Budget::new(&Limits::default()),
+    )
+    .unwrap();
+    let r1_atom = AtomId([2u8; 32]);
+    kept.insert(1u64, r1.tree.clone());
+    revnum_to_atom.insert(1, r1_atom);
+
+    // r2: copy trunk -> branches/x (pushes a copy record for a.txt from trunk@r0), then the same
+    // revision replaces branches/x/a.txt with a copy from other/b.txt@r1 instead.
+    let r2 = apply_revision(
+        &r1.tree,
+        vec![
+            dir_copy("branches/x", 0, "trunk"),
+            file_replace_with_copy("branches/x/a.txt", 1, "other/b.txt"),
+        ],
+        &kept,
+        &revnum_to_atom,
+        &mut b,
+        &mut Budget::new(&Limits::default()),
+    )
+    .unwrap();
+
+    assert_eq!(r2.copies.len(), 1, "{:?}", r2.copies);
+    assert_eq!(r2.copies[0].from, "other/b.txt");
+    assert_eq!(r2.copies[0].to, "branches/x/a.txt");
+    assert_eq!(r2.copies[0].from_atom, r1_atom);
 }
