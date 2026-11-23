@@ -129,10 +129,11 @@ fn escape_invalid_utf8(bytes: &[u8]) -> String {
 /// Decode the Git repository at `path` into an [`Ir`] under `opts`.
 ///
 /// # Errors
-/// [`Error::Open`] if the path is not a readable repository; [`Error::FloorRefusal`] on a refused source
-/// feature (submodule, grafts, shallow, replace ref — RFC 004 D-4); [`Error::Read`] on a malformed
-/// object; [`Error::ResourceLimit`] on a resource ceiling (RFC 010); [`Error::Ir`] if the assembled IR
-/// violates an invariant.
+/// [`Error::InvalidOptions`] if an `opts` field cannot mean anything (checked before the repository is
+/// opened); [`Error::Open`] if the path is not a readable repository; [`Error::FloorRefusal`] on a
+/// refused source feature (submodule, grafts, shallow, replace ref — RFC 004 D-4); [`Error::Read`] on a
+/// malformed object; [`Error::ResourceLimit`] on a resource ceiling (RFC 010); [`Error::Ir`] if the
+/// assembled IR violates an invariant.
 pub fn decode(path: &Path, opts: &Options) -> Result<Ir, Error> {
     decode_with_storage(path, opts, &Storage::Memory)
 }
@@ -152,6 +153,13 @@ pub(crate) fn decode_with(
     limits: &Limits,
     storage: &Storage,
 ) -> Result<Ir, Error> {
+    for prefix in &opts.carry_extra_namespaces {
+        if !prefix.ends_with('/') {
+            return Err(Error::InvalidOptions(format!(
+                "carry_extra_namespaces: '{prefix}' does not end with '/', so it would match no ref"
+            )));
+        }
+    }
     let repo = open::open(path)?;
     open::check_repo_floor(&repo)?;
 

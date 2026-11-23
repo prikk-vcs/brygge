@@ -65,6 +65,9 @@ pub enum Error {
     },
     /// The assembled IR violated a `brygge-ir` invariant (signals a decoder bug, not bad input).
     Ir(brygge_ir::Error),
+    /// An [`Options`] field was given a value that cannot mean anything — refused before the repository
+    /// is even opened, rather than silently matching nothing (review 147/148, `carry_extra_namespaces`).
+    InvalidOptions(String),
 }
 
 impl std::fmt::Display for Error {
@@ -82,6 +85,7 @@ impl std::fmt::Display for Error {
                 write!(f, "refused: {what} exceeds brygge's ceiling ({ceiling})")
             }
             Self::Ir(e) => write!(f, "IR assembly failed: {e}"),
+            Self::InvalidOptions(m) => write!(f, "invalid options: {m}"),
         }
     }
 }

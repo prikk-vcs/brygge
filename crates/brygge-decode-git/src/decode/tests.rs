@@ -2520,3 +2520,28 @@ fn a_revert_back_to_an_older_tree_is_diffed_correctly() {
     let again = decode(r.path(), &Options::default()).unwrap();
     assert_eq!(brygge_ir::to_bytes(&ir), brygge_ir::to_bytes(&again));
 }
+
+/// Review 148 C-3: a `carry_extra_namespaces` prefix with no trailing `/` would silently match no ref
+/// (every real ref name under a namespace always has one after the prefix) — refused at decode start,
+/// before the repository is even opened, rather than becoming a quiet no-op.
+#[test]
+fn a_carry_extra_namespaces_prefix_without_a_trailing_slash_is_refused() {
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let r = TempRepo::new();
+    r.write("f.txt", "one\n");
+    r.commit_all("c1");
+    let opts = Options {
+        infer_renames: false,
+        rename_threshold: 100,
+        carry_extra_namespaces: vec!["refs/brygge/other".to_string()], // missing the trailing '/'
+    };
+    match decode(r.path(), &opts) {
+        Err(Error::InvalidOptions(msg)) => {
+            assert!(msg.contains("refs/brygge/other"), "{msg}");
+        }
+        other => panic!("expected Error::InvalidOptions, got {other:?}"),
+    }
+}

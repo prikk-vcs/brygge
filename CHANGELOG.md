@@ -23,15 +23,6 @@ Every handoff adds its own entry in its own commit.
 
 ### Fixed
 
-- `encode git`'s check against the artifact (`verify --against-target git` included): an atom reachable
-  only from an `Other`-kind ref (a `--branch-lines` dead/earlier-life root) was wrongly reported as
-  missing from the result, because `brygge_decode_git` never carries `refs/brygge/other/*` (its own
-  stated namespace policy, unrelated to this check) and so could never surface that commit for matching.
-  The check's own internal re-decode now carries that one namespace too (a new, library-only
-  `carry_extra_namespaces` option on `brygge_decode_git::Options`, never exposed on the CLI), so a dead
-  line's commit is actually read and compared like any other — a wrong tree on it is caught, not
-  exempted from scrutiny; found by `--branch-lines`'s own real-corpus proof.
-
 - `brygge_ir::transform::Edit` (0.7.0 and 0.7.1): a transform that changed an atom with a later copy from
   it was refused at `finish`, with "copy … names from_atom … which was not already added". Nothing wrong
   was ever written; such a transform now succeeds.
@@ -48,6 +39,8 @@ Every handoff adds its own entry in its own commit.
 
 - `examples/encode-git` is removed, and a `brygge-encode-git` plugin is no longer run: `git` is now a
   reserved, built-in `encode` target (RFC 019).
+- `brygge_decode_git::Options` has a new field, `carry_extra_namespaces`. Build it with
+  `..Options::default()`.
 
 ### Security
 
