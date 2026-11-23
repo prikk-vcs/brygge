@@ -104,3 +104,12 @@ license = "GPL-2.0-or-later"
 pin = "2700"
 hash = "a73201207b689470a4217bb271d5a11068806774d5ed9f35251ded8fcd4fc033"
 note = "self-contained, standard trunk/branches/tags; dumped r0:2700 (past the first branch and tag); re-pinned 2026-11-21 to the canonical dump hash (review 128 S-3): svnrdump's own node order within a revision is not stable across runs, even for byte-identical content (2,701 revisions, 6,602,004 bytes both times) — confirmed deterministic across three independent dumps before recording"
+
+[[entry]]
+kind = "svn"
+name = "codeblocks"
+url = "https://svn.code.sf.net/p/codeblocks/code"
+license = "GPL-3.0-or-later"
+pin = "6220"
+hash = "67d87bbdd3d6a0c460ad2eb6413611d0a11c3471ab69629d72717b747d94e1b7"
+note = "dedicated revision counter, not shared with other SourceForge projects; dumped r0:6220, chosen as the earliest range that holds a real deleted branch (branches/codecompletion_refactoring, its last revision r5769); canonical dump hash (review 128 S-3); found during RFC 019 batch G4 (review 150), which also surfaced the duplicate-copy-record defect this entry now exercises (request 076)"
