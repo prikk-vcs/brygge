@@ -334,8 +334,17 @@ fn tampering_a_dead_lines_commit_is_caught_by_against_target() {
         .arg(&out)
         .args(["commit-tree", &new_tree_oid, "-m"])
         .arg(String::from_utf8_lossy(&message.stdout).into_owned())
+        .env("GIT_AUTHOR_NAME", "A U Thor")
+        .env("GIT_AUTHOR_EMAIL", "a@example.com")
+        .env("GIT_COMMITTER_NAME", "C O Mitter")
+        .env("GIT_COMMITTER_EMAIL", "c@example.com")
         .output()
         .unwrap();
+    assert!(
+        new_commit.status.success(),
+        "git commit-tree failed: {}",
+        String::from_utf8_lossy(&new_commit.stderr)
+    );
     let new_commit_oid = String::from_utf8_lossy(&new_commit.stdout)
         .trim()
         .to_string();
