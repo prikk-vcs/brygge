@@ -383,6 +383,61 @@ fn a_file_copied_across_branches_is_an_add_with_a_copy_record() {
     assert_eq!(trunk2.copies[0].to, "b.txt");
 }
 
+/// Review 150 decision 2/3: a directory add-with-copyfrom, whose dump *also* restates one of its own
+/// files as its own explicit delete-then-add-with-copyfrom, from the same source revision throughout —
+/// the shape diagnosed on a real repository (codeblocks r5310: a directory copy of `IncrementalSearch`
+/// whose dump separately re-states every file under it with its own delete+add-copyfrom pair, same
+/// source revision). Both observations describe the same fact; they must collapse into one copy
+/// record, not two (which the builder would otherwise refuse as a non-canonical duplicate).
+#[test]
+fn a_redundant_per_file_copyfrom_under_a_directory_copy_gives_one_copy_record() {
+    let mut d = DumpBuilder::new();
+    d.revision(0, &[("svn:date", &date(0))]);
+    d.revision(1, &[("svn:log", "add"), ("svn:date", &date(1))]);
+    d.add_dir("trunk");
+    d.add_dir("trunk/sub");
+    d.add_file("trunk/sub/file.txt", b"one\n");
+    d.add_dir("branches");
+    d.revision(2, &[("svn:log", "branch"), ("svn:date", &date(2))]);
+    d.copy_dir("branches/stable", (1, "trunk"));
+    d.revision(
+        3,
+        &[
+            ("svn:log", "redundant per-file copyfrom under a dir copy"),
+            ("svn:date", &date(3)),
+        ],
+    );
+    d.copy_dir("branches/stable/newdir", (1, "trunk/sub"));
+    d.delete("branches/stable/newdir/file.txt");
+    d.node(
+        "branches/stable/newdir/file.txt",
+        Some("file"),
+        "add",
+        None,
+        None,
+        Some((1, "trunk/sub/file.txt")),
+    );
+
+    let ir = decode_dump(&d.buf, &branch_lines_opts()).unwrap();
+    let stable3 = ir
+        .atoms
+        .iter()
+        .find(|a| {
+            atom_name(ir_root(&ir, a)) == "branches/stable"
+                && a.ops.iter().any(|o| op_path_eq(o, "newdir/file.txt"))
+        })
+        .expect("branches/stable's continuing atom should exist");
+    assert_eq!(
+        stable3.copies.len(),
+        1,
+        "the directory copy's expansion and the redundant explicit copyfrom must collapse to one \
+         record, not two: {:?}",
+        stable3.copies
+    );
+    assert_eq!(stable3.copies[0].from, "sub/file.txt");
+    assert_eq!(stable3.copies[0].to, "newdir/file.txt");
+}
+
 fn ir_root(ir: &brygge_ir::Ir, atom: &brygge_ir::model::ChangeAtom) -> String {
     let _ = ir;
     match &atom.status {

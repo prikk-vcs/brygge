@@ -574,6 +574,23 @@ fn resolve_copies(
             .from
             .strip_prefix(&from_dir_prefix)
             .unwrap_or(copy.from.as_str());
+        // Review 150 decision 2: a directory add-with-copyfrom expands into one CopyRecord per file
+        // in the source snapshot (below), but the dump may *also* carry an explicit delete-then-add
+        // pair for the same file, copying from the same source revision (confirmed on a real
+        // repository: codeblocks r5310, a directory copy of `IncrementalSearch@5309` whose dump also
+        // restates every one of its files as its own delete-then-add-with-copyfrom, same source
+        // revision throughout). Both observations describe the same fact — same destination, same
+        // source path, the same resolved `from_atom` — so a copy record is a member of a set: two
+        // equal members collapse to one, rather than being pushed twice (which `IrBuilder::add_atom`
+        // would then refuse as a non-canonical duplicate). `resolve_copies` always marks its own
+        // records `Stated`, so two records that agree on (to, from, from_atom) can never disagree on
+        // status here; nothing to compare there.
+        if out
+            .iter()
+            .any(|c: &CopyRecord| c.to == to_rel && c.from == from_rel && c.from_atom == from_atom)
+        {
+            continue;
+        }
         out.push(CopyRecord {
             from: from_rel.to_string(),
             from_atom,
