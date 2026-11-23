@@ -21,6 +21,8 @@ stands.
 (the owner, 2026-11-14: "Migration support of both subversion to git and cvs to git … officially support them.
 However, less prioritized. Our primary target is prikk.").
 
+**Done (2026-11-24): implemented in 0.8.0.**
+
 ## Summary
 
 - **What it adds:** brygge gains a supported encoder, `brygge encode git <artifact> --out <dir>`. It writes a new

@@ -5,7 +5,7 @@ map: what brygge is, the state at handover, the invariants you must never regres
 lives, how to build and gate it, and the prioritized backlog. Everything it references is in this
 repository; nothing load-bearing lives only in someone's head.
 
-**Date of handover:** 2026-09-12. **Updated for the 0.7.1 release, 2026-11-21.** **State:** brygge
+**Date of handover:** 2026-09-12. **Updated for the 0.8.0 release, 2026-11-24.** **State:** brygge
 **0.1.0 is released**: the decode → IR half for all four named sources, on IR contract **0.2.0**.
 **0.1.1** added Windows support and the release workflow (RFC 012), **0.2.0** bounds long Git and
 CVS histories (RFC 010), **0.3.0** reaches SVN delta dumps, Mercurial's hashed store paths and CVS branch
@@ -18,7 +18,13 @@ the official extension point: an encoder author's guide, an unsupported referenc
 and B), and **0.7.0** is the next contract revision, RFC 018: artifacts are compressed (contract **0.3.0**,
 batch C), transforms can record themselves in the contract and be checked for honesty by the reader (batch
 T), and `brygge transform <name>` runs them as external plugins, with brygge checking every plugin's output
-against its input before writing anything (batch P; RFC 017 Part C). This build still reads contract 0.2.0.
+against its input before writing anything (batch P; RFC 017 Part C). **0.7.1** is a patch for Rust 1.100's
+test-binary layout and the AUR's `.SRCINFO` architectures. **0.8.0** adds Git as a second, supported
+target (RFC 019): `brygge encode git` writes a new bare Git repository from an artifact, checked against
+it with brygge's own Git decoder before it is handed over; `verify --against-target git` runs the same
+check on a kept repository; `brygge transform authors` maps source identities to Git identities; and
+Subversion `--branch-lines` and CVS's `trunk` main line give every branch and tag its own reachable line
+of history. This build still reads contract 0.2.0.
 All gates are green, and CI enforces them on the declared MSRV. The encode → prikk half waits on prikk's
 import foundations (see §8).
 
@@ -40,8 +46,8 @@ where told. The governing upstream contract is prikk **RFC 113** (History import
 |---|---|
 | **Decode → IR (Track A)** | **Released in 0.1.0** for all four sources: Git, Mercurial, Subversion, CVS (main line). See `CHANGELOG.md` and the user guides in `docs/src/guide/`. |
 | **IR contract** | **0.3.0** (RFC 018, compact artifacts: DEFLATE frames, blobs grouped by path, a digest over the logical stream; this build still reads 0.2.0). Tagged fields with a critical bit, a strict canonical form; published in `docs/src/reference/ir-artifact-format.md`. |
-| **CLI** | `brygge decode <git\|hg\|svn\|cvs> <source> --out <artifact>`, `inspect <artifact> [--atoms]`, `verify <artifact> [--against-source <source>]`, `encode <target> <artifact> [-- <plugin args>]` / `encode --list` (RFC 017 D-3, an external plugin found on `PATH` only), `transform <name> <artifact> --out <file> [-- <plugin args>]` / `transform --list` (RFC 018 D-6, an external plugin, checked against its input before anything is written); human and versioned machine output (`docs/src/reference/machine-output.md`); CL-08 exit classes. |
-| **Encode → prikk (Track B)** | **Not started past design.** prikk ruled OQ-1…OQ-3 (2026-09-13) and UD-4 (2026-09-23); the encoder waits on prikk building UD-1 and UD-2 (RFC 008; see §8). `brygge encode` (RFC 017 D-3) runs an *external* plugin only; `encode prikk` is reserved and stays unavailable until this lands. |
+| **CLI** | `brygge decode <git\|hg\|svn\|cvs> <source> --out <artifact>`, `inspect <artifact> [--atoms\|--authors]`, `verify <artifact> [--against-source <source>\|--against-target git <repo>]`, `encode <target> <artifact> [-- <plugin args>]` / `encode --list` (RFC 017 D-3; `git` is a reserved, built-in, checked target, RFC 019 D-1/D-6; every other target is an external plugin found on `PATH` only), `transform <name> <artifact> --out <file> [-- <plugin args>]` / `transform --list` (RFC 018 D-6; `authors` is a reserved, built-in transform, RFC 019 D-4; every other name is an external plugin, checked against its input before anything is written); human and versioned machine output (`docs/src/reference/machine-output.md`); CL-08 exit classes. |
+| **Encode → prikk (Track B)** | **Not started past design.** prikk ruled OQ-1…OQ-3 (2026-09-13) and UD-4 (2026-09-23); the encoder waits on prikk building UD-1 and UD-2 (RFC 008; see §8). `brygge encode` (RFC 017 D-3) runs an *external* plugin for every target but the reserved built-ins (`git`, supported since 0.8.0; `prikk`, reserved and still unavailable until this lands). |
 | **Gates** | fmt · clippy `-D warnings` · test · `cargo deny` · `cargo audit` · `tools/check-ir-isolation.sh` · `tools/check-links.sh` · `tools/test-release-tools.sh`, all `--locked`, on the default toolchain **and** on MSRV 1.87; CI-enforced (§7). CI runs fmt, clippy and test on Linux x86_64, Linux arm64, macOS (Apple Silicon) and Windows (RFC 012 D-9). |
 | **Toolchain** | Rust 2024, MSRV **1.87** (raised from 1.85 for the ruzstd security fix, RUSTSEC-2026-0344; enforced by CI). |
 | **Third-party deps** | `sha2` (core); `gix` (Git); `flate2`, `ruzstd` and `sha1-checked` (hg); `sha2` (CVS). SVN adds `md-5` and `sha1-checked` (dump checksums). |
@@ -300,8 +306,11 @@ the team inherits the reasoning, not just the TODO. `ROADMAP.md` is authoritativ
 
 ## 9. Known limits (set expectations honestly)
 
-- **No built-in encoder yet.** 0.1.0 is decode + inspect + verify (§8, Track B); 0.6.0 adds `brygge encode
-  <target>`, which only runs an external plugin found on `PATH` — brygge itself still supports none.
+- **One built-in encoder, Git.** 0.1.0 is decode + inspect + verify (§8, Track B); 0.6.0 adds `brygge
+  encode <target>`, which ran an external plugin found on `PATH` only — brygge itself supported none;
+  0.8.0 adds `encode git` as a supported, built-in target (RFC 019), checked against the artifact before
+  it is handed over. Every other target is still an external plugin only; `prikk` stays reserved and
+  unavailable (§8).
 - **CVS is lossy by nature** (SRC-C3): the changeset is brygge's reconstruction, and every atom is
   `Derived`. Changeset-level `verify --against-source` is *not offered*, because there is no source
   changeset to check against; only per-file content and deterministic reproduction are. Branch history is
@@ -313,7 +322,7 @@ the team inherits the reasoning, not just the TODO. `ROADMAP.md` is authoritativ
   streams: RFC 010 increments 2 and 4 are deferred by measurement.
 - **No progress reporting or cancellation.** Interrupting a decode is safe (the artifact write is atomic),
   but it produces nothing.
-- The threat model is the living document, revisited every release (v0.3 for 0.1.0, v0.4 for 0.1.1, v0.5 for 0.2.0, v0.6 for 0.3.0, v0.7 for 0.3.1, v0.8 for 0.4.0, v0.9 for 0.5.0, v0.10 for 0.6.0, v0.11 for 0.7.0, re-verified for 0.7.1).
+- The threat model is the living document, revisited every release (v0.3 for 0.1.0, v0.4 for 0.1.1, v0.5 for 0.2.0, v0.6 for 0.3.0, v0.7 for 0.3.1, v0.8 for 0.4.0, v0.9 for 0.5.0, v0.10 for 0.6.0, v0.11 for 0.7.0, re-verified for 0.7.1, v0.12 for 0.8.0).
 
 ---
 

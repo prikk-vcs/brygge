@@ -70,8 +70,11 @@ Do these once, before the first automated release. Each is reversible in the sam
      two calls — the review 099 lesson). Both rows go in `tools/bench/README.md`'s per-release table, so
      the previous release's row is re-measured on this machine too and machine drift between cycles
      cannot fake a regression. `brygge-bench real` (fetching aside) stays the RFC 014 D-4 shape-and-
-     correctness run; it is not this step. **When none of those changed,** state so in the cut request
-     and reuse the previous release's row rather than re-measuring (stated, not silently copied);
+     correctness run; it is not this step. **A time comparison takes the median of three runs per
+     binary** (review 154): a single pair's run-to-run spread on one machine can exceed 10% with
+     nothing changed, so one run of each is not enough to tell a real regression from noise. **When
+     none of those changed,** state so in the cut request and reuse the previous release's row rather
+     than re-measuring (stated, not silently copied);
    - **the dev team runs the cross-version `--against-source` check** (review 111 N-2), on the release
      commit, **when the IR model, a decoder's derivation, or `--against-source` changed since the previous
      release:** `tools/fixtures.sh fetch` for the previous release's real published binary

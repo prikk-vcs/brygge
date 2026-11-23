@@ -8,6 +8,21 @@ Every handoff adds its own entry in its own commit.
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-11-24
+
+**Git as a target.** brygge now writes Git repositories. `brygge encode git` turns an artifact into a new bare
+Git repository, and before handing it over, decodes the result with brygge's own Git decoder and checks every
+commit against the artifact. Every commit names brygge, its source and the artifact in `Brygge-` trailers, so
+the result never reads as the source's own history. For Subversion, `decode svn --branch-lines` gives each
+branch and tag its own line of history with its own files; for CVS, `--reconstruct-refs` now includes the
+main line as the branch `trunk`; and `brygge transform authors` maps Subversion and CVS user names to Git
+identities. This release also fixes two released faults: a Subversion revision that copied a directory and
+restated files inside it wrote an artifact that its own `verify` rejected, and a transform that changed a
+copied-from commit was refused. Install with `cargo install --locked brygge`, or download a binary from the
+GitHub release.
+
+The detailed changes that made up 0.8.0 follow.
+
 ### Added
 
 - `brygge encode git`: a supported encoder that writes a new bare Git repository from an artifact, every
@@ -48,6 +63,9 @@ Every handoff adds its own entry in its own commit.
 
 - `examples/encode-git` is removed, and a `brygge-encode-git` plugin is no longer run: `git` is now a
   reserved, built-in `encode` target (RFC 019).
+- `authors` is now a reserved, built-in `transform` target: a `brygge-transform-authors` plugin on
+  `PATH` is no longer run and is shown as shadowed by `transform --list` (RFC 019). `examples/transform-authors`
+  stays the plugin reference example, under its own name.
 - `brygge_decode_git::Options` has a new field, `carry_extra_namespaces`. Build it with
   `..Options::default()`.
 

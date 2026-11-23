@@ -48,16 +48,18 @@ is written by the architect and reviewed/approved per `GOVERNANCE.md`.
 
 ## State
 
-**brygge 0.7.0 is released (2026-10-30). Artifacts are IR contract `0.3.0` (RFC 018); brygge still reads
-contract `0.2.0`.** Since 0.1.0 (2026-09-24), all four sources on the gradient decode into the IR (contract
-`0.2.0`, RFC 011; its artifacts are now written as contract `0.3.0`, RFC 018). The RFCs that 0.1.0 implements
+**brygge 0.8.0 is released, Git as a target (2026-11-24). Artifacts are still IR contract `0.3.0` (RFC
+018); brygge still reads contract `0.2.0`.** Since 0.1.0 (2026-09-24), all four sources on the gradient
+decode into the IR (contract `0.2.0`, RFC 011; its artifacts are now written as contract `0.3.0`, RFC
+018). The RFCs that 0.1.0 implements
 are in `done/`. RFC 010 stays accepted: its first
 increment (the input ceilings) shipped in 0.1.0, increments 3, 3b and 5 in 0.2.0, and increments 2 and 4
 (streaming) are deferred by measurement — its revisit trigger fired in 0.4.0's real-world validation
 (RFC 014 D-4), and the next theme plans it. RFC 013 (Source reach) is done in 0.3.0. RFC 014 (Hardening)
 is done in 0.4.0. RFC 015 (Scale at real size) and RFC 016 (Arch Linux packaging) are done in 0.5.0.
 RFC 017 (Extensibility) is done: Parts A and B in 0.6.0, Part C in 0.7.0, as designed by RFC 018. RFC 018
-(Contract 0.3.0: compact artifacts, and transforms that record themselves) is done in 0.7.0.
+(Contract 0.3.0: compact artifacts, and transforms that record themselves) is done in 0.7.0. RFC 019
+(Git as a target, with Amendment A, Subversion branch lines) is done in 0.8.0.
 Per the lifecycle policy, **the folder an RFC lives in is the source of truth for its state**. This
 table is the index the policy asks each project to keep, grouped by state as RFC 000 recommends. Update it
 in the same commit that moves an RFC between folders.
@@ -89,6 +91,7 @@ in the same commit that moves an RFC between folders.
 | [016](done/016-arch-linux-packaging.md) | Arch Linux packaging (0.5.0): `brygge` (source) and `brygge-bin` on the AUR, rendered, built and checked in an Arch container, and pushed by `release.yml` | `handoffs/016-arch-linux-packaging/` |
 | [017](done/017-extensibility.md) | Extensibility: the IR as the extension point (an encoder guide, an unsupported reference IR → Git encoder), external encoder plugins (`brygge encode <target>`), and honest transforms with the next contract revision. Parts A and B done in 0.6.0; Part C done in 0.7.0, as designed by RFC 018 | `handoffs/017-extensibility/` |
 | [018](done/018-contract-0.3.0.md) | Contract 0.3.0 (0.7.0): compact artifacts (DEFLATE frames, blobs grouped by path, the digest over the logical content) and transforms that record themselves (a chain, a `Transformed` status, `brygge transform` with brygge's output check); reads 0.2.0 artifacts. Done in 0.7.0 | `handoffs/018-contract-0.3.0/` |
+| [019](done/019-git-target.md) | Git as a target (0.8.0): `brygge encode git`, checked against the artifact; `verify --against-target git`; `brygge transform authors`; Subversion `--branch-lines` and the CVS `trunk` main line (Amendment A). Done in 0.8.0 | `handoffs/019-git-target/` |
 
 ### Proposed
 

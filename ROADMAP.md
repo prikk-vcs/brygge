@@ -7,11 +7,13 @@ design ids (e.g. `PR-4`, `IX-06`, `HO-1`, `INV-2`) refer to the design set in
 model). The governing upstream is prikk **RFC 113** (the import contract; accepted, owner-ruled
 2026-09-13).
 
-> **Status (2026-11-21): brygge 0.7.1 is released,** a patch on 0.7.0 (Contract 0.3.0), after 0.6.0
-> (Extensibility), 0.5.0 (Scale at real size), 0.4.0 (Hardening), 0.3.1 (Security), 0.3.0 (Source reach),
-> 0.2.0 (Scale), 0.1.1 (Windows, and release automation) and 0.1.0 (the first release). All four sources
-> (Git, hg, SVN, CVS) decode into the IR (contract 0.2.0, RFC 011); artifacts are written as contract
-> 0.3.0, and brygge still reads 0.2.0 (see `CHANGELOG.md`). Next: **0.8.0, Git as a target** (RFC 019, accepted 2026-11-21). brygge is in **v0 development**: breaking changes made to
+> **Status (2026-11-24): brygge 0.8.0 is released, Git as a target** (RFC 019 and Amendment A), after
+> 0.7.1 (Rust 1.100 and the AUR), 0.7.0 (Contract 0.3.0), 0.6.0 (Extensibility), 0.5.0 (Scale at real
+> size), 0.4.0 (Hardening), 0.3.1 (Security), 0.3.0 (Source reach), 0.2.0 (Scale), 0.1.1 (Windows, and
+> release automation) and 0.1.0 (the first release). All four sources (Git, hg, SVN, CVS) decode into the
+> IR (contract 0.2.0, RFC 011); artifacts are written as contract 0.3.0, and brygge still reads 0.2.0
+> (see `CHANGELOG.md`). `brygge encode git` writes a new bare Git repository from an artifact, checked
+> against it before it is handed over. Next: **to be planned.** brygge is in **v0 development**: breaking changes made to
 > improve or fix it are acceptable, and are stated in the release notes. Track B (encode → prikk):
 > **prikk decides, brygge informs proactively**. brygge sends its import requirements to prikk; the encoder
 > is built once prikk's import foundations exist (see Track B). For the invariants, the architecture and
@@ -161,7 +163,7 @@ design (prikk RFC 113 §6).
     describes: commits, files per commit, atoms per block. brygge can supply measured shapes of real
     repositories from its IR when prikk's import work is scheduled.
 
-### Phase B2 — a second target encoder: Git (the owner, 2026-11-14)
+### Phase B2 — a second target encoder: Git (the owner, 2026-11-14) — **built (0.8.0)**
 - **The target:** Git, officially supported, so Subversion → Git and CVS → Git migrations go through brygge,
   with every derivation and every loss still recorded. It ranks **below prikk**: B1 always comes first, and
   B2 is scheduled only while B1 waits on prikk.
@@ -192,7 +194,7 @@ design (prikk RFC 113 §6).
 | **0.6.0** (**released 2026-10-29**) | **Extensibility** | The IR as the official extension point: an encoder author's guide, and an **unsupported**, labelled reference encoder from IR to Git (`git fast-import`); external encoder plugins, `brygge encode <target>` → `brygge-encode-<target>` on `PATH`, with the artifact verified first and honest labelling (this amends the external design's CL-03) | 0.5.0 released | The reference encoder round-trips a Git fixture (differences only where the IR records a loss); plugin discovery and refusals tested |
 | **0.7.0** (**released 2026-10-30**) | **Contract 0.3.0: compact artifacts and honest transforms** | A compressed blob encoding with a pinned, deterministic codec (RFC 015 OQ-1), and transforms (middlewares) that record themselves (a transform chain, and a `Transformed` derivation kind; RFC 017 D-4). **One contract change for both;** prikk's view asked by letter | Its RFC opens when 0.5.0 is released, or earlier if prikk's import design needs smaller artifacts | Defined by its RFC |
 | **0.7.1** — patch (**released 2026-11-21**) | **Rust 1.100 and the AUR** | the test-harness fix, the AUR `.SRCINFO` architectures | 0.7.0 released | CI green on Rust 1.100; the AUR packaging job green; the threat model re-verified for 0.7.1 |
-| **0.8.0** (planned) | **Git as a target** | RFC 019: `brygge encode git`, a supported encoder that writes a bare Git repository from an artifact, every commit labelled with `Brygge-` trailers, then checked against the artifact by brygge's own Git decoder; a supported authors map (`brygge transform authors`); Subversion branch lines (`decode svn --branch-lines`, RFC 019 Amendment A); `faster-hex` 0.10.1 (RUSTSEC-2026-0306) | RFC 019 accepted (2026-11-21); B1 still waiting on prikk | Subversion, CVS, Mercurial and Git → Git on the real corpus, each passing the check; deterministic commit ids; the threat model updated |
+| **0.8.0** (**released 2026-11-24**) | **Git as a target** | RFC 019: `brygge encode git`, a supported encoder that writes a bare Git repository from an artifact, every commit labelled with `Brygge-` trailers, then checked against the artifact by brygge's own Git decoder; a supported authors map (`brygge transform authors`); Subversion branch lines (`decode svn --branch-lines`, RFC 019 Amendment A); the CVS `trunk` main line; `faster-hex` 0.10.1 (RUSTSEC-2026-0306); two released faults fixed (a Subversion copy-record duplicate, and an `Edit` transform refusal) | RFC 019 accepted (2026-11-21); B1 still waiting on prikk | Subversion, CVS, Mercurial and Git → Git on the real corpus, each passing the check; deterministic commit ids; the threat model updated |
 | **B0** | **Requirements to prikk** | Letter 001: an importer's requirements and questions (no code) | RFC 011 accepted | **Done 2026-09-23:** sent and answered (see Track B0) |
 | **B1** | **prikk encoder** | RFC 008, conforming to prikk's import foundations | prikk's foundations accepted (see Track B) | Per RFC 008 |
 | **1.0.0** | — | The owner's decision alone. Its criteria are to be restated when 1.0 is discussed (the former "prikk proposal encoder (B0)" criterion was withdrawn with B0) | — | — |

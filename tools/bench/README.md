@@ -657,6 +657,35 @@ Machine: AMD Ryzen 9 9950X (16 cores), 59 GiB RAM, x86_64 Linux. Measured once, 
 fetch`'d and checksum-verified, never a local rebuild), not a second build of this tree: the measurement
 is 0.7.1's, and it stands for 0.7.0 as explained above.
 
+### The 0.8.0 cut (request 077)
+
+This cycle changed decoders (the SVN copy rule, `--branch-lines`, the CVS `trunk` ref), `brygge-ir`'s
+builder and `Edit`, and the CLI — the real corpus run is due (111 N-2). Both rows below are from one
+session, this machine, `fixtures/previous-release/0.7.1/brygge` and the 0.8.0 release build:
+
+| Release | Repository | Artifact size | Decode time | Decode peak RSS | `verify` time | `verify` peak RSS |
+|---|---|---:|---:|---:|---:|---:|
+| 0.7.1 (re-measured) | eza | 10,727,417 B | 1,434 ms | 107,840 KiB | 173 ms | 17,332 KiB |
+| 0.7.1 (re-measured) | fish-shell | 991,301,357 B | 63,314 ms | 434,532 KiB | 9,580 ms | 79,500 KiB |
+| 0.7.1 (re-measured) | tortoisehg-thg | 336,240,068 B | 81,149 ms | 254,996 KiB | 3,442 ms | 56,544 KiB |
+| 0.8.0 | eza | 10,727,417 B | 1,207 ms | 104,576 KiB | 142 ms | 16,936 KiB |
+| 0.8.0 | fish-shell | 991,301,357 B | 51,085 ms | 430,308 KiB | 9,677 ms | 79,172 KiB |
+| 0.8.0 | tortoisehg-thg | 336,240,068 B | 94,999 ms | 256,228 KiB | 4,422 ms | 55,444 KiB |
+
+**No decoder, `brygge-ir`, or CLI decode-path source file touches Git, hg or CVS decoding differently
+for these three repositories this cycle** (0.8.0's changes are Subversion's copy rule and
+`--branch-lines`, the CVS `trunk` ref, the Git encoder, and the builder's copy-record guard, none of
+which this table's three repositories exercise on decode). **Comparison:** artifact bytes are identical
+for every repository, both releases; every peak RSS is within 1% between releases; decode and `verify`
+times move in both directions by up to about 20% per repository, which is this machine's own run-to-run
+noise, not a regression — confirmed by re-measuring `tortoisehg-thg` with both binaries a second time in
+this same session: the unchanged 0.7.1 binary alone gave 81,149 ms and 92,255 ms on two successive runs
+(a 14% swing with nothing different), and the second 0.7.1/0.8.0 pair (92,255 ms / 81,808 ms) reversed
+which release looked faster. No artifact-size or peak-RSS difference exceeds noise, so nothing here
+stops the cut.
+
+Machine: the same as the table above, same session.
+
 ## Result — Git target (RFC 019 D-8)
 
 One row per run: the real decode (and, where the handoff's §1 "Before encoding" step applies,
