@@ -5,7 +5,7 @@ map: what brygge is, the state at handover, the invariants you must never regres
 lives, how to build and gate it, and the prioritized backlog. Everything it references is in this
 repository; nothing load-bearing lives only in someone's head.
 
-**Date of handover:** 2026-09-12. **Updated for the 0.8.0 release, 2026-11-24.** **State:** brygge
+**Date of handover:** 2026-09-12. **Updated for the 0.8.1 release, 2026-11-25.** **State:** brygge
 **0.1.0 is released**: the decode → IR half for all four named sources, on IR contract **0.2.0**.
 **0.1.1** added Windows support and the release workflow (RFC 012), **0.2.0** bounds long Git and
 CVS histories (RFC 010), **0.3.0** reaches SVN delta dumps, Mercurial's hashed store paths and CVS branch
@@ -24,7 +24,8 @@ target (RFC 019): `brygge encode git` writes a new bare Git repository from an a
 it with brygge's own Git decoder before it is handed over; `verify --against-target git` runs the same
 check on a kept repository; `brygge transform authors` maps source identities to Git identities; and
 Subversion `--branch-lines` and CVS's `trunk` main line give every branch and tag its own reachable line
-of history. This build still reads contract 0.2.0.
+of history. This build still reads contract 0.2.0. **0.8.1** bounds decoding against amplifying inputs (a
+security patch, threat model v0.13).
 All gates are green, and CI enforces them on the declared MSRV. The encode → prikk half waits on prikk's
 import foundations (see §8).
 
@@ -322,7 +323,7 @@ the team inherits the reasoning, not just the TODO. `ROADMAP.md` is authoritativ
   streams: RFC 010 increments 2 and 4 are deferred by measurement.
 - **No progress reporting or cancellation.** Interrupting a decode is safe (the artifact write is atomic),
   but it produces nothing.
-- The threat model is the living document, revisited every release (v0.3 for 0.1.0, v0.4 for 0.1.1, v0.5 for 0.2.0, v0.6 for 0.3.0, v0.7 for 0.3.1, v0.8 for 0.4.0, v0.9 for 0.5.0, v0.10 for 0.6.0, v0.11 for 0.7.0, re-verified for 0.7.1, v0.12 for 0.8.0).
+- The threat model is the living document, revisited every release (v0.3 for 0.1.0, v0.4 for 0.1.1, v0.5 for 0.2.0, v0.6 for 0.3.0, v0.7 for 0.3.1, v0.8 for 0.4.0, v0.9 for 0.5.0, v0.10 for 0.6.0, v0.11 for 0.7.0, re-verified for 0.7.1, v0.12 for 0.8.0, v0.13 for 0.8.1).
 
 ---
 

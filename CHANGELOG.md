@@ -8,6 +8,18 @@ Every handoff adds its own entry in its own commit.
 
 ## [Unreleased]
 
+## [0.8.1] — 2026-11-25
+
+**A security patch: decoding is bounded against amplifying inputs.** A small Git repository whose trees reuse
+one subtree, or a small Subversion dump with many directory copies, could make `decode` use memory out of all
+proportion to its size: about 4 GB from a 0.5 MB dump. The fault was present since 0.1.0, and affects
+availability only: never a wrong or a corrupt result. 0.8.1 refuses such inputs with a resource limit
+(exit 20), through four declared ceilings. Real repositories are unaffected: the whole test corpus decodes
+byte-identically to 0.8.0. Install with `cargo install --locked brygge`, or download a binary from the GitHub
+release.
+
+The detailed changes that made up 0.8.1 follow.
+
 ### Security
 
 - Decoding is bounded against amplifying inputs. A small Git repository whose trees reuse one subtree,
