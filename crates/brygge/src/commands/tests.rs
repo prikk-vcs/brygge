@@ -717,6 +717,32 @@ fn a_resource_limit_from_every_decoder_maps_to_floor_refusal_with_the_stated_mes
     );
 }
 
+// ---- review 159 C-2: a `ResourceLimit` from `transform authors`'s own `Edit::finish` maps to the ----
+// ---- same exit 20 a decoder's does, not the generic runtime-failure code ----------------------------
+
+#[test]
+fn a_resource_limit_from_transform_authors_finish_maps_to_floor_refusal() {
+    let (code, msg) = map_transform_finish_err(brygge_ir::Error::ResourceLimit {
+        what: "the path-operation total in this artifact".to_string(),
+        ceiling: "100 operations".to_string(),
+    });
+    assert_eq!(code, exit::FLOOR_REFUSAL);
+    assert_eq!(
+        msg,
+        "refused: the path-operation total in this artifact exceeds brygge's ceiling (100 operations)"
+    );
+}
+
+#[test]
+fn every_other_transform_finish_error_stays_a_plain_failure() {
+    let (code, msg) = map_transform_finish_err(brygge_ir::Error::Invariant("x".to_string()));
+    assert_eq!(code, exit::FAILURE);
+    assert_eq!(
+        msg,
+        "the transform's own output was refused: brygge-ir invariant violated: x"
+    );
+}
+
 #[test]
 fn missing_artifact_is_a_plain_failure() {
     let missing = std::env::temp_dir().join("brygge-cli-nope-does-not-exist.ir");

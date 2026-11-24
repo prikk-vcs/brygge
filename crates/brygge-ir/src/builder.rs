@@ -135,7 +135,7 @@ impl IrBuilder {
         let next_total = self.total_ops.saturating_add(ops.len());
         if next_total > self.max_ops {
             return Err(Error::ResourceLimit {
-                what: "the total path operations in this artifact".to_string(),
+                what: "the path-operation total in this artifact".to_string(),
                 ceiling: format!("{} operations", self.max_ops),
             });
         }

@@ -394,6 +394,11 @@ since `Edit` passes it by construction), brygge prints the same `the transform's
 <why>` line `transform <name>` does, deletes its temp file, leaves `--out` untouched, and exits `50` —
 none of the keys above appear.
 
+**If a declared resource ceiling (0.8.1) is reached while `Edit::finish` rebuilds the output** —
+`max_ir_ops`, the only one reachable here, since `authors` touches no tree or copy of its own — brygge
+prints the same `refused: <what> exceeds brygge's ceiling (<ceiling>)` line a decoder's own ceiling
+gives (§4's row for exit `20`) and exits `20`; none of the keys above appear either.
+
 ## 4. Exit codes
 
 The exit code carries the outcome class, so a gate can branch without parsing output.
@@ -402,7 +407,7 @@ The exit code carries the outcome class, so a gate can branch without parsing ou
 |---|---|---|
 | `0` | clean: completed, with at most representation-class drops (storage layout, nothing of the history) | any command |
 | `10` | recorded loss: completed, and something other than representation was dropped and recorded | `decode`, `encode git`, `transform authors` |
-| `20` | refused: a source feature brygge refuses rather than approximates (a floor feature, named in the message), an unsupported format, or a resource ceiling | `decode` |
+| `20` | refused: a source feature brygge refuses rather than approximates (a floor feature, named in the message), an unsupported format, or a resource ceiling | `decode`, `transform authors` |
 | `30` | flagged: completed, but a condition needs attention (an SVN layout brygge could not follow, or CVS reconstructions under the confidence floor) | `decode`, `encode git`, `transform authors` |
 | `40` | reserved (partial or interrupted import); not produced by 0.1.0 | — |
 | `50` | `verify` result `fail` | `verify` |
@@ -428,6 +433,9 @@ source identity, `50`; otherwise the plugin runs, and a non-zero exit or a signa
 as `encode`'s does; on a clean plugin exit, `50` if the plugin's own output fails any check (§3.8), else
 the fidelity class `decode` would have given that same output (this table's `0`/`10`/`30` rows). A bad
 name, or a name not found on `PATH`, is `2`; `--out` naming the same file as `<artifact>` is also `2`.
+A resource ceiling (0.8.1) reached while a plugin builds its own output is the plugin's own exit `20` to
+give, the same convention brygge's own code follows; it passes through here exactly like any other
+plugin exit code. For the built-in `authors` transform, `20` is brygge's own, given in-process (§3.11).
 
 **`encode git`'s own exit code, unlike the plugin-based commands above, is in this table (§3.9):** if
 its mandatory verify-first check does not pass, `verify`'s own code; a pre-flight refusal (D-7) is `2`;

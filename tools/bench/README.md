@@ -823,3 +823,26 @@ review 149):** two real, public candidates were found and confirmed to really ha
 
 **Memory:** AMD Ryzen 9 9950X (16 cores), 59 GiB RAM, x86_64 Linux — the same machine and method as
 every other table here.
+
+## Result — 0.8.1 (Amplification bounds, request 078)
+
+Four declared ceilings (`max_tree_entries`, `max_copy_expansion`, `max_retained_entries`, `max_ir_ops`)
+against the amplification found while scoping 0.9 (review 157): a small Subversion dump with many
+directory copies, or a small Git repository whose trees reuse one subtree, could otherwise make `decode`
+use memory out of all proportion to its size. Each is checked before storing, not after allocating.
+
+**The real corpus still decodes byte-identically to 0.8.0** — no ceiling fires on any real repository.
+
+**Cost per retained entry, measured (not estimated):** a Subversion input built to reach
+`max_retained_entries`'s 20,000,000-entry ceiling was refused at exit 20 after 16.7 s, peaking at
+3,312,196 KiB — about **170 bytes per retained entry**. At that cost the default stays well under the
+~4 GiB judgment threshold for choosing it silently; 0.9's shared-structure tree (RFC 020) is what makes
+the real cost smaller still, for any repository that is not itself amplifying.
+
+**Every corpus repository stays at least 2.96× under every ceiling** (the architect's own measurement;
+`codeblocks`'s `max_retained_entries` use is the tightest).
+
+**Both of the architect's own amplifying inputs are refused at the default ceilings**, run once by hand
+and never committed (the generator inputs themselves are not part of this record, by design — see
+CHANGELOG's `### Security` entry for 0.8.1): the Subversion one in 16.7 s, peaking at 3,312,196 KiB; the
+Git one in 22 s, peaking at 686 MiB.

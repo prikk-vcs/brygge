@@ -383,6 +383,22 @@ fn map_hg_error(e: HgError) -> (i32, String) {
     }
 }
 
+/// `run_transform_authors`'s own `Edit::finish` error, mapped to a `(exit code, message)` exactly as a
+/// decoder's `ResourceLimit` is above (review 159 C-2): the ceiling `IrBuilder::add_atom` raises from
+/// inside `Edit::finish`'s own builder is the same kind of refusal `machine-output.md` §4's row for `20`
+/// names, not a generic runtime failure, so it must give the same exit code here too.
+fn map_transform_finish_err(e: brygge_ir::Error) -> (i32, String) {
+    match e {
+        brygge_ir::Error::ResourceLimit { what, ceiling } => {
+            (exit::FLOOR_REFUSAL, resource_limit_message(&what, &ceiling))
+        }
+        other => (
+            exit::FAILURE,
+            format!("the transform's own output was refused: {other}"),
+        ),
+    }
+}
+
 /// Decode `repo` with the chosen source decoder, mapping decoder errors to a `(exit code, message)`.
 /// A refused format/feature is a clean refusal (`FLOOR_REFUSAL`), not a generic failure. The decoder
 /// invocation itself is panic-guarded (`guard_decoder`, CR-16) for all four sources, since this is the
@@ -3710,10 +3726,9 @@ pub fn run_transform_authors(
     let output_ir = match edit.finish() {
         Ok(ir) => ir,
         Err(e) => {
-            output::stderr(&display::human(&format!(
-                "the transform's own output was refused: {e}"
-            )));
-            return exit::FAILURE;
+            let (code, msg) = map_transform_finish_err(e);
+            output::stderr(&display::human(&msg));
+            return code;
         }
     };
 

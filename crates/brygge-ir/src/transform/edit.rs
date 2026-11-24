@@ -190,6 +190,12 @@ pub struct Edit<'a> {
     refs: BTreeMap<(RefKind, String), RefEditState>,
     removed_refs: BTreeMap<(RefKind, String), String>,
     new_blobs: Vec<Vec<u8>>,
+    /// Overrides [`IrBuilder`]'s default `max_ops` ceiling for a test (review 159 C-2), so [`finish`]
+    /// can be driven to [`Error::ResourceLimit`] without building near 200,000,000 operations.
+    ///
+    /// [`finish`]: Self::finish
+    #[cfg(test)]
+    max_ops_for_test: Option<usize>,
 }
 
 impl<'a> Edit<'a> {
@@ -227,7 +233,16 @@ impl<'a> Edit<'a> {
             refs,
             removed_refs: BTreeMap::new(),
             new_blobs: Vec::new(),
+            #[cfg(test)]
+            max_ops_for_test: None,
         }
+    }
+
+    /// Override [`IrBuilder`]'s default `max_ops` ceiling for a test (review 159 C-2).
+    #[cfg(test)]
+    pub(crate) fn with_max_ops_for_test(mut self, max_ops: usize) -> Self {
+        self.max_ops_for_test = Some(max_ops);
+        self
     }
 
     /// Every atom's own working copy, in the input's own order.
@@ -373,7 +388,13 @@ impl<'a> Edit<'a> {
         let input_ir = &self.input.ir;
         let step = input_ir.transforms.len() as u64;
 
-        let mut builder = IrBuilder::new(input_ir.provenance.clone());
+        let builder = IrBuilder::new(input_ir.provenance.clone());
+        #[cfg(test)]
+        let builder = match self.max_ops_for_test {
+            Some(max_ops) => builder.with_max_ops_for_test(max_ops),
+            None => builder,
+        };
+        let mut builder = builder;
         for id in input_ir.content.ids() {
             let bytes = input_ir.content.get(id)?.ok_or_else(|| {
                 Error::Invariant(format!("blob {id} indexed in the input but not readable"))

@@ -6,6 +6,7 @@
 use std::collections::BTreeMap;
 
 use super::*;
+use crate::Error;
 use crate::artifact::{Decoded, digest_of, from_bytes, to_bytes};
 use crate::builder::{AtomDraft, IrBuilder};
 use crate::model::{
@@ -291,6 +292,20 @@ fn an_honest_no_op_edit_passes_check_as_a_zero_change_step() {
             refs_changed: 0,
             dropped: 0,
         }
+    );
+}
+
+/// Review 159 C-2: `Edit::finish` rebuilds through its own `IrBuilder`, so `max_ir_ops` (0.8.1) holds
+/// for a transform exactly as it does for a decoder — proven here with a small injected ceiling
+/// (`decoded_fixture`'s two atoms together add two `PathOp`s, one over a ceiling of one).
+#[test]
+fn finish_raises_resource_limit_when_the_injected_max_ops_is_crossed() {
+    let input = decoded_fixture();
+    let edit = Edit::begin(&input, "no-op", "1.0.0", BTreeMap::new()).with_max_ops_for_test(1);
+    let err = edit.finish().unwrap_err();
+    assert!(
+        matches!(err, Error::ResourceLimit { .. }),
+        "expected Error::ResourceLimit, got {err:?}"
     );
 }
 

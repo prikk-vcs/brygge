@@ -37,7 +37,9 @@ entries across every snapshot brygge must retain for a later copy to name — ne
 design (a `copyfrom` may name any earlier revision) — is refused above 20,000,000, checked before a
 snapshot is kept. None of these are reachable by real history: a dump that copies a directory, and later
 restates files inside the copy as copies of their own, repeated many times over, is what crosses them —
-not a real repository's own history, however large.
+not a real repository's own history, however large. Measured against the 20,000,000-entry retention
+ceiling, a retained snapshot entry costs about 170 bytes — comfortably inside the default before it
+matters; 0.9's shared-structure tree is what makes it small for a real repository's own size.
 
 ## Dump forms
 

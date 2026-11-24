@@ -81,7 +81,8 @@ impl<'a> Budget<'a> {
         let next = self.retained_entries.saturating_add(entries);
         if next > self.limits.max_retained_entries {
             return Err(Error::ResourceLimit {
-                what: "the snapshots brygge must retain for later copies in this dump".to_string(),
+                what: "the snapshot total brygge must retain for later copies in this dump"
+                    .to_string(),
                 ceiling: format!("{} entries", self.limits.max_retained_entries),
             });
         }

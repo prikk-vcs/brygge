@@ -99,7 +99,7 @@ pub enum Error {
     /// `max_ir_ops` before the atom that crossed it was stored. Holds for every decoder and every
     /// `Edit`-based transform, since both build through [`builder::IrBuilder`].
     ResourceLimit {
-        /// What was being counted (e.g. `"the total path operations in this artifact"`).
+        /// What was being counted (e.g. `"the path-operation total in this artifact"`).
         what: String,
         /// The ceiling that was reached, already formatted for a message (e.g. `"200000000 operations"`).
         ceiling: String,
