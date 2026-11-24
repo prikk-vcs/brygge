@@ -29,6 +29,16 @@ removing it. The option never changes the artifact. Compressing the artifact use
 about 100 MiB more memory than before (not growing with the repository), and makes decoding take about
 1.5× as long.
 
+**Three ceilings on copies and the running tree** (0.8.1): a repository where the running tree holds
+more than 10,000,000 files is refused, exit 20 — checked before a new path is stored, whether by a
+single node or by a directory copy. One directory copy that would add more than 10,000,000 entries is
+refused the same way, checked as its source is walked, before the expansion is collected. And the sum of
+entries across every snapshot brygge must retain for a later copy to name — never evicted once kept, by
+design (a `copyfrom` may name any earlier revision) — is refused above 20,000,000, checked before a
+snapshot is kept. None of these are reachable by real history: a dump that copies a directory, and later
+restates files inside the copy as copies of their own, repeated many times over, is what crosses them —
+not a real repository's own history, however large.
+
 ## Dump forms
 
 brygge reads all three dumps of one repository, and **gives the same artifact for each**, byte for byte:

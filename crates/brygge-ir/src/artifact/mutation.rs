@@ -234,6 +234,10 @@ fn outcome_tag(r: &Result<super::Decoded, crate::Error>) -> &'static str {
         Err(crate::Error::Invariant(_)) => "invariant",
         Err(crate::Error::Io(_)) => "io",
         Err(crate::Error::ArtifactChanged(_)) => "artifact_changed",
+        // 0.8.1: `IrBuilder::add_atom`'s own ceiling, never returned by the artifact reader
+        // (`from_bytes`/`read_from`) this equivalence check exercises — kept here only so a new
+        // `Error` variant is a compile error in this match, per the doc comment above.
+        Err(crate::Error::ResourceLimit { .. }) => "resource_limit",
     }
 }
 

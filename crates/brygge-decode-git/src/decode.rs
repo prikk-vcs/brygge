@@ -52,6 +52,13 @@ pub(crate) struct Limits {
     /// on), checked while peeling (batch-2 handoff §1.1, review 011 R-2) — an attacker-chosen chain of
     /// tag objects cannot force unbounded verified reads for one ref.
     pub(crate) max_tag_chain: usize,
+    /// The maximum number of entries `walk_tree` visits while materializing one tree snapshot (0.8.1,
+    /// the amplification-bounds patch): incremented as each entry (tree or leaf) is visited, checked
+    /// before it is stored or its subtree pushed. A small tree whose entries share one subtree can
+    /// otherwise expand to far more paths than the tree's own object count: [`SnapshotCache`] only
+    /// avoids re-walking the same tree *object* twice across different commits, never the multiplicative
+    /// growth of one walk's own flat output when a subtree repeats within it.
+    pub(crate) max_tree_entries: usize,
 }
 
 impl Default for Limits {
@@ -62,6 +69,7 @@ impl Default for Limits {
             max_path_bytes: 4096,
             max_tree_depth: 256,
             max_tag_chain: 32,
+            max_tree_entries: 10_000_000,
         }
     }
 }
@@ -908,11 +916,22 @@ fn walk_tree(
 ) -> Result<(), Error> {
     // (tree id, path prefix built so far, this tree's own nesting depth; the root is depth 1).
     let mut stack: Vec<(ObjectId, String, usize)> = vec![(root_tree_id, String::new(), 1)];
+    // 0.8.1: one counter for the whole walk (one materialized tree), not per tree object — a subtree
+    // visited through several parents in this same walk must still count each visit, since each is a
+    // distinct path in the flat snapshot `out` builds.
+    let mut visited: usize = 0;
     while let Some((tree_id, prefix, depth)) = stack.pop() {
         let tree = find_verified_object(repo, tree_id)?
             .try_into_tree()
             .map_err(read_err)?;
         for entry in tree.iter() {
+            visited = visited.saturating_add(1);
+            if visited > limits.max_tree_entries {
+                return Err(resource_limit(
+                    "one tree in this repository",
+                    format!("{} entries", limits.max_tree_entries),
+                ));
+            }
             let entry = entry.map_err(read_err)?;
             let raw_name = entry.filename(); // &BStr; CR-03/D-3(i): checked below, never `to_str_lossy`.
             let Ok(name) = std::str::from_utf8(raw_name) else {

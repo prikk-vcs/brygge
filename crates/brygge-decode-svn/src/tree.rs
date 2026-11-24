@@ -53,6 +53,10 @@ pub struct Budget<'a> {
     pub limits: &'a Limits,
     /// The bytes every delta's reconstructed target has taken so far.
     pub reconstructed: usize,
+    /// The sum of entries across every [`Tree`] snapshot ever retained in `kept` so far (0.8.1):
+    /// updated by [`Budget::retain`] each time the caller keeps a revision's snapshot (RFC 010
+    /// increment 1's own bookkeeping never evicts a kept snapshot, so this only ever grows).
+    retained_entries: usize,
 }
 
 impl<'a> Budget<'a> {
@@ -62,7 +66,27 @@ impl<'a> Budget<'a> {
         Self {
             limits,
             reconstructed: 0,
+            retained_entries: 0,
         }
+    }
+
+    /// Account for keeping a snapshot of `entries` files (0.8.1): refuses, before the caller stores the
+    /// snapshot, if doing so would cross `max_retained_entries` — the running sum across every snapshot
+    /// ever retained, not any one snapshot's own size (that is `max_tree_entries`).
+    ///
+    /// # Errors
+    /// [`Error::ResourceLimit`] if keeping this snapshot would cross the ceiling. The caller must not
+    /// store the snapshot in that case.
+    pub fn retain(&mut self, entries: usize) -> Result<(), Error> {
+        let next = self.retained_entries.saturating_add(entries);
+        if next > self.limits.max_retained_entries {
+            return Err(Error::ResourceLimit {
+                what: "the snapshots brygge must retain for later copies in this dump".to_string(),
+                ceiling: format!("{} entries", self.limits.max_retained_entries),
+            });
+        }
+        self.retained_entries = next;
+        Ok(())
     }
 }
 
@@ -237,7 +261,14 @@ pub fn apply_revision(
                 }
                 match node.kind {
                     Some(NodeKind::Dir) => {
-                        apply_dir(&mut tree, &mut copy_out, kept, revnum_to_atom, node)?;
+                        apply_dir(
+                            &mut tree,
+                            &mut copy_out,
+                            kept,
+                            revnum_to_atom,
+                            node,
+                            budget.limits,
+                        )?;
                     }
                     Some(NodeKind::File) => {
                         apply_file(
@@ -481,6 +512,13 @@ fn apply_file(
         });
         copy_out.source_revs.push(*crev);
     }
+    // 0.8.1: the running tree's own size, checked before a genuinely new path is stored.
+    if !tree.contains_key(&node.path) && tree.len() >= budget.limits.max_tree_entries {
+        return Err(Error::ResourceLimit {
+            what: "one tree in this repository".to_string(),
+            ceiling: format!("{} entries", budget.limits.max_tree_entries),
+        });
+    }
     tree.insert(
         node.path,
         FileEntry {
@@ -538,6 +576,7 @@ fn apply_dir(
     kept: &HashMap<u64, Tree>,
     revnum_to_atom: &HashMap<u64, AtomId>,
     node: NodeRecord,
+    limits: &Limits,
 ) -> Result<(), Error> {
     let Some((crev, cpath)) = &node.copyfrom else {
         return Ok(());
@@ -546,8 +585,17 @@ fn apply_dir(
     let from_atom = atom_for(revnum_to_atom, *crev)?;
     let prefix = format!("{cpath}/");
     // Collect first (avoid borrowing `src` while mutating `tree`; they are different maps anyway).
+    // 0.8.1: the count is checked as the source snapshot is walked, before more of it is collected —
+    // one copy cannot expand to more than `max_copy_expansion` entries, however large the real
+    // directory it copies from is.
     let mut additions: Vec<(String, String, FileEntry)> = Vec::new();
     for (spath, sentry) in src {
+        if additions.len() >= limits.max_copy_expansion {
+            return Err(Error::ResourceLimit {
+                what: "one directory copy's expansion".to_string(),
+                ceiling: format!("{} entries", limits.max_copy_expansion),
+            });
+        }
         let new_path = if spath == cpath {
             node.path.clone()
         } else if let Some(rest) = spath.strip_prefix(&prefix) {
@@ -558,6 +606,14 @@ fn apply_dir(
         additions.push((spath.clone(), new_path, sentry.clone()));
     }
     for (from, to, entry) in additions {
+        // 0.8.1: the running tree's own size, checked before a genuinely new path is stored (an
+        // existing path being overwritten does not grow the tree).
+        if !tree.contains_key(&to) && tree.len() >= limits.max_tree_entries {
+            return Err(Error::ResourceLimit {
+                what: "one tree in this repository".to_string(),
+                ceiling: format!("{} entries", limits.max_tree_entries),
+            });
+        }
         copy_out.copies.push(CopyRecord {
             from,
             from_atom,

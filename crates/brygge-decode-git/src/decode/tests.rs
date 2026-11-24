@@ -1475,6 +1475,101 @@ fn commit_tree(r: &TempRepo, tree: &str, msg: &str) -> String {
     commit
 }
 
+/// A tree of `n` distinct blob entries, all the same content, built with `git mktree`.
+fn build_flat_tree(r: &TempRepo, n: usize) -> String {
+    let blob = git_stdin(r.path(), &["hash-object", "-w", "--stdin"], b"x\n");
+    let mut listing = String::new();
+    for i in 0..n {
+        listing.push_str(&format!("100644 blob {blob}\tf{i}\n"));
+    }
+    git_stdin(r.path(), &["mktree"], listing.as_bytes())
+}
+
+/// `width` entries at each of `levels` levels, every entry pointing to the **same** child subtree (0.8.1
+/// / review 157's "tree bomb" shape): the real object count is `levels + 1`, while the flat snapshot
+/// `walk_tree` must build has `width.pow(levels)` paths. `SnapshotCache` cannot help here — every root
+/// tree in this test is distinct, so no root is ever walked twice; the amplification is inside *one*
+/// walk, from one subtree id repeated within it.
+fn build_shared_subtree_bomb(r: &TempRepo, width: usize, levels: usize) -> String {
+    let blob = git_stdin(r.path(), &["hash-object", "-w", "--stdin"], b"leaf\n");
+    let mut tree = git_stdin(
+        r.path(),
+        &["mktree"],
+        format!("100644 blob {blob}\tleaf.txt\n").as_bytes(),
+    );
+    for _ in 0..levels {
+        let mut listing = String::new();
+        for i in 0..width {
+            listing.push_str(&format!("040000 tree {tree}\td{i}\n"));
+        }
+        tree = git_stdin(r.path(), &["mktree"], listing.as_bytes());
+    }
+    tree
+}
+
+#[test]
+fn a_flat_tree_at_the_entry_ceiling_decodes_but_one_more_is_refused() {
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let limits = Limits {
+        max_tree_entries: 20,
+        ..Limits::default()
+    };
+
+    let at_ceiling = TempRepo::new();
+    let tree = build_flat_tree(&at_ceiling, 20);
+    commit_tree(&at_ceiling, &tree, "20 entries");
+    decode_with(
+        at_ceiling.path(),
+        &Options::default(),
+        &limits,
+        &Storage::Memory,
+    )
+    .expect("20 entries is exactly the injected 20-entry ceiling");
+
+    let over_ceiling = TempRepo::new();
+    let tree = build_flat_tree(&over_ceiling, 21);
+    commit_tree(&over_ceiling, &tree, "21 entries");
+    match decode_with(
+        over_ceiling.path(),
+        &Options::default(),
+        &limits,
+        &Storage::Memory,
+    ) {
+        Err(crate::Error::ResourceLimit { .. }) => {}
+        other => panic!("expected a resource-limit refusal, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_small_shared_subtree_bomb_is_refused_by_the_entry_ceiling() {
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let r = TempRepo::new();
+    // 20 entries at 4 levels, every one sharing the same child: 20^4 = 160,000 paths from 5 real
+    // objects (review 157/158's own example scale for this level-2 test).
+    let tree = build_shared_subtree_bomb(&r, 20, 4);
+    commit_tree(&r, &tree, "shared-subtree bomb");
+
+    let limits = Limits {
+        max_tree_entries: 1_000,
+        ..Limits::default()
+    };
+    let start = std::time::Instant::now();
+    match decode_with(r.path(), &Options::default(), &limits, &Storage::Memory) {
+        Err(crate::Error::ResourceLimit { .. }) => {}
+        other => panic!("expected a resource-limit refusal, got {other:?}"),
+    }
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(10),
+        "refused fast, bounded by the ceiling, not by walking all 160,000 paths first"
+    );
+}
+
 #[test]
 fn a_blob_over_the_limit_is_refused() {
     if !git_available() {

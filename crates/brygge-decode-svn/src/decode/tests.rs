@@ -1150,6 +1150,69 @@ fn an_empty_author_is_still_an_absent_claim_and_an_empty_log_is_kept() {
     );
 }
 
+// ---- 0.8.1: a real, small Subversion copy bomb, through the full decode path (amplification bounds) ----
+
+/// Decode a dumpstream through `Source::DumpFile`, with injected `limits` (0.8.1's level-2 proof needs
+/// the real `decode_with` path, not `apply_revision` directly, so the ceiling's plumbing from the CLI's
+/// options through to `tree.rs` is what gets exercised).
+fn decode_dump_with_limits(
+    bytes: &[u8],
+    opts: &Options,
+    limits: &crate::source::Limits,
+) -> Result<brygge_ir::Ir, crate::Error> {
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let path: PathBuf = std::env::temp_dir().join(format!(
+        "brygge-svndec-limited-{}-{n}.dump",
+        std::process::id()
+    ));
+    std::fs::write(&path, bytes).unwrap();
+    let out = super::decode_with(
+        &Source::DumpFile(path.clone()),
+        opts,
+        limits,
+        &brygge_ir::Storage::Memory,
+    );
+    let _ = std::fs::remove_file(&path);
+    out
+}
+
+#[test]
+fn a_small_copy_bomb_is_refused_fast_by_the_default_sized_ceiling_scaled_down() {
+    // trunk holds 200 files; 20 tags each copy the whole of trunk — a small-scale version of review
+    // 157's own finding (quadratic growth from many directory copies over one tree), built here with a
+    // generated dump, never a real svnadmin repository.
+    let mut d = DumpBuilder::new();
+    d.revision(0, &[("svn:date", &date(0))]);
+    d.revision(1, &[("svn:log", "add"), ("svn:date", &date(1))]);
+    d.add_dir("trunk");
+    for i in 0..200 {
+        d.add_file(&format!("trunk/f{i}.txt"), b"x");
+    }
+    for t in 0..20 {
+        d.revision(2 + t, &[("svn:log", "tag"), ("svn:date", &date(2 + t))]);
+        d.copy_dir(&format!("tags/t{t}"), (1, "trunk"));
+    }
+
+    // Ceilings far below the real defaults, so this small, fast-to-build dump still crosses them —
+    // mirroring how a real adversarial dump of this shape would be refused long before it reaches
+    // 10,000,000/20,000,000 entries.
+    let limits = crate::source::Limits {
+        max_tree_entries: 1_000,
+        max_copy_expansion: 1_000,
+        max_retained_entries: 1_000,
+        ..crate::source::Limits::default()
+    };
+    let start = std::time::Instant::now();
+    match decode_dump_with_limits(&d.buf, &Options::default(), &limits) {
+        Err(crate::Error::ResourceLimit { .. }) => {}
+        other => panic!("expected a resource-limit refusal, got {other:?}"),
+    }
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(10),
+        "refused fast, bounded by a ceiling, not by retaining all 20 copies of a 200-file tree first"
+    );
+}
+
 #[test]
 fn decoding_a_non_utf8_author_and_log_is_deterministic() {
     let dump = latin1_dump();

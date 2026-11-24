@@ -19,6 +19,13 @@ removing it. The option never changes the artifact. Compressing the artifact use
 about 100 MiB more memory than before (not growing with the repository), and makes decoding take about
 1.5× as long.
 
+**A ceiling on the size of one tree** (0.8.1): a repository where one commit's tree holds more than
+10,000,000 path entries is refused, exit 20. This is checked as each tree is walked, before an entry is
+stored — it cannot be reached by a real repository's own files, but it bounds a crafted tree whose
+entries reuse one shared subtree: a tiny repository, stated in terms of real objects, can otherwise make
+a flat path list many times larger than the objects themselves. The ceiling counts the entries this one
+walk visits, not the number of distinct Git objects involved.
+
 ## What brygge carries
 
 - Every commit reachable from a branch (`refs/heads/*`) or a tag (`refs/tags/*`), as a stated atom that

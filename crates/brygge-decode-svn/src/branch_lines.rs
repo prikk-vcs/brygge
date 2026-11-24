@@ -319,6 +319,7 @@ pub(crate) fn decode_with(
         }
 
         if needed.contains(&number) {
+            budget.retain(applied.tree.len())?;
             kept.insert(number, applied.tree.clone());
         }
         prev_tree = applied.tree;

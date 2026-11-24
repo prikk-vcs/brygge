@@ -311,6 +311,11 @@ fn map_cvs_error(e: CvsError) -> (i32, String) {
         CvsError::ResourceLimit { what, ceiling } => {
             (exit::FLOOR_REFUSAL, resource_limit_message(&what, &ceiling))
         }
+        // 0.8.1: `IrBuilder::add_atom`'s own ceiling (`max_ir_ops`), wrapped here like every other
+        // decoder's native `ResourceLimit` — the builder's ceiling holds for every decoder.
+        CvsError::Ir(brygge_ir::Error::ResourceLimit { what, ceiling }) => {
+            (exit::FLOOR_REFUSAL, resource_limit_message(&what, &ceiling))
+        }
         other => (exit::FAILURE, format!("decode failed: {other}")),
     }
 }
@@ -328,6 +333,10 @@ fn map_svn_error(e: SvnError) -> (i32, String) {
         SvnError::ResourceLimit { what, ceiling } => {
             (exit::FLOOR_REFUSAL, resource_limit_message(&what, &ceiling))
         }
+        // 0.8.1: as CVS's own arm above.
+        SvnError::Ir(brygge_ir::Error::ResourceLimit { what, ceiling }) => {
+            (exit::FLOOR_REFUSAL, resource_limit_message(&what, &ceiling))
+        }
         e @ SvnError::BranchLinesNoLayout => (exit::FLOOR_REFUSAL, e.to_string()),
         other => (exit::FAILURE, format!("decode failed: {other}")),
     }
@@ -340,6 +349,10 @@ fn map_git_error(e: GitError) -> (i32, String) {
             format!("refused Git feature '{feature}' below the floor: {reason}"),
         ),
         GitError::ResourceLimit { what, ceiling } => {
+            (exit::FLOOR_REFUSAL, resource_limit_message(&what, &ceiling))
+        }
+        // 0.8.1: as CVS's own arm above.
+        GitError::Ir(brygge_ir::Error::ResourceLimit { what, ceiling }) => {
             (exit::FLOOR_REFUSAL, resource_limit_message(&what, &ceiling))
         }
         other => (exit::FAILURE, format!("decode failed: {other}")),
@@ -360,6 +373,10 @@ fn map_hg_error(e: HgError) -> (i32, String) {
             format!("unsupported Mercurial format '{requirement}': {reason}"),
         ),
         HgError::ResourceLimit { what, ceiling } => {
+            (exit::FLOOR_REFUSAL, resource_limit_message(&what, &ceiling))
+        }
+        // 0.8.1: as CVS's own arm above.
+        HgError::Ir(brygge_ir::Error::ResourceLimit { what, ceiling }) => {
             (exit::FLOOR_REFUSAL, resource_limit_message(&what, &ceiling))
         }
         other => (exit::FAILURE, format!("decode failed: {other}")),

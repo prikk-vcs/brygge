@@ -8,6 +8,14 @@ Every handoff adds its own entry in its own commit.
 
 ## [Unreleased]
 
+### Security
+
+- Decoding is bounded against amplifying inputs. A small Git repository whose trees reuse one subtree,
+  or a small Subversion dump with many directory copies, could make `decode` use memory out of all
+  proportion to its size (about 4 GB from a 0.5 MB dump), present since 0.1.0. Such inputs are now
+  refused with a resource limit (exit 20). Real repositories are unaffected: the whole test corpus
+  decodes byte-identically.
+
 ## [0.8.0] — 2026-11-24
 
 **Git as a target.** brygge now writes Git repositories. `brygge encode git` turns an artifact into a new bare

@@ -33,6 +33,7 @@ fn an_over_limit_dumpfile_is_refused_without_being_read() {
         max_node_text_bytes: 1024,
         max_stderr_bytes: 1024,
         max_svnadmin_version_bytes: 4096,
+        ..Limits::default()
     };
     let start = Instant::now();
     let result = Source::DumpFile(path.clone()).load_with(&limits);
@@ -108,6 +109,7 @@ fn an_over_limit_svnadmin_dump_is_refused() {
         max_node_text_bytes: 1024,
         max_stderr_bytes: 1024,
         max_svnadmin_version_bytes: 4096,
+        ..Limits::default()
     };
     let result = Source::LocalRepo(repo.clone()).load_with(&limits);
     let _ = std::fs::remove_dir_all(&repo);
@@ -139,6 +141,7 @@ fn a_child_writing_a_lot_of_stderr_does_not_deadlock() {
         max_node_text_bytes: 1024,
         max_stderr_bytes: 4096,
         max_svnadmin_version_bytes: 4096,
+        ..Limits::default()
     };
 
     let start = Instant::now();
@@ -168,6 +171,7 @@ fn an_over_limit_svnadmin_version_output_is_named_as_such_not_as_the_dumpstream(
         max_node_text_bytes: 1024,
         max_stderr_bytes: 64,
         max_svnadmin_version_bytes: 64,
+        ..Limits::default()
     };
     let result = run_and_capture(cmd, "version", "the svnadmin --version output", &limits);
     match result {
@@ -210,6 +214,7 @@ fn a_large_stderr_with_valid_stdout_under_the_cap_succeeds() {
         max_node_text_bytes: 1024,
         max_stderr_bytes: 4096,
         max_svnadmin_version_bytes: 4096,
+        ..Limits::default()
     };
 
     let result = run_and_capture(cmd, "large stderr test", "the dumpstream", &limits);

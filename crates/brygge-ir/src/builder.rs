@@ -34,6 +34,12 @@ pub struct AtomDraft {
     pub status: EpistemicStatus,
 }
 
+/// The default ceiling for [`IrBuilder`]'s running count of every atom's `ops`, across the whole
+/// artifact (0.8.1, the amplification-bounds patch): the total `PathOp`s a decoder or an `Edit`-based
+/// transform can add before `add_atom` refuses, so an amplifying input cannot grow the IR itself without
+/// bound even once a decoder's own ceilings (tree entries, copy expansion, snapshot retention) are held.
+pub(crate) const DEFAULT_MAX_IR_OPS: usize = 200_000_000;
+
 /// Builds an [`Ir`] deterministically.
 #[derive(Debug)]
 pub struct IrBuilder {
@@ -45,6 +51,8 @@ pub struct IrBuilder {
     loss: LossBoundary,
     flags: Vec<Flag>,
     transforms: Vec<TransformRecord>,
+    max_ops: usize,
+    total_ops: usize,
 }
 
 impl IrBuilder {
@@ -60,6 +68,8 @@ impl IrBuilder {
             loss: LossBoundary::default(),
             flags: Vec::new(),
             transforms: Vec::new(),
+            max_ops: DEFAULT_MAX_IR_OPS,
+            total_ops: 0,
         }
     }
 
@@ -80,7 +90,17 @@ impl IrBuilder {
             loss: LossBoundary::default(),
             flags: Vec::new(),
             transforms: Vec::new(),
+            max_ops: DEFAULT_MAX_IR_OPS,
+            total_ops: 0,
         })
+    }
+
+    /// Override [`DEFAULT_MAX_IR_OPS`] for a test, so the ceiling can be crossed without building an
+    /// artifact anywhere near 200,000,000 operations (0.8.1).
+    #[cfg(test)]
+    pub(crate) fn with_max_ops_for_test(mut self, max_ops: usize) -> Self {
+        self.max_ops = max_ops;
+        self
     }
 
     /// Insert file bytes into the content store, returning the content address.
@@ -109,6 +129,17 @@ impl IrBuilder {
     /// from, from_atom)`, or a copy's `from_atom` is not an atom already added.
     pub fn add_atom(&mut self, draft: AtomDraft) -> Result<AtomId> {
         let mut ops = draft.ops;
+        // 0.8.1: counted and checked before this atom's ops are stored, so an amplifying input cannot
+        // grow the IR without bound even once a decoder's own ceilings are held (every decoder and every
+        // `Edit`-based transform builds through here).
+        let next_total = self.total_ops.saturating_add(ops.len());
+        if next_total > self.max_ops {
+            return Err(Error::ResourceLimit {
+                what: "the total path operations in this artifact".to_string(),
+                ceiling: format!("{} operations", self.max_ops),
+            });
+        }
+        self.total_ops = next_total;
         ops.sort_by(|a, b| a.path().cmp(b.path()));
         for (a, b) in ops.iter().zip(ops.iter().skip(1)) {
             if a.path() == b.path() {

@@ -175,6 +175,7 @@ pub(crate) fn decode_with(
 
         // Retain this revision's tree only if a later copyfrom names it; always carry it forward as `prev`.
         if needed.contains(&number) {
+            budget.retain(applied.tree.len())?;
             kept.insert(number, applied.tree.clone());
         }
         prev_tree = applied.tree;

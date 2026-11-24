@@ -32,6 +32,7 @@ fn small_limits() -> Limits {
         max_node_text_bytes: 4096,
         max_stderr_bytes: 1024,
         max_svnadmin_version_bytes: 1024,
+        ..Limits::default()
     }
 }
 

@@ -281,3 +281,51 @@ fn finish_sorts_flags_canonically() {
     assert_eq!(ir.flags[1].kind, FlagKind::ConventionViolation);
     assert_eq!(ir.flags[2].kind, FlagKind::BelowConfidenceFloor);
 }
+
+// ---- 0.8.1: max_ir_ops, the total PathOps ceiling (amplification bounds) ----------------------
+
+fn add_ops(n: usize, blob: BlobId, start: usize) -> Vec<PathOp> {
+    (start..start + n)
+        .map(|i| PathOp::Add {
+            path: format!("f{i}"),
+            blob,
+            mode: 0o100_644,
+            status: EpistemicStatus::Stated,
+        })
+        .collect()
+}
+
+#[test]
+fn add_atom_accepts_exactly_at_the_ir_ops_ceiling() {
+    let mut b = IrBuilder::new(provenance()).with_max_ops_for_test(5);
+    let blob = b.add_blob(b"x".to_vec()).unwrap();
+    assert!(
+        b.add_atom(draft(vec![], b"aaa", add_ops(5, blob, 0), vec![]))
+            .is_ok()
+    );
+}
+
+#[test]
+fn add_atom_refuses_one_op_past_the_ir_ops_ceiling() {
+    let mut b = IrBuilder::new(provenance()).with_max_ops_for_test(5);
+    let blob = b.add_blob(b"x".to_vec()).unwrap();
+    let err = b
+        .add_atom(draft(vec![], b"aaa", add_ops(6, blob, 0), vec![]))
+        .unwrap_err();
+    assert!(matches!(err, Error::ResourceLimit { .. }), "{err:?}");
+}
+
+#[test]
+fn the_ir_ops_ceiling_sums_across_atoms_not_just_within_one() {
+    // Two atoms under the limit individually, whose sum crosses it: the ceiling is a running total
+    // over the whole artifact, not a per-atom check (0.8.1).
+    let mut b = IrBuilder::new(provenance()).with_max_ops_for_test(3);
+    let blob = b.add_blob(b"x".to_vec()).unwrap();
+    let a1 = b
+        .add_atom(draft(vec![], b"aaa", add_ops(2, blob, 0), vec![]))
+        .unwrap();
+    let err = b
+        .add_atom(draft(vec![a1], b"bbb", add_ops(2, blob, 2), vec![]))
+        .unwrap_err();
+    assert!(matches!(err, Error::ResourceLimit { .. }), "{err:?}");
+}

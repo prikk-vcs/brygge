@@ -94,6 +94,16 @@ pub enum Error {
     /// reader's own pass verified it, no longer matches its content address: something modified the
     /// artifact while it was open. The caller is never handed the changed bytes.
     ArtifactChanged(String),
+    /// A declared resource ceiling was reached while building an [`Ir`] (0.8.1, the amplification-bounds
+    /// patch): [`builder::IrBuilder::add_atom`]'s running count of every atom's `ops` crossed
+    /// `max_ir_ops` before the atom that crossed it was stored. Holds for every decoder and every
+    /// `Edit`-based transform, since both build through [`builder::IrBuilder`].
+    ResourceLimit {
+        /// What was being counted (e.g. `"the total path operations in this artifact"`).
+        what: String,
+        /// The ceiling that was reached, already formatted for a message (e.g. `"200000000 operations"`).
+        ceiling: String,
+    },
 }
 
 impl Error {
@@ -137,6 +147,9 @@ impl std::fmt::Display for Error {
             Self::Io(m) => write!(f, "writing a brygge-ir artifact failed: {m}"),
             Self::ArtifactChanged(m) => {
                 write!(f, "the artifact changed while it was being read: {m}")
+            }
+            Self::ResourceLimit { what, ceiling } => {
+                write!(f, "refused: {what} exceeds brygge's ceiling ({ceiling})")
             }
         }
     }
