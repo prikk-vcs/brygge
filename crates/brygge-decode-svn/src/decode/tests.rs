@@ -1199,7 +1199,6 @@ fn a_small_copy_bomb_is_refused_fast_by_the_default_sized_ceiling_scaled_down() 
     let limits = crate::source::Limits {
         max_tree_entries: 1_000,
         max_copy_expansion: 1_000,
-        max_retained_entries: 1_000,
         ..crate::source::Limits::default()
     };
     let start = std::time::Instant::now();

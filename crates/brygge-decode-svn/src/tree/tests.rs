@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use brygge_ir::builder::IrBuilder;
 use brygge_ir::model::{AtomId, ImportProvenance, PathOp, SourceIdentity, SourceKind};
 
-use super::{Budget, Tree, apply_revision};
+use super::{Budget, FileEntry, Tree, apply_revision};
 use crate::dumpstream::{Checksums, NodeAction, NodeKind, NodeRecord, PropBlock, TextBody};
 use crate::source::Limits;
 
@@ -346,38 +346,78 @@ fn a_different_source_replace_under_a_directory_copy_keeps_only_the_replacement(
     assert_eq!(r2.copies[0].from_atom, r1_atom);
 }
 
-// ---- 0.8.1: max_tree_entries, max_copy_expansion, max_retained_entries (amplification bounds) ------
+// ---- RFC 020 D-2: max_tree_entries (re-expressed), max_copy_expansion, max_tree_nodes -------------
 
 #[test]
-fn a_tree_at_the_entry_ceiling_applies_but_one_more_file_is_refused() {
+fn an_ordinary_file_by_file_growth_past_the_old_entry_ceiling_is_no_longer_refused() {
+    // RFC 020 D-2: `max_tree_entries` used to be checked on every ordinary single-file add (0.8.1), as
+    // the only thing standing between an adversarial dump and an unbounded *live* tree. A shared tree
+    // (D-1) costs nothing extra to hold at any size, so this is no longer checked here — only where a
+    // tree is *expanded* into entries (a directory copy, or `--branch-lines`'s own per-file walk). A
+    // plain history that grows one file at a time past the old ceiling must now succeed.
     let mut b = builder();
     let limits = Limits {
         max_tree_entries: 10,
         ..Limits::default()
     };
-    let nodes: Vec<NodeRecord> = (0..10)
-        .map(|i| file_node(&format!("trunk/f{i}.txt"), NodeAction::Add, Some(b"x")))
-        .collect();
-    apply_revision(
-        &Tree::new(),
-        nodes,
-        &HashMap::new(),
-        &HashMap::new(),
-        &mut b,
-        &mut Budget::new(&limits),
-    )
-    .unwrap();
-
     let over_nodes: Vec<NodeRecord> = (0..11)
         .map(|i| file_node(&format!("trunk/f{i}.txt"), NodeAction::Add, Some(b"x")))
         .collect();
-    match apply_revision(
+    let applied = apply_revision(
         &Tree::new(),
         over_nodes,
         &HashMap::new(),
         &HashMap::new(),
         &mut b,
         &mut Budget::new(&limits),
+    )
+    .expect("an ordinary 11-file revision is no longer bounded by max_tree_entries");
+    assert!(applied.tree.contains_key("trunk/f10.txt"));
+}
+
+#[test]
+fn a_directory_copy_that_would_cross_the_entry_ceiling_is_refused() {
+    // RFC 020 D-2: `max_tree_entries` is still checked at the one point that actually expands a tree
+    // into entries in one step — a directory copy — against the *resulting* live tree size, even when
+    // the copy itself is well within `max_copy_expansion`. `budget.live_entries` is only meaningful
+    // threaded continuously across every revision of one decode (as `decode_with` does with one
+    // `Budget`), so this test shares one `Budget` across both revisions too, rather than starting a
+    // fresh one per `apply_revision` call as the other tests here do for their own, unrelated reasons.
+    let mut b = builder();
+    let limits = Limits {
+        max_tree_entries: 10,
+        ..Limits::default()
+    };
+    let mut budget = Budget::new(&limits);
+    // r0: trunk holds 8 files (under max_copy_expansion, comfortably, and under the 10-entry ceiling).
+    let r0_nodes: Vec<NodeRecord> = (0..8)
+        .map(|i| file_node(&format!("trunk/f{i}.txt"), NodeAction::Add, Some(b"x")))
+        .collect();
+    let r0 = apply_revision(
+        &Tree::new(),
+        r0_nodes,
+        &HashMap::new(),
+        &HashMap::new(),
+        &mut b,
+        &mut budget,
+    )
+    .unwrap();
+    assert_eq!(budget.live_entries, 8);
+    let r0_atom = AtomId([1u8; 32]);
+    let mut kept: HashMap<u64, Tree> = HashMap::new();
+    kept.insert(0, r0.tree.clone());
+    let mut revnum_to_atom: HashMap<u64, AtomId> = HashMap::new();
+    revnum_to_atom.insert(0, r0_atom);
+
+    // r1: copy the 8-file trunk into branches/x — 16 live entries after the copy, over a ceiling of 10,
+    // even though 8 is well under `max_copy_expansion`.
+    match apply_revision(
+        &r0.tree,
+        vec![dir_copy("branches/x", 0, "trunk")],
+        &kept,
+        &revnum_to_atom,
+        &mut b,
+        &mut budget,
     ) {
         Ok(_) => panic!("expected a resource-limit refusal, got Ok"),
         Err(crate::Error::ResourceLimit { .. }) => {}
@@ -427,20 +467,184 @@ fn a_directory_copy_over_the_expansion_ceiling_is_refused() {
 }
 
 #[test]
-fn retaining_a_snapshot_over_the_retention_ceiling_is_refused() {
+fn a_dump_that_crosses_the_tree_node_ceiling_is_refused() {
+    // RFC 020 D-2: `max_retained_entries` (0.8.1) is gone — retaining a snapshot is now `Rc::clone`,
+    // free. `max_tree_nodes` bounds the tree's *cumulative* allocations instead: every `Dir` clone or
+    // creation, and every new file entry, across the whole decode. A long chain of edits to files each
+    // under their own new directory forces a fresh `Dir` node per edit (no sharing to exploit, by
+    // design of the test), so a small per-decode ceiling is crossed with a small, fast dump.
+    let mut b = builder();
     let limits = Limits {
-        max_retained_entries: 15,
+        max_tree_nodes: 20,
         ..Limits::default()
     };
     let mut budget = Budget::new(&limits);
-    // The first 10-entry snapshot fits.
-    budget
-        .retain(10)
-        .expect("10 is within the 15-entry ceiling");
-    // A second 10-entry snapshot would bring the running total to 20, over the 15-entry ceiling —
-    // the sum across every snapshot ever retained, not any one snapshot's own size.
-    match budget.retain(10) {
-        Err(crate::Error::ResourceLimit { .. }) => {}
-        other => panic!("expected a resource-limit refusal, got {other:?}"),
+    let mut tree = Tree::new();
+    let mut kept = HashMap::new();
+    let mut revnum_to_atom = HashMap::new();
+    for i in 0..50u64 {
+        let applied = apply_revision(
+            &tree,
+            vec![file_node(
+                &format!("d{i}/f.txt"),
+                NodeAction::Add,
+                Some(b"x"),
+            )],
+            &kept,
+            &revnum_to_atom,
+            &mut b,
+            &mut budget,
+        );
+        match applied {
+            Ok(a) => {
+                tree = a.tree;
+                revnum_to_atom.insert(i, AtomId([0u8; 32]));
+                kept.insert(i, tree.clone());
+            }
+            Err(crate::Error::ResourceLimit { .. }) => return,
+            Err(other) => panic!("expected a resource-limit refusal, got {other:?}"),
+        }
+    }
+    panic!("expected a resource-limit refusal within 50 revisions of a 20-node ceiling");
+}
+
+#[test]
+fn a_dir_clone_still_shared_with_a_kept_snapshot_is_charged_and_does_not_mutate_it() {
+    // RFC 020 D-1's own correctness trap: `Rc::make_mut` on a node still shared with a retained
+    // snapshot must copy, never mutate the snapshot in place.
+    let mut b = builder();
+    let r0 = apply_revision(
+        &Tree::new(),
+        vec![file_node("trunk/a.txt", NodeAction::Add, Some(b"a"))],
+        &HashMap::new(),
+        &HashMap::new(),
+        &mut b,
+        &mut Budget::new(&Limits::default()),
+    )
+    .unwrap();
+    let mut kept: HashMap<u64, Tree> = HashMap::new();
+    kept.insert(0, r0.tree.clone());
+    let before = r0.tree.clone();
+
+    // r1 edits a different file under `trunk` — `trunk`'s own `Dir` node is shared with `kept[0]` and
+    // `before`, so inserting here must clone it, not mutate the snapshot everyone else still holds.
+    let r1 = apply_revision(
+        &r0.tree,
+        vec![file_node("trunk/b.txt", NodeAction::Add, Some(b"b"))],
+        &kept,
+        &HashMap::new(),
+        &mut b,
+        &mut Budget::new(&Limits::default()),
+    )
+    .unwrap();
+
+    assert!(before.contains_key("trunk/a.txt"));
+    assert!(
+        !before.contains_key("trunk/b.txt"),
+        "the kept snapshot must not see r1's new file"
+    );
+    assert!(kept[&0].contains_key("trunk/a.txt"));
+    assert!(
+        !kept[&0].contains_key("trunk/b.txt"),
+        "kept[0] must not see r1's new file either"
+    );
+    assert!(r1.tree.contains_key("trunk/a.txt"));
+    assert!(r1.tree.contains_key("trunk/b.txt"));
+}
+
+// ---- RFC 020 D-1, handoff §0 level 1: a property test against the flat map --------------------------
+
+/// A small deterministic generator (xorshift64*), matching `svndiff::tests`'s own one (no dependency).
+struct Rng(u64);
+
+impl Rng {
+    fn next(&mut self) -> u64 {
+        self.0 ^= self.0 >> 12;
+        self.0 ^= self.0 << 25;
+        self.0 ^= self.0 >> 27;
+        self.0.wrapping_mul(0x2545_F491_4F6C_DD1D)
+    }
+
+    fn below(&mut self, n: u64) -> u64 {
+        self.next() % n.max(1)
+    }
+}
+
+/// Name stems chosen around the module doc's own ordering pitfall: `.` (`0x2E`) and `-` (`0x2D`) both
+/// sort before `/` (`0x2F`), so a bare-name comparison of a directory against a sibling file gets the
+/// flat map's own order backwards exactly when names like these collide at one level.
+const STEMS: &[&str] = &["a", "a.c", "a-b", "b", "b.c", "m", "m.n", "m-n", "z", "z.z"];
+
+fn random_path(rng: &mut Rng) -> String {
+    let depth = 1 + rng.below(3) as usize;
+    (0..depth)
+        .map(|_| STEMS[rng.below(STEMS.len() as u64) as usize])
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn entry(seed: u64) -> FileEntry {
+    FileEntry {
+        blob: brygge_ir::BlobId([seed as u8; 32]),
+        mode: 0o100_644,
+        exec: false,
+        special: false,
+    }
+}
+
+/// Random insert/remove sequences, each checked against a flat `BTreeMap<String, FileEntry>` doing the
+/// exact same operations: the new tree's `contains_key`/`get` must agree at every step, and
+/// `flat_entries()` must equal the flat map's own `iter()` order exactly (the handoff's own standard —
+/// not just "same set", but the identical sequence byte order gives, including through name collisions
+/// at the `.`/`-`/`/` boundary `STEMS` is chosen to hit).
+#[test]
+fn random_operations_match_a_flat_map_at_every_step() {
+    let mut rng = Rng(0xf00d_cafe_1357_9bdf);
+    for case in 0..200 {
+        let mut tree = Tree::new();
+        let mut flat: std::collections::BTreeMap<String, FileEntry> =
+            std::collections::BTreeMap::new();
+        let limits = Limits::default();
+        let mut budget = Budget::new(&limits);
+        for step in 0..200u64 {
+            let path = random_path(&mut rng);
+            if rng.below(3) == 0 && !flat.is_empty() {
+                // A removal: either the exact path, or (if it names a directory prefix in the flat map
+                // too) its whole subtree — mirrors `Tree::remove_subtree`'s own two cases.
+                tree.remove_subtree(&path, &mut budget).unwrap();
+                let prefix = format!("{path}/");
+                flat.retain(|k, _| *k != path && !k.starts_with(&prefix));
+            } else {
+                let e = entry(step);
+                tree.insert(&path, e.clone(), &mut budget).unwrap();
+                flat.insert(path.clone(), e);
+            }
+            // Every path either structure has ever touched: `get`/`contains_key` must agree.
+            for probe in &[
+                "a".to_string(),
+                "a.c".to_string(),
+                "a/b".to_string(),
+                "a.c/b".to_string(),
+                path.clone(),
+            ] {
+                assert_eq!(
+                    tree.get(probe).cloned(),
+                    flat.get(probe).cloned(),
+                    "case {case} step {step}: get({probe:?}) disagrees"
+                );
+                assert_eq!(
+                    tree.contains_key(probe),
+                    flat.contains_key(probe),
+                    "case {case} step {step}: contains_key({probe:?}) disagrees"
+                );
+            }
+            let got: Vec<(String, FileEntry)> = tree.flat_entries();
+            let want: Vec<(String, FileEntry)> =
+                flat.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+            assert_eq!(
+                got, want,
+                "case {case} step {step}: iteration order disagrees"
+            );
+        }
     }
 }

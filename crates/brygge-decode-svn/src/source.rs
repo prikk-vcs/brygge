@@ -30,22 +30,27 @@ pub(crate) struct Limits {
     /// The maximum bytes brygge reads from `svnadmin --version --quiet` (stdout and stderr each; review
     /// 010 R-5's "one place" for what was an inline 4 KiB literal), far past any real version string.
     pub(crate) max_svnadmin_version_bytes: usize,
-    /// The maximum entries one running [`crate::tree::Tree`] may hold at once (0.8.1, the
-    /// amplification-bounds patch): checked before a new path is inserted, whether by a single node or
-    /// by a directory copy's expansion. Bounds the live tree directly, beyond what `max_copy_expansion`
-    /// (one copy's own growth) and `max_retained_entries` (snapshot retention) each bound on their own.
+    /// The maximum entries one *expansion* of the tree may result in (RFC 020 D-2, re-expressing
+    /// 0.8.1's ceiling of the same name): checked where a tree is expanded into entries — a directory
+    /// copy's expansion ([`crate::tree::apply_dir`]), against the resulting live tree size, and
+    /// `--branch-lines`'s own per-file walk for a new line's first atom. **Not** checked on an ordinary
+    /// single-file change: a shared tree's logical size (RFC 020 D-1) costs nothing extra to hold, so
+    /// only the operations that flatten it into IR entries need a ceiling of their own.
     pub(crate) max_tree_entries: usize,
     /// The maximum entries one directory copy may add to the tree (0.8.1): checked as
     /// [`crate::tree::apply_dir`] walks the source snapshot, before the expansion is collected — a small
     /// dump can otherwise copy a large directory into many destinations, each expanding to the same
     /// huge file count.
     pub(crate) max_copy_expansion: usize,
-    /// The maximum sum of entries across every snapshot [`crate::tree::Tree`] held in `kept` at once
-    /// (0.8.1): checked before a revision's tree is retained (RFC 010 increment 1 keeps one snapshot per
-    /// revision a later `copyfrom` names, and never evicts it) — a dump with many copy-sourcing
-    /// revisions over a large tree otherwise retains that many full-tree copies, memory growing as
-    /// (retained revisions) × (tree size) with no ceiling of its own.
-    pub(crate) max_retained_entries: usize,
+    /// The cumulative count of tree nodes (a `Dir` cloned or created, or a file entry created) the
+    /// decoder may allocate in total while decoding one dump (RFC 020 D-2, replacing 0.8.1's
+    /// `max_retained_entries`): checked at each allocation ([`crate::tree::Budget::charge_node`]).
+    /// Cumulative, not live — `Rc`-shared structure (RFC 020 D-1) makes retaining a snapshot free, so
+    /// what can still grow without bound is the *total* copy-on-write work across the whole decode, not
+    /// any one snapshot's size. **The default (50,000,000) is measured:** codeblocks (6,221 revisions,
+    /// 316 copy-source revisions — the real corpus's own tightest user of the old
+    /// `max_retained_entries`) allocates 115,404 nodes end to end, about 433× under this default.
+    pub(crate) max_tree_nodes: usize,
 }
 
 impl Default for Limits {
@@ -57,7 +62,7 @@ impl Default for Limits {
             max_svnadmin_version_bytes: 4096,
             max_tree_entries: 10_000_000,
             max_copy_expansion: 10_000_000,
-            max_retained_entries: 20_000_000,
+            max_tree_nodes: 50_000_000,
         }
     }
 }

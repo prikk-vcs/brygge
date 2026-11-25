@@ -25,11 +25,14 @@ use brygge_ir::status::{Derivation, DerivationKind, EpistemicStatus};
 
 use crate::layout::{self, Root};
 use crate::source::{Limits, svnadmin_version};
-use crate::tree::{self, Budget, FileEntry, Tree};
+use crate::tree::{self, Budget, Tree};
 use crate::{DECODER, Error, Options, Source, decoder_version, dumpstream, floor, props};
 
-/// A root's own relative tree: repo-relative paths under its prefix, with the prefix stripped.
-type RelTree = BTreeMap<String, FileEntry>;
+/// A root's own relative tree: repo-relative paths under its prefix, with the prefix stripped. The same
+/// shared-tree type the whole-repository spine uses (RFC 020 D-1) — a continuing line's `Line::tree`
+/// clone (every revision it continues, not only a copy) is then `Rc::clone`, O(1), not a full copy of
+/// the root's own content.
+type RelTree = Tree;
 
 /// Decode with `--branch-lines` (a decoder change with no new process or platform code).
 ///
@@ -166,8 +169,8 @@ pub(crate) fn decode_with(
 
         // Partition the new whole-tree state by root, one pass.
         let mut by_root: HashMap<String, (Root, RelTree)> = HashMap::new();
-        for (path, entry) in &applied.tree {
-            if let Some(root) = layout::classify(path, &opts.layout) {
+        for (path, entry) in applied.tree.flat_entries() {
+            if let Some(root) = layout::classify(&path, &opts.layout) {
                 let rel = path
                     .strip_prefix(&root.prefix)
                     .and_then(|r| r.strip_prefix('/'))
@@ -177,7 +180,7 @@ pub(crate) fn decode_with(
                     .entry(root.prefix.clone())
                     .or_insert_with(|| (root, RelTree::new()))
                     .1
-                    .insert(rel, entry.clone());
+                    .insert_unbudgeted(&rel, entry);
             }
         }
 
@@ -256,6 +259,19 @@ pub(crate) fn decode_with(
             let ops = if continuing {
                 filter_ops_for_root(&applied.ops, &root)
             } else {
+                // RFC 020 D-2: a new line's first atom expands its whole starting tree (the copy
+                // source's content) into one op per file — the other of the two points that still check
+                // `max_tree_entries` (`apply_dir`'s own copy expansion, for the single-spine path, is
+                // the first); an ordinary continuing-line revision above is not checked, for the same
+                // reason an ordinary single-file change on the single-spine path is not (the module
+                // doc of `crate::tree`).
+                let starting_len = starting_tree.flat_entries().len();
+                if starting_len > budget.limits.max_tree_entries {
+                    return Err(Error::ResourceLimit {
+                        what: "one tree in this repository".to_string(),
+                        ceiling: format!("{} entries", budget.limits.max_tree_entries),
+                    });
+                }
                 diff_relative(&starting_tree, &new_rel_tree)
             };
 
@@ -318,8 +334,9 @@ pub(crate) fn decode_with(
             );
         }
 
+        // RFC 020 D-1/D-2: see `crate::decode`'s own identical comment — retaining a snapshot is now
+        // O(1), and `max_retained_entries` is gone.
         if needed.contains(&number) {
-            budget.retain(applied.tree.len())?;
             kept.insert(number, applied.tree.clone());
         }
         prev_tree = applied.tree;
@@ -414,14 +431,18 @@ struct DeadLife {
 /// `snapshot`'s content under `root_prefix`, keyed with the prefix removed — the "starting tree" D-9
 /// gives a new line created by copy, whether the copy named the root itself or a subdirectory of it (in
 /// which case the ops diff against this full tree is what "makes up the difference", D-9 §2).
+///
+/// RFC 020 D-2: this is `--branch-lines`'s own "per-file walk" that still checks `max_tree_entries` —
+/// the caller (`decode_with`, where a new line's first atom is built from a copy source) checks the
+/// resulting size before using it, mirroring `apply_dir`'s own check for the single-spine path.
 fn relative_subtree(snapshot: &Tree, root_prefix: &str) -> RelTree {
-    let dir_prefix = format!("{root_prefix}/");
     let mut out = RelTree::new();
-    for (path, entry) in snapshot {
-        if path == root_prefix {
-            out.insert(String::new(), entry.clone());
-        } else if let Some(rel) = path.strip_prefix(&dir_prefix) {
-            out.insert(rel.to_string(), entry.clone());
+    if let Some(direct) = snapshot.get(root_prefix) {
+        out.insert_unbudgeted("", direct.clone());
+    }
+    if let Some(sub) = snapshot.dir_at(root_prefix) {
+        for (rel, entry) in sub.flat_entries() {
+            out.insert_unbudgeted(&rel, entry);
         }
     }
     out
@@ -435,16 +456,16 @@ fn relative_subtree(snapshot: &Tree, root_prefix: &str) -> RelTree {
 /// sibling, the direct `applied.ops` filter in the caller), so this only runs for a line's first atom.
 fn diff_relative(before: &RelTree, after: &RelTree) -> Vec<PathOp> {
     let mut ops = Vec::new();
-    for (path, entry) in after {
-        match before.get(path) {
+    for (path, entry) in after.flat_entries() {
+        match before.get(&path) {
             None => ops.push(PathOp::Add {
-                path: path.clone(),
+                path,
                 blob: entry.blob,
                 mode: entry.mode,
                 status: EpistemicStatus::Stated,
             }),
             Some(b) if b.blob != entry.blob || b.mode != entry.mode => ops.push(PathOp::Modify {
-                path: path.clone(),
+                path,
                 blob: entry.blob,
                 mode: entry.mode,
                 status: EpistemicStatus::Stated,
@@ -452,10 +473,10 @@ fn diff_relative(before: &RelTree, after: &RelTree) -> Vec<PathOp> {
             Some(_) => {}
         }
     }
-    for path in before.keys() {
-        if !after.contains_key(path) {
+    for (path, _) in before.flat_entries() {
+        if !after.contains_key(&path) {
             ops.push(PathOp::Delete {
-                path: path.clone(),
+                path,
                 status: EpistemicStatus::Stated,
             });
         }
@@ -618,8 +639,9 @@ fn layout_honesty(
     builder: &mut IrBuilder,
 ) {
     let outside = final_tree
-        .keys()
-        .filter(|path| layout::classify(path, &opts.layout).is_none())
+        .flat_entries()
+        .iter()
+        .filter(|(path, _)| layout::classify(path, &opts.layout).is_none())
         .count() as u64;
     if outside > 0 || roots_created_from_outside_the_layout > 0 {
         let what = if roots_created_from_outside_the_layout > 0 {

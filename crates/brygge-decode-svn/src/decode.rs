@@ -173,9 +173,12 @@ pub(crate) fn decode_with(
             heads.insert(root.prefix.clone(), (root, atom_id));
         }
 
-        // Retain this revision's tree only if a later copyfrom names it; always carry it forward as `prev`.
+        // Retain this revision's tree only if a later copyfrom names it; always carry it forward as
+        // `prev`. RFC 020 D-1: retaining a snapshot is now an `Rc::clone`, O(1) regardless of the tree's
+        // size — `max_retained_entries` (0.8.1), which bounded the *sum of every retained snapshot's own
+        // size*, is gone; `max_tree_nodes` (D-2) bounds the tree's cumulative allocations instead,
+        // charged by `Tree::insert`/`Tree::remove_subtree` as they happen, not by retention.
         if needed.contains(&number) {
-            budget.retain(applied.tree.len())?;
             kept.insert(number, applied.tree.clone());
         }
         prev_tree = applied.tree;
@@ -221,7 +224,7 @@ fn reconstruct_refs(
     }
     let live: Vec<&(Root, AtomId)> = heads
         .values()
-        .filter(|(root, _)| tree::is_live_under(final_tree, &root.prefix))
+        .filter(|(root, _)| final_tree.is_live_under(&root.prefix))
         .collect();
     loss.deleted_or_moved_roots = heads.len().saturating_sub(live.len());
     for (root, target) in live {
@@ -260,8 +263,9 @@ fn reconstruct_refs(
 /// — but is a distinct condition (the layout *was* found; it just does not cover everything).
 fn layout_honesty(final_tree: &Tree, opts: &Options, builder: &mut IrBuilder) {
     let outside = final_tree
-        .keys()
-        .filter(|path| layout::classify(path, &opts.layout).is_none())
+        .flat_entries()
+        .iter()
+        .filter(|(path, _)| layout::classify(path, &opts.layout).is_none())
         .count();
     if outside > 0 {
         builder.add_flag(Flag {

@@ -1,4 +1,4 @@
-//! The running repository-tree model (RFC 006 D-1/§5b) — the SVN-specific core.
+//! The running repository-tree model (RFC 006 D-1/§5b; RFC 020 D-1/D-2) — the SVN-specific core.
 //!
 //! SVN dumps a directory copy *implicitly* (it does not re-list the copied subtree), so the decoder keeps
 //! a live `path → file` snapshot and evolves it revision by revision, expanding directory copies from the
@@ -14,8 +14,50 @@
 //! A path SVN states as **replaced** (`Node-action: replace`) gets `PathOp::Replace`, even when its
 //! content is unchanged, because the source stated a new node at that path (CR-07.2, RFC 011 D-7) — never
 //! folded into `Modify`, and never silently dropped when identical.
+//!
+//! ## The tree, shared (RFC 020 D-1)
+//!
+//! A snapshot is [`Tree`], a cheap handle (`Rc<Dir>` underneath) to a **persistent** trie: [`Dir`] holds
+//! this level's files and its subdirectories, each subdirectory itself an `Rc<Dir>`. Cloning a [`Tree`] —
+//! what every retained snapshot and every revision's rolling `prev` does — is an `Rc::clone`, O(1)
+//! regardless of the tree's size. A change (`Tree::insert`/`Tree::remove_subtree`) copies only the
+//! directories on its own path (`Rc::make_mut`): every subtree it does not touch stays shared with
+//! whichever other snapshot (a `kept` retained tree, the previous revision's tree) still holds it. A
+//! directory copy (`svn cp <src>@<rev> <dst>`) inserts the source subtree's `Rc` at `<dst>` directly
+//! (`Tree::dir_at` + `Tree::flat_entries`): the lookup is O(depth), not O(files) — the **stated** layer
+//! still records one `Add` and one `CopyRecord` per copied file, unchanged (the artifact must not
+//! change), so that expansion still costs one op per file, same as before.
+//!
+//! **No `Rc` cycle is possible:** a copy always inserts a subtree taken from an *earlier* revision's
+//! snapshot into a path of the *current*, newer tree being built. The current tree can therefore never
+//! appear inside its own history of subtrees — the graph of "subtree reachable from" is a DAG by
+//! construction, never a cycle, so `Rc::make_mut`'s ordinary copy-on-write is sound without any cycle
+//! bookkeeping.
+//!
+//! **The ordering pitfall (RFC 020 batch S's handoff):** a flat `BTreeMap<String, _>` orders *whole
+//! paths* by byte value, so `"a.c"` (`.` = `0x2E`) sorts before `"a/b"` (`/` = `0x2F`). A trie walked
+//! component by component, naively comparing a directory's bare name against a sibling file's name,
+//! gets this backwards: comparing `"a"` (the directory) against `"a.c"` (the file) as bare strings puts
+//! `"a"` first, the opposite of the flat order. [`Tree::flat_entries`] (and everything built on it) merges
+//! files and subdirectories by comparing a file's name against a subdirectory's name *with a trailing
+//! `/` appended* (not the bare name) — `cmp_file_vs_dir` — which reproduces the flat map's own byte order
+//! exactly. [`IrBuilder::add_atom`] re-sorts every atom's `ops` and `copies` canonically by path before
+//! storing them regardless (so the *artifact* never depended on this), but [`Dir`]'s own iteration order
+//! is still made to match the flat map's, both because the level-1 property test below holds the two to
+//! that standard directly, and so that no future consumer can be tripped up by it.
+//!
+//! **Why `max_tree_entries` no longer gates an ordinary file add (RFC 020 D-2):** before this, *every*
+//! `apply_file`/`apply_dir` insertion checked the live tree's total size, because a flat clone-per-copy
+//! made the live tree's size the only thing standing between an adversarial dump and unbounded memory. A
+//! shared tree's logical size costs nothing extra to *hold* — what can still cost a lot, in one step, is
+//! **expanding** a tree into entries: a directory copy's per-file `Add`+`CopyRecord` expansion
+//! ([`apply_dir`]), and `--branch-lines`'s own per-file walk when a new line's first atom is built from a
+//! copy source (`crate::branch_lines::diff_relative`). `max_tree_entries` is checked at exactly those two
+//! points now (against the *resulting* live/relative tree's size), not on every ordinary single-file
+//! change; ordinary growth is bounded elsewhere (`max_dump_bytes`, `max_node_text_bytes`, `max_ir_ops`).
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::rc::Rc;
 
 use brygge_ir::BlobId;
 use brygge_ir::builder::IrBuilder;
@@ -46,17 +88,318 @@ pub struct FileEntry {
     pub special: bool,
 }
 
-/// The resource accounting for one decode: the ceilings, and how much the deltas have reconstructed so far
-/// (RFC 013 D-2, T-8). A delta dump never expands past what brygge would accept as a fulltext dump.
+// ---- the shared tree (RFC 020 D-1) ------------------------------------------------------------------
+
+/// One directory level: its own files, and its subdirectories by name. Reachable only through a
+/// [`Tree`]'s `Rc`, so every subtree not on a change's own path is shared, never copied, by every
+/// snapshot that holds it.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct Dir {
+    files: BTreeMap<String, FileEntry>,
+    dirs: BTreeMap<String, Rc<Dir>>,
+}
+
+impl Dir {
+    /// Every `(path, FileEntry)` under this directory, `path` relative to it and with `prefix`
+    /// prepended, in **flat map order** (the module doc's ordering pitfall) — files and subdirectories
+    /// merged by [`cmp_file_vs_dir`], not by comparing bare names.
+    ///
+    /// **Two collisions, not one:** a file's bare name can collide with a sibling *directory's* name
+    /// (handled by [`cmp_file_vs_dir`]) — but two sibling *directories* can collide with each other the
+    /// same way (`"a"` and `"a.c"` as directory names: `self.dirs`, a `BTreeMap<String, _>`, orders them
+    /// by the bare names, `"a"` before `"a.c"`, but the flat order compares `"a/"` against `"a.c/"`,
+    /// which disagrees whenever one name is a prefix of the other — exactly `"a"`/`"a.c"`'s case). So
+    /// `self.dirs` is first re-sorted by its *own* effective key (name with `/` appended) before it is
+    /// merged against `self.files`, which needs no such correction (two file names are never compared
+    /// with an implicit suffix on either side).
+    fn flat_entries_into(&self, prefix: &str, out: &mut Vec<(String, FileEntry)>) {
+        let mut files = self.files.iter().peekable();
+        let mut dirs: Vec<(&String, &Rc<Dir>)> = self.dirs.iter().collect();
+        dirs.sort_by(|(a, _), (b, _)| cmp_dir_vs_dir(a, b));
+        let mut dirs = dirs.into_iter().peekable();
+        loop {
+            match (files.peek().copied(), dirs.peek().copied()) {
+                (None, None) => break,
+                (Some((fname, fentry)), None) => {
+                    out.push((format!("{prefix}{fname}"), fentry.clone()));
+                    files.next();
+                }
+                (None, Some((dname, dsub))) => {
+                    dsub.flat_entries_into(&format!("{prefix}{dname}/"), out);
+                    dirs.next();
+                }
+                (Some((fname, fentry)), Some((dname, dsub))) => {
+                    if cmp_file_vs_dir(fname, dname) == std::cmp::Ordering::Less {
+                        out.push((format!("{prefix}{fname}"), fentry.clone()));
+                        files.next();
+                    } else {
+                        dsub.flat_entries_into(&format!("{prefix}{dname}/"), out);
+                        dirs.next();
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Compare a file's bare name against a subdirectory's bare name **as if the directory's name had `/`
+/// appended** — the one comparison that makes a component-wise trie walk agree with the flat map's own
+/// byte order (the module doc's ordering pitfall: `.` = `0x2E` sorts before `/` = `0x2F`, so `"a.c"` <
+/// `"a/b"` as full paths, which comparing bare `"a.c"` against bare `"a"` would get backwards).
+fn cmp_file_vs_dir(file_name: &str, dir_name: &str) -> std::cmp::Ordering {
+    file_name
+        .bytes()
+        .cmp(dir_name.bytes().chain(std::iter::once(b'/')))
+}
+
+/// Compare two sibling subdirectories' bare names **as if both had `/` appended** — the same
+/// correction as [`cmp_file_vs_dir`], needed because two directory names can have the same prefix
+/// relationship a file and a directory name can (`"a"` and `"a.c"`): comparing them bare, as
+/// `self.dirs`'s `BTreeMap` does on its own, disagrees with the flat map's order in exactly that case.
+fn cmp_dir_vs_dir(a: &str, b: &str) -> std::cmp::Ordering {
+    a.bytes()
+        .chain(std::iter::once(b'/'))
+        .cmp(b.bytes().chain(std::iter::once(b'/')))
+}
+
+/// Split `path` into its first component and the rest (`None` if `path` has no further `/`).
+fn split_first(path: &str) -> (&str, Option<&str>) {
+    match path.split_once('/') {
+        Some((first, rest)) => (first, Some(rest)),
+        None => (path, None),
+    }
+}
+
+/// Split `path` into its directory components (joined, `""` if `path` has only one component) and its
+/// last component — the walk [`Tree::insert`]/[`Tree::insert_unbudgeted`] need: every component but the
+/// last is a directory to descend into (creating it if absent), and the last is the file's own name.
+fn split_last(path: &str) -> (&str, &str) {
+    match path.rsplit_once('/') {
+        Some((dirs, last)) => (dirs, last),
+        None => ("", path),
+    }
+}
+
+/// A snapshot of the repository tree: a cheap (`Rc::clone`, O(1)) handle to a persistent trie (RFC 020
+/// D-1 — see the module doc). `BTreeMap`/`Rc` from `std` only: no new dependency, no `unsafe`, and no
+/// `Arc` (the decoder is single-threaded).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Tree(Rc<Dir>);
+
+impl Tree {
+    /// An empty tree.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The file at `path`, if any. `path` never names a directory: only files are stored (the module
+    /// doc).
+    #[must_use]
+    pub fn get(&self, path: &str) -> Option<&FileEntry> {
+        let (first, rest) = split_first(path);
+        match rest {
+            None => self.0.files.get(first),
+            Some(rest) => self.0.dirs.get(first).and_then(|d| dir_get(d, rest)),
+        }
+    }
+
+    /// Whether a **file** exists at exactly `path` (never true for a path that is only a directory — the
+    /// module doc: only files are stored).
+    #[must_use]
+    pub fn contains_key(&self, path: &str) -> bool {
+        self.get(path).is_some()
+    }
+
+    /// Whether `path` names a file, or a directory with at least one file somewhere under it — i.e.
+    /// whether anything at all is "live" at or under `path` (CR-07.3's live-ref check, CR-07.5's
+    /// layout-honesty count). Relies on the invariant that an existing [`Dir`] node always holds at
+    /// least one file transitively (nothing ever inserts an empty directory node, and
+    /// [`Tree::remove_subtree`] prunes one back out the moment it becomes empty) — so a subtree's mere
+    /// existence already means it is live.
+    #[must_use]
+    pub fn is_live_under(&self, prefix: &str) -> bool {
+        self.contains_key(prefix) || self.dir_at(prefix).is_some()
+    }
+
+    /// The subtree at `path` (a directory, by SVN convention — the module doc), as its own cheap
+    /// [`Tree`] handle, or `None` if `path` names nothing (an empty directory copy, or a path absent
+    /// from this snapshot — both are a copy of nothing, not an error; see [`crate::tree::apply_dir`]).
+    #[must_use]
+    pub fn dir_at(&self, path: &str) -> Option<Tree> {
+        let mut node = &self.0;
+        for comp in path.split('/') {
+            node = node.dirs.get(comp)?;
+        }
+        Some(Tree(Rc::clone(node)))
+    }
+
+    /// Every `(path, FileEntry)` in this tree, in flat map order (the module doc's ordering pitfall).
+    #[must_use]
+    pub fn flat_entries(&self) -> Vec<(String, FileEntry)> {
+        let mut out = Vec::new();
+        self.0.flat_entries_into("", &mut out);
+        out
+    }
+
+    /// Insert `entry` at `path`, copying every directory on the path (`Rc::make_mut`) and creating any
+    /// that do not yet exist. Every `Dir` node actually cloned, and every brand-new `Dir` node or file
+    /// entry created, is charged against [`Limits::max_tree_nodes`] via `budget` (RFC 020 D-2) —
+    /// cumulative, never decreasing, so it bounds the total work the tree has ever done, not its live
+    /// size. `budget`'s live-entry count ([`Budget::live_entries`]) is updated too, so a later caller
+    /// (a directory copy's expansion) can cheaply ask "how big is the tree right now" without a full
+    /// walk.
+    ///
+    /// # Errors
+    /// [`Error::ResourceLimit`] if this would cross `max_tree_nodes`.
+    pub fn insert(
+        &mut self,
+        path: &str,
+        entry: FileEntry,
+        budget: &mut Budget<'_>,
+    ) -> Result<(), Error> {
+        let (dirs, last) = split_last(path);
+        let mut node = &mut self.0;
+        if !dirs.is_empty() {
+            for comp in dirs.split('/') {
+                charge_clone(node, budget)?;
+                let d = Rc::make_mut(node);
+                if !d.dirs.contains_key(comp) {
+                    budget.charge_node()?;
+                }
+                node = d.dirs.entry(comp.to_string()).or_default();
+            }
+        }
+        charge_clone(node, budget)?;
+        let d = Rc::make_mut(node);
+        let is_new = !d.files.contains_key(last);
+        if is_new {
+            budget.charge_node()?;
+            budget.live_entries = budget.live_entries.saturating_add(1);
+        }
+        d.files.insert(last.to_string(), entry);
+        Ok(())
+    }
+
+    /// [`Tree::insert`], without charging any ceiling (`crate::branch_lines`'s own per-root partition,
+    /// RFC 020 D-1: a *secondary*, derived structure whose total insertions are already bounded by the
+    /// whole-repository tree's own, budget-checked construction — every entry it ever holds came from
+    /// that tree's `flat_entries`, so charging again here would double-count the same work without
+    /// bounding anything new). Still an `Rc::make_mut` walk, so an unrelated root's subtree stays
+    /// shared; just not a chargeable one.
+    pub(crate) fn insert_unbudgeted(&mut self, path: &str, entry: FileEntry) {
+        let (dirs, last) = split_last(path);
+        let mut node = &mut self.0;
+        if !dirs.is_empty() {
+            for comp in dirs.split('/') {
+                let d = Rc::make_mut(node);
+                node = d.dirs.entry(comp.to_string()).or_default();
+            }
+        }
+        let d = Rc::make_mut(node);
+        d.files.insert(last.to_string(), entry);
+    }
+
+    /// Remove the file at exactly `path`, and (SVN delete-of-a-directory semantics) everything under
+    /// `path/...` if `path` is also a directory. Returns the number of file entries actually removed
+    /// (`budget.live_entries` is decremented by the same amount). A path absent from this tree removes
+    /// nothing and charges nothing — only an actual clone or structural change is chargeable work.
+    ///
+    /// # Errors
+    /// [`Error::ResourceLimit`] if a `Dir` node clone this requires would cross `max_tree_nodes`.
+    pub fn remove_subtree(&mut self, path: &str, budget: &mut Budget<'_>) -> Result<usize, Error> {
+        let removed = remove_at(&mut self.0, path, budget)?;
+        budget.live_entries = budget.live_entries.saturating_sub(removed);
+        Ok(removed)
+    }
+}
+
+/// Internal, borrow-friendly lookup used by [`Tree::get`]'s dir-walk branch.
+fn dir_get<'a>(dir: &'a Rc<Dir>, path: &str) -> Option<&'a FileEntry> {
+    let (first, rest) = split_first(path);
+    match rest {
+        None => dir.files.get(first),
+        Some(rest) => dir.dirs.get(first).and_then(|d| dir_get(d, rest)),
+    }
+}
+
+/// If `Rc::make_mut(node)` is about to clone (strong count > 1), charge one node against the budget
+/// first — the clone itself is unavoidable once called, so the charge (and its possible refusal) happens
+/// before it, not after.
+fn charge_clone(node: &Rc<Dir>, budget: &mut Budget<'_>) -> Result<(), Error> {
+    if Rc::strong_count(node) > 1 {
+        budget.charge_node()?;
+    }
+    Ok(())
+}
+
+/// [`Tree::remove_subtree`]'s own recursion.
+fn remove_at(node: &mut Rc<Dir>, path: &str, budget: &mut Budget<'_>) -> Result<usize, Error> {
+    let (first, rest) = split_first(path);
+    match rest {
+        None => {
+            if !node.files.contains_key(first) && !node.dirs.contains_key(first) {
+                return Ok(0);
+            }
+            charge_clone(node, budget)?;
+            let d = Rc::make_mut(node);
+            let mut removed = 0usize;
+            if d.files.remove(first).is_some() {
+                removed = removed.saturating_add(1);
+            }
+            if let Some(sub) = d.dirs.remove(first) {
+                removed = removed.saturating_add(count_entries(&sub));
+            }
+            Ok(removed)
+        }
+        Some(rest) => {
+            if !node.dirs.contains_key(first) {
+                return Ok(0);
+            }
+            charge_clone(node, budget)?;
+            let d = Rc::make_mut(node);
+            let Some(child) = d.dirs.get_mut(first) else {
+                // Checked present just above `make_mut`, which does not change the key set — stays a
+                // defined `Ok(0)` rather than an `unreachable!`/`expect` if that invariant is ever wrong.
+                return Ok(0);
+            };
+            let removed = remove_at(child, rest, budget)?;
+            if removed > 0 && child.files.is_empty() && child.dirs.is_empty() {
+                // Keep the invariant `Tree::is_live_under` relies on: an existing `Dir` node always
+                // holds at least one file. No charge: this shrinks the tree, it never clones or creates.
+                d.dirs.remove(first);
+            }
+            Ok(removed)
+        }
+    }
+}
+
+/// The total number of file entries anywhere under `dir` (used only when a whole subtree is dropped at
+/// once, to keep the live-entry count exact).
+fn count_entries(dir: &Dir) -> usize {
+    dir.files.len() + dir.dirs.values().map(|d| count_entries(d)).sum::<usize>()
+}
+
+/// The resource accounting for one decode: the ceilings, and how much the deltas have reconstructed so
+/// far (RFC 013 D-2, T-8), and how much the tree has cost so far (RFC 020 D-2).
 pub struct Budget<'a> {
     /// The ceilings.
     pub limits: &'a Limits,
     /// The bytes every delta's reconstructed target has taken so far.
     pub reconstructed: usize,
-    /// The sum of entries across every [`Tree`] snapshot ever retained in `kept` so far (0.8.1):
-    /// updated by [`Budget::retain`] each time the caller keeps a revision's snapshot (RFC 010
-    /// increment 1's own bookkeeping never evicts a kept snapshot, so this only ever grows).
-    retained_entries: usize,
+    /// The cumulative count of `Dir` nodes cloned or created, and file entries created, by every
+    /// [`Tree::insert`]/[`Tree::remove_subtree`] call so far (RFC 020 D-2) — never decreasing, so it
+    /// bounds the tree's total lifetime work, not any one snapshot's live size. **Live ≤ cumulative
+    /// always** (a node still live was allocated exactly once, and removal never decrements this
+    /// counter), so bounding the cumulative count bounds the live size too, with no `Drop` accounting
+    /// needed to prove it. Checked at each allocation ([`Budget::charge_node`]).
+    tree_nodes: usize,
+    /// The current live tree's total file count, maintained incrementally by every
+    /// [`Tree::insert`]/[`Tree::remove_subtree`] call (RFC 020 D-2) — an O(1) answer to "how big is the
+    /// tree right now", read only at the points that expand a tree into entries (a directory copy's
+    /// expansion, `--branch-lines`'s own per-file walk for a new line), never on an ordinary single-file
+    /// change (the module doc explains why).
+    pub live_entries: usize,
 }
 
 impl<'a> Budget<'a> {
@@ -66,27 +409,25 @@ impl<'a> Budget<'a> {
         Self {
             limits,
             reconstructed: 0,
-            retained_entries: 0,
+            tree_nodes: 0,
+            live_entries: 0,
         }
     }
 
-    /// Account for keeping a snapshot of `entries` files (0.8.1): refuses, before the caller stores the
-    /// snapshot, if doing so would cross `max_retained_entries` — the running sum across every snapshot
-    /// ever retained, not any one snapshot's own size (that is `max_tree_entries`).
+    /// Charge one node (a `Dir` clone or creation, or a new file entry) against `max_tree_nodes` (RFC 020
+    /// D-2), refusing before the cumulative count would cross it.
     ///
     /// # Errors
-    /// [`Error::ResourceLimit`] if keeping this snapshot would cross the ceiling. The caller must not
-    /// store the snapshot in that case.
-    pub fn retain(&mut self, entries: usize) -> Result<(), Error> {
-        let next = self.retained_entries.saturating_add(entries);
-        if next > self.limits.max_retained_entries {
+    /// [`Error::ResourceLimit`] if this would cross `max_tree_nodes`.
+    fn charge_node(&mut self) -> Result<(), Error> {
+        let next = self.tree_nodes.saturating_add(1);
+        if next > self.limits.max_tree_nodes {
             return Err(Error::ResourceLimit {
-                what: "the snapshot total brygge must retain for later copies in this dump"
-                    .to_string(),
-                ceiling: format!("{} entries", self.limits.max_retained_entries),
+                what: "the tree nodes brygge has allocated while decoding this dump".to_string(),
+                ceiling: format!("{} nodes", self.limits.max_tree_nodes),
             });
         }
-        self.retained_entries = next;
+        self.tree_nodes = next;
         Ok(())
     }
 }
@@ -128,9 +469,6 @@ fn blob_for(
     };
     Ok(builder.add_blob(content)?)
 }
-
-/// The repository tree at a point: repo-relative file path → file. `BTreeMap` for deterministic order.
-pub type Tree = BTreeMap<String, FileEntry>;
 
 /// Where a revision's copy records go as they are found: the destination-relative pairs the
 /// single-spine path reads directly, and each one's source revision, which only `--branch-lines`
@@ -188,7 +526,9 @@ pub struct Applied {
 ///
 /// # Errors
 /// [`Error::FloorRefusal`] for a refused property; [`Error::Read`] for a copyfrom that names a missing
-/// revision/path or a malformed change, or a symlink whose content is not `link <target>`.
+/// revision/path or a malformed change, or a symlink whose content is not `link <target>`; or
+/// [`Error::ResourceLimit`] (RFC 020 D-2) if a directory copy's expansion would cross `max_tree_entries`
+/// or `max_copy_expansion`, or the tree's cumulative node allocations would cross `max_tree_nodes`.
 pub fn apply_revision(
     prev: &Tree,
     nodes: Vec<NodeRecord>,
@@ -253,23 +593,16 @@ pub fn apply_revision(
         match node.action {
             NodeAction::Delete => {
                 void_copies_under(&mut copy_out, &node.path);
-                remove_subtree(&mut tree, &node.path);
+                tree.remove_subtree(&node.path, budget)?;
             }
             NodeAction::Add | NodeAction::Change | NodeAction::Replace => {
                 if node.action == NodeAction::Replace {
                     void_copies_under(&mut copy_out, &node.path);
-                    remove_subtree(&mut tree, &node.path);
+                    tree.remove_subtree(&node.path, budget)?;
                 }
                 match node.kind {
                     Some(NodeKind::Dir) => {
-                        apply_dir(
-                            &mut tree,
-                            &mut copy_out,
-                            kept,
-                            revnum_to_atom,
-                            node,
-                            budget.limits,
-                        )?;
+                        apply_dir(&mut tree, &mut copy_out, kept, revnum_to_atom, node, budget)?;
                     }
                     Some(NodeKind::File) => {
                         apply_file(
@@ -309,7 +642,7 @@ pub fn apply_revision(
     }
     let mut empty_dirs = 0usize;
     for dir in &added_dirs {
-        if !is_live_under(&tree, dir) {
+        if !tree.is_live_under(dir) {
             empty_dirs = empty_dirs.saturating_add(1);
         }
     }
@@ -331,10 +664,9 @@ fn collect_subtree_paths(tree: &Tree, dir: &str, out: &mut HashSet<String>) {
     if tree.contains_key(dir) {
         out.insert(dir.to_string());
     }
-    let prefix = format!("{dir}/");
-    for path in tree.keys() {
-        if path.starts_with(&prefix) {
-            out.insert(path.clone());
+    if let Some(sub) = tree.dir_at(dir) {
+        for (rel, _) in sub.flat_entries() {
+            out.insert(format!("{dir}/{rel}"));
         }
     }
 }
@@ -513,22 +845,18 @@ fn apply_file(
         });
         copy_out.source_revs.push(*crev);
     }
-    // 0.8.1: the running tree's own size, checked before a genuinely new path is stored.
-    if !tree.contains_key(&node.path) && tree.len() >= budget.limits.max_tree_entries {
-        return Err(Error::ResourceLimit {
-            what: "one tree in this repository".to_string(),
-            ceiling: format!("{} entries", budget.limits.max_tree_entries),
-        });
-    }
+    // RFC 020 D-2: an ordinary single-file change is no longer checked against `max_tree_entries` (the
+    // module doc explains why) — only `Tree::insert`'s own cumulative `max_tree_nodes` charge applies.
     tree.insert(
-        node.path,
+        &node.path,
         FileEntry {
             blob,
             mode,
             exec,
             special,
         },
-    );
+        budget,
+    )?;
     Ok(())
 }
 
@@ -571,58 +899,75 @@ fn verify_content(path: &str, sums: &Checksums, text: &[u8]) -> Result<(), Error
 /// Apply a directory add/change/replace: expand a copy from its historical snapshot. A directory
 /// property-only change, or a plain `add`/`replace` with no copy source, touches no files — CR-07.4's
 /// empty-directory accounting happens once, after the whole revision, from the final tree.
+///
+/// RFC 020 D-1: the source subtree is looked up directly (`Tree::dir_at`, O(depth)), not found by
+/// scanning the whole source snapshot — the win over 0.8.1, which cloned the whole tree per
+/// copy-source revision instead of sharing it. The expansion itself — one `Add`+`CopyRecord` per copied
+/// file — is unchanged and still costs one op per file (the artifact must not change), bounded by
+/// `max_copy_expansion` as before, and now also by `max_tree_entries` against the *resulting* live tree
+/// size (D-2: this is one of the two places that still checks it).
 fn apply_dir(
     tree: &mut Tree,
     copy_out: &mut CopyOut<'_>,
     kept: &HashMap<u64, Tree>,
     revnum_to_atom: &HashMap<u64, AtomId>,
     node: NodeRecord,
-    limits: &Limits,
+    budget: &mut Budget<'_>,
 ) -> Result<(), Error> {
     let Some((crev, cpath)) = &node.copyfrom else {
         return Ok(());
     };
     let src = snapshot_for(kept, *crev)?;
     let from_atom = atom_for(revnum_to_atom, *crev)?;
-    let prefix = format!("{cpath}/");
-    // Collect first (avoid borrowing `src` while mutating `tree`; they are different maps anyway).
-    // 0.8.1: the count is checked as the source snapshot is walked, before more of it is collected —
-    // one copy cannot expand to more than `max_copy_expansion` entries, however large the real
-    // directory it copies from is.
-    let mut additions: Vec<(String, String, FileEntry)> = Vec::new();
-    for (spath, sentry) in src {
-        if additions.len() >= limits.max_copy_expansion {
-            return Err(Error::ResourceLimit {
-                what: "one directory copy's expansion".to_string(),
-                ceiling: format!("{} entries", limits.max_copy_expansion),
-            });
-        }
-        let new_path = if spath == cpath {
-            node.path.clone()
-        } else if let Some(rest) = spath.strip_prefix(&prefix) {
-            format!("{}/{}", node.path, rest)
-        } else {
-            continue;
-        };
-        additions.push((spath.clone(), new_path, sentry.clone()));
+    // Reproduces exactly what scanning the whole source tree for `spath == cpath || spath starts_with
+    // "{cpath}/"` would collect — just without the whole-tree scan: a direct file at `cpath` itself
+    // (possible in principle, since files and directories are independent maps at every level — see the
+    // module doc), plus every file under the `cpath` subtree, if one exists.
+    let mut additions: Vec<(String, FileEntry)> = Vec::new();
+    if let Some(direct) = src.get(cpath) {
+        additions.push((String::new(), direct.clone()));
     }
-    for (from, to, entry) in additions {
-        // 0.8.1: the running tree's own size, checked before a genuinely new path is stored (an
-        // existing path being overwritten does not grow the tree).
-        if !tree.contains_key(&to) && tree.len() >= limits.max_tree_entries {
-            return Err(Error::ResourceLimit {
-                what: "one tree in this repository".to_string(),
-                ceiling: format!("{} entries", limits.max_tree_entries),
-            });
+    if let Some(sub) = src.dir_at(cpath) {
+        for (rel, entry) in sub.flat_entries() {
+            additions.push((rel, entry));
         }
+    }
+    let limits = budget.limits;
+    if additions.len() > limits.max_copy_expansion {
+        return Err(Error::ResourceLimit {
+            what: "one directory copy's expansion".to_string(),
+            ceiling: format!("{} entries", limits.max_copy_expansion),
+        });
+    }
+    // RFC 020 D-2: checked here, once, against the *resulting* live tree size — the other of the two
+    // points that still check `max_tree_entries` (the module doc explains why ordinary adds no longer
+    // do). A conservative, single check before inserting anything: every addition could in principle be
+    // a genuinely new path (the cheapest case to reason about; an addition that overwrites an existing
+    // path only ever makes the true total smaller than this bound).
+    if budget.live_entries.saturating_add(additions.len()) > limits.max_tree_entries {
+        return Err(Error::ResourceLimit {
+            what: "one tree in this repository".to_string(),
+            ceiling: format!("{} entries", limits.max_tree_entries),
+        });
+    }
+    for (rel, entry) in additions {
+        let to = if rel.is_empty() {
+            node.path.clone()
+        } else {
+            format!("{}/{rel}", node.path)
+        };
         copy_out.copies.push(CopyRecord {
-            from,
+            from: if rel.is_empty() {
+                cpath.clone()
+            } else {
+                format!("{cpath}/{rel}")
+            },
             from_atom,
             to: to.clone(),
             status: EpistemicStatus::Stated,
         });
         copy_out.source_revs.push(*crev);
-        tree.insert(to, entry);
+        tree.insert(&to, entry, budget)?;
     }
     Ok(())
 }
@@ -640,47 +985,159 @@ fn atom_for(revnum_to_atom: &HashMap<u64, AtomId>, rev: u64) -> Result<AtomId, E
 
 /// Diff `prev` → `new` into `Stated` path operations (one op per changed path). A path named in
 /// `replaced` gets `PathOp::Replace` whenever it is present on both sides, even with identical content
-/// (CR-07.2, RFC 011 D-7) — the source stated a new node, not a modification.
+/// (CR-07.2, RFC 011 D-7) — the source stated a new node, not a modification. The order the two trees are
+/// walked in does not affect the artifact: [`IrBuilder::add_atom`] sorts every atom's `ops` canonically
+/// by path before storing them.
+///
+/// RFC 020 D-1's own efficiency win, not just D-1's memory one: `prev` and `new` are walked **together**,
+/// comparing `Rc<Dir>` identity at every directory and skipping straight past any pair that is
+/// `Rc::ptr_eq` — a subtree neither side touched this revision is never even read, let alone flattened.
+/// An ordinary revision (one file changed) costs O(depth), not O(whole tree): the fix for a real,
+/// measured regression (codeblocks' decode time was ~37% *slower* than 0.8.1 with an earlier version of
+/// this function that called [`Tree::flat_entries`] on both whole trees every revision — correct, same
+/// ops, but exactly the O(whole tree)-per-revision cost this walk exists to avoid).
 fn diff(prev: &Tree, new: &Tree, replaced: &HashSet<String>) -> Vec<PathOp> {
     let mut ops = Vec::new();
-    for (path, e) in new {
-        match prev.get(path) {
-            None => ops.push(PathOp::Add {
-                path: path.clone(),
-                blob: e.blob,
-                mode: e.mode,
-                status: EpistemicStatus::Stated,
-            }),
-            Some(_) if replaced.contains(path) => ops.push(PathOp::Replace {
-                path: path.clone(),
-                blob: e.blob,
-                mode: e.mode,
-                status: EpistemicStatus::Stated,
-            }),
-            Some(p) if p.blob != e.blob || p.mode != e.mode => ops.push(PathOp::Modify {
-                path: path.clone(),
-                blob: e.blob,
-                mode: e.mode,
-                status: EpistemicStatus::Stated,
-            }),
-            Some(_) => {}
-        }
-    }
-    for path in prev.keys() {
-        if !new.contains_key(path) {
-            ops.push(PathOp::Delete {
-                path: path.clone(),
-                status: EpistemicStatus::Stated,
-            });
-        }
-    }
+    diff_dir(&prev.0, &new.0, "", replaced, &mut ops);
     ops
 }
 
-/// Remove the exact path and its whole subtree (`path/...`).
-fn remove_subtree(tree: &mut Tree, path: &str) {
-    let prefix = format!("{path}/");
-    tree.retain(|k, _| k != path && !k.starts_with(&prefix));
+/// [`diff`]'s own recursion, one `Dir` level at a time. Files and subdirectories are each compared in
+/// their own map's bare-name order (not merged against each other the way [`Dir::flat_entries_into`]
+/// must): order never reaches the artifact here (see [`diff`]'s own doc), only *which* ops are produced.
+fn diff_dir(
+    prev: &Rc<Dir>,
+    new: &Rc<Dir>,
+    prefix: &str,
+    replaced: &HashSet<String>,
+    ops: &mut Vec<PathOp>,
+) {
+    if Rc::ptr_eq(prev, new) {
+        return;
+    }
+    let mut prev_files = prev.files.iter().peekable();
+    let mut new_files = new.files.iter().peekable();
+    loop {
+        match (prev_files.peek().copied(), new_files.peek().copied()) {
+            (None, None) => break,
+            (Some((p, _)), None) => {
+                ops.push(delete_op(format!("{prefix}{p}")));
+                prev_files.next();
+            }
+            (None, Some((n, e))) => {
+                ops.push(add_op(format!("{prefix}{n}"), e));
+                new_files.next();
+            }
+            (Some((p, pe)), Some((n, ne))) => match p.as_str().cmp(n.as_str()) {
+                std::cmp::Ordering::Less => {
+                    ops.push(delete_op(format!("{prefix}{p}")));
+                    prev_files.next();
+                }
+                std::cmp::Ordering::Greater => {
+                    ops.push(add_op(format!("{prefix}{n}"), ne));
+                    new_files.next();
+                }
+                std::cmp::Ordering::Equal => {
+                    let path = format!("{prefix}{n}");
+                    if replaced.contains(&path) {
+                        ops.push(replace_op(path, ne));
+                    } else if pe.blob != ne.blob || pe.mode != ne.mode {
+                        ops.push(modify_op(path, ne));
+                    }
+                    prev_files.next();
+                    new_files.next();
+                }
+            },
+        }
+    }
+    let mut prev_dirs = prev.dirs.iter().peekable();
+    let mut new_dirs = new.dirs.iter().peekable();
+    loop {
+        match (prev_dirs.peek().copied(), new_dirs.peek().copied()) {
+            (None, None) => break,
+            (Some((p, psub)), None) => {
+                emit_all(psub, &format!("{prefix}{p}/"), ops, Emit::Delete);
+                prev_dirs.next();
+            }
+            (None, Some((n, nsub))) => {
+                emit_all(nsub, &format!("{prefix}{n}/"), ops, Emit::Add);
+                new_dirs.next();
+            }
+            (Some((p, psub)), Some((n, nsub))) => match p.as_str().cmp(n.as_str()) {
+                std::cmp::Ordering::Less => {
+                    emit_all(psub, &format!("{prefix}{p}/"), ops, Emit::Delete);
+                    prev_dirs.next();
+                }
+                std::cmp::Ordering::Greater => {
+                    emit_all(nsub, &format!("{prefix}{n}/"), ops, Emit::Add);
+                    new_dirs.next();
+                }
+                std::cmp::Ordering::Equal => {
+                    diff_dir(psub, nsub, &format!("{prefix}{n}/"), replaced, ops);
+                    prev_dirs.next();
+                    new_dirs.next();
+                }
+            },
+        }
+    }
+}
+
+fn add_op(path: String, e: &FileEntry) -> PathOp {
+    PathOp::Add {
+        path,
+        blob: e.blob,
+        mode: e.mode,
+        status: EpistemicStatus::Stated,
+    }
+}
+
+fn modify_op(path: String, e: &FileEntry) -> PathOp {
+    PathOp::Modify {
+        path,
+        blob: e.blob,
+        mode: e.mode,
+        status: EpistemicStatus::Stated,
+    }
+}
+
+fn replace_op(path: String, e: &FileEntry) -> PathOp {
+    PathOp::Replace {
+        path,
+        blob: e.blob,
+        mode: e.mode,
+        status: EpistemicStatus::Stated,
+    }
+}
+
+fn delete_op(path: String) -> PathOp {
+    PathOp::Delete {
+        path,
+        status: EpistemicStatus::Stated,
+    }
+}
+
+/// Whether [`emit_all`] should treat every file it finds under a whole prev-only or new-only subtree as
+/// added or deleted — a path that exists on only one side can never be in `diff`'s `replaced` set (that
+/// requires presence on both sides at the exact path), so neither case needs to consult it.
+enum Emit {
+    Add,
+    Delete,
+}
+
+/// Every file under `dir`, each as an `Add` or `Delete` op (whichever `emit` asks for) — used only for a
+/// whole subtree present on just one side (a directory wholly added or wholly removed this revision),
+/// so this walk's cost is bounded by the size of *that* change, not the whole tree.
+fn emit_all(dir: &Dir, prefix: &str, ops: &mut Vec<PathOp>, emit: Emit) {
+    for (path, entry) in {
+        let mut out = Vec::new();
+        dir.flat_entries_into(prefix, &mut out);
+        out
+    } {
+        ops.push(match emit {
+            Emit::Add => add_op(path, &entry),
+            Emit::Delete => delete_op(path),
+        });
+    }
 }
 
 /// The retained snapshot for a revision. Only revisions a `copyfrom` names are retained (RFC 010
@@ -700,15 +1157,6 @@ fn lookup_file(kept: &HashMap<u64, Tree>, rev: u64, path: &str) -> Result<FileEn
             "copyfrom source file '{path}' at revision {rev} not found"
         ))
     })
-}
-
-/// Whether at least one file in `tree` lives at or under `prefix` (used by the decode layer for CR-07.3's
-/// live-ref check and CR-07.5's layout-honesty count).
-#[must_use]
-pub fn is_live_under(tree: &Tree, prefix: &str) -> bool {
-    let dir_prefix = format!("{prefix}/");
-    tree.keys()
-        .any(|k| k == prefix || k.starts_with(&dir_prefix))
 }
 
 #[cfg(test)]
