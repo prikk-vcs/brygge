@@ -245,11 +245,13 @@ fn measure(mut cmd: Command) -> Measured {
                 .find(|l| l.starts_with("content_bytes="))
                 .map(|l| format!(" {l}"))
                 .unwrap_or_default();
-            // `brygge`'s own exit codes (`crates/brygge/src/exit.rs`): 0 (clean) and 10 (recorded
-            // loss — every real repository has some; batch R's own runs show `dropped>0` on every
-            // entry) both mean the command did its job and produced a result. Anything else (a
-            // refusal, a verify failure, a genuine crash) is a real problem for this measurement.
-            let ok = matches!(status.code(), Some(0) | Some(10));
+            // `brygge`'s own exit codes (`crates/brygge/src/exit.rs`): 0 (clean), 10 (recorded loss —
+            // every real repository has some; batch R's own runs show `dropped>0` on every entry), and
+            // 30 (a convention violation flagged, not silently dropped — a dump with paths outside the
+            // chosen layout, review 168 N-2) all mean the command did its job and produced a result.
+            // Anything else (a refusal, a verify failure, a genuine crash) is a real problem for this
+            // measurement.
+            let ok = matches!(status.code(), Some(0) | Some(10) | Some(30));
             return Measured {
                 ok,
                 time_ms,

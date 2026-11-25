@@ -930,11 +930,11 @@ full CLI `decode`; P4/P5/P6 = `verify`/`inspect`/`verify --against-source`.
 (1,456,268 / 1,457,836 KiB, two independent measurements) to within 0.4%** — the same shape, re-confirmed
 across batches, not a regression.
 
-**P3 reports `ok=false`** for `codeblocks --branch-lines` only: the real dump has paths outside the
-default layout, so the decode exits flagged (not 0 or 10), which this profiler's `measure()` does not yet
+**P3 reported `ok=false`** for `codeblocks --branch-lines` only: the real dump has paths outside the
+default layout, so the decode exits flagged (30, `CONVENTION_VIOLATION`), which `measure()` did not yet
 recognize as success — the decode and serialization both plainly succeeded (the artifact was written,
-108,071,349 bytes, matching P2's `artifact_bytes` exactly). Not fixed here (out of this batch's scope);
-noted so it is not mistaken for a real failure.
+108,071,349 bytes, matching P2's `artifact_bytes` exactly). **Fixed (review 168 N-2):** `measure()` now
+accepts exit 30 alongside 0 and 10, so this reads `ok=true`.
 
 ### Separating what the RFC must change from what it must not (§2)
 
@@ -973,22 +973,33 @@ lands within ~3% of measured peak either way, so (e) is ~0, inside this estimate
 creates a root has no ops" measured directly: 2,140 ops instead of 282,140, zero copy records instead of
 280,000.
 
-**codeblocks: (c)+(d) ≈ 0.66 GiB (plain) / 0.61 GiB (`--branch-lines`), about 30–33% of its ~2.1 GiB
-peak.** The remaining ~67–70% — (a)+(b)+(e) lumped — **cannot be split further from outside**: a real
-repository's retained-entry count (unlike `svn-tags`'s known `K`/`N`) is not independently knowable
-without the decoder reporting it, which this batch does not add. RFC 020's own Motivation table already
-names codeblocks' 316 copy-source revisions; consistent with that, this remaining two-thirds is plausibly
-mostly (a)+(b), but this batch states that as a judgment, not a measurement.
+**N-1 correction (review 168): the content store is not resident in the real CLI's process.** P1/P2 are
+library calls using `Storage::Memory` (`brygge_decode_svn::decode`'s own default), so (d) is genuinely
+part of *their* peak. P3–P6 run the real `brygge` binary, which always spills content to disk (RFC 015
+D-4) — the content is never in that process's resident memory, so (d) must not be subtracted from P3's
+peak, as the first version of this section wrongly did.
+
+**The correct split, for P3 (the real `decode` command users actually run): peak 1,503,220 KiB; (c) ≈
+39.2 MiB; so (a)+(b)+(e) ≈ 1.43 GiB, about 96% of peak — not the 67–70% first reported here.** The
+conclusion is stronger, not weaker: on a real, tag-heavy repository, the retained snapshots and the
+working tree are very nearly the whole of the real command's peak, the same as on the synthetic
+`svn-tags`. (a)+(b)+(e) still cannot be split further from outside (a real repository's retained-entry
+count, unlike `svn-tags`'s known `K`/`N`, is not independently knowable without the decoder reporting it),
+but with (d) correctly excluded there is essentially nothing left for (e) to be: RFC 020's own Motivation
+table already names codeblocks' 316 copy-source revisions, consistent with (a)+(b) alone accounting for
+nearly all of it.
 
 ### The judgment
 
-**Does (a)+(b) dominate the peak? Yes, clearly, on `svn-tags`** (the shape D-1 targets directly) —
-essentially the entire peak in both modes. **On `codeblocks`, (a)+(b)+(e) together are ~67–70% of peak,
-with (c)+(d) (real, substantial content) making up the rest** — a real repository's peak is less
-amplification-dominated than the synthetic worst case, as expected, but the unsplit majority share is
-still consistent with (a)+(b) being the largest single piece. **D-1 is confirmed as specified**: a real
-retained-snapshot/working-tree cost this large, for both a real repository with many tags and a
-deliberately adversarial one, is exactly what shared-structure sharing (D-1) removes.
+**Does (a)+(b) dominate the peak? Yes, clearly, on both.** On `svn-tags` (the shape D-1 targets directly)
+— essentially the entire peak in both modes. **On `codeblocks`'s real CLI peak (P3, corrected per N-1),
+(a)+(b)+(e) is about 1.43 GiB of a 1.50 GiB peak — about 96%**, with (c) (the IR's metadata alone, ~39
+MiB; the content store is spilled to disk, never resident in that process) making up the rest. A real
+repository is *not* less amplification-dominated than the synthetic worst case, as this batch first
+reported — the retained-snapshot/working-tree cost is nearly the whole peak either way. **D-1 is
+confirmed as specified, more strongly than first reported**: a retained-snapshot/working-tree cost this
+large, for both a real repository with many tags and a deliberately adversarial one, is exactly what
+shared-structure sharing (D-1) removes.
 
 ### What could not be measured from outside, and why
 
