@@ -76,11 +76,14 @@ const SCENARIOS: &[(&str, &[u64])] = &[
     ("svn-checked", &[1_000, 5_000, 20_000]),
     ("cvs-branches", &[200, 1_000, 5_000]),
     ("cvs-branches-plain", &[200, 1_000, 5_000]),
-    // The handoff's matrix names N = 10, 40, 160; empirically, 160 already crosses 0.8.1's
-    // `max_retained_entries` ceiling at this K (2,000) — refused, not measured (see the request). 140 is
-    // the largest round value that still completes, so it stands in as the third point here.
-    ("svn-tags-plain", &[10, 40, 140]),
-    ("svn-tags", &[10, 40, 140]),
+    // RFC 020 D-1/D-2 (batch S): `max_retained_entries` — which 0.8.1's quadratic retention crossed at
+    // N=150 for this K (2,000), the reason this table once stood in with 140 — is gone; a shared tree's
+    // retention is O(1) per snapshot, so the full handoff matrix (10, 40, 160, 640, 2,560) now completes.
+    // This in-process run is a quick self-checked sanity pass, not the reported figures: review 169 F-2
+    // asks for those from the real binary, one child per run (`tools/bench/svn-tags-corpus.py`), not
+    // from this harness's own in-process call.
+    ("svn-tags-plain", &[10, 40, 160, 640, 2_560]),
+    ("svn-tags", &[10, 40, 160, 640, 2_560]),
 ];
 
 fn main() {

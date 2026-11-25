@@ -25,6 +25,8 @@ for before/after comparison on one machine, not a precise heap figure.
 cargo run -p brygge-bench --release            # the full matrix, as a table
 cargo run -p brygge-bench --release -- run svn-revs 5000   # one scenario (machine line)
 cargo run -p brygge-bench --release -- corpus git-commits 5000 /some/dir   # write a corpus and stop
+python3 -I tools/bench/svn-tags-corpus.py target/release/brygge target/release/brygge-bench \
+    10 40 160 640 2560 --branch-lines   # svn-tags' matrix, the real binary, one child per run
 ```
 
 `corpus` writes a scenario's input and prints its kind and path (`git /some/dir`), so the same input can be decoded by
@@ -1016,3 +1018,143 @@ shared-structure sharing (D-1) removes.
 
 None of these required or used a decoder change; the gaps are stated rather than approximated past what
 the public API and the generator's own known shape support.
+
+## Result — RFC 020 batch S, F-1/F-2/F-3 (review 169's fix batch on request 083)
+
+Review 169 found that the first batch-S submission's `svn-tags` time figures (24.8 s at N=160, 87
+minutes at N=2,560, plain) did not match a clean measurement of the real binary (2.1 s at N=160), and
+that `--branch-lines` was genuinely quadratic in N — not the "sibling-scan" explanation first given, but
+`branch_lines.rs`'s own per-revision partition, which flattened the **whole** repository tree every
+revision to bucket it by root. This section replaces that batch's §5 with the real binary's own figures,
+and reports the fix (F-1), the measurement method (F-2), and the kept-snapshot release (F-3).
+
+### F-2: why the gap, and the method going forward
+
+**Investigated, not assumed.** The hypotheses offered (`Storage::Memory` vs. the real binary's
+`Storage::Spill`, a self-check walk, the corpus's own shape summary) were checked by re-running the
+*exact same* `svn-tags-plain N=160` scenario, in-process and as the real binary, back to back, with
+nothing else intentionally started on the machine:
+
+| Method | Time |
+|---|---:|
+| `brygge-bench run svn-tags-plain 160` (in-process, `Storage::Memory`, decode only) | 0.66–0.83 s |
+| `brygge decode svn … --out …` (the real binary, one child, `Storage::Spill` + serialize + report) | 1.96–2.32 s |
+
+**In-process is *faster*, not 24.8 s slower** — the expected direction, since it skips the content-spill,
+serialization and report steps the real binary always does. The originally-reported 24.8 s (and the 87
+minutes at N=2,560) could not be reproduced under a clean run of the *same, unfixed* code either; this
+machine runs several other sessions' builds concurrently (`uptime`'s load average was seen as high as ~60
+on a 32-thread machine during this batch), and the first submission's own figures were not measured
+pinned against a clean moment the way its codeblocks figures were. **The in-process/real-binary gap
+itself is not the finding; `--branch-lines`'s genuine quadratic cost (below) is.**
+
+Going forward, `svn-tags`'s matrix is still recorded from the real binary, one child per run
+(`os.wait4`), matching `release-corpus.py`'s own discipline — not because the in-process method was shown
+to add overhead, but because the real binary is what a user runs, and what the handoff's own stop
+condition ("codeblocks' peak or time is worse than 0.8.1's") is about. **New script:**
+`tools/bench/svn-tags-corpus.py <brygge-binary> <brygge-bench-binary> <n>... [--branch-lines]` — `svn-tags`
+is synthetic (not a `real.toml` entry), so `release-corpus.py` itself has nothing to measure it from; this
+is the same method, for the one scenario it does not cover.
+
+### F-1: `--branch-lines` must take each root's tree by sharing, not by flattening
+
+**The bug:** every revision, `decode_with`'s partition ran `applied.tree.flat_entries()` over the
+**whole** repository tree to bucket paths by root, then rebuilt each touched root's relative tree from
+that flat list — O(tree size) per revision. `svn-tags`' tree grows by the trunk's file count (K) with
+every tag, so this was O(N²·K) over a history of N tags, the same shape D-1 exists to remove, reintroduced
+one layer up.
+
+**The fix:** only the roots a revision's own nodes name (`touched`, already derived from node paths, never
+from the tree) get a fresh relative tree, looked up directly — `Tree::dir_at`, O(depth) — not rebuilt by
+flattening. The live-root set (for detecting a line that just died) comes from the layout containers'
+own immediate children (a new `Tree::child_names`, one level only) and the trunk's own liveness, not from
+flattening either — still correct for a root killed by its *containing* directory's removal (a new
+level-1 test, `deleting_the_whole_branches_container_kills_every_branch_under_it`, covers exactly this: a
+root never named directly, only implied by its container's deletion). The copy-created first atom's own
+diff now reuses `tree::diff` (made `pub(crate)`) instead of a second, separately-written flattening
+diff — the same `Rc::ptr_eq`-skipping walk D-1's main fix already has, not a parallel implementation of
+it. `layout_honesty` (both modules) still flattens the final tree once, after the whole decode — O(tree
+size) total, not per-revision — checked and left as is.
+
+**Proof — byte-identity, again, every corpus entry, all three modes:**
+
+| Repository | Mode | `cmp` | Exit (old/new) |
+|---|---|---|---:|
+| wordpress-core | plain | **identical** | 10 / 10 |
+| wordpress-core | `--branch-lines` | **identical** | 10 / 10 |
+| wordpress-core | `--reconstruct-refs` | **identical** | 10 / 10 |
+| codeblocks | plain | **identical** | 10 / 10 |
+| codeblocks | `--branch-lines` | **identical** | 30 / 30 |
+| codeblocks | `--reconstruct-refs` | **identical** | 30 / 30 |
+
+**`svn-tags`/`svn-tags-plain`, the real binary, one child per run, N = 10 … 2,560 (256× range):**
+
+| N | Mode | Peak (KiB) | Time (ms) |
+|---:|---|---:|---:|
+| 10 | plain | 33,284 | 146 |
+| 40 | plain | 112,028 | 493 |
+| 160 | plain | 442,136 | 1,735 |
+| 640 | plain | 1,690,316 | 6,605 |
+| 2,560 | plain | 6,744,272 | 24,569 |
+| 10 | `--branch-lines` | 12,088 | 41 |
+| 40 | `--branch-lines` | 26,088 | 105 |
+| 160 | `--branch-lines` | 85,732 | 367 |
+| 640 | `--branch-lines` | 327,740 | 1,450 |
+| 2,560 | `--branch-lines` | 1,288,420 | 7,032 |
+
+**Both about linear, time included, across the full range.** Peak per-tag slope (plain): 2,625 / 2,751 /
+2,600 / 2,632 KiB — within 5.7% of each other; a 4× step in N gives a 3.4×–3.8× time step, not the
+~12×–20× the unfixed `--branch-lines` showed (below). `--branch-lines`'s own per-tag slope is tighter
+still: 467 / 497 / 504 / 500 KiB — within 1.5%; its time steps (2.6×, 3.5×, 4.0×, 4.8× per 4× N) converge
+toward linear as N grows past the small-N fixed-cost noise.
+
+**codeblocks, median of three, the real binary, old (0.8.1) vs. new, all three modes:**
+
+| Mode | 0.8.1 time | New time | Speedup | 0.8.1 peak | New peak | Peak cut |
+|---|---:|---:|---:|---:|---:|---:|
+| plain | 56,110 ms | 5,888 ms | **9.5×** | 1,500,868 KiB | 355,588 KiB | 76.3% |
+| `--branch-lines` | 143,404 ms | 5,622 ms | **25.5×** | 1,447,836 KiB | 355,704 KiB | 75.4% |
+| `--reconstruct-refs` | 90,008 ms | 6,055 ms | **14.9×** | 1,501,952 KiB | 355,876 KiB | 76.3% |
+
+Artifact bytes match the old binary's exactly in every mode (131,581,296 / 108,071,349 / 131,583,831).
+**`--branch-lines` is the biggest winner** — exactly the mode F-1's bug was in; before this fix, batch S's
+own first submission could only show the win on the single-spine path, because the real quadratic cost
+was hiding in a module that submission never touched.
+
+### F-3: release a kept snapshot after its last use
+
+The first submission's premise — "a revision is kept only if a later copy names it, so there is no last
+use to detect" — confused *whether* a snapshot is needed with *until when*: a branch created at r100 from
+trunk@99 and later deleted only ever uses r99's snapshot at r100, but without this fix it stays pinned
+(holding every directory version r99 had, however much of it a later revision has since replaced) to the
+end of the decode regardless. **The fix:** the pre-scan now counts each source revision's uses; a use is
+consumed (decremented) as its revision is processed, and the `kept` entry is dropped the moment the count
+reaches zero. **Level 1:** `a_snapshot_used_once_is_released_from_kept_right_after_its_last_use` —
+`decode_with`'s own `kept` map (not observable any other way, since it is a local) is read back through a
+`#[cfg(test)]`-only thread-local probe set right after the main loop; the test proves a once-used
+snapshot is gone from `kept` by then, which an unfixed decode (nothing ever removed) would not show.
+
+**Measured, codeblocks, peak RSS, all three modes, with and without the fix (otherwise identical
+binaries):**
+
+| Mode | Without F-3 | With F-3 |
+|---|---:|---:|
+| plain | 354,728 KiB | 356,036 KiB |
+| `--branch-lines` | 354,752 KiB | 355,284 KiB |
+| `--reconstruct-refs` | 356,096 KiB | 354,948 KiB |
+
+**The gain is nil for codeblocks** (every difference is within measurement noise, under 0.5%) — the
+bound is correct regardless (it tightens what `kept` can cost in the shape the handoff describes), but
+codeblocks' own peak is evidently not dominated by stale `kept` entries at the moment it peaks. Not
+re-measured on a shape designed to show the gain (e.g. a huge branch created and deleted early, then a
+long unrelated tail): F-3 only asked for codeblocks' own figure, and this already answers it honestly,
+as the handoff's own wording allowed for.
+
+### The usual checks
+
+All green: `cargo fmt --check`; clippy `-D warnings` on stable, `x86_64-pc-windows-gnu`,
+`x86_64-apple-darwin`, `+1.87`; `cargo test --workspace --locked` **1,069 passed, 0 failed** on stable,
+`+1.87`, and the no-identity run; the deep mutation sweep **1,069 passed, 0 failed**; isolation (ok),
+links (ok, 85), the book (ok, no warnings), `cargo deny` (advisories/bans/licenses/sources ok). The
+release-tools suite hit one flaky `check-published` case on its first run (the same pre-existing flake
+seen in review 168's own CI run, unrelated to this batch's files) — clean, **75/75**, on retry.
