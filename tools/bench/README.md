@@ -846,3 +846,162 @@ the real cost smaller still, for any repository that is not itself amplifying.
 and never committed (the generator inputs themselves are not part of this record, by design — see
 CHANGELOG's `### Security` entry for 0.8.1): the Subversion one in 16.7 s, peaking at 3,312,196 KiB; the
 Git one in 22 s, peaking at 686 MiB.
+
+## Result — RFC 020 batch M, "measure first" (request 082)
+
+**Measurement only — no change to any published crate** (the handoff's own scope; this batch touches
+only `tools/bench/`). The question: where codeblocks' and a tag-heavy synthetic dump's memory and time
+go, and whether the retained snapshots and the working tree dominate the peak — RFC 020 D-1's premise,
+before any decoder change.
+
+### A new scenario: `svn-tags-plain <n>` / `svn-tags <n>`
+
+A 2,000-file trunk, then `n` times "edit one trunk file, copy trunk to `tags/t<n>`" (RFC 020's "157"
+shape, already in the accepted RFC — not a secret). `svn-tags-plain` decodes without `--branch-lines`,
+`svn-tags` with it. Level 1: both self-check against the generator's own analytically-known atom/blob/
+byte counts (plain) or ref count (branch-lines, `n + 1` — the trunk plus every tag), confirmed exactly at
+every scale tried.
+
+**The handoff's own matrix named N = 10, 40, 160. 160 already crosses 0.8.1's `max_retained_entries`
+ceiling** (confirmed: refused, `the snapshot total brygge must retain for later copies in this dump`,
+`20000000 entries`) **— tighter than the handoff assumed.** Why: a tag's files become ordinary live paths
+in the one repository-wide tree from then on, so retaining a later trunk snapshot (for a later tag) costs
+the trunk *plus every earlier tag* — the retained-entry total is `K·N·(N+1)/2` (K = 2,000), not `K·N`.
+Solving for the ceiling: 140 is the largest round N that still completes; 150 already refuses (confirmed
+both ways). The matrix below uses 140 in place of 160; **this is a stop-condition-adjacent finding for
+the architect, not something this batch fixed** — RFC 020's own text may want this number corrected
+before batch S, though it does not change D-1's premise (if anything it strengthens it: the growth really
+is the quadratic shape RFC 020 describes).
+
+| Scenario | N | Peak (KiB) | Time (ms) | Atoms | Blobs | Content (B) |
+|---|---:|---:|---:|---:|---:|---:|
+| `svn-tags-plain` | 10 | 45,852 | 59 | 23 | 2,010 | 514,560 |
+| `svn-tags-plain` | 40 | 352,376 | 1,260 | 83 | 2,040 | 522,240 |
+| `svn-tags-plain` | 140 | 3,414,076 | 13,744 | 283 | 2,140 | 547,840 |
+| `svn-tags-plain` | 150 | — | — | refused: `20000000 entries` | | |
+| `svn-tags` (`--branch-lines`) | 10 | 36,404 | 94 | 21 | 2,010 | 514,560 |
+| `svn-tags` | 40 | 310,940 | 2,009 | 81 | 2,040 | 522,240 |
+| `svn-tags` | 140 | 3,266,632 | 28,034 | 281 | 2,140 | 547,840 |
+| `svn-tags` | 150 | — | — | refused: `20000000 entries` (same message) | | |
+
+Machine: AMD Ryzen 9 9950X, 59 GiB RAM, x86_64 Linux, release build.
+
+**The cost of one tree entry today, measured (differential, not absolute — cancels the roughly-constant
+baseline):** `(peak(140) − peak(10)) / (retained(140) − retained(10))`, retained(N) = `2000·N·(N+1)/2`.
+Three pairs agree closely: (140,10) → 175.6 B; (140,40) → 173.2 B; (120,10) → 178.0 B. **About 175 B per
+retained entry** — consistent with review 159's ~170 B figure for the same structure (a different
+ceiling's message, the same `Tree`/`FileEntry` cost), cross-validating both.
+
+### The profile, by phase (`brygge-bench profile`, extended)
+
+`codeblocks` (the real corpus's own tag-heavy entry, already known from the Git-target table above to
+have an unusually large retained-snapshot cost) and `svn-tags` at N = 140 (not the handoff's 160, per
+above), each plain and `--branch-lines`. P1 = decode only (library); P2 = decode + serialize; P3 = the
+full CLI `decode`; P4/P5/P6 = `verify`/`inspect`/`verify --against-source`.
+
+| Target | Phase | Time (ms) | Peak (KiB) |
+|---|---|---:|---:|
+| `codeblocks` | P1 | 66,376 | 2,190,868 |
+| `codeblocks` | P2 | 84,966 | 2,376,760 |
+| `codeblocks` | P3 | 59,509 | 1,503,220 |
+| `codeblocks` | P4 | 1,602 | 545,600 |
+| `codeblocks` | P5 | 1,252 | 87,296 |
+| `codeblocks` | P6 | 52,940 | 1,505,928 |
+| `codeblocks` (`--branch-lines`) | P1 | 109,412 | 2,145,532 |
+| `codeblocks` (`--branch-lines`) | P2 | 97,889 | 2,382,524 |
+| `codeblocks` (`--branch-lines`) | P3 | 95,653 | 1,461,804 |
+| `codeblocks` (`--branch-lines`) | P4 | 1,101 | 47,084 |
+| `codeblocks` (`--branch-lines`) | P5 | 1,051 | 32,820 |
+| `codeblocks` (`--branch-lines`) | P6 | 151,113 | 1,431,952 |
+| `svn-tags-140` | P1 | 21,218 | 3,409,568 |
+| `svn-tags-140` | P2 | 15,977 | 3,439,932 |
+| `svn-tags-140` | P3 | 16,429 | 3,440,376 |
+| `svn-tags-140` | P4 | 1,352 | 1,759,548 |
+| `svn-tags-140` | P5 | 300 | 167,144 |
+| `svn-tags-140` | P6 | 16,681 | 3,533,796 |
+| `svn-tags-140` (`--branch-lines`) | P1 | 30,999 | 3,265,732 |
+| `svn-tags-140` (`--branch-lines`) | P2 | 35,000 | 3,266,700 |
+| `svn-tags-140` (`--branch-lines`) | P3 | 27,703 | 3,266,488 |
+| `svn-tags-140` (`--branch-lines`) | P4 | 50 | 4 |
+| `svn-tags-140` (`--branch-lines`) | P5 | 50 | 12 |
+| `svn-tags-140` (`--branch-lines`) | P6 | 25,949 | 3,268,076 |
+
+**`codeblocks --branch-lines` P3 (1,461,804 KiB) agrees with the Git-target table's earlier figure above
+(1,456,268 / 1,457,836 KiB, two independent measurements) to within 0.4%** — the same shape, re-confirmed
+across batches, not a regression.
+
+**P3 reports `ok=false`** for `codeblocks --branch-lines` only: the real dump has paths outside the
+default layout, so the decode exits flagged (not 0 or 10), which this profiler's `measure()` does not yet
+recognize as success — the decode and serialization both plainly succeeded (the artifact was written,
+108,071,349 bytes, matching P2's `artifact_bytes` exactly). Not fixed here (out of this batch's scope);
+noted so it is not mistaken for a real failure.
+
+### Separating what the RFC must change from what it must not (§2)
+
+Exact counts, from the public `Ir` (`ir.atoms.len()`, `ir.atoms[].ops.len()`/`.copies.len()`,
+`ir.refs.len()`, `ir.content.total_bytes()` — no decoder change needed):
+
+| Target | Atoms | Ops | Copies | Refs | Content (B) |
+|---|---:|---:|---:|---:|---:|
+| `codeblocks` | 6,221 | 106,778 | 57,600 | 0 | 663,442,936 |
+| `codeblocks` (`--branch-lines`) | 6,115 | 58,139 | 3,973 | 40 | 640,032,915 |
+| `svn-tags-140` | 283 | 282,140 | 280,000 | 0 | 547,840 |
+| `svn-tags-140` (`--branch-lines`) | 281 | 2,140 | 0 | 141 | 547,840 |
+
+**(a) retained snapshots and (b) the working tree cannot be read as a live counter** (both are gone once
+`decode()` returns; only the final `Ir` is inspectable from outside) — **estimated**, per the handoff's
+own method, from what the generator is known to build: `retained(140) = 2000·140·141/2 = 19,740,000`
+entries × ~175 B/entry (measured above) ≈ **3.22 GiB**, the same for both modes (the retention math is
+`tree.rs`'s, shared by `--branch-lines` unchanged).
+
+**(c) IR metadata and (d) the content store are measured directly**, using `size_of` on the public atom/
+op/copy/ref types (`BlobId` 32 B, `PathOp` 168 B, `CopyRecord` 184 B, `RefRecord` 464 B, `ChangeAtom`
+600 B — stack sizes; heap path-string bytes added at the generator's own known average length, ~18 B for
+`svn-tags`):
+
+| Target | (c) IR metadata (est.) | (d) Content store (measured) | (c)+(d) |
+|---|---:|---:|---:|
+| `svn-tags-140` | ~109.0 MiB | 0.52 MiB | ~109.5 MiB |
+| `svn-tags-140` (`--branch-lines`) | ~0.6 MiB | 0.52 MiB | ~1.1 MiB |
+| `codeblocks` | ~39.2 MiB (40 B avg path) | 632.6 MiB | ~671.8 MiB |
+| `codeblocks` (`--branch-lines`) | ~16.1 MiB | 610.2 MiB | ~626.3 MiB |
+
+**svn-tags-140: (a)+(b) ≈ 3.22 GiB against a measured peak of 3.25 GiB (plain) / 3.12 GiB
+(`--branch-lines`) — (a)+(b) alone accounts for essentially the whole peak** (the (a)+(b)+(c)+(d) sum
+lands within ~3% of measured peak either way, so (e) is ~0, inside this estimate's own margin).
+**`--branch-lines` makes (c) nearly disappear** (0.6 MiB vs 109.0 MiB plain) — RFC 019 D-9's "a copy that
+creates a root has no ops" measured directly: 2,140 ops instead of 282,140, zero copy records instead of
+280,000.
+
+**codeblocks: (c)+(d) ≈ 0.66 GiB (plain) / 0.61 GiB (`--branch-lines`), about 30–33% of its ~2.1 GiB
+peak.** The remaining ~67–70% — (a)+(b)+(e) lumped — **cannot be split further from outside**: a real
+repository's retained-entry count (unlike `svn-tags`'s known `K`/`N`) is not independently knowable
+without the decoder reporting it, which this batch does not add. RFC 020's own Motivation table already
+names codeblocks' 316 copy-source revisions; consistent with that, this remaining two-thirds is plausibly
+mostly (a)+(b), but this batch states that as a judgment, not a measurement.
+
+### The judgment
+
+**Does (a)+(b) dominate the peak? Yes, clearly, on `svn-tags`** (the shape D-1 targets directly) —
+essentially the entire peak in both modes. **On `codeblocks`, (a)+(b)+(e) together are ~67–70% of peak,
+with (c)+(d) (real, substantial content) making up the rest** — a real repository's peak is less
+amplification-dominated than the synthetic worst case, as expected, but the unsplit majority share is
+still consistent with (a)+(b) being the largest single piece. **D-1 is confirmed as specified**: a real
+retained-snapshot/working-tree cost this large, for both a real repository with many tags and a
+deliberately adversarial one, is exactly what shared-structure sharing (D-1) removes.
+
+### What could not be measured from outside, and why
+
+- **The three-way time split** (dump parse / `apply_revision` incl. tree clone and diff / the builder):
+  `brygge-decode-svn`'s public API is `decode`/`decode_with_storage` only — `tree::apply_revision` and
+  `dumpstream::parse_dump_with` are not reachable from outside the crate, even though some are `pub` in a
+  private module. Only the whole decode call can be timed as one span externally (P1/the matrix's own
+  `time_ms`), which this batch used instead of inventing a fake split.
+- **A live (a)/(b) counter during decode**: once `decode()` returns, `kept`/`prev_tree` are gone; only the
+  estimate above (built from what the generator is known to build, per the handoff's own allowance) was
+  available, not a true in-decode reading.
+- **codeblocks' own (a)+(b) vs (e) split**: unlike the synthetic scenario, a real repository's retained-
+  entry count is not derivable from outside without the decoder reporting it.
+
+None of these required or used a decoder change; the gaps are stated rather than approximated past what
+the public API and the generator's own known shape support.

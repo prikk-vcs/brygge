@@ -34,6 +34,8 @@ pub enum ProfileSource {
     Hg(PathBuf),
     Cvs(PathBuf),
     Svn(PathBuf),
+    /// SVN, decoded with `--branch-lines` (RFC 020 batch M).
+    SvnBranchLines(PathBuf),
 }
 
 impl ProfileSource {
@@ -43,12 +45,30 @@ impl ProfileSource {
             Self::Hg(_) => "hg",
             Self::Cvs(_) => "cvs",
             Self::Svn(_) => "svn",
+            Self::SvnBranchLines(_) => "svn-bl",
         }
     }
 
     fn path(&self) -> &Path {
         match self {
-            Self::Git(p) | Self::Hg(p) | Self::Cvs(p) | Self::Svn(p) => p,
+            Self::Git(p) | Self::Hg(p) | Self::Cvs(p) | Self::Svn(p) | Self::SvnBranchLines(p) => p,
+        }
+    }
+
+    /// The `brygge` CLI's own `decode <kind>` positional — `"svn-bl"` is this module's own label, not a
+    /// kind the real binary knows; `--branch-lines` (below) carries the mode to it instead.
+    fn cli_kind(&self) -> &'static str {
+        match self {
+            Self::SvnBranchLines(_) => "svn",
+            other => other.kind(),
+        }
+    }
+
+    /// Extra flags the real `brygge` binary (P3/P6) needs beyond `decode <kind> <path>`.
+    fn cli_extra_args(&self) -> &'static [&'static str] {
+        match self {
+            Self::SvnBranchLines(_) => &["--branch-lines"],
+            _ => &[],
         }
     }
 
@@ -58,6 +78,7 @@ impl ProfileSource {
             "hg" => Self::Hg(path.to_path_buf()),
             "cvs" => Self::Cvs(path.to_path_buf()),
             "svn" => Self::Svn(path.to_path_buf()),
+            "svn-bl" => Self::SvnBranchLines(path.to_path_buf()),
             other => panic!("unknown profile source kind {other}"),
         }
     }
@@ -76,6 +97,14 @@ fn decode_source(src: &ProfileSource) -> Ir {
         ProfileSource::Svn(p) => {
             brygge_decode_svn::decode(&SvnSource::DumpFile(p.clone()), &SvnOpts::default())
                 .expect("svn decode")
+        }
+        ProfileSource::SvnBranchLines(p) => {
+            let opts = SvnOpts {
+                branch_lines: true,
+                ..SvnOpts::default()
+            };
+            brygge_decode_svn::decode(&SvnSource::DumpFile(p.clone()), &opts)
+                .expect("svn decode (branch-lines)")
         }
     }
 }
@@ -99,6 +128,8 @@ pub fn run(targets: &[Target], out_dir: &Path) {
 
     for target in targets {
         let kind = target.source.kind();
+        let cli_kind = target.source.cli_kind();
+        let extra = target.source.cli_extra_args();
         let path = target.source.path();
         let artifact = out_dir.join(format!("{}.artifact", target.label));
 
@@ -118,11 +149,12 @@ pub fn run(targets: &[Target], out_dir: &Path) {
                     let mut c = Command::new(&bin);
                     c.args([
                         "decode",
-                        kind,
+                        cli_kind,
                         &path.display().to_string(),
                         "--out",
                         &artifact.display().to_string(),
                     ]);
+                    c.args(extra);
                     c
                 }
                 "P4" => {
@@ -136,6 +168,8 @@ pub fn run(targets: &[Target], out_dir: &Path) {
                     c
                 }
                 "P6" => {
+                    // No `--branch-lines` here: `verify --against-source` re-derives the mode from the
+                    // artifact's own provenance (`commands.rs::branch_lines_from_provenance`), not a flag.
                     let mut c = Command::new(&bin);
                     c.args([
                         "verify",

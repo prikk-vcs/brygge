@@ -40,6 +40,10 @@
 //!                      it is the cost of hashing every node.
 //!   svn-dump <n>     — a content-heavy SVN dump of n revisions over 300 files (increment 2: the parsed dump held
 //!                      beside the IR).
+//!   svn-tags-plain <n>, svn-tags <n> — RFC 020 batch M: a 2,000-file trunk, then n times "edit one trunk
+//!                      file, copy trunk to tags/t<n>" (the RFC's own "157" shape). `svn-tags-plain` decodes
+//!                      without `--branch-lines`, `svn-tags` with it. Peak should show why a later tag's
+//!                      retained snapshot costs the trunk plus every earlier tag (D-1's target).
 
 // A dev-only tool: unwrap/expect/indexing are acceptable here and keep the generators readable.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
@@ -72,6 +76,11 @@ const SCENARIOS: &[(&str, &[u64])] = &[
     ("svn-checked", &[1_000, 5_000, 20_000]),
     ("cvs-branches", &[200, 1_000, 5_000]),
     ("cvs-branches-plain", &[200, 1_000, 5_000]),
+    // The handoff's matrix names N = 10, 40, 160; empirically, 160 already crosses 0.8.1's
+    // `max_retained_entries` ceiling at this K (2,000) — refused, not measured (see the request). 140 is
+    // the largest round value that still completes, so it stands in as the third point here.
+    ("svn-tags-plain", &[10, 40, 140]),
+    ("svn-tags", &[10, 40, 140]),
 ];
 
 fn main() {
@@ -180,7 +189,7 @@ fn main() {
                 let source = match corpus.source {
                     Source::Git(p) => profile::ProfileSource::Git(p),
                     Source::Cvs(p) | Source::CvsRefs(p) => profile::ProfileSource::Cvs(p),
-                    Source::Svn(p) => profile::ProfileSource::Svn(p),
+                    Source::Svn(p) | Source::SvnBranchLines(p) => profile::ProfileSource::Svn(p),
                 };
                 targets.push(profile::Target {
                     label: match scenario {
@@ -192,6 +201,30 @@ fn main() {
                     source,
                 });
             }
+            // RFC 020 batch M: codeblocks and `svn-tags` (N=140 — see `SCENARIOS`'s comment on why not
+            // the handoff's 160), each in both modes, for the memory/time breakdown by phase.
+            let codeblocks = cache_dir.join("svn").join("codeblocks.dump");
+            targets.push(profile::Target {
+                label: "codeblocks",
+                source: profile::ProfileSource::Svn(codeblocks.clone()),
+            });
+            targets.push(profile::Target {
+                label: "codeblocks-branch-lines",
+                source: profile::ProfileSource::SvnBranchLines(codeblocks),
+            });
+            let tags_dir = synth_dir.join("svn-tags-140");
+            std::fs::create_dir_all(&tags_dir)
+                .expect("create the svn-tags scenario's own directory");
+            let tags_path = tags_dir.join("in.dump");
+            corpus::svn_tags(&tags_path, 140);
+            targets.push(profile::Target {
+                label: "svn-tags-140",
+                source: profile::ProfileSource::Svn(tags_path.clone()),
+            });
+            targets.push(profile::Target {
+                label: "svn-tags-140-branch-lines",
+                source: profile::ProfileSource::SvnBranchLines(tags_path),
+            });
             profile::run(&targets, &out_dir.join("artifacts"));
         }
         Some("profile-one") => {
@@ -231,7 +264,7 @@ fn main() {
                 std::process::exit(2);
             };
             let (kind, path) = match &corpus.source {
-                Source::Svn(p) => ("svn", p),
+                Source::Svn(p) | Source::SvnBranchLines(p) => ("svn", p),
                 Source::Cvs(p) | Source::CvsRefs(p) => ("cvs", p),
                 Source::Git(p) => ("git", p),
             };
@@ -302,6 +335,8 @@ struct Corpus {
 
 enum Source {
     Svn(PathBuf),
+    /// SVN, decoded with `--branch-lines` (RFC 020 batch M: `svn-tags`'s own mode).
+    SvnBranchLines(PathBuf),
     Cvs(PathBuf),
     /// CVS, decoded with `--reconstruct-refs` (the branches).
     CvsRefs(PathBuf),
@@ -334,7 +369,13 @@ fn run_one(scenario: &str, n: u64) {
         blobs: ir.content.len(),
         bytes: ir.content.total_bytes(),
     };
-    let check = self_check(&corpus, &ir, got);
+    let check = self_check(&corpus, &ir, got).and_then(|()| {
+        if scenario == "svn-tags" {
+            check_svn_tags_refs(n, &ir)
+        } else {
+            Ok(())
+        }
+    });
     let _ = std::fs::remove_dir_all(&dir);
     println!(
         "peak_kb={peak} time_ms={time_ms} atoms={} blobs={} bytes={} check={}",
@@ -425,6 +466,28 @@ fn prepare(scenario: &str, n: u64, dir: &Path) -> Option<Corpus> {
                 cvs_content_check: false,
             }
         }
+        "svn-tags-plain" => {
+            let path = dir.join("in.dump");
+            let expected = corpus::svn_tags(&path, n);
+            Corpus {
+                source: Source::Svn(path),
+                expected: Some(expected),
+                cvs_content_check: false,
+            }
+        }
+        "svn-tags" => {
+            let path = dir.join("in.dump");
+            // The generator's own Stats (atoms/blobs/bytes) describe the *plain* decode; `--branch-lines`
+            // partitions the same revisions into one line per root, so this scenario's self-check is the
+            // dedicated `check_svn_tags_refs` below (ref count), not the generic `Stats` comparison —
+            // `expected: None` here deliberately skips the atoms/blobs/bytes check for this one scenario.
+            let _ = corpus::svn_tags(&path, n);
+            Corpus {
+                source: Source::SvnBranchLines(path),
+                expected: None,
+                cvs_content_check: false,
+            }
+        }
         _ => return None,
     })
 }
@@ -479,6 +542,14 @@ fn decode(source: &Source) -> Ir {
         Source::Svn(path) => {
             brygge_decode_svn::decode(&SvnSource::DumpFile(path.clone()), &SvnOpts::default())
                 .expect("svn decode")
+        }
+        Source::SvnBranchLines(path) => {
+            let opts = SvnOpts {
+                branch_lines: true,
+                ..SvnOpts::default()
+            };
+            brygge_decode_svn::decode(&SvnSource::DumpFile(path.clone()), &opts)
+                .expect("svn decode (branch-lines)")
         }
         Source::Cvs(dir) => {
             brygge_decode_cvs::decode(&CvsSource::LocalRepo(dir.clone()), &CvsOpts::default())
@@ -560,6 +631,17 @@ fn check_cvs_revs_content(ir: &Ir) -> Result<(), String> {
             models.len(),
             corpus::CVS_FILES
         ));
+    }
+    Ok(())
+}
+
+/// `svn-tags` (`--branch-lines`): one ref per root — the trunk, plus one per tag — so `n` tags give `n + 1`
+/// refs exactly, regardless of how the per-root atom count itself splits.
+fn check_svn_tags_refs(n: u64, ir: &Ir) -> Result<(), String> {
+    let want = usize::try_from(n + 1).expect("n fits");
+    let got = ir.refs.len();
+    if got != want {
+        return Err(format!("{got} refs, expected {want} (trunk + {n} tags)"));
     }
     Ok(())
 }

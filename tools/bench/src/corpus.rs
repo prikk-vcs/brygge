@@ -194,6 +194,68 @@ pub fn svn_dump(path: &Path, n: u64) -> Stats {
     }
 }
 
+// ---- SVN tag-heavy dump (RFC 020 batch M, "measure first") --------------------------------------------
+
+/// `svn-tags <n>`'s fixed trunk size (the handoff: "K fixed at 2,000").
+pub const SVN_TAGS_TRUNK_FILES: u64 = 2_000;
+const SVN_TAGS_CONTENT_SIZE: usize = 256;
+
+/// `svn-tags <n>`: a `SVN_TAGS_TRUNK_FILES`-file trunk, then `n` times "edit one trunk file, copy trunk to
+/// `tags/t<i>`" (RFC 020's "157" shape, cited in the RFC's own Motivation table — not a secret, since the
+/// RFC is already committed and accepted). A `copyfrom` must name an already-committed revision, so each
+/// iteration is two revisions: an edit, then the copy. With the two setup revisions (the `trunk`/`tags`
+/// dirs, then the `K` initial files) and r0, there are `2n + 3` revisions, each one atom.
+///
+/// Every tag's files become ordinary live paths in the one repository-wide tree from then on — exactly
+/// how SVN's own namespacing works, and exactly why retaining a later trunk snapshot (for a later tag)
+/// costs the trunk *plus every earlier tag*: this is "memory grows as tags × files" (RFC 020), not a
+/// contrived shape.
+pub fn svn_tags(path: &Path, n: u64) -> Stats {
+    use crate::{svn_add_dir, svn_add_file as add_file, svn_change_file, svn_header, svn_revision};
+    let k = SVN_TAGS_TRUNK_FILES;
+    let file = std::fs::File::create(path).expect("create the dump");
+    let mut w = BufWriter::with_capacity(1 << 20, file);
+    let mut b = Vec::new();
+    svn_header(&mut b);
+    svn_revision(&mut b, 0, "init");
+    svn_revision(&mut b, 1, "layout");
+    svn_add_dir(&mut b, "trunk", None);
+    svn_add_dir(&mut b, "tags", None);
+    w.write_all(&b).expect("write");
+    b.clear();
+    svn_revision(&mut b, 2, "add files");
+    for i in 0..k {
+        add_file(
+            &mut b,
+            &format!("trunk/f{i}.txt"),
+            &fill(i, SVN_TAGS_CONTENT_SIZE),
+        );
+    }
+    w.write_all(&b).expect("write");
+    for i in 1..=n {
+        let edit_rev = 2 * i + 1;
+        let tag_rev = 2 * i + 2;
+        b.clear();
+        svn_revision(&mut b, edit_rev, "edit");
+        svn_change_file(
+            &mut b,
+            "trunk/f0.txt",
+            &fill(1_000_000_000 + i, SVN_TAGS_CONTENT_SIZE),
+        );
+        w.write_all(&b).expect("write");
+        b.clear();
+        svn_revision(&mut b, tag_rev, "tag");
+        svn_add_dir(&mut b, &format!("tags/t{i}"), Some((edit_rev, "trunk")));
+        w.write_all(&b).expect("write");
+    }
+    w.flush().expect("flush");
+    Stats {
+        atoms: usize::try_from(2 * n + 3).expect("n fits"),
+        blobs: usize::try_from(k + n).expect("n fits"),
+        bytes: (k + n) * SVN_TAGS_CONTENT_SIZE as u64,
+    }
+}
+
 // ---- CVS: long trunk delta chains ------------------------------------------------------------------
 
 pub const CVS_FILES: u64 = 20;
