@@ -92,11 +92,16 @@ pub(crate) fn decode_with(
     // Snapshot retention (RFC 010 increment 1, unchanged): a copyfrom — including the one that creates a
     // line by copying a whole root — always names an earlier revision, collected here exactly as the
     // single-spine path does.
-    let mut needed: HashSet<u64> = HashSet::new();
+    //
+    // RFC 020 review 169 F-3: the count, not just whether a revision is ever named — see
+    // `crate::decode`'s identical pre-scan and its own comment for why the release-after-last-use this
+    // enables is sound: a `copyfrom` always names an earlier, already-committed revision, so every use
+    // of revision `r` happens strictly after `r` itself.
+    let mut needed: HashMap<u64, usize> = HashMap::new();
     for rev in &dump.revisions {
         for node in &rev.nodes {
             if let Some((crev, _)) = &node.copyfrom {
-                needed.insert(*crev);
+                *needed.entry(*crev).or_insert(0) += 1;
             }
         }
     }
@@ -153,6 +158,17 @@ pub(crate) fn decode_with(
             }
         }
 
+        // RFC 020 review 169 F-3: this revision's own copy sources, captured before `rev.nodes` moves
+        // into `apply_revision` below — each is one use of its source revision's kept snapshot. (Both
+        // `apply_revision`'s own internal copyfrom lookups and this module's own `root_creating_copy`
+        // lookup below read from the *same* node-level copyfrom occurrence, so this is not double
+        // counted against either.)
+        let copy_sources: Vec<u64> = rev
+            .nodes
+            .iter()
+            .filter_map(|n| n.copyfrom.as_ref().map(|(crev, _)| *crev))
+            .collect();
+
         let applied = tree::apply_revision(
             &prev_tree,
             rev.nodes,
@@ -167,20 +183,17 @@ pub(crate) fn decode_with(
         loss.custom |= applied.prop_loss.custom;
         loss.empty_dirs = loss.empty_dirs.saturating_add(applied.empty_dirs);
 
-        // Partition the new whole-tree state by root, one pass.
-        let mut by_root: HashMap<String, (Root, RelTree)> = HashMap::new();
-        for (path, entry) in applied.tree.flat_entries() {
-            if let Some(root) = layout::classify(&path, &opts.layout) {
-                let rel = path
-                    .strip_prefix(&root.prefix)
-                    .and_then(|r| r.strip_prefix('/'))
-                    .unwrap_or("")
-                    .to_string();
-                by_root
-                    .entry(root.prefix.clone())
-                    .or_insert_with(|| (root, RelTree::new()))
-                    .1
-                    .insert_unbudgeted(&rel, entry);
+        // RFC 020 review 169 F-1: only the roots this revision's own nodes name (`touched`, already
+        // derived from the revision's node paths, never from the whole tree) need a fresh relative tree
+        // this revision, each looked up directly (`root_tree`, O(depth)) — not found by flattening the
+        // whole repository tree and re-bucketing every entry by root on every single revision. That
+        // whole-tree flatten was the actual cause of a real, measured regression (review 169): it made
+        // `--branch-lines` quadratic over a tag-heavy history, since the tree it flattened grows by the
+        // trunk's own file count with every tag.
+        let mut by_root: HashMap<String, RelTree> = HashMap::new();
+        for root in &touched {
+            if let Some(t) = root_tree(&applied.tree, &root.prefix) {
+                by_root.insert(root.prefix.clone(), t);
             }
         }
 
@@ -199,11 +212,24 @@ pub(crate) fn decode_with(
             }
         }
 
-        // A root previously live but absent from the new partition just died — whether an explicit node
-        // deleted it directly, or a containing directory was removed with no node of its own.
+        // RFC 020 review 169 F-1: the live-root set comes from the layout containers' own children
+        // (one level only, O(live roots)) and the trunk's own liveness, never from flattening the whole
+        // tree — this still catches a root dying from a containing directory's removal (e.g. the whole
+        // `branches` directory deleted in one node, naming no individual branch), exactly as the old
+        // whole-tree partition did, without ever reading more than the container's own child names.
+        let mut currently_live: HashSet<String> = HashSet::new();
+        if applied.tree.is_live_under(&opts.layout.trunk) {
+            currently_live.insert(opts.layout.trunk.clone());
+        }
+        for name in applied.tree.child_names(&opts.layout.branches) {
+            currently_live.insert(format!("{}/{name}", opts.layout.branches));
+        }
+        for name in applied.tree.child_names(&opts.layout.tags) {
+            currently_live.insert(format!("{}/{name}", opts.layout.tags));
+        }
         let now_dead: Vec<String> = live
             .keys()
-            .filter(|prefix| !by_root.contains_key(prefix.as_str()))
+            .filter(|prefix| !currently_live.contains(prefix.as_str()))
             .cloned()
             .collect();
         for prefix in now_dead {
@@ -217,11 +243,10 @@ pub(crate) fn decode_with(
         }
 
         for root in touched {
-            let Some((_, new_rel_tree)) = by_root.get(&root.prefix) else {
+            let Some(new_rel_tree) = by_root.remove(&root.prefix) else {
                 // Touched but ended up with nothing under it this revision: just died, handled above.
                 continue;
             };
-            let new_rel_tree = new_rel_tree.clone();
 
             let continuing = live.contains_key(&root.prefix);
             let (parent, starting_tree) = if let Some(line) = live.get(&root.prefix) {
@@ -235,7 +260,7 @@ pub(crate) fn decode_with(
                             .map(|(_, atom)| *atom);
                         let start = kept
                             .get(crev)
-                            .map(|snap| relative_subtree(snap, &enclosing.prefix))
+                            .and_then(|snap| root_tree(snap, &enclosing.prefix))
                             .unwrap_or_default();
                         (parent, start)
                     }
@@ -272,7 +297,7 @@ pub(crate) fn decode_with(
                         ceiling: format!("{} entries", budget.limits.max_tree_entries),
                     });
                 }
-                diff_relative(&starting_tree, &new_rel_tree)
+                tree::diff(&starting_tree, &new_rel_tree, &HashSet::new())
             };
 
             // Copies carried into this atom: only for a *continuing* line (a root just created by a
@@ -334,9 +359,24 @@ pub(crate) fn decode_with(
             );
         }
 
+        // RFC 020 review 169 F-3: release each source this revision just used, the moment its last use
+        // is consumed — placed *after* the `touched` roots loop above (not right after
+        // `apply_revision`, unlike `crate::decode`'s identical fix): `root_creating_copy`'s own lookup
+        // in that loop still needs this revision's own copy sources to be in `kept`, so a source must
+        // not be removed until every one of this revision's own reads of it, not just
+        // `apply_revision`'s internal ones, are done.
+        for crev in copy_sources {
+            if let Some(remaining) = needed.get_mut(&crev) {
+                *remaining = remaining.saturating_sub(1);
+                if *remaining == 0 {
+                    kept.remove(&crev);
+                }
+            }
+        }
+
         // RFC 020 D-1/D-2: see `crate::decode`'s own identical comment — retaining a snapshot is now
         // O(1), and `max_retained_entries` is gone.
-        if needed.contains(&number) {
+        if needed.contains_key(&number) {
             kept.insert(number, applied.tree.clone());
         }
         prev_tree = applied.tree;
@@ -430,58 +470,30 @@ struct DeadLife {
 
 /// `snapshot`'s content under `root_prefix`, keyed with the prefix removed — the "starting tree" D-9
 /// gives a new line created by copy, whether the copy named the root itself or a subdirectory of it (in
-/// which case the ops diff against this full tree is what "makes up the difference", D-9 §2).
+/// which case the ops diff against this full tree is what "makes up the difference", D-9 §2). `None` if
+/// nothing is live at `root_prefix` at all.
 ///
-/// RFC 020 D-2: this is `--branch-lines`'s own "per-file walk" that still checks `max_tree_entries` —
-/// the caller (`decode_with`, where a new line's first atom is built from a copy source) checks the
-/// resulting size before using it, mirroring `apply_dir`'s own check for the single-spine path.
-fn relative_subtree(snapshot: &Tree, root_prefix: &str) -> RelTree {
-    let mut out = RelTree::new();
-    if let Some(direct) = snapshot.get(root_prefix) {
-        out.insert_unbudgeted("", direct.clone());
-    }
-    if let Some(sub) = snapshot.dir_at(root_prefix) {
-        for (rel, entry) in sub.flat_entries() {
-            out.insert_unbudgeted(&rel, entry);
+/// RFC 020 review 169 F-1: the common case — `root_prefix` names a directory — is `Tree::dir_at`'s own
+/// `Rc::clone`, O(depth): the *shared* subtree itself, not a per-entry walk-and-reinsert of it (which
+/// would be O(the subtree's size) every time this is called, defeating the whole point of a shared
+/// tree). SVN forbids a file and a directory sharing one path at once, so the "both" arm below should be
+/// unreachable from any real dump — `Tree`'s own files/dirs maps do not forbid it structurally, so it is
+/// handled defensively rather than assumed impossible.
+fn root_tree(snapshot: &Tree, root_prefix: &str) -> Option<RelTree> {
+    match (snapshot.get(root_prefix), snapshot.dir_at(root_prefix)) {
+        (None, None) => None,
+        (None, Some(sub)) => Some(sub),
+        (Some(direct), None) => {
+            let mut t = RelTree::new();
+            t.insert_unbudgeted("", direct.clone());
+            Some(t)
+        }
+        (Some(direct), Some(sub)) => {
+            let mut t = sub;
+            t.insert_unbudgeted("", direct.clone());
+            Some(t)
         }
     }
-    out
-}
-
-/// A plain before/after diff of two relative trees: `Add` for a new key, `Modify` for a changed one,
-/// `Delete` for one no longer present. Unlike [`tree::apply_revision`]'s own diff, this never produces
-/// `Replace`: that distinction is about a literal SVN `Node-action: replace` on one path, which has no
-/// meaning once two different trees (a copy's source, and a new root's result) are being compared
-/// synthetically. A continuing line's ops come from the real diff instead (via [`resolve_copies`]'s
-/// sibling, the direct `applied.ops` filter in the caller), so this only runs for a line's first atom.
-fn diff_relative(before: &RelTree, after: &RelTree) -> Vec<PathOp> {
-    let mut ops = Vec::new();
-    for (path, entry) in after.flat_entries() {
-        match before.get(&path) {
-            None => ops.push(PathOp::Add {
-                path,
-                blob: entry.blob,
-                mode: entry.mode,
-                status: EpistemicStatus::Stated,
-            }),
-            Some(b) if b.blob != entry.blob || b.mode != entry.mode => ops.push(PathOp::Modify {
-                path,
-                blob: entry.blob,
-                mode: entry.mode,
-                status: EpistemicStatus::Stated,
-            }),
-            Some(_) => {}
-        }
-    }
-    for (path, _) in before.flat_entries() {
-        if !after.contains_key(&path) {
-            ops.push(PathOp::Delete {
-                path,
-                status: EpistemicStatus::Stated,
-            });
-        }
-    }
-    ops
 }
 
 /// `applied.ops`'s entries under `root`, relativized, keeping each op's original variant (so `Replace`,
@@ -632,6 +644,11 @@ fn sort_roots_canonically(roots: &mut [Root], trunk_prefix: &str) {
 
 /// Count files in the final tree outside every root the layout recognizes, same as the single-spine
 /// path's own check — the aggregate flag `--branch-lines` keeps alongside the per-change drops above.
+///
+/// RFC 020 review 169 F-1: this still flattens the whole final tree (`Tree::flat_entries`), but runs
+/// **once**, after the whole decode, not once per revision — O(tree size) total, same as any other
+/// single linear pass over the final result, not the per-revision O(tree size) cost F-1 fixed. Left as
+/// is.
 fn layout_honesty(
     final_tree: &Tree,
     opts: &Options,

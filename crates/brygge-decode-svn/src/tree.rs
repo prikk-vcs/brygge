@@ -242,6 +242,24 @@ impl Tree {
         out
     }
 
+    /// The names of the directory at `path`'s own immediate children — both files and subdirectories,
+    /// one level only, never recursing into them. Empty if `path` names nothing, or names a file (which
+    /// has no children of its own).
+    ///
+    /// RFC 020 review 169 F-1: `--branch-lines`'s live-root set under a layout container (`branches`,
+    /// `tags`) comes from here — O(the container's own child count) — never from flattening the whole
+    /// repository tree to find which roots still exist, which made that detection cost O(tree size) on
+    /// every revision (quadratic over a tag-heavy history, since the tree grows with every tag).
+    #[must_use]
+    pub(crate) fn child_names(&self, path: &str) -> Vec<String> {
+        let Some(dir) = self.dir_at(path) else {
+            return Vec::new();
+        };
+        let mut names: Vec<String> = dir.0.files.keys().cloned().collect();
+        names.extend(dir.0.dirs.keys().cloned());
+        names
+    }
+
     /// Insert `entry` at `path`, copying every directory on the path (`Rc::make_mut`) and creating any
     /// that do not yet exist. Every `Dir` node actually cloned, and every brand-new `Dir` node or file
     /// entry created, is charged against [`Limits::max_tree_nodes`] via `budget` (RFC 020 D-2) —
@@ -996,7 +1014,11 @@ fn atom_for(revnum_to_atom: &HashMap<u64, AtomId>, rev: u64) -> Result<AtomId, E
 /// measured regression (codeblocks' decode time was ~37% *slower* than 0.8.1 with an earlier version of
 /// this function that called [`Tree::flat_entries`] on both whole trees every revision — correct, same
 /// ops, but exactly the O(whole tree)-per-revision cost this walk exists to avoid).
-fn diff(prev: &Tree, new: &Tree, replaced: &HashSet<String>) -> Vec<PathOp> {
+///
+/// `pub(crate)`: review 169 F-1 — `crate::branch_lines` reuses this exact function (with an empty
+/// `replaced`) for a new line's first atom, instead of a second, separately-written diff that would
+/// need its own `Rc::ptr_eq` short-circuiting to get the same win.
+pub(crate) fn diff(prev: &Tree, new: &Tree, replaced: &HashSet<String>) -> Vec<PathOp> {
     let mut ops = Vec::new();
     diff_dir(&prev.0, &new.0, "", replaced, &mut ops);
     ops

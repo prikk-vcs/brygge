@@ -122,6 +122,9 @@ impl DumpBuilder {
     fn copy_dir(&mut self, path: &str, from: (u64, &str)) -> &mut Self {
         self.node(path, Some("dir"), "add", None, None, Some(from))
     }
+    fn delete(&mut self, path: &str) -> &mut Self {
+        self.node(path, None, "delete", None, None, None)
+    }
 }
 
 fn date(n: u64) -> String {
@@ -268,6 +271,34 @@ fn branch_and_tag_reconstruction_is_derived_and_opt_in() {
     // ... and they surface on the fidelity report under the reconstructed-branch taxonomy label.
     let report = brygge_ir::summary(&ir_on);
     assert_eq!(report.derived.get("reconstructed-branch"), Some(&3));
+}
+
+/// RFC 020 review 169 F-3: a retained snapshot is released the moment its *last* use is consumed, not
+/// held to the end of the decode regardless. r1's tree is retained only because r2's copy names it;
+/// nothing ever copies from r1 again, so after r2 is processed, r1's snapshot should already be gone —
+/// not merely absent from the *final* artifact (which r1's own deletion at r3 would not by itself prove:
+/// without this fix, r1's snapshot stays in `kept` right to the end regardless, so this directly
+/// distinguishes "released early" from "never released at all").
+#[test]
+fn a_snapshot_used_once_is_released_from_kept_right_after_its_last_use() {
+    let mut d = DumpBuilder::new();
+    d.revision(0, &[("svn:date", &date(0))]);
+    d.revision(1, &[("svn:log", "trunk"), ("svn:date", &date(1))]);
+    d.add_dir("trunk");
+    d.add_file("trunk/a.txt", b"x\n");
+    d.revision(2, &[("svn:log", "branch"), ("svn:date", &date(2))]);
+    d.add_dir("branches");
+    d.copy_dir("branches/feature", (1, "trunk"));
+    d.revision(3, &[("svn:log", "prune"), ("svn:date", &date(3))]);
+    d.delete("branches/feature");
+
+    decode_dump(&d.buf, &Options::default()).unwrap();
+    let kept = super::kept_at_end().expect("a decode should have run and set the probe");
+    assert!(
+        !kept.contains(&1),
+        "r1's snapshot was used only by r2's copy; it should have been released right after, not \
+         held to the end of the decode: kept still holds {kept:?}"
+    );
 }
 
 #[test]

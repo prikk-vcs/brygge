@@ -2,7 +2,7 @@
 //! [`brygge_ir::Ir`] — a `Stated` linear revision spine with `Stated` copies, and an opt-in `Derived`
 //! branch/tag layer. Builds against IR contract 0.2.0 (RFC 011).
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 
 use brygge_ir::Storage;
 use brygge_ir::builder::{AtomDraft, IrBuilder};
@@ -16,6 +16,24 @@ use crate::layout::{self, Root};
 use crate::source::{Limits, svnadmin_version};
 use crate::tree::{self, Tree};
 use crate::{DECODER, Error, Options, Source, decoder_version, dumpstream, floor, props};
+
+// RFC 020 review 169 F-3's own level-1 test: `kept`'s key set right after the main loop below, for a
+// test to read back after calling `decode`/`decode_with` — not read or written in any non-test build.
+// `kept` is a local the caller cannot otherwise observe; this is the one thing it needs to prove a
+// source revision's snapshot was actually dropped once its last use was consumed, not held to the end
+// of the decode regardless of when it was last needed.
+#[cfg(test)]
+thread_local! {
+    static KEPT_AT_END_PROBE: std::cell::RefCell<Option<std::collections::HashSet<u64>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// The revisions `kept` still held right after the decode that just ran on this thread (each test gets
+/// its own OS thread, so this is never cross-test state) — `None` if no decode has run yet.
+#[cfg(test)]
+pub(crate) fn kept_at_end() -> Option<std::collections::HashSet<u64>> {
+    KEPT_AT_END_PROBE.with(|p| p.borrow().clone())
+}
 
 /// Decode the Subversion source into an [`Ir`].
 ///
@@ -110,11 +128,17 @@ pub(crate) fn decode_with(
     // for those (plus the rolling previous tree, always needed as the next revision's base). This turns
     // O(revisions × tree) scratch into O(copy-targets × tree) — copy targets are branch/tag creation
     // points, typically far fewer than revisions — with no change to the atoms produced or their order.
-    let mut needed: HashSet<u64> = HashSet::new();
+    //
+    // RFC 020 review 169 F-3: the count, not just whether a revision is ever named — a kept snapshot is
+    // then released the moment its *last* use is consumed (below), rather than held to the end of the
+    // decode regardless. A `copyfrom` always names an earlier, already-committed revision, so every use
+    // of revision `r` happens strictly after `r` itself: `r`'s own entry is never touched by this
+    // decrement before `r` has finished being retained.
+    let mut needed: HashMap<u64, usize> = HashMap::new();
     for rev in &dump.revisions {
         for node in &rev.nodes {
             if let Some((crev, _)) = &node.copyfrom {
-                needed.insert(*crev);
+                *needed.entry(*crev).or_insert(0) += 1;
             }
         }
     }
@@ -137,6 +161,14 @@ pub(crate) fn decode_with(
             Vec::new()
         };
 
+        // RFC 020 review 169 F-3: this revision's own copy sources, captured before `rev.nodes` moves
+        // into `apply_revision` below — each is one use of its source revision's kept snapshot.
+        let copy_sources: Vec<u64> = rev
+            .nodes
+            .iter()
+            .filter_map(|n| n.copyfrom.as_ref().map(|(crev, _)| *crev))
+            .collect();
+
         let applied = tree::apply_revision(
             &prev_tree,
             rev.nodes,
@@ -145,6 +177,21 @@ pub(crate) fn decode_with(
             &mut builder,
             &mut budget,
         )?;
+
+        // RFC 020 review 169 F-3: release each source this revision just used, the moment its last use
+        // is consumed — the premise an earlier version of this fix got wrong was "a revision is kept
+        // only if a later copy names it, so there is no last use to detect": that confuses *whether* a
+        // snapshot is needed with *until when*. A branch created at r100 from trunk@99, then deleted,
+        // only ever uses r99's snapshot at r100; without this, it stays pinned (holding every directory
+        // version r99 had) until the end of the decode regardless.
+        for crev in copy_sources {
+            if let Some(remaining) = needed.get_mut(&crev) {
+                *remaining = remaining.saturating_sub(1);
+                if *remaining == 0 {
+                    kept.remove(&crev);
+                }
+            }
+        }
 
         loss.mergeinfo |= applied.prop_loss.mergeinfo;
         loss.workflow |= applied.prop_loss.workflow;
@@ -178,11 +225,14 @@ pub(crate) fn decode_with(
         // size — `max_retained_entries` (0.8.1), which bounded the *sum of every retained snapshot's own
         // size*, is gone; `max_tree_nodes` (D-2) bounds the tree's cumulative allocations instead,
         // charged by `Tree::insert`/`Tree::remove_subtree` as they happen, not by retention.
-        if needed.contains(&number) {
+        if needed.contains_key(&number) {
             kept.insert(number, applied.tree.clone());
         }
         prev_tree = applied.tree;
     }
+
+    #[cfg(test)]
+    KEPT_AT_END_PROBE.with(|p| *p.borrow_mut() = Some(kept.keys().copied().collect()));
 
     if opts.reconstruct_refs {
         reconstruct_refs(&heads, &prev_tree, opts, &mut builder, &mut loss)?;
@@ -261,6 +311,10 @@ fn reconstruct_refs(
 /// (CR-07.5): a repository that only partly follows the convention still leaves paths belonging to no
 /// reconstructed branch or tag, which deserves the same loud attention as the whole-layout-not-found case
 /// — but is a distinct condition (the layout *was* found; it just does not cover everything).
+///
+/// RFC 020 review 169 F-1 (checked alongside `crate::branch_lines`'s twin of this function): this
+/// flattens the whole final tree, but runs once, after the whole decode — O(tree size) total, not
+/// per-revision. Left as is.
 fn layout_honesty(final_tree: &Tree, opts: &Options, builder: &mut IrBuilder) {
     let outside = final_tree
         .flat_entries()

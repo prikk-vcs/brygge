@@ -292,6 +292,41 @@ fn deleted_then_recreated_gives_two_lives_with_distinct_refs() {
     assert_eq!(dead.target, ir.atoms[1].id);
 }
 
+/// RFC 020 review 169 F-1: a branch dies when its *containing* directory (`branches`) is removed in one
+/// node that names no individual branch — not `branches/stable` itself. The live-root set now comes
+/// from `branches`'/`tags`' own children (`Tree::child_names`), not from flattening the whole tree to
+/// see which roots are still present; this is the one case that distinction actually changes the answer
+/// to, so it gets its own level-1 test rather than relying only on byte-identity against real corpora
+/// that may never happen to delete a whole container at once.
+#[test]
+fn deleting_the_whole_branches_container_kills_every_branch_under_it() {
+    let mut d = DumpBuilder::new();
+    d.revision(0, &[("svn:date", &date(0))]);
+    d.revision(1, &[("svn:log", "add"), ("svn:date", &date(1))]);
+    d.add_dir("trunk");
+    d.add_file("trunk/a.txt", b"one\n");
+    d.add_dir("branches");
+    d.revision(2, &[("svn:log", "branch"), ("svn:date", &date(2))]);
+    d.copy_dir("branches/stable", (1, "trunk"));
+    d.revision(
+        3,
+        &[("svn:log", "prune everything"), ("svn:date", &date(3))],
+    );
+    d.delete("branches");
+
+    let ir = decode_dump(&d.buf, &branch_lines_opts()).unwrap();
+    // trunk@1, branches/stable@2 — r3 only deletes the container, gives no new atom for the dead line.
+    assert_eq!(ir.atoms.len(), 2);
+    assert_eq!(ir.refs.len(), 2);
+    let other = ir
+        .refs
+        .iter()
+        .find(|r| matches!(r.kind, RefKind::Other(_)))
+        .expect("a branch killed by its container's own deletion should still get an Other ref");
+    assert_eq!(other.name, "branches/stable@r2");
+    assert_eq!(other.target, ir.atoms[1].id);
+}
+
 /// Review 147 F-4: the subdirectory-copy sub-case of D-9's parent rule — a new line created by
 /// copying a *subdirectory* of another root, not the whole root. The handoff's §2 claims the parent is
 /// still that whole root's atom, and the ops "make up the difference" between inheriting its full tree
