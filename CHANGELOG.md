@@ -8,6 +8,17 @@ Every handoff adds its own entry in its own commit.
 
 ## [Unreleased]
 
+### Changed
+
+- The Subversion decoder shares unchanged directories between revisions: a branch or tag copy no longer
+  copies the tree, so memory follows the size of the history, not the number of tags times the number of
+  files. Every artifact is byte-identical.
+
+### Breaking
+
+- The ceiling `max_retained_entries` is replaced by `max_tree_nodes` (its message and exit code are as
+  before).
+
 ## [0.8.1] — 2026-11-25
 
 **A security patch: decoding is bounded against amplifying inputs.** A small Git repository whose trees reuse

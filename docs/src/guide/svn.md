@@ -29,17 +29,32 @@ removing it. The option never changes the artifact. Compressing the artifact use
 about 100 MiB more memory than before (not growing with the repository), and makes decoding take about
 1.5× as long.
 
-**Three ceilings on copies and the running tree** (0.8.1): a repository where the running tree holds
-more than 10,000,000 files is refused, exit 20 — checked before a new path is stored, whether by a
-single node or by a directory copy. One directory copy that would add more than 10,000,000 entries is
-refused the same way, checked as its source is walked, before the expansion is collected. And the sum of
-entries across every snapshot brygge must retain for a later copy to name — never evicted once kept, by
-design (a `copyfrom` may name any earlier revision) — is refused above 20,000,000, checked before a
-snapshot is kept. None of these are reachable by real history: a dump that copies a directory, and later
-restates files inside the copy as copies of their own, repeated many times over, is what crosses them —
-not a real repository's own history, however large. Measured against the 20,000,000-entry retention
-ceiling, a retained snapshot entry costs about 170 bytes — comfortably inside the default before it
-matters; 0.9's shared-structure tree is what makes it small for a real repository's own size.
+**The running tree shares unchanged directories between revisions (0.9).** A branch or tag copy no
+longer clones the tree it copies: it inserts the source directory where the copy lands, and a later
+change copies only the directories on its own path back down to the root. Holding a snapshot — the
+previous revision's tree, or one `copyfrom` may still name later — now costs nothing beyond that one
+handle, however large the tree is. Memory therefore follows **the size of the history** (how much ever
+changed), not **the number of tags times the number of files** it last held, which is what made a
+tag-heavy repository expensive before. For a history with many tags, `--branch-lines` keeps the
+resulting artifact small too, on top of this: a tag's own creation costs no operations at all (a copy
+that creates a root has no ops), only the edits a branch or tag line makes afterward.
+
+**Two ceilings remain on what still costs real work, each refused, exit 20:**
+- **`max_tree_entries`** (10,000,000): checked where a tree is **expanded into entries** — a directory
+  copy's expansion (the stated layer still records one `Add` per copied file, as it always has), and
+  `--branch-lines`'s own per-file walk when a new branch or tag line's first revision is built from a
+  copy. Not checked on an ordinary single-file change: a shared tree's size costs nothing to hold, so
+  only turning it into IR entries needs a ceiling.
+- **`max_tree_nodes`** (50,000,000): the **cumulative** count of directory nodes and file entries the
+  decoder has ever allocated across the whole decode — every directory actually copied or newly created,
+  every new file. Never decreasing, so it bounds the total copy-on-write work a dump can cause, not any
+  one snapshot's size. Measured against a real, tag-heavy repository (codeblocks: 6,221 revisions, 316
+  copy-source revisions), this stays about 433× under the default.
+
+`max_copy_expansion` (10,000,000, one directory copy's own growth) is unchanged. None of these three are
+reachable by real history: a dump that copies a directory, and later restates files inside the copy as
+copies of their own, repeated many times over, is what crosses them — not a real repository's own
+history, however large.
 
 ## Dump forms
 
