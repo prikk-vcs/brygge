@@ -6,6 +6,8 @@ as recommended. Handoffs: `rfcs/handoffs/020-subversion-at-real-size-and-shape/`
 architect. It is scoped in the architect's
 review 157. It follows 0.8.1, which bounded the Subversion decoder's memory with ceilings; this RFC removes the cause.
 
+**Done (2026-11-26): implemented in 0.9.0.**
+
 ## Summary
 
 Two changes to the Subversion decoder, so that real Subversion repositories reach Git (RFC 019):
