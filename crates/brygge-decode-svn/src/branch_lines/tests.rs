@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use brygge_ir::model::{PathOp, RefKind};
 use brygge_ir::status::EpistemicStatus;
 
-use crate::{Error, Options, Source};
+use crate::{Error, LayoutPolicy, Options, Source};
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -609,6 +609,70 @@ fn branch_lines_refuses_a_flat_repository_with_no_layout_at_all() {
     assert_eq!(
         err.to_string(),
         "the trunk/branches/tags layout was not found, so `--branch-lines` has no branch to follow; \
-         decode without it"
+         decode without it, or give `--layout-trunk .` to decode the whole repository as one line"
+    );
+}
+
+/// RFC 020 D-3, handoff `layout-options-handoff-v1.md` §0, level 2: a project in a subdirectory. Two
+/// unrelated projects share one repository, each with its own trunk/branches/tags; decoding `proj-a`
+/// alone (`--layout-trunk proj-a/trunk --layout-branches proj-a/branches --layout-tags proj-a/tags`)
+/// gives `proj-a`'s own line and ref, and flags and drops every `proj-b` path rather than silently
+/// losing it.
+#[test]
+fn a_project_in_a_subdirectory_decodes_alone_dropping_the_other() {
+    let mut d = DumpBuilder::new();
+    d.revision(0, &[("svn:date", &date(0))]);
+    d.revision(
+        1,
+        &[("svn:log", "lay out both projects"), ("svn:date", &date(1))],
+    );
+    d.add_dir("proj-a");
+    d.add_dir("proj-a/trunk");
+    d.add_file("proj-a/trunk/a.txt", b"a\n");
+    d.add_dir("proj-a/branches");
+    d.add_dir("proj-a/tags");
+    d.add_dir("proj-b");
+    d.add_dir("proj-b/trunk");
+    d.add_file("proj-b/trunk/b.txt", b"b\n");
+    d.add_dir("proj-b/branches");
+    d.add_dir("proj-b/tags");
+
+    let opts = Options {
+        reconstruct_refs: true,
+        branch_lines: true,
+        layout: LayoutPolicy {
+            trunk: "proj-a/trunk".to_string(),
+            branches: Some("proj-a/branches".to_string()),
+            tags: Some("proj-a/tags".to_string()),
+        },
+    };
+    let ir = decode_dump(&d.buf, &opts).unwrap();
+
+    // proj-a's own trunk line: one atom, the add of a.txt — proj-b never reaches it.
+    assert_eq!(ir.atoms.len(), 1);
+    assert_eq!(atom_root(&ir, 0), "proj-a/trunk");
+    let adds: Vec<&str> = ir.atoms[0]
+        .ops
+        .iter()
+        .map(|o| match o {
+            PathOp::Add { path, .. } => path.as_str(),
+            other => panic!("expected only Add ops, got {other:?}"),
+        })
+        .collect();
+    assert_eq!(adds, ["a.txt"]);
+
+    // proj-a's own ref is right.
+    assert_eq!(ir.refs.len(), 1);
+    assert_eq!(ir.refs[0].name, "trunk");
+    assert_eq!(ir.refs[0].kind, RefKind::Branch);
+
+    // proj-b's file is flagged and dropped, not silently lost.
+    assert!(
+        ir.loss
+            .dropped
+            .iter()
+            .any(|dr| dr.what.contains("proj-b/trunk/b.txt")),
+        "{:?}",
+        ir.loss.dropped
     );
 }

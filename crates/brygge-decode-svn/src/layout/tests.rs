@@ -40,11 +40,27 @@ fn a_path_outside_the_convention_is_unclassified() {
 fn a_custom_policy_is_honoured() {
     let l = LayoutPolicy {
         trunk: "main".to_string(),
-        branches: "b".to_string(),
-        tags: "t".to_string(),
+        branches: Some("b".to_string()),
+        tags: Some("t".to_string()),
     };
     assert_eq!(classify("main/x", &l).unwrap().name, "trunk");
     assert_eq!(classify("b/foo/x", &l).unwrap().name, "foo");
     // the default names no longer match.
     assert!(classify("trunk/x", &l).is_none());
+}
+
+/// RFC 020 D-3: `--layout-trunk .` — every path, with no exception, is the one trunk root, prefix `""`.
+#[test]
+fn the_root_form_classifies_every_path_as_the_trunk() {
+    let l = LayoutPolicy {
+        trunk: ".".to_string(),
+        branches: None,
+        tags: None,
+    };
+    for path in ["readme.txt", "src/main.rs", "branches/x", "trunk/y", ""] {
+        let root = classify(path, &l).unwrap();
+        assert_eq!(root.name, "trunk");
+        assert_eq!(root.kind, RefKind::Branch);
+        assert_eq!(root.prefix, "");
+    }
 }

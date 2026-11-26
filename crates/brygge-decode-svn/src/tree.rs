@@ -225,8 +225,22 @@ impl Tree {
     /// The subtree at `path` (a directory, by SVN convention — the module doc), as its own cheap
     /// [`Tree`] handle, or `None` if `path` names nothing (an empty directory copy, or a path absent
     /// from this snapshot — both are a copy of nothing, not an error; see [`crate::tree::apply_dir`]).
+    ///
+    /// RFC 020 D-3: `path == ""` means the tree's own root (`--layout-trunk .`'s whole-repository trunk
+    /// uses this, via [`crate::options::LayoutPolicy::trunk_prefix`]) — `self.clone()`, O(1), not a
+    /// walk. Still `None` if the tree is completely empty, matching every other `Dir` node's own
+    /// invariant (a node that exists always holds at least one file transitively): the root is the one
+    /// node nothing ever prunes, so this is the one place that invariant must be checked rather than
+    /// assumed.
     #[must_use]
     pub fn dir_at(&self, path: &str) -> Option<Tree> {
+        if path.is_empty() {
+            return if self.0.files.is_empty() && self.0.dirs.is_empty() {
+                None
+            } else {
+                Some(self.clone())
+            };
+        }
         let mut node = &self.0;
         for comp in path.split('/') {
             node = node.dirs.get(comp)?;

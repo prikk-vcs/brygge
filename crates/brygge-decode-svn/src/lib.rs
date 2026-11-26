@@ -105,7 +105,8 @@ impl std::fmt::Display for Error {
             Self::BranchLinesNoLayout => write!(
                 f,
                 "the trunk/branches/tags layout was not found, so `--branch-lines` has no branch to \
-                 follow; decode without it"
+                 follow; decode without it, or give `--layout-trunk .` to decode the whole repository \
+                 as one line"
             ),
         }
     }

@@ -140,7 +140,7 @@ pub(crate) fn decode_with(
             .filter_map(|n| layout::classify(&n.path, &opts.layout))
             .collect();
         dedup_roots(&mut touched);
-        sort_roots_canonically(&mut touched, &opts.layout.trunk);
+        sort_roots_canonically(&mut touched, opts.layout.trunk_prefix());
         if touched.is_empty() {
             revisions_with_no_branch_change = revisions_with_no_branch_change.saturating_add(1);
         }
@@ -218,14 +218,21 @@ pub(crate) fn decode_with(
         // `branches` directory deleted in one node, naming no individual branch), exactly as the old
         // whole-tree partition did, without ever reading more than the container's own child names.
         let mut currently_live: HashSet<String> = HashSet::new();
-        if applied.tree.is_live_under(&opts.layout.trunk) {
-            currently_live.insert(opts.layout.trunk.clone());
+        let trunk_prefix = opts.layout.trunk_prefix();
+        if applied.tree.is_live_under(trunk_prefix) {
+            currently_live.insert(trunk_prefix.to_string());
         }
-        for name in applied.tree.child_names(&opts.layout.branches) {
-            currently_live.insert(format!("{}/{name}", opts.layout.branches));
+        // RFC 020 D-3: both are `None` only under `--layout-trunk .`, where there is no separate
+        // container to list children of — the trunk root above already covers everything.
+        if let Some(branches) = &opts.layout.branches {
+            for name in applied.tree.child_names(branches) {
+                currently_live.insert(format!("{branches}/{name}"));
+            }
         }
-        for name in applied.tree.child_names(&opts.layout.tags) {
-            currently_live.insert(format!("{}/{name}", opts.layout.tags));
+        if let Some(tags) = &opts.layout.tags {
+            for name in applied.tree.child_names(tags) {
+                currently_live.insert(format!("{tags}/{name}"));
+            }
         }
         let now_dead: Vec<String> = live
             .keys()
@@ -499,7 +506,15 @@ fn root_tree(snapshot: &Tree, root_prefix: &str) -> Option<RelTree> {
 /// `applied.ops`'s entries under `root`, relativized, keeping each op's original variant (so `Replace`,
 /// CR-07.2, survives) — used for a continuing line, whose starting state really is `prev_tree`'s content
 /// under `root`, so the existing whole-tree diff already says exactly what changed.
+///
+/// RFC 020 D-3: `root.prefix == ""` (`--layout-trunk .`) covers the whole repository, so every op is
+/// already "under" it and relativizing is a no-op — stripping a `"/"` prefix, as the general case below
+/// does, would strip nothing from an ordinary repo-relative path (none starts with `/`) and silently
+/// drop every op instead.
 fn filter_ops_for_root(ops: &[PathOp], root: &Root) -> Vec<PathOp> {
+    if root.prefix.is_empty() {
+        return ops.to_vec();
+    }
     let dir_prefix = format!("{}/", root.prefix);
     ops.iter()
         .filter_map(|op| {
@@ -582,12 +597,20 @@ fn resolve_copies(
     let dir_prefix = format!("{}/", root.prefix);
     let mut out = Vec::new();
     for (copy, crev) in copies.iter().zip(source_revs.iter()) {
-        let Some(to_rel) = copy
-            .to
-            .strip_prefix(&dir_prefix)
-            .or_else(|| (copy.to == root.prefix).then_some(""))
-        else {
-            continue;
+        // RFC 020 D-3: `root.prefix == ""` (`--layout-trunk .`) covers the whole repository, so every
+        // copy's `to` is trivially under it — stripping a `"/"` prefix (the general case below) would
+        // strip nothing from an ordinary path and silently drop every copy record instead.
+        let to_rel = if root.prefix.is_empty() {
+            copy.to.as_str()
+        } else {
+            let Some(rel) = copy
+                .to
+                .strip_prefix(&dir_prefix)
+                .or_else(|| (copy.to == root.prefix).then_some(""))
+            else {
+                continue;
+            };
+            rel
         };
         let Some(from_root) = layout::classify(&copy.from, policy) else {
             continue;

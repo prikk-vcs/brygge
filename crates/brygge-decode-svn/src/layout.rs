@@ -22,28 +22,44 @@ pub struct Root {
 }
 
 /// Classify a repo-relative path into the conventional branch/tag root it belongs to, if any.
+///
+/// RFC 020 D-3: under `--layout-trunk .` (the whole repository is the trunk), `layout.branches` and
+/// `layout.tags` are both `None`, and every path — with no exception — classifies into the one trunk
+/// root, prefix `""` (never `"."`; see [`LayoutPolicy::trunk_prefix`]).
 #[must_use]
 pub fn classify(path: &str, layout: &LayoutPolicy) -> Option<Root> {
-    if path == layout.trunk || starts_with_dir(path, &layout.trunk) {
+    let trunk_prefix = layout.trunk_prefix();
+    if trunk_prefix.is_empty() {
         return Some(Root {
             name: "trunk".to_string(),
             kind: RefKind::Branch,
-            prefix: layout.trunk.clone(),
+            prefix: String::new(),
         });
     }
-    if let Some(name) = child_under(path, &layout.branches) {
+    if path == trunk_prefix || starts_with_dir(path, trunk_prefix) {
         return Some(Root {
-            prefix: format!("{}/{name}", layout.branches),
-            name,
+            name: "trunk".to_string(),
             kind: RefKind::Branch,
+            prefix: trunk_prefix.to_string(),
         });
     }
-    if let Some(name) = child_under(path, &layout.tags) {
-        return Some(Root {
-            prefix: format!("{}/{name}", layout.tags),
-            name,
-            kind: RefKind::Tag,
-        });
+    if let Some(branches) = &layout.branches {
+        if let Some(name) = child_under(path, branches) {
+            return Some(Root {
+                prefix: format!("{branches}/{name}"),
+                name,
+                kind: RefKind::Branch,
+            });
+        }
+    }
+    if let Some(tags) = &layout.tags {
+        if let Some(name) = child_under(path, tags) {
+            return Some(Root {
+                prefix: format!("{tags}/{name}"),
+                name,
+                kind: RefKind::Tag,
+            });
+        }
     }
     None
 }

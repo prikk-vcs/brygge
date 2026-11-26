@@ -552,6 +552,28 @@ fn a_dir_clone_still_shared_with_a_kept_snapshot_is_charged_and_does_not_mutate_
     assert!(r1.tree.contains_key("trunk/b.txt"));
 }
 
+/// RFC 020 D-3: `Tree::dir_at("")` is the tree's own root (`--layout-trunk .`'s whole-repository trunk
+/// uses this) — `Some`, cloning the whole tree, whenever anything at all is in it; `None` for an empty
+/// tree, matching every other `Dir` node's own "exists implies non-empty" invariant.
+#[test]
+fn dir_at_the_empty_path_is_the_whole_tree_when_non_empty_else_none() {
+    assert!(Tree::new().dir_at("").is_none());
+
+    let mut b = builder();
+    let r0 = apply_revision(
+        &Tree::new(),
+        vec![file_node("a/b.txt", NodeAction::Add, Some(b"x"))],
+        &HashMap::new(),
+        &HashMap::new(),
+        &mut b,
+        &mut Budget::new(&Limits::default()),
+    )
+    .unwrap();
+
+    let whole = r0.tree.dir_at("").expect("a non-empty tree's root is Some");
+    assert_eq!(whole.flat_entries(), r0.tree.flat_entries());
+}
+
 // ---- RFC 020 D-1, handoff §0 level 1: a property test against the flat map --------------------------
 
 /// A small deterministic generator (xorshift64*), matching `svndiff::tests`'s own one (no dependency).
