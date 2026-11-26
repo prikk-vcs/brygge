@@ -136,6 +136,9 @@ fn spill_dir_missing_is_a_usage_error() {
         false,
         false,
         false,
+        None,
+        None,
+        None,
         Some(&missing),
         Format::Machine,
     );
@@ -160,6 +163,9 @@ fn spill_dir_a_file_not_a_directory_is_a_usage_error() {
         false,
         false,
         false,
+        None,
+        None,
+        None,
         Some(&file),
         Format::Machine,
     );
@@ -188,7 +194,10 @@ fn spill_dir_given_a_good_directory_is_used_and_the_artifact_is_byte_identical()
             false,
             false,
             None,
-            Format::Machine
+            None,
+            None,
+            None,
+            Format::Machine,
         ),
         exit::CLEAN
     );
@@ -200,8 +209,11 @@ fn spill_dir_given_a_good_directory_is_used_and_the_artifact_is_byte_identical()
             false,
             false,
             false,
+            None,
+            None,
+            None,
             Some(&spill_dir),
-            Format::Machine
+            Format::Machine,
         ),
         exit::CLEAN
     );
@@ -234,7 +246,10 @@ fn verify_spill_dir_missing_is_a_usage_error() {
             false,
             false,
             None,
-            Format::Machine
+            None,
+            None,
+            None,
+            Format::Machine,
         ),
         exit::CLEAN
     );
@@ -266,7 +281,10 @@ fn verify_spill_dir_a_file_not_a_directory_is_a_usage_error() {
             false,
             false,
             None,
-            Format::Machine
+            None,
+            None,
+            None,
+            Format::Machine,
         ),
         exit::CLEAN
     );
@@ -293,7 +311,10 @@ fn verify_spill_dir_given_a_good_directory_is_used_and_left_empty_and_the_verdic
             false,
             false,
             None,
-            Format::Machine
+            None,
+            None,
+            None,
+            Format::Machine,
         ),
         exit::CLEAN
     );
@@ -338,7 +359,10 @@ fn decode_inspect_verify_roundtrip() {
             false,
             false,
             None,
-            Format::Machine
+            None,
+            None,
+            None,
+            Format::Machine,
         ),
         exit::CLEAN
     );
@@ -373,7 +397,10 @@ fn verify_internal_catches_tamper_with_no_source() {
             false,
             false,
             None,
-            Format::Machine
+            None,
+            None,
+            None,
+            Format::Machine,
         ),
         exit::CLEAN
     );
@@ -408,7 +435,10 @@ fn verify_against_source_detects_a_mismatch() {
             false,
             false,
             None,
-            Format::Machine
+            None,
+            None,
+            None,
+            Format::Machine,
         ),
         exit::CLEAN
     );
@@ -437,7 +467,10 @@ fn a_failing_internal_check_with_a_corresponding_source_still_reports_against_so
             false,
             false,
             None,
-            Format::Machine
+            None,
+            None,
+            None,
+            Format::Machine,
         ),
         exit::CLEAN
     );
@@ -473,7 +506,10 @@ fn against_source_with_a_nonexistent_path_is_not_checked_not_a_mismatch() {
             false,
             false,
             None,
-            Format::Machine
+            None,
+            None,
+            None,
+            Format::Machine,
         ),
         exit::CLEAN
     );
@@ -570,7 +606,10 @@ fn decode_a_real_clone_succeeds_and_verifies_against_source() {
             false,
             false,
             None,
-            Format::Machine
+            None,
+            None,
+            None,
+            Format::Machine,
         ),
         exit::CLEAN,
         "a clone's symbolic HEAD is a representation-class drop, still a clean import (CR-16)"
@@ -592,7 +631,10 @@ fn decode_a_real_clone_succeeds_and_verifies_against_source() {
             false,
             false,
             None,
-            Format::Machine
+            None,
+            None,
+            None,
+            Format::Machine,
         ),
         exit::CLEAN
     );
@@ -668,7 +710,10 @@ fn decode_of_a_submodule_exits_floor_refusal() {
             false,
             false,
             None,
-            Format::Human
+            None,
+            None,
+            None,
+            Format::Human,
         ),
         exit::FLOOR_REFUSAL
     );
@@ -815,7 +860,10 @@ fn a_pre_existing_artifact_survives_a_failing_decode_and_leaves_no_temp_file() {
             false,
             false,
             None,
-            Format::Machine
+            None,
+            None,
+            None,
+            Format::Machine,
         ),
         exit::CLEAN
     );
@@ -846,7 +894,10 @@ fn a_pre_existing_artifact_survives_a_failing_decode_and_leaves_no_temp_file() {
             false,
             false,
             None,
-            Format::Machine
+            None,
+            None,
+            None,
+            Format::Machine,
         ),
         exit::FLOOR_REFUSAL
     );
@@ -879,7 +930,10 @@ fn a_successful_decode_replaces_the_existing_artifact_and_leaves_no_temp_file() 
             false,
             false,
             None,
-            Format::Machine
+            None,
+            None,
+            None,
+            Format::Machine,
         ),
         exit::CLEAN
     );
@@ -895,7 +949,10 @@ fn a_successful_decode_replaces_the_existing_artifact_and_leaves_no_temp_file() 
             false,
             false,
             None,
-            Format::Machine
+            None,
+            None,
+            None,
+            Format::Machine,
         ),
         exit::CLEAN
     );
@@ -923,7 +980,10 @@ fn inspect_default_equals_decodes_end_of_run_report() {
             false,
             false,
             None,
-            Format::Machine
+            None,
+            None,
+            None,
+            Format::Machine,
         ),
         exit::CLEAN
     );
@@ -957,7 +1017,10 @@ fn inspect_atoms_adds_the_listing_and_reads_the_artifact_once() {
             false,
             false,
             None,
-            Format::Machine
+            None,
+            None,
+            None,
+            Format::Machine,
         ),
         exit::CLEAN
     );
@@ -990,7 +1053,10 @@ fn inspect_report_says_unverifiable_never_unverified() {
             false,
             false,
             None,
-            Format::Machine
+            None,
+            None,
+            None,
+            Format::Machine,
         ),
         exit::CLEAN
     );
@@ -1019,7 +1085,10 @@ fn representation_drops_appear_only_on_the_not_history_line() {
             false,
             false,
             None,
-            Format::Machine
+            None,
+            None,
+            None,
+            Format::Machine,
         ),
         exit::CLEAN
     );
@@ -1791,6 +1860,9 @@ fn decode_svn_from_a_dumpfile_reconstructs_refs_and_verifies() {
         true,
         false,
         None,
+        None,
+        None,
+        None,
         Format::Machine,
     );
     assert!(
@@ -1839,6 +1911,9 @@ fn decode_svn_flat_layout_with_reconstruct_is_a_convention_violation() {
         false,
         true,
         false,
+        None,
+        None,
+        None,
         None,
         Format::Machine,
     );
@@ -1890,6 +1965,9 @@ fn decode_svn_from_a_live_repository_via_svnadmin() {
         true,
         false,
         None,
+        None,
+        None,
+        None,
         Format::Machine,
     );
     assert!(
@@ -1923,6 +2001,9 @@ fn cr_07_6_verifying_a_dumpfile_decode_against_a_live_repository_is_not_checked(
         false,
         true,
         false,
+        None,
+        None,
+        None,
         None,
         Format::Machine,
     );
@@ -2002,6 +2083,9 @@ fn cr_07_6_r1_an_svnadmin_version_difference_alone_does_not_fail_verification() 
         false,
         true,
         false,
+        None,
+        None,
+        None,
         None,
         Format::Machine,
     );
@@ -2149,6 +2233,9 @@ fn decode_cvs_reconstructs_derived_changesets_and_reproduces() {
         false,
         false,
         None,
+        None,
+        None,
+        None,
         Format::Machine,
     );
     assert!(
@@ -2199,6 +2286,9 @@ fn a_cvs_repository_with_a_branch_revision_verifies_its_own_artifact() {
         false,
         false,
         false,
+        None,
+        None,
+        None,
         None,
         Format::Machine,
     );
@@ -2276,6 +2366,9 @@ fn decode_cvs_nested_and_mixed_branches_reproduce_and_verify_against_source() {
             true,
             false,
             None,
+            None,
+            None,
+            None,
             Format::Machine,
         );
         assert_eq!(
@@ -2324,6 +2417,9 @@ fn decode_cvs_whole_import_under_floor_is_refused() {
         false,
         false,
         None,
+        None,
+        None,
+        None,
         Format::Machine,
     );
     assert_eq!(code, exit::FLOOR_REFUSAL);
@@ -2368,6 +2464,9 @@ fn decode_cvs_partial_under_floor_imports_and_exits_convention_violation() {
         false,
         false,
         None,
+        None,
+        None,
+        None,
         Format::Machine,
     );
     assert_eq!(code, exit::CONVENTION_VIOLATION);
@@ -2402,6 +2501,9 @@ desc\n@@\n\n\n\
         false,
         false,
         false,
+        None,
+        None,
+        None,
         None,
         Format::Machine,
     );
@@ -2528,6 +2630,9 @@ fn decode_hg_and_verify_a_good_artifact_from_every_decoder() {
         false,
         false,
         false,
+        None,
+        None,
+        None,
         None,
         Format::Machine,
     );
@@ -3073,7 +3178,10 @@ fn an_hg_artifacts_params_carry_no_rename_or_infer_keys() {
             false,
             false,
             None,
-            Format::Machine
+            None,
+            None,
+            None,
+            Format::Machine,
         ),
         exit::CLEAN
     );
@@ -3734,6 +3842,9 @@ fn verify_against_source_root_corresponds_and_wrong_consumed_through_the_real_re
         false,
         false,
         None,
+        None,
+        None,
+        None,
         Format::Machine,
     );
     assert!(
@@ -3820,6 +3931,9 @@ fn verify_against_source_rejects_a_well_formed_artifact_that_lies_about_being_un
         false,
         false,
         false,
+        None,
+        None,
+        None,
         None,
         Format::Machine,
     );
@@ -3950,6 +4064,9 @@ fn verify_against_source_not_checked_when_recorded_version_differs_and_history_d
         false,
         false,
         None,
+        None,
+        None,
+        None,
         Format::Machine,
     );
     assert!(
@@ -4012,6 +4129,9 @@ fn verify_against_source_root_corresponds_with_both_notes_across_brygge_versions
         false,
         false,
         false,
+        None,
+        None,
+        None,
         None,
         Format::Machine,
     );
@@ -4080,6 +4200,9 @@ fn a_malformed_transform_chain_is_refused_by_the_reader_not_given_a_verdict() {
         false,
         false,
         None,
+        None,
+        None,
+        None,
         Format::Machine,
     );
     assert!(
@@ -4125,6 +4248,9 @@ fn verify_against_source_root_reproduces_for_cvs() {
         false,
         false,
         false,
+        None,
+        None,
+        None,
         None,
         Format::Machine,
     );

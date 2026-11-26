@@ -48,6 +48,9 @@ fn decode_git_full() {
             infer_renames,
             reconstruct_refs,
             branch_lines,
+            layout_trunk,
+            layout_branches,
+            layout_tags,
             spill_dir,
             format,
         } => {
@@ -57,6 +60,9 @@ fn decode_git_full() {
             assert_eq!(out, PathBuf::from("out.ir"));
             assert!(infer_renames);
             assert!(!reconstruct_refs);
+            assert_eq!(layout_trunk, None);
+            assert_eq!(layout_branches, None);
+            assert_eq!(layout_tags, None);
             assert_eq!(spill_dir, None);
             assert_eq!(format, Format::Machine);
         }

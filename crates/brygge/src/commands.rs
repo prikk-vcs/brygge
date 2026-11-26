@@ -32,6 +32,11 @@ const VERIFY_VERSION: u32 = 5;
 const INSPECT_VERSION: u32 = 4;
 // RFC 019 D-4 (batch G3): `inspect --authors`'s own machine form, independent of `inspect`'s own report.
 const INSPECT_AUTHORS_VERSION: u32 = 1;
+// RFC 020 D-3 (batch L): `decode`'s own layout section (below `report_version`'s own lines, like
+// `inspect_authors_version`'s own independence from `inspect_version`) — absent entirely from a decode
+// that never names a layout (not svn, or svn without --reconstruct-refs/--branch-lines), so every
+// existing decode's machine output is unchanged byte for byte.
+const DECODE_SVN_LAYOUT_VERSION: u32 = 1;
 
 // ---- small shared renderers -------------------------------------------------------------------------
 
@@ -242,13 +247,17 @@ fn branch_lines_from_provenance(ir: &Ir) -> bool {
         .unwrap_or(false)
 }
 
-/// The SVN layout policy recorded in the IR's provenance (default if absent/unparsable).
-fn layout_from_provenance(ir: &Ir) -> LayoutPolicy {
-    ir.provenance
-        .params
-        .get("layout")
-        .and_then(|l| LayoutPolicy::from_label(l))
-        .unwrap_or_default()
+/// The SVN layout policy recorded in the IR's provenance: `Ok` with the default if the `layout` param is
+/// absent (an older artifact, or a non-SVN decode, where it never existed); `Ok` with the parsed policy
+/// if present and readable; `Err` with the raw label if present but [`LayoutPolicy::from_label`] cannot
+/// read it — never a silent fallback to the default for a label that *is* present (RFC 020 D-3 §2): the
+/// caller decides what to do with an unreadable one (`verify --against-source` reports `not-checked`,
+/// naming the label, rather than guessing).
+fn layout_from_provenance(ir: &Ir) -> Result<LayoutPolicy, String> {
+    match ir.provenance.params.get("layout") {
+        None => Ok(LayoutPolicy::default()),
+        Some(label) => LayoutPolicy::from_label(label).ok_or_else(|| label.clone()),
+    }
 }
 
 /// The per-source knobs a decode needs: git uses `infer_renames`/`carry_extra_namespaces`; svn uses
@@ -544,6 +553,9 @@ pub fn run_decode(
     infer_renames: bool,
     reconstruct_refs: bool,
     branch_lines: bool,
+    layout_trunk: Option<String>,
+    layout_branches: Option<String>,
+    layout_tags: Option<String>,
     spill_dir: Option<&Path>,
     format: Format,
 ) -> i32 {
@@ -568,6 +580,24 @@ pub fn run_decode(
     };
     let storage = brygge_ir::Storage::Spill(dir);
 
+    // RFC 020 D-3: an option not given keeps its standard name; under `--layout-trunk .` (checked as a
+    // usage error in `cli.rs` if `--layout-branches`/`--layout-tags` are also given), there is no
+    // separate branches/tags container at all.
+    let is_root = layout_trunk.as_deref() == Some(".");
+    let layout = LayoutPolicy {
+        trunk: layout_trunk.unwrap_or_else(|| "trunk".to_string()),
+        branches: if is_root {
+            None
+        } else {
+            Some(layout_branches.unwrap_or_else(|| "branches".to_string()))
+        },
+        tags: if is_root {
+            None
+        } else {
+            Some(layout_tags.unwrap_or_else(|| "tags".to_string()))
+        },
+    };
+
     let default_cvs = brygge_decode_cvs::Options::default();
     let ir = match decode_source(
         kind,
@@ -577,7 +607,7 @@ pub fn run_decode(
             reconstruct_refs,
             branch_lines,
             carry_extra_namespaces: Vec::new(),
-            layout: LayoutPolicy::default(),
+            layout: layout.clone(),
             cvs_window: default_cvs.window_secs,
             cvs_floor: default_cvs.confidence_floor,
         },
@@ -607,14 +637,66 @@ pub fn run_decode(
 
     // The end-of-run report is `inspect`'s default report (FS-02): the exact same call.
     let report = brygge_ir::honesty::summary(&ir);
-    let rendered = match format {
+    let mut rendered = match format {
         Format::Human => report.render_human(),
         Format::Machine => report.render_machine(),
     };
+    // RFC 020 D-3 §2: the decode report always names the layout used when reconstructing — appended
+    // after the base report, exactly as `inspect`'s own transform/atom sections are (never folded into
+    // `report_version`'s own fields, so a decode that never reconstructs is byte-for-byte unchanged).
+    if kind == SourceKind::Svn && reconstruct_refs {
+        rendered.push_str(&match format {
+            Format::Human => render_svn_layout_human(&layout),
+            Format::Machine => render_svn_layout_machine(&layout),
+        });
+    }
     if let Some(code) = output::stdout(&rendered) {
         return code;
     }
     fidelity_exit_class(&ir)
+}
+
+/// RFC 020 D-3 §2: the human-facing "what layout did this decode use" line, one line, whether the
+/// values were given on the command line or are the standard ones.
+fn render_svn_layout_human(layout: &LayoutPolicy) -> String {
+    if layout.trunk == "." {
+        "layout: the whole repository as trunk\n".to_string()
+    } else {
+        let mut s = format!("layout: trunk={}", layout.trunk);
+        if let Some(branches) = &layout.branches {
+            let _ = write!(s, ", branches={branches}");
+        }
+        if let Some(tags) = &layout.tags {
+            let _ = write!(s, ", tags={tags}");
+        }
+        s.push('\n');
+        s
+    }
+}
+
+/// RFC 020 D-3 §2: `decode.svn.layout.trunk`/`.branches`/`.tags` (the last two absent for the root form),
+/// governed by its own [`DECODE_SVN_LAYOUT_VERSION`], independent of `report_version` — present only
+/// when this function is actually called (svn, with `--reconstruct-refs`/`--branch-lines`), so every
+/// other decode's machine output is unchanged.
+fn render_svn_layout_machine(layout: &LayoutPolicy) -> String {
+    let mut s = String::new();
+    let _ = writeln!(s, "decode_svn_layout_version={DECODE_SVN_LAYOUT_VERSION}");
+    let _ = writeln!(
+        s,
+        "decode.svn.layout.trunk={}",
+        display::machine_value(&layout.trunk)
+    );
+    if let Some(branches) = &layout.branches {
+        let _ = writeln!(
+            s,
+            "decode.svn.layout.branches={}",
+            display::machine_value(branches)
+        );
+    }
+    if let Some(tags) = &layout.tags {
+        let _ = writeln!(s, "decode.svn.layout.tags={}", display::machine_value(tags));
+    }
+    s
 }
 
 /// CL-08's fidelity exit class for `ir` alone: a flagged condition (RFC 011 D-8 — an unresolved SVN
@@ -1569,6 +1651,17 @@ fn run_against_source(ir1: &Ir, repo: &Path, storage: &brygge_ir::Storage) -> Ag
             return AgainstSourceOutcome::NotChecked(mismatch);
         }
     }
+    // RFC 020 D-3 §2: a `layout` param that is present but unreadable is reported `not-checked`, naming
+    // the label — never silently re-derived against the default, which would compare against the wrong
+    // convention and risk a false mismatch.
+    let layout = match layout_from_provenance(ir1) {
+        Ok(l) => l,
+        Err(label) => {
+            return AgainstSourceOutcome::NotChecked(format!(
+                "the recorded layout ('{label}') could not be parsed"
+            ));
+        }
+    };
     let opts = SourceOpts {
         // Only Git infers renames; no other artifact records the parameter, so none is read.
         infer_renames: kind == SourceKind::Git && infer_renames_from_provenance(ir1),
@@ -1576,7 +1669,7 @@ fn run_against_source(ir1: &Ir, repo: &Path, storage: &brygge_ir::Storage) -> Ag
         branch_lines: kind == SourceKind::Svn && branch_lines_from_provenance(ir1),
         // Re-deriving the *source*, never a Git target: the recorded import never carried this.
         carry_extra_namespaces: Vec::new(),
-        layout: layout_from_provenance(ir1),
+        layout,
         cvs_window: cvs_window_from_provenance(ir1),
         cvs_floor: cvs_floor_from_provenance(ir1),
     };

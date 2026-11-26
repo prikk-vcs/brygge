@@ -141,6 +141,136 @@ fn run_decode_branch_lines(repo: &Path, out: &Path) -> std::process::Output {
         .expect("run brygge decode svn --branch-lines")
 }
 
+/// A real, flat local SVN repository: files live directly at the repository root, with no
+/// trunk/branches/tags convention at all — the RFC 020 D-3 shape `--layout-trunk .` exists for.
+fn build_flat_svn_repo() -> PathBuf {
+    let root = scratch_dir("svn-flat-repo");
+    let repo = root.join("repo");
+    assert!(
+        Command::new("svnadmin")
+            .args(["create", repo.to_str().unwrap()])
+            .status()
+            .unwrap()
+            .success()
+    );
+    let url = format!("file://{}", repo.display());
+    let wc = root.join("wc");
+    assert!(
+        Command::new("svn")
+            .args(["checkout", "-q", &url, wc.to_str().unwrap()])
+            .status()
+            .unwrap()
+            .success()
+    );
+    std::fs::write(wc.join("a.txt"), "one\n").unwrap();
+    std::fs::create_dir_all(wc.join("src")).unwrap();
+    std::fs::write(wc.join("src/main.rs"), "fn main() {}\n").unwrap();
+    assert!(
+        Command::new("svn")
+            .args(["add", "a.txt", "src"])
+            .current_dir(&wc)
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        Command::new("svn")
+            .args(["commit", "-q", "-m", "flat: add a.txt and src/"])
+            .current_dir(&wc)
+            .status()
+            .unwrap()
+            .success()
+    );
+    std::fs::write(wc.join("a.txt"), "one, edited\n").unwrap();
+    assert!(
+        Command::new("svn")
+            .args(["commit", "-q", "-m", "flat: edit a.txt"])
+            .current_dir(&wc)
+            .status()
+            .unwrap()
+            .success()
+    );
+    repo
+}
+
+/// RFC 020 D-3, handoff `layout-options-handoff-v1.md` §0 level 3: a repository with no layout at all,
+/// decoded with `--layout-trunk . --branch-lines` (one line, the whole repository), then `encode git`,
+/// then `git fsck --strict` on the result — the 0.8.0 refusal's own escape hatch, proven end to end
+/// against real `svnadmin`/`svn`/`git`, not just a hand-built dumpstream.
+#[test]
+fn a_flat_svn_repository_with_layout_trunk_dot_encodes_cleanly_to_git() {
+    if !svnadmin_available() {
+        eprintln!("skipping: svnadmin not on PATH");
+        return;
+    }
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let repo = build_flat_svn_repo();
+    let artifact = scratch_dir("flat-artifact").join("repo.ir");
+    let decode_result = Command::new(bin())
+        .args(["decode", "svn"])
+        .arg(&repo)
+        .arg("--out")
+        .arg(&artifact)
+        .args(["--branch-lines", "--layout-trunk", "."])
+        .output()
+        .expect("run brygge decode svn --branch-lines --layout-trunk .");
+    assert!(
+        decode_result.status.success() || decode_result.status.code() == Some(10),
+        "decode should succeed (plain, or exit 10 for flagged fidelity): {}",
+        String::from_utf8_lossy(&decode_result.stderr)
+    );
+    assert!(artifact.exists());
+
+    let out = scratch_dir("flat-result").join("repo.git");
+    let encode_result = run_encode_git(&artifact, &out);
+    assert!(
+        encode_result.status.success()
+            || [10, 30].contains(&encode_result.status.code().unwrap_or(-1)),
+        "encode should succeed: {}",
+        String::from_utf8_lossy(&encode_result.stderr)
+    );
+    assert!(out.exists());
+
+    let fsck = Command::new("git")
+        .args(["-C"])
+        .arg(&out)
+        .args(["fsck", "--strict"])
+        .output()
+        .unwrap();
+    assert!(
+        fsck.status.success(),
+        "git fsck --strict: {}",
+        String::from_utf8_lossy(&fsck.stderr)
+    );
+
+    // The whole repository is the one trunk line: a single ref, reachable, with both commits.
+    let refs = Command::new("git")
+        .args(["-C"])
+        .arg(&out)
+        .args(["for-each-ref", "--format=%(refname)"])
+        .output()
+        .unwrap();
+    let refs_text = String::from_utf8_lossy(&refs.stdout);
+    assert!(
+        refs_text.lines().any(|l| l == "refs/heads/trunk"),
+        "{refs_text}"
+    );
+    let log = Command::new("git")
+        .args(["-C"])
+        .arg(&out)
+        .args(["log", "--oneline", "refs/heads/trunk"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&log.stdout).lines().count(),
+        2,
+        "expected both commits on the one trunk line"
+    );
+}
+
 fn run_encode_git(artifact: &Path, out: &Path) -> std::process::Output {
     Command::new(bin())
         .args(["encode", "git"])

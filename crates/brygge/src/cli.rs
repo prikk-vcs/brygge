@@ -62,6 +62,16 @@ pub enum Command {
         /// One line of history per branch/tag root, instead of the single whole-repository spine
         /// (svn only; RFC 019 Amendment A). Implies `reconstruct_refs`.
         branch_lines: bool,
+        /// The trunk container's path (svn only, with `--reconstruct-refs`/`--branch-lines`; RFC 020
+        /// D-3). `None` keeps the standard name, `"trunk"`. `Some(".")` means the whole repository is
+        /// the trunk, with no separate branches/tags container.
+        layout_trunk: Option<String>,
+        /// The branches container's path (svn only, same conditions). `None` keeps the standard name,
+        /// `"branches"`.
+        layout_branches: Option<String>,
+        /// The tags container's path (svn only, same conditions). `None` keeps the standard name,
+        /// `"tags"`.
+        layout_tags: Option<String>,
         /// Where to keep file content while decoding, instead of in memory (RFC 015 D-3/D-3a). Must
         /// already exist and be a directory; `None` means the output artifact's own directory.
         spill_dir: Option<PathBuf>,
@@ -213,7 +223,7 @@ pub const USAGE: &str = "\
 brygge — carry version-control history into an intermediate representation (IR).
 
 USAGE:
-  brygge decode <git|hg|svn|cvs> <source> --out <artifact> [--infer-renames | --reconstruct-refs | --branch-lines] [--spill-dir <DIR>] [--format human|machine]
+  brygge decode <git|hg|svn|cvs> <source> --out <artifact> [--infer-renames | --reconstruct-refs | --branch-lines] [--layout-trunk <path> | --layout-branches <path> | --layout-tags <path>] [--spill-dir <DIR>] [--format human|machine]
   brygge inspect <artifact> [--atoms] [--format human|machine]
   brygge inspect --authors <artifact> [--format human|machine]
   brygge verify <artifact> [--against-source <source> | --against-target git <repository>] [--spill-dir <DIR>] [--format human|machine]
@@ -231,7 +241,12 @@ COMMANDS:
            --reconstruct-refs (svn/cvs) each turn on an opt-in, always-marked derived layer; giving either
            to a source kind it does not apply to is a usage error. --branch-lines (svn only) implies
            --reconstruct-refs, and gives each branch/tag its own line of history instead of the single
-           whole-repository spine. File content is kept on disk while
+           whole-repository spine. --layout-trunk/--layout-branches/--layout-tags (svn only, with
+           --reconstruct-refs or --branch-lines) each set one container's own path, keeping the other two
+           at their standard names (trunk, branches, tags) — an option not given is never silently
+           removed. --layout-trunk . means the whole repository is the trunk, with no separate branches
+           or tags container; giving --layout-branches or --layout-tags with it is a usage error. File
+           content is kept on disk while
            decoding, in a private file removed when brygge exits — --spill-dir <DIR> chooses where (it
            must already exist); the default is --out's own directory. The option never changes the
            artifact; a RAM-backed directory (tmpfs) moves the memory cost rather than removing it.
@@ -338,6 +353,51 @@ fn need_value(
         .ok_or_else(|| usage_error(command, format!("{flag} needs a value")))
 }
 
+/// As [`need_value`], but for an option whose value is a repo-relative layout path, never a local
+/// filesystem path (RFC 020 D-3) — a plain `String`, not a `PathBuf` (which would normalize separators
+/// for the host platform, wrong for a path that names a position inside the *source* repository).
+fn need_string_value(
+    rest: &mut std::slice::Iter<'_, String>,
+    flag: &str,
+    command: &str,
+) -> Result<String, String> {
+    rest.next()
+        .cloned()
+        .ok_or_else(|| usage_error(command, format!("{flag} needs a value")))
+}
+
+/// Validate one `--layout-*` value's syntax (RFC 020 D-3 §1): never empty, never absolute, no `..` or
+/// empty segment, never ending in `/`. `.` is allowed only as the whole value of `--layout-trunk`
+/// (checked by the caller before calling this, since this helper has no way to know which option it is
+/// validating).
+fn validate_layout_value(option: &str, value: &str) -> Result<(), String> {
+    if value.is_empty() {
+        return Err(usage_error(
+            "decode",
+            format!("--layout-{option} must not be empty"),
+        ));
+    }
+    if value.starts_with('/') {
+        return Err(usage_error(
+            "decode",
+            format!("--layout-{option} '{value}' must be a relative path, not absolute"),
+        ));
+    }
+    if value.ends_with('/') {
+        return Err(usage_error(
+            "decode",
+            format!("--layout-{option} '{value}' must not end in '/'"),
+        ));
+    }
+    if value.split('/').any(|seg| seg.is_empty() || seg == "..") {
+        return Err(usage_error(
+            "decode",
+            format!("--layout-{option} '{value}' must not contain an empty segment or '..'"),
+        ));
+    }
+    Ok(())
+}
+
 fn parse_decode(args: &[String]) -> Result<Command, String> {
     if wants_help(args) {
         return Ok(Command::Help);
@@ -372,6 +432,12 @@ fn parse_decode(args: &[String]) -> Result<Command, String> {
     let mut reconstruct_refs_seen = false;
     let mut branch_lines = false;
     let mut branch_lines_seen = false;
+    let mut layout_trunk: Option<String> = None;
+    let mut layout_trunk_seen = false;
+    let mut layout_branches: Option<String> = None;
+    let mut layout_branches_seen = false;
+    let mut layout_tags: Option<String> = None;
+    let mut layout_tags_seen = false;
     let mut spill_dir: Option<PathBuf> = None;
     let mut spill_dir_seen = false;
     let mut format = Format::Human;
@@ -419,6 +485,30 @@ fn parse_decode(args: &[String]) -> Result<Command, String> {
                 branch_lines_seen = true;
                 branch_lines = true;
             }
+            "--layout-trunk" => {
+                if layout_trunk_seen {
+                    return Err(usage_error("decode", "--layout-trunk given more than once"));
+                }
+                layout_trunk_seen = true;
+                layout_trunk = Some(need_string_value(&mut it, "--layout-trunk", "decode")?);
+            }
+            "--layout-branches" => {
+                if layout_branches_seen {
+                    return Err(usage_error(
+                        "decode",
+                        "--layout-branches given more than once",
+                    ));
+                }
+                layout_branches_seen = true;
+                layout_branches = Some(need_string_value(&mut it, "--layout-branches", "decode")?);
+            }
+            "--layout-tags" => {
+                if layout_tags_seen {
+                    return Err(usage_error("decode", "--layout-tags given more than once"));
+                }
+                layout_tags_seen = true;
+                layout_tags = Some(need_string_value(&mut it, "--layout-tags", "decode")?);
+            }
             "--format" => {
                 if format_seen {
                     return Err(usage_error("decode", "--format given more than once"));
@@ -465,6 +555,77 @@ fn parse_decode(args: &[String]) -> Result<Command, String> {
     // RFC 019 Amendment A, D-9: --branch-lines implies --reconstruct-refs (the same layout policy).
     let reconstruct_refs = reconstruct_refs || branch_lines;
 
+    // RFC 020 D-3 §1: each --layout-* option is svn only, and only means anything alongside
+    // --reconstruct-refs/--branch-lines.
+    for (given, option) in [
+        (layout_trunk.is_some(), "layout-trunk"),
+        (layout_branches.is_some(), "layout-branches"),
+        (layout_tags.is_some(), "layout-tags"),
+    ] {
+        if given && !matches!(kind, SourceKind::Svn) {
+            return Err(usage_error(
+                "decode",
+                inapplicable_option(option, "svn", kind),
+            ));
+        }
+    }
+    let any_layout_given =
+        layout_trunk.is_some() || layout_branches.is_some() || layout_tags.is_some();
+    if any_layout_given && !reconstruct_refs {
+        return Err(usage_error(
+            "decode",
+            "--layout-trunk/--layout-branches/--layout-tags need --reconstruct-refs or --branch-lines",
+        ));
+    }
+    let is_root = layout_trunk.as_deref() == Some(".");
+    if is_root && (layout_branches.is_some() || layout_tags.is_some()) {
+        return Err(usage_error(
+            "decode",
+            "--layout-trunk . makes the whole repository the trunk; --layout-branches and \
+             --layout-tags cannot also be given",
+        ));
+    }
+    if let Some(v) = &layout_trunk {
+        if v != "." {
+            validate_layout_value("trunk", v)?;
+        }
+    }
+    if let Some(v) = &layout_branches {
+        validate_layout_value("branches", v)?;
+    }
+    if let Some(v) = &layout_tags {
+        validate_layout_value("tags", v)?;
+    }
+    // RFC 020 D-3 §1: two containers that are the same path, or where one is inside another, checked
+    // after the defaults are filled in (an option not given keeps its standard name) — never under the
+    // root form, which has no separate branches/tags container to collide with.
+    if !is_root {
+        let eff_trunk = layout_trunk.as_deref().unwrap_or("trunk");
+        let eff_branches = layout_branches.as_deref().unwrap_or("branches");
+        let eff_tags = layout_tags.as_deref().unwrap_or("tags");
+        let containers = [
+            ("trunk", eff_trunk),
+            ("branches", eff_branches),
+            ("tags", eff_tags),
+        ];
+        for &(a_name, a) in &containers {
+            for &(b_name, b) in &containers {
+                if a_name == b_name {
+                    continue;
+                }
+                if b == a || b.starts_with(&format!("{a}/")) {
+                    return Err(usage_error(
+                        "decode",
+                        format!(
+                            "--layout-{b_name} ('{b}') is the same as, or inside, the {a_name} \
+                             container ('{a}')"
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+
     Ok(Command::Decode {
         kind,
         source,
@@ -472,6 +633,9 @@ fn parse_decode(args: &[String]) -> Result<Command, String> {
         infer_renames,
         reconstruct_refs,
         branch_lines,
+        layout_trunk,
+        layout_branches,
+        layout_tags,
         spill_dir,
         format,
     })
