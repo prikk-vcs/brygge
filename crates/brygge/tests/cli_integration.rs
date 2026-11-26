@@ -92,22 +92,13 @@ fn faithfulness_statement_reaches_stderr_even_when_decode_then_fails() {
     }
     let repo = TempRepo::new();
     repo.commit("a.txt", "one\n", "c1");
-    // A submodule triggers a floor refusal (decode fails) after the statement must already be printed.
-    let head = repo.git(&["rev-parse", "HEAD"]);
-    repo.git(&[
-        "update-index",
-        "--add",
-        "--cacheinfo",
-        &format!("160000,{head},sub"),
-    ]);
-    repo.git(&[
-        "-c",
-        "commit.gpgsign=false",
-        "commit",
-        "-q",
-        "-m",
-        "add gitlink",
-    ]);
+    // A shallow clone triggers a floor refusal (decode fails) after the statement must already be
+    // printed. RFC 021 D-3 took `submodule` off this floor, so it no longer serves this purpose.
+    std::fs::write(
+        repo.dir.join(".git/shallow"),
+        repo.git(&["rev-parse", "HEAD"]) + "\n",
+    )
+    .unwrap();
     let out = repo.dir.join("out.ir");
     let output = Command::new(bin())
         .args(["decode", "git"])

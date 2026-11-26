@@ -96,6 +96,225 @@ impl TempRepo {
         self.git(&["add", "-A"]);
         self.git(&["-c", "commit.gpgsign=false", "commit", "-q", "-m", msg]);
     }
+
+    /// Commits whatever is already in the index, untouched (RFC 021 D-3's gitlink fixtures): unlike
+    /// [`Self::commit_all`], this never runs `git add -A` first, which would otherwise see a gitlink
+    /// path as "deleted" (nothing on disk there, since no real submodule checkout exists) and stage its
+    /// removal. Every gitlink test below builds the index directly with [`Self::set_cacheinfo`] and
+    /// commits it exactly as set.
+    fn commit_index(&self, msg: &str) {
+        self.git(&["-c", "commit.gpgsign=false", "commit", "-q", "-m", msg]);
+    }
+
+    /// Sets one index entry directly (`git update-index --add --cacheinfo`), overwriting whatever was
+    /// at `path` before, whatever kind it was — the plumbing-level way to build a gitlink (mode
+    /// `160000`) or an ordinary blob entry without needing a matching working-tree file, which a real
+    /// submodule checkout would otherwise require.
+    fn set_cacheinfo(&self, mode: &str, oid: &str, path: &str) {
+        self.git(&[
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            &format!("{mode},{oid},{path}"),
+        ]);
+    }
+
+    /// Removes one index entry directly (`git update-index --force-remove`), the plumbing counterpart
+    /// to [`Self::set_cacheinfo`] — no working-tree file needs to exist or disappear.
+    fn force_remove(&self, path: &str) {
+        self.git(&["update-index", "--force-remove", path]);
+    }
+
+    /// Writes `contents` to a throwaway file and hashes it into the object database
+    /// (`git hash-object -w`), for a blob oid to feed [`Self::set_cacheinfo`] — never staged or
+    /// committed as itself.
+    fn hash_blob(&self, contents: &str) -> String {
+        let scratch = self.dir.join(format!(
+            ".blob-scratch-{}",
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::write(&scratch, contents).unwrap();
+        let oid = self.git(&["hash-object", "-w", &scratch.to_string_lossy()]);
+        let _ = std::fs::remove_file(&scratch);
+        oid
+    }
+}
+
+/// A commit id that names no object this repository actually has — syntactically a valid 40-hex SHA-1,
+/// which is all a gitlink's own entry ever needs to be (RFC 021 D-3: "a commit id that no object in the
+/// repository has is normal for a submodule").
+const GHOST_COMMIT: &str = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+
+/// RFC 021 D-3 (batch G, level 1/2): a gitlink entry decodes as `Content::Submodule`, never a floor
+/// refusal — and the decoder never opens, fetches or looks up the pinned commit, proved by pointing it
+/// at [`GHOST_COMMIT`], an id no object in this repository has. Decode would fail with a read error if
+/// anything tried to resolve it.
+#[test]
+fn decodes_an_added_submodule_never_reading_its_pinned_commit() {
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let r = TempRepo::new();
+    r.write("readme.txt", "hi\n");
+    r.commit_all("initial");
+    r.set_cacheinfo("160000", GHOST_COMMIT, "ghost-sub");
+    r.commit_index("add a gitlink to a commit this repo never has");
+
+    let ir = decode(r.path(), &Options::default()).unwrap();
+    let atom = ir.atoms.last().unwrap();
+    let op = atom
+        .ops
+        .iter()
+        .find(|op| op.path() == "ghost-sub")
+        .expect("the gitlink's own op");
+    match op.content() {
+        Some(Content::Submodule { commit }) => assert_eq!(hex_of(commit), GHOST_COMMIT),
+        other => panic!("expected an Add of Content::Submodule, got {other:?}"),
+    }
+    assert!(matches!(op, brygge_ir::PathOp::Add { .. }));
+}
+
+/// RFC 021 D-3: a submodule's pointer moving to a new commit, with the path unchanged, is `Modify` —
+/// same kind, new commit — never `Replace` (kind is unchanged) and never a delete+add.
+#[test]
+fn decodes_a_moved_submodule_pointer_as_modify() {
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let r = TempRepo::new();
+    r.write("readme.txt", "hi\n");
+    r.commit_all("c1");
+    let head1 = r.git(&["rev-parse", "HEAD"]);
+    r.write("other.txt", "x\n");
+    r.commit_all("c2");
+    let head2 = r.git(&["rev-parse", "HEAD"]);
+
+    r.set_cacheinfo("160000", &head1, "sub");
+    r.commit_index("add gitlink pinned at c1");
+    r.set_cacheinfo("160000", &head2, "sub");
+    r.commit_index("move gitlink to c2");
+
+    let ir = decode(r.path(), &Options::default()).unwrap();
+    let atom = ir.atoms.last().unwrap();
+    assert_eq!(
+        atom.ops.len(),
+        1,
+        "only the moved pointer should be an op: {:?}",
+        atom.ops
+    );
+    match &atom.ops[0] {
+        brygge_ir::PathOp::Modify {
+            path,
+            content: Content::Submodule { commit },
+            ..
+        } => {
+            assert_eq!(path, "sub");
+            assert_eq!(hex_of(commit), head2);
+        }
+        other => panic!("expected a Modify of Content::Submodule, got {other:?}"),
+    }
+}
+
+/// RFC 021 D-1/D-3: a path that was a file and becomes a submodule is `Replace` — a change of kind,
+/// never `Modify`.
+#[test]
+fn decodes_a_file_replaced_by_a_submodule_as_replace() {
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let r = TempRepo::new();
+    r.write("x.txt", "a file\n");
+    r.commit_all("c1");
+    let pin = r.git(&["rev-parse", "HEAD"]);
+
+    r.set_cacheinfo("160000", &pin, "x.txt");
+    r.commit_index("replace x.txt with a submodule");
+
+    let ir = decode(r.path(), &Options::default()).unwrap();
+    let atom = ir.atoms.last().unwrap();
+    match atom.ops.iter().find(|op| op.path() == "x.txt") {
+        Some(brygge_ir::PathOp::Replace {
+            content: Content::Submodule { commit },
+            ..
+        }) => assert_eq!(hex_of(commit), pin),
+        other => panic!("expected a Replace of Content::Submodule, got {other:?}"),
+    }
+}
+
+/// RFC 021 D-1/D-3: the reverse — a path that was a submodule and becomes a file is also `Replace`.
+#[test]
+fn decodes_a_submodule_replaced_by_a_file_as_replace() {
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let r = TempRepo::new();
+    r.write("readme.txt", "hi\n");
+    r.commit_all("c1");
+    let pin = r.git(&["rev-parse", "HEAD"]);
+    r.set_cacheinfo("160000", &pin, "y");
+    r.commit_index("add gitlink y");
+
+    let blob = r.hash_blob("a replacement file\n");
+    r.set_cacheinfo("100644", &blob, "y");
+    r.commit_index("replace submodule y with a file");
+
+    let ir = decode(r.path(), &Options::default()).unwrap();
+    let atom = ir.atoms.last().unwrap();
+    match atom.ops.iter().find(|op| op.path() == "y") {
+        Some(brygge_ir::PathOp::Replace {
+            content: Content::Blob { mode, .. },
+            ..
+        }) => assert_eq!(*mode, 0o100_644),
+        other => panic!("expected a Replace of Content::Blob, got {other:?}"),
+    }
+}
+
+/// RFC 021 D-3: a removed submodule is `Delete`, exactly like a removed file.
+#[test]
+fn decodes_a_removed_submodule_as_delete() {
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let r = TempRepo::new();
+    r.write("readme.txt", "hi\n");
+    r.commit_all("c1");
+    let pin = r.git(&["rev-parse", "HEAD"]);
+    r.set_cacheinfo("160000", &pin, "z");
+    r.commit_index("add gitlink z");
+
+    r.force_remove("z");
+    r.commit_index("remove gitlink z");
+
+    let ir = decode(r.path(), &Options::default()).unwrap();
+    let atom = ir.atoms.last().unwrap();
+    assert!(
+        atom.ops
+            .iter()
+            .any(|op| matches!(op, brygge_ir::PathOp::Delete { path, .. } if path == "z"))
+    );
+}
+
+/// RFC 021 D-3: the Git floor no longer refuses a submodule — `submodule` must not appear in the
+/// recorded floor string at all (the pinned string itself is checked in `floor::tests`).
+#[test]
+fn a_repository_with_a_submodule_no_longer_hits_the_floor() {
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let r = TempRepo::new();
+    r.write("readme.txt", "hi\n");
+    r.commit_all("c1");
+    let pin = r.git(&["rev-parse", "HEAD"]);
+    r.set_cacheinfo("160000", &pin, "sub");
+    r.commit_index("add gitlink");
+
+    decode(r.path(), &Options::default()).expect("a submodule is carried, never refused");
 }
 
 /// A repo with a linear history, a branch, a merge, a modify, a delete, and a tag.
@@ -307,38 +526,6 @@ fn loss_boundary_records_representation_drops() {
         !whats.iter().any(|w| w.contains("annotated tag")),
         "the old annotated-tag drop record is gone: {whats:?}"
     );
-}
-
-#[test]
-fn refuses_a_submodule_gitlink() {
-    if !git_available() {
-        eprintln!("skipping: git not on PATH");
-        return;
-    }
-    let r = TempRepo::new();
-    r.write("readme.txt", "hi\n");
-    r.commit_all("initial");
-    let head = r.git(&["rev-parse", "HEAD"]);
-    // Add a gitlink (mode 160000) pointing at any valid commit id.
-    r.git(&[
-        "update-index",
-        "--add",
-        "--cacheinfo",
-        &format!("160000,{head},sub"),
-    ]);
-    r.git(&[
-        "-c",
-        "commit.gpgsign=false",
-        "commit",
-        "-q",
-        "-m",
-        "add gitlink",
-    ]);
-
-    match decode(r.path(), &Options::default()) {
-        Err(crate::Error::FloorRefusal { feature, .. }) => assert_eq!(feature, "submodule"),
-        other => panic!("expected a submodule floor refusal, got {other:?}"),
-    }
 }
 
 #[test]

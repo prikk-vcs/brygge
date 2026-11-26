@@ -4,7 +4,6 @@
 //! `params["floor"]`, so a reviewer reads from the artifact which floor applied (PR-5). Changing this
 //! list is a reviewed code change, not a runtime knob: no caller can turn a floor item off.
 
-pub(crate) const SUBMODULE: &str = "submodule";
 pub(crate) const REPLACE_REF: &str = "replace-ref";
 pub(crate) const GRAFTS: &str = "grafts";
 pub(crate) const SHALLOW_CLONE: &str = "shallow-clone";
@@ -29,7 +28,6 @@ pub(crate) const SHA256_OBJECT_FORMAT: &str = "sha256-object-format";
 /// Every refused feature, in the order this module declares them. This is the list recorded into
 /// provenance (`params["floor"]`) and the list an architect review changes to change the floor.
 pub(crate) const ALL: &[&str] = &[
-    SUBMODULE,
     REPLACE_REF,
     GRAFTS,
     SHALLOW_CLONE,

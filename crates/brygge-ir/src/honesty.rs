@@ -6,15 +6,20 @@
 //! be lost with a log. The report is **always complete**: there is no flag that drops the derived,
 //! dropped, or flagged sections (`HO-5/CF-02`); verbosity affects rendering, never presence.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::rc::Rc;
 
-use crate::model::{FlagKind, Ir, LossClass};
+use crate::model::{AtomId, Content, FlagKind, Ir, LossClass};
 use crate::status::EpistemicStatus;
 
 /// The machine-report contract version (RFC 002 D-3), independent of the IR contract and the tool.
 /// Bumped to 2 by RFC 011 (`refused` replaced with `flagged`), and to 3 by the machine-output cleanup:
 /// keys that embed a label are `snake_case`, and `skipped_non_critical_fields` is always printed.
 pub const REPORT_VERSION: u32 = 3;
+
+/// The submodule sentence's own machine-key version (RFC 021 D-4, batch G), independent of
+/// `REPORT_VERSION`: shown by both `decode` and `inspect`, since both render one [`FidelityReport`].
+pub const SUBMODULES_REPORT_VERSION: u32 = 1;
 
 /// The `dropped` label for [`LossClass::Representation`] (matches [`class_label`]), used by
 /// [`FidelityReport::render_human`] to split the representation-class count onto its own "not history"
@@ -53,6 +58,10 @@ pub struct FidelityReport {
     pub transformed_refs: BTreeMap<u64, u64>,
     /// `Transform`-class drops, grouped by step → count.
     pub transformed_drops: BTreeMap<u64, u64>,
+    /// Distinct paths that ever held a submodule anywhere in the history (RFC 021 D-4's `P`).
+    pub submodule_paths: u64,
+    /// Distinct paths holding a submodule at any ref's own target (RFC 021 D-4's `T`).
+    pub submodule_at_tips: u64,
 }
 
 /// Walk a status's own `Transformed`/`prior` chain, incrementing `counts[step]` once for every
@@ -110,6 +119,15 @@ pub fn summary(ir: &Ir) -> FidelityReport {
             .or_insert(0) += flag.count;
     }
 
+    let mut submodule_paths_ever: BTreeSet<&str> = BTreeSet::new();
+    for atom in &ir.atoms {
+        for op in &atom.ops {
+            if matches!(op.content(), Some(Content::Submodule { .. })) {
+                submodule_paths_ever.insert(op.path());
+            }
+        }
+    }
+
     FidelityReport {
         report_version: REPORT_VERSION,
         atoms: ir.atoms.len() as u64,
@@ -123,7 +141,59 @@ pub fn summary(ir: &Ir) -> FidelityReport {
         transformed_atoms,
         transformed_refs,
         transformed_drops,
+        submodule_paths: submodule_paths_ever.len() as u64,
+        submodule_at_tips: submodules_at_tips(ir).len() as u64,
     }
+}
+
+/// Every path holding a submodule at any ref's own target commit (RFC 021 D-4's `T`): each atom's own
+/// submodule-path set is built incrementally from its first parent's set (mirroring
+/// `encode_git::check`'s tree-state walk, but tracking only submodule paths, since that is all `T`
+/// needs), assuming atoms are already in canonical, parents-before-children order — the same assumption
+/// `encode_git::write_stream` already makes. An atom's retained set is dropped once no later atom still
+/// needs it as a first-parent basis, so this never holds the whole history's states at once.
+fn submodules_at_tips(ir: &Ir) -> BTreeSet<String> {
+    let mut remaining: HashMap<AtomId, u32> = HashMap::new();
+    for atom in &ir.atoms {
+        if let Some(first) = atom.parents.first() {
+            *remaining.entry(*first).or_insert(0) += 1;
+        }
+    }
+    let targets: HashSet<AtomId> = ir.refs.iter().map(|rf| rf.target).collect();
+
+    let mut state_of: HashMap<AtomId, Rc<BTreeSet<String>>> = HashMap::new();
+    let mut tips: BTreeSet<String> = BTreeSet::new();
+    for atom in &ir.atoms {
+        let mut set: BTreeSet<String> = match atom.parents.first() {
+            Some(p) => state_of.get(p).map(|rc| (**rc).clone()).unwrap_or_default(),
+            None => BTreeSet::new(),
+        };
+        for op in &atom.ops {
+            match op.content() {
+                Some(Content::Submodule { .. }) => {
+                    set.insert(op.path().to_string());
+                }
+                Some(Content::Blob { .. }) | None => {
+                    set.remove(op.path());
+                }
+            }
+        }
+        if targets.contains(&atom.id) {
+            tips.extend(set.iter().cloned());
+        }
+        if let Some(first) = atom.parents.first() {
+            if let Some(c) = remaining.get_mut(first) {
+                *c = c.saturating_sub(1);
+                if *c == 0 {
+                    state_of.remove(first);
+                }
+            }
+        }
+        if remaining.get(&atom.id).copied().unwrap_or(0) > 0 {
+            state_of.insert(atom.id, Rc::new(set));
+        }
+    }
+    tips
 }
 
 /// A label as a machine-output key segment: keys are `snake_case`, values (labels) stay `kebab-case`.
@@ -177,6 +247,13 @@ impl FidelityReport {
         }
         for (step, n) in &self.transformed_drops {
             let _ = writeln!(s, "transformed_drops.{step}={n}");
+        }
+        // RFC 021 D-4 (batch G): absent entirely when the history never held a submodule, so a decode
+        // or inspect of an ordinary repository's report is byte-for-byte unchanged by this RFC.
+        if self.submodule_paths > 0 {
+            let _ = writeln!(s, "decode_submodules_version={SUBMODULES_REPORT_VERSION}");
+            let _ = writeln!(s, "decode.submodules.paths={}", self.submodule_paths);
+            let _ = writeln!(s, "decode.submodules.at_tips={}", self.submodule_at_tips);
         }
         s
     }
@@ -269,6 +346,16 @@ impl FidelityReport {
             for (step, n) in &self.transformed_drops {
                 let _ = writeln!(s, "    step {step}: {n} drop(s)");
             }
+        }
+        // RFC 021 D-4 (batch G): condition A — wherever a submodule appears, say plainly what brygge
+        // did not do. Absent entirely when the history never held one.
+        if self.submodule_paths > 0 {
+            let _ = writeln!(
+                s,
+                "submodules: {} path(s) in the history, {} at the branch and tag tips; their own \
+                 repositories were not read, imported or verified",
+                self.submodule_paths, self.submodule_at_tips
+            );
         }
         s
     }

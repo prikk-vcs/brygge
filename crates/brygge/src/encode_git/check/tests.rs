@@ -316,6 +316,28 @@ fn a_different_tree_is_caught() {
     );
 }
 
+/// RFC 021 D-6 (batch G): a blob in the artifact and a submodule in the result at the same path is a
+/// difference, the same as any other state mismatch — `EntryState`'s own `PartialEq` gives this with no
+/// special-casing in `compare_matched_pair`.
+#[test]
+fn a_blob_in_the_artifact_and_a_submodule_in_the_result_at_the_same_path_is_caught() {
+    let base = baseline_artifact();
+    let digest_hex = trailers::to_hex(&DIGEST);
+    let (result, refs) = perturbed_atom(&base, &digest_hex, |draft| {
+        draft.ops = vec![PathOp::Add {
+            path: "f.txt".to_string(),
+            content: Content::submodule(vec![0xcd; 20]),
+            status: brygge_ir::EpistemicStatus::Stated,
+        }];
+    });
+    assert_one_diff_containing(
+        &base,
+        &result,
+        &refs,
+        &format!("{}: the resulting tree differs", expected_label()),
+    );
+}
+
 #[test]
 fn a_different_author_is_caught() {
     let base = baseline_artifact();

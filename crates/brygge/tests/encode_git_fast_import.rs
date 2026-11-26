@@ -110,6 +110,18 @@ impl TempRepo {
         ]);
     }
 
+    /// RFC 021 D-3: a gitlink entry (mode `160000`) pinned at `commit_hex` — the plumbing-level way to
+    /// build a submodule, the same pattern [`Self::add_symlink`] already uses for mode `120000`. No
+    /// second repository is needed: the pinned commit id need not name any object this repository has.
+    fn add_submodule(&self, rel: &str, commit_hex: &str) {
+        self.git(&[
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            &format!("160000,{commit_hex},{rel}"),
+        ]);
+    }
+
     fn make_executable(&self, rel: &str) {
         self.git(&["add", rel]);
         self.git(&["update-index", "--chmod=+x", rel]);
@@ -310,6 +322,78 @@ fn the_git_round_trip_reproduces_tree_message_author_and_refs() {
     let report = std::fs::read_to_string(&report_path).unwrap();
     assert!(report.contains("encode_git.commits=4"), "{report}");
     assert!(report.contains("encode_git.tags=1"), "{report}");
+}
+
+/// RFC 021, batch G: the full pipeline for a submodule — a real repository decoded, `verify`,
+/// `verify --against-source`, `encode git` (with its own in-process G2 check), then `git ls-tree` on the
+/// real result, showing the same path and the same pinned commit id as the source.
+#[test]
+fn a_submodule_round_trips_through_decode_verify_and_encode_git() {
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let source = TempRepo::new();
+    source.write("readme.txt", "hello\n");
+    source.git(&["add", "readme.txt"]);
+    source.commit_only("initial");
+    // A commit id this repository never has: "a commit id no object in the repository has is normal
+    // for a submodule" (RFC 021 D-3) — proof that nothing is fetched or looked up for it.
+    let pinned = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+    source.add_submodule("vendor/lib", pinned);
+    source.commit_only("add a submodule");
+
+    let ir =
+        brygge_decode_git::decode(source.path(), &brygge_decode_git::Options::default()).unwrap();
+    let artifact = write_artifact(&ir);
+
+    let verify = Command::new(bin())
+        .arg("verify")
+        .arg(&artifact)
+        .output()
+        .expect("run brygge verify");
+    assert!(verify.status.success(), "{:?}", verify);
+
+    let verify_source = Command::new(bin())
+        .arg("verify")
+        .arg(&artifact)
+        .arg("--against-source")
+        .arg(source.path())
+        .args(["--format", "machine"])
+        .output()
+        .expect("run brygge verify --against-source");
+    assert!(verify_source.status.success(), "{:?}", verify_source);
+    let stdout = String::from_utf8_lossy(&verify_source.stdout);
+    assert!(
+        stdout.contains("verify.against_source=corresponds"),
+        "{stdout}"
+    );
+
+    let out = scratch_dir("submodule-result").join("repo");
+    let encoded = run_encode_git(&artifact, &out);
+    assert!(
+        encoded.status.success(),
+        "encode git failed: {}",
+        String::from_utf8_lossy(&encoded.stderr)
+    );
+
+    let ls = git_out(&out, &["ls-tree", "-r", "main"]);
+    assert!(
+        ls.contains(&format!("160000 commit {pinned}\tvendor/lib")),
+        "{ls}"
+    );
+
+    let report_path = {
+        let mut p = out.as_os_str().to_os_string();
+        p.push(".brygge-report");
+        PathBuf::from(p)
+    };
+    let report = std::fs::read_to_string(&report_path).unwrap();
+    assert!(report.contains("encode_git.submodules.paths=1"), "{report}");
+    assert!(
+        report.contains("encode_git.submodules.at_tips=1"),
+        "{report}"
+    );
 }
 
 #[test]

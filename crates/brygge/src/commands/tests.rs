@@ -677,8 +677,10 @@ fn guard_decoder_passes_through_a_normal_result() {
     assert_eq!(guard_decoder(|| 42u32), Ok(42));
 }
 
+/// RFC 021 D-3 (batch G): a submodule no longer hits the Git floor at all — it decodes cleanly, carried
+/// as `Content::Submodule`, and the report says so (D-4).
 #[test]
-fn decode_of_a_submodule_exits_floor_refusal() {
+fn decode_of_a_submodule_succeeds_and_reports_it() {
     if !git_available() {
         eprintln!("skipping: git not on PATH");
         return;
@@ -714,9 +716,15 @@ fn decode_of_a_submodule_exits_floor_refusal() {
             None,
             Format::Human,
         ),
-        exit::FLOOR_REFUSAL
+        exit::CLEAN
     );
-    assert!(!out.exists(), "no artifact is written on a refusal");
+    assert!(out.exists(), "a submodule is carried, not refused");
+    let decoded = brygge_ir::from_file(&out).unwrap();
+    let fidelity = brygge_ir::honesty::summary(&decoded.ir);
+    assert_eq!(fidelity.submodule_paths, 1);
+    assert_eq!(fidelity.submodule_at_tips, 1);
+    let floor = decoded.ir.provenance.params.get("floor").cloned().unwrap();
+    assert!(!floor.contains("submodule"));
 }
 
 // ---- RFC 010 §2.6: a ResourceLimit from any decoder maps to exit 20 --------------------------------
@@ -868,22 +876,13 @@ fn a_pre_existing_artifact_survives_a_failing_decode_and_leaves_no_temp_file() {
     );
     let good_bytes = std::fs::read(&out).unwrap();
 
-    // Now make the same repo un-decodable (a submodule) and decode again to the same --out.
-    let head = repo.git(&["rev-parse", "HEAD"]);
-    repo.git(&[
-        "update-index",
-        "--add",
-        "--cacheinfo",
-        &format!("160000,{head},sub"),
-    ]);
-    repo.git(&[
-        "-c",
-        "commit.gpgsign=false",
-        "commit",
-        "-q",
-        "-m",
-        "break it",
-    ]);
+    // Now make the same repo un-decodable (a shallow clone — RFC 021 D-3 took `submodule` off this
+    // floor, so a submodule no longer serves this purpose) and decode again to the same --out.
+    std::fs::write(
+        repo.dir.join(".git/shallow"),
+        repo.git(&["rev-parse", "HEAD"]) + "\n",
+    )
+    .unwrap();
     assert_eq!(
         run_decode(
             SourceKind::Git,
@@ -3531,7 +3530,13 @@ fn verify_against_source_corresponds_on_a_0_2_0_artifact() {
     // rather than falsely reporting tampering.
     let decoded = brygge_ir::from_file(&fixture).unwrap();
     match run_against_source(&decoded.ir, r.path(), &brygge_ir::Storage::Memory) {
-        AgainstSourceOutcome::Corresponds(note) => assert_version_note("0.6.0", note),
+        AgainstSourceOutcome::Corresponds(note) => assert_version_note(
+            "0.6.0",
+            note,
+            Some(
+                "the decoder's floor changed between the two decodes: added none; removed submodule",
+            ),
+        ),
         other => panic!("expected Corresponds across brygge versions, got {other:?}"),
     }
 }
@@ -3542,22 +3547,21 @@ fn verify_against_source_corresponds_on_a_0_2_0_artifact() {
 /// checkout of this very fix that sits on `main` before the separate version-bump commit lands (the
 /// fixtures and this fix are reviewed and pushed first; see review 107's "Then"). Asserts whichever
 /// is actually true, rather than assuming the gap, so these tests pass on both sides of that bump.
-fn assert_version_note(fixture_version: &str, note: Option<String>) {
+/// `floor_diff`, when given, is the bare text [`decoder_floor_note`] produces (review 140) — a peer
+/// note to the version note, joined the same way [`combine_notes`] joins any two: `"; "` between
+/// present ones, with neither note implying a leading separator of its own. Both of this function's two
+/// Git callers now pass RFC 021 D-3's real diff: `submodule` left the Git floor between brygge 0.6.0
+/// (when these fixtures were made) and this build.
+fn assert_version_note(fixture_version: &str, note: Option<String>, floor_diff: Option<&str>) {
     let this_version = env!("CARGO_PKG_VERSION");
-    if this_version == fixture_version {
-        assert_eq!(
-            note, None,
-            "this build's own version equals the fixture's: no version gap, no note"
-        );
-    } else {
-        assert_eq!(
-            note,
-            Some(format!(
-                "decoded by brygge {fixture_version}, re-derived by {this_version}; the history is identical"
-            )),
-            "the note names both versions and says the history is identical"
-        );
-    }
+    let version_note = (this_version != fixture_version).then(|| {
+        format!("decoded by brygge {fixture_version}, re-derived by {this_version}; the history is identical")
+    });
+    let expected = combine_notes(vec![version_note, floor_diff.map(str::to_string)]);
+    assert_eq!(
+        note, expected,
+        "the note names the version gap (if any) and the floor diff (if any), joined like any two notes"
+    );
 }
 
 /// Review 140: a decoder's floor is a fact about the decoder, not about the history (CR-07.6's pattern,
@@ -3836,7 +3840,13 @@ fn verify_against_source_corresponds_on_a_0_2_0_git_rename_artifact_across_brygg
     assert_eq!(decoded.contract, brygge_ir::ContractVersion::new(0, 2, 0));
 
     match run_against_source(&decoded.ir, r.path(), &brygge_ir::Storage::Memory) {
-        AgainstSourceOutcome::Corresponds(note) => assert_version_note("0.6.0", note),
+        AgainstSourceOutcome::Corresponds(note) => assert_version_note(
+            "0.6.0",
+            note,
+            Some(
+                "the decoder's floor changed between the two decodes: added none; removed submodule",
+            ),
+        ),
         other => panic!("expected Corresponds across brygge versions, got {other:?}"),
     }
 }

@@ -5,8 +5,9 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
 
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -84,6 +85,16 @@ impl TempRepo {
     fn commit(&self, msg: &str) {
         self.git(&["-c", "commit.gpgsign=false", "commit", "-q", "-m", msg]);
     }
+
+    /// RFC 021 D-3: a gitlink entry (mode `160000`) pinned at `commit_hex`.
+    fn add_submodule(&self, rel: &str, commit_hex: &str) {
+        self.git(&[
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            &format!("160000,{commit_hex},{rel}"),
+        ]);
+    }
 }
 
 fn write_artifact(ir: &brygge_ir::Ir) -> PathBuf {
@@ -91,6 +102,37 @@ fn write_artifact(ir: &brygge_ir::Ir) -> PathBuf {
     let path = dir.join("artifact.ir");
     std::fs::write(&path, brygge_ir::to_bytes(ir)).unwrap();
     path
+}
+
+/// As [`encoded_fixture`], but the second commit adds a submodule instead of changing `a.txt` — for the
+/// tamper test that moves its pinned commit (RFC 021 D-6, batch G). A top-level path (`git mktree`, the
+/// tamper's own tool, builds one tree level at a time, so the tampered tree is easiest to write by hand
+/// with no nested path).
+fn encoded_fixture_with_submodule(pinned: &str) -> (PathBuf, PathBuf) {
+    let source = TempRepo::new();
+    source.write("a.txt", "a\n");
+    source.git(&["add", "a.txt"]);
+    source.commit("first");
+    source.add_submodule("submodule", pinned);
+    source.commit("add a submodule");
+
+    let ir = brygge_decode_git::decode(source.path(), &brygge_decode_git::Options::default())
+        .expect("decode the fixture");
+    let artifact = write_artifact(&ir);
+    let out = scratch_dir("encoded").join("repo.git");
+    let output = Command::new(bin())
+        .args(["encode", "git"])
+        .arg(&artifact)
+        .arg("--out")
+        .arg(&out)
+        .output()
+        .expect("run brygge encode git");
+    assert!(
+        output.status.success(),
+        "encode git failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    (artifact, out)
 }
 
 /// A fixture with two commits and one tag, encoded once. Returns the artifact and the encoded
@@ -199,6 +241,84 @@ fn an_amended_commit_message_does_not_correspond() {
             "-m",
             "tampered message",
             "HEAD^{tree}",
+        ],
+    );
+    assert!(
+        new_commit.status.success(),
+        "commit-tree failed: {}",
+        String::from_utf8_lossy(&new_commit.stderr)
+    );
+    let new_oid = String::from_utf8_lossy(&new_commit.stdout)
+        .trim()
+        .to_string();
+    let status = git_in(&tampered, &["update-ref", "refs/heads/main", &new_oid]);
+    assert!(status.status.success());
+
+    let out = run_against_target(&artifact, &tampered);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("verify.against_target=does-not-correspond"),
+        "{stdout}"
+    );
+    assert_eq!(out.status.code(), Some(50));
+    let _ = std::fs::remove_dir_all(&repo);
+    let _ = std::fs::remove_dir_all(&tampered);
+}
+
+/// RFC 021 D-6 (batch G): a submodule's pinned commit is compared like any other entry's state — moving
+/// it in the result, with nothing else changed, is caught and the path is named.
+#[test]
+fn a_moved_submodule_pointer_does_not_correspond_naming_the_path() {
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let pinned = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+    let moved = "cafebabecafebabecafebabecafebabecafebabe";
+    let (artifact, repo) = encoded_fixture_with_submodule(pinned);
+    let tampered = copy_repo(&repo);
+
+    let a_txt_oid = git_in(&tampered, &["rev-parse", "HEAD:a.txt"]);
+    assert!(a_txt_oid.status.success());
+    let a_txt_oid = String::from_utf8_lossy(&a_txt_oid.stdout)
+        .trim()
+        .to_string();
+
+    // A new tree, built by hand (`git mktree`), with the gitlink's own pinned commit moved — the only
+    // change from `HEAD^{tree}`.
+    let tree_text = format!("100644 blob {a_txt_oid}\ta.txt\n160000 commit {moved}\tsubmodule\n");
+    let mut mktree = Command::new("git")
+        .current_dir(&tampered)
+        .arg("mktree")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn git mktree");
+    mktree
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(tree_text.as_bytes())
+        .unwrap();
+    let mktree_out = mktree.wait_with_output().unwrap();
+    assert!(
+        mktree_out.status.success(),
+        "mktree failed: {:?}",
+        mktree_out
+    );
+    let new_tree = String::from_utf8_lossy(&mktree_out.stdout)
+        .trim()
+        .to_string();
+
+    let new_commit = git_in(
+        &tampered,
+        &[
+            "commit-tree",
+            "-p",
+            "HEAD^",
+            "-m",
+            "add a submodule",
+            &new_tree,
         ],
     );
     assert!(

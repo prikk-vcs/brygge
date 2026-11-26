@@ -239,6 +239,82 @@ fn three_refusal_kinds_at_once_are_all_collected() {
     );
 }
 
+// ---- write_stream's gitlink form (RFC 021 D-5, batch G) ----------------------------------------------
+
+#[test]
+fn a_submodule_passes_preflight_and_is_never_refused() {
+    let mut builder = IrBuilder::new(provenance(SourceKind::Git));
+    let atom_id = builder
+        .add_atom(AtomDraft {
+            parents: Vec::new(),
+            ops: vec![brygge_ir::PathOp::Add {
+                path: "vendor/lib".to_string(),
+                content: Content::submodule(vec![0xab; 20]),
+                status: brygge_ir::EpistemicStatus::Stated,
+            }],
+            copies: Vec::new(),
+            metadata: MetadataClaims::default(),
+            source: source(SourceKind::Git, b"r1"),
+            status: brygge_ir::EpistemicStatus::Stated,
+        })
+        .unwrap();
+    builder
+        .add_ref(RefRecord {
+            name: "main".to_string(),
+            kind: RefKind::Branch,
+            target: atom_id,
+            status: brygge_ir::EpistemicStatus::Stated,
+            source: None,
+            annotation: None,
+        })
+        .unwrap();
+    let ir = builder.finish().unwrap();
+    assert!(
+        preflight(&ir).is_empty(),
+        "a submodule is written, not refused, since batch G"
+    );
+}
+
+#[test]
+fn write_stream_writes_a_submodule_as_a_gitlink_m_line() {
+    let mut builder = IrBuilder::new(provenance(SourceKind::Git));
+    let atom_id = builder
+        .add_atom(AtomDraft {
+            parents: Vec::new(),
+            ops: vec![brygge_ir::PathOp::Add {
+                path: "vendor/lib".to_string(),
+                content: Content::submodule(vec![0xab; 20]),
+                status: brygge_ir::EpistemicStatus::Stated,
+            }],
+            copies: Vec::new(),
+            metadata: MetadataClaims::default(),
+            source: source(SourceKind::Git, b"r1"),
+            status: brygge_ir::EpistemicStatus::Stated,
+        })
+        .unwrap();
+    builder
+        .add_ref(RefRecord {
+            name: "main".to_string(),
+            kind: RefKind::Branch,
+            target: atom_id,
+            status: brygge_ir::EpistemicStatus::Stated,
+            source: None,
+            annotation: None,
+        })
+        .unwrap();
+    let ir = builder.finish().unwrap();
+
+    let mut out = Vec::new();
+    write_stream(&ir, &[0u8; 32], &mut out).unwrap();
+    let text = String::from_utf8(out).unwrap();
+    // The gitlink form: an object id written directly, never a `:mark` (this commit was never itself
+    // written by this stream — it is a pinned reference to one that may not even exist here).
+    assert!(
+        text.contains(&format!("M 160000 {} vendor/lib", "ab".repeat(20))),
+        "{text}"
+    );
+}
+
 // ---- choose_default_branch (D-3) ---------------------------------------------------------------------
 
 fn ir_with_branch_names(names: &[&str]) -> brygge_ir::Ir {

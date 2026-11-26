@@ -79,11 +79,21 @@ pub(crate) enum Comparison {
     NotChecked(String),
 }
 
-/// Every atom's resulting tree state, incrementally: `path → (mode, content id)` after that atom's own
-/// ops, built from its first parent's state (RFC 019 D-6 §4 — a merge's `M`/`D` ops are always relative
-/// to the `from` parent, exactly as `fast-import` and `write_stream` both treat them). `Rc`-shared so a
-/// branch point costs one pointer clone, not a map clone, until a child actually mutates it.
-type TreeState = BTreeMap<String, (u32, BlobId)>;
+/// What one path holds in a [`TreeState`] (RFC 019 D-6 §4, extended by RFC 021 D-6): a blob's `(mode,
+/// content id)`, or a submodule's pinned commit id. A blob at a path on one side and a submodule at the
+/// same path on the other is a difference, the same as any other state mismatch — `PartialEq` alone
+/// gives that, with no special-casing in [`compare_matched_pair`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum EntryState {
+    Blob(u32, BlobId),
+    Submodule(Vec<u8>),
+}
+
+/// Every atom's resulting tree state, incrementally: `path → state` after that atom's own ops, built
+/// from its first parent's state (RFC 019 D-6 §4 — a merge's `M`/`D` ops are always relative to the
+/// `from` parent, exactly as `fast-import` and `write_stream` both treat them). `Rc`-shared so a branch
+/// point costs one pointer clone, not a map clone, until a child actually mutates it.
+type TreeState = BTreeMap<String, EntryState>;
 
 fn apply_ops(state: &mut TreeState, ops: &[PathOp]) {
     for op in ops {
@@ -91,13 +101,12 @@ fn apply_ops(state: &mut TreeState, ops: &[PathOp]) {
             PathOp::Add { path, content, .. }
             | PathOp::Modify { path, content, .. }
             | PathOp::Replace { path, content, .. } => match content {
-                // A submodule's state is not yet tracked here (RFC 021 D-6 defers this comparison to
-                // batch G, alongside the Git decoder that would first produce one) — `encode_git`'s own
-                // `preflight` already refuses any artifact holding one before this ever runs.
                 Content::Blob { blob, mode } => {
-                    state.insert(path.clone(), (*mode, *blob));
+                    state.insert(path.clone(), EntryState::Blob(*mode, *blob));
                 }
-                Content::Submodule { .. } => {}
+                Content::Submodule { commit } => {
+                    state.insert(path.clone(), EntryState::Submodule(commit.clone()));
+                }
             },
             PathOp::Delete { path, .. } => {
                 state.remove(path);

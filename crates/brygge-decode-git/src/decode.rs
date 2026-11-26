@@ -886,8 +886,15 @@ fn count_snapshot_uses(
     uses
 }
 
+/// The raw mode `gix::objs::tree::EntryKind::Commit` normalizes to — Git's own tree-entry mode for a
+/// gitlink (a submodule), fixed by the Git tree-object format itself, not an implementation detail of
+/// this crate's `gix` dependency. `Snapshot` stores every leaf entry's mode as a plain `u32` (blob,
+/// executable blob, symlink or gitlink alike), so this is how [`diff_to_ops`] tells a submodule apart
+/// from a blob once the kind information `walk_tree` had is gone (RFC 021 D-3).
+const GITLINK_MODE: u32 = 0o160_000;
+
 /// Build the full path→(oid,mode) snapshot of a tree, caching it while it is still needed. A gitlink
-/// (submodule) entry is a floor refusal (RFC 004 D-4).
+/// entry is carried as a submodule (RFC 021 D-3, batch G) — never as a floor refusal.
 fn snapshot(
     repo: &gix::Repository,
     tree_id: ObjectId,
@@ -969,15 +976,11 @@ fn walk_tree(
                     }
                     stack.push((oid, path, child_depth));
                 }
-                gix::objs::tree::EntryKind::Commit => {
-                    return Err(Error::FloorRefusal {
-                        feature: floor::SUBMODULE.to_string(),
-                        reason: format!(
-                            "submodule (gitlink) at '{path}' points outside this repository; refused \
-                             rather than approximated"
-                        ),
-                    });
-                }
+                // RFC 021 D-3 (batch G): a gitlink (`EntryKind::Commit`) is carried, not refused — its
+                // `oid` *is* the pinned commit id, embedded directly in the tree entry, so this never
+                // reads, fetches or recurses into the other repository. It joins the flat snapshot
+                // exactly like any other leaf entry, caught below with blobs and symlinks; `diff_to_ops`
+                // tells it apart from a blob by `mode` alone ([`is_gitlink_mode`]).
                 _ => {
                     // CR-03 §2.3.4: valid UTF-8 paths cannot collide at this point (git trees disallow
                     // duplicate entry names, and entry names cannot contain '/'); this is defense in
@@ -1013,35 +1016,53 @@ fn diff_to_ops(
     let mut deleted_by_oid: BTreeMap<ObjectId, Vec<String>> = BTreeMap::new();
 
     for (path, (oid, mode)) in child {
+        let child_is_submodule = *mode == GITLINK_MODE;
         match base.get(path) {
             None => {
-                let blob = builder.add_blob(blob_bytes(repo, *oid, limits)?)?;
+                let content = content_for(repo, *oid, *mode, limits, builder)?;
                 ops.push(PathOp::Add {
                     path: path.clone(),
-                    content: Content::blob(blob, *mode),
+                    content,
                     status: EpistemicStatus::Stated,
                 });
-                added_by_oid.entry(*oid).or_default().push(path.clone());
+                // Rename inference below is blob-only (RFC 004 D-3's exact-content-move rule was never
+                // specified for a submodule's pinned commit id; a moved pointer is already a plain
+                // `Modify` at its own path, same kind, new commit — there is nothing to infer).
+                if !child_is_submodule {
+                    added_by_oid.entry(*oid).or_default().push(path.clone());
+                }
             }
             Some((base_oid, base_mode)) => {
-                if base_oid != oid || base_mode != mode {
-                    let blob = builder.add_blob(blob_bytes(repo, *oid, limits)?)?;
+                let base_is_submodule = *base_mode == GITLINK_MODE;
+                if base_is_submodule != child_is_submodule {
+                    // A change of kind at one path is always `Replace` (RFC 021 D-1): `Modify` keeps the
+                    // content's kind, whether blob or submodule, whatever else about it changed.
+                    let content = content_for(repo, *oid, *mode, limits, builder)?;
+                    ops.push(PathOp::Replace {
+                        path: path.clone(),
+                        content,
+                        status: EpistemicStatus::Stated,
+                    });
+                } else if base_oid != oid || base_mode != mode {
+                    let content = content_for(repo, *oid, *mode, limits, builder)?;
                     ops.push(PathOp::Modify {
                         path: path.clone(),
-                        content: Content::blob(blob, *mode),
+                        content,
                         status: EpistemicStatus::Stated,
                     });
                 }
             }
         }
     }
-    for (path, (oid, _)) in base {
+    for (path, (oid, mode)) in base {
         if !child.contains_key(path) {
             ops.push(PathOp::Delete {
                 path: path.clone(),
                 status: EpistemicStatus::Stated,
             });
-            deleted_by_oid.entry(*oid).or_default().push(path.clone());
+            if *mode != GITLINK_MODE {
+                deleted_by_oid.entry(*oid).or_default().push(path.clone());
+            }
         }
     }
 
@@ -1079,6 +1100,26 @@ fn diff_to_ops(
         }
     }
     Ok((ops, copies))
+}
+
+/// What `path` holds, told apart by `mode` alone (RFC 021 D-3): a submodule's pinned commit id is the
+/// tree entry's own `oid`, read directly — never a blob lookup, since a gitlink's `oid` names a commit
+/// in another repository, which this decoder never opens, fetches or recurses into (a commit id no
+/// object in this repository has is normal for a submodule). Any other mode reads the blob's bytes, as
+/// before this RFC.
+fn content_for(
+    repo: &gix::Repository,
+    oid: ObjectId,
+    mode: u32,
+    limits: &Limits,
+    builder: &mut IrBuilder,
+) -> Result<Content, Error> {
+    if mode == GITLINK_MODE {
+        Ok(Content::submodule(oid.as_bytes().to_vec()))
+    } else {
+        let blob = builder.add_blob(blob_bytes(repo, oid, limits)?)?;
+        Ok(Content::blob(blob, mode))
+    }
 }
 
 /// Read one blob's bytes, refusing before allocation if it exceeds `limits.max_blob_bytes` (RFC 010

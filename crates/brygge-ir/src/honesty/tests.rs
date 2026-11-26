@@ -8,7 +8,7 @@ use super::*;
 use crate::builder::{AtomDraft, IrBuilder};
 use crate::model::{
     Content, CopyRecord, DropRecord, Flag, FlagKind, ImportProvenance, LossBoundary, LossClass,
-    MetadataClaims, PathOp, SourceIdentity, SourceKind,
+    MetadataClaims, PathOp, RefKind, RefRecord, SourceIdentity, SourceKind,
 };
 use crate::status::{Derivation, DerivationKind, EpistemicStatus};
 
@@ -272,4 +272,118 @@ fn a_representation_drop_is_counted_on_the_not_history_line_not_recorded_loss() 
     let human = summary(&b.finish().unwrap()).render_human();
     assert!(human.contains("not history (no content or claim lost): 1"));
     assert!(human.contains("dropped (recorded loss): nothing"));
+}
+
+#[test]
+fn an_import_with_no_submodule_omits_the_sentence_and_the_machine_keys_entirely() {
+    // `build()` holds no submodule at all — RFC 021 D-4's report lines must be byte-absent, not
+    // present with a zero count, so an ordinary repository's report is unchanged by this RFC.
+    let r = summary(&build());
+    assert_eq!(r.submodule_paths, 0);
+    assert_eq!(r.submodule_at_tips, 0);
+    assert!(!r.render_human().contains("submodules:"));
+    assert!(!r.render_machine().contains("submodules"));
+    assert!(!r.render_machine().contains("decode_submodules_version"));
+}
+
+#[test]
+fn summary_counts_a_submodule_present_at_a_ref_target_in_both_history_and_at_tips() {
+    let mut b = IrBuilder::new(provenance());
+    let readme_blob = b.add_blob(b"hi".to_vec()).unwrap();
+    let root = b
+        .add_atom(AtomDraft {
+            parents: vec![],
+            ops: vec![PathOp::Add {
+                path: "readme".into(),
+                content: Content::blob(readme_blob, 0o100_644),
+                status: EpistemicStatus::Stated,
+            }],
+            copies: vec![],
+            metadata: MetadataClaims::default(),
+            source: src(b"c1"),
+            status: EpistemicStatus::Stated,
+        })
+        .unwrap();
+    let with_sub = b
+        .add_atom(AtomDraft {
+            parents: vec![root],
+            ops: vec![PathOp::Add {
+                path: "sub".into(),
+                content: Content::submodule(vec![0xab; 20]),
+                status: EpistemicStatus::Stated,
+            }],
+            copies: vec![],
+            metadata: MetadataClaims::default(),
+            source: src(b"c2"),
+            status: EpistemicStatus::Stated,
+        })
+        .unwrap();
+    b.add_ref(RefRecord {
+        name: "main".into(),
+        kind: RefKind::Branch,
+        target: with_sub,
+        status: EpistemicStatus::Stated,
+        source: None,
+        annotation: None,
+    })
+    .unwrap();
+    let r = summary(&b.finish().unwrap());
+    assert_eq!(r.submodule_paths, 1);
+    assert_eq!(r.submodule_at_tips, 1);
+    let human = r.render_human();
+    assert!(human.contains(
+        "submodules: 1 path(s) in the history, 1 at the branch and tag tips; their own \
+         repositories were not read, imported or verified"
+    ));
+    let machine = r.render_machine();
+    assert!(machine.contains("decode_submodules_version=1"));
+    assert!(machine.contains("decode.submodules.paths=1"));
+    assert!(machine.contains("decode.submodules.at_tips=1"));
+}
+
+#[test]
+fn summary_counts_a_removed_submodule_in_history_but_not_at_tips() {
+    // A submodule added, then removed before any ref's own target: it is part of the history (`P`),
+    // but holds no ref's tip (`T`) — the two counts must disagree here, or they would be the same
+    // field twice under different names.
+    let mut b = IrBuilder::new(provenance());
+    let added = b
+        .add_atom(AtomDraft {
+            parents: vec![],
+            ops: vec![PathOp::Add {
+                path: "sub".into(),
+                content: Content::submodule(vec![0xcd; 20]),
+                status: EpistemicStatus::Stated,
+            }],
+            copies: vec![],
+            metadata: MetadataClaims::default(),
+            source: src(b"c1"),
+            status: EpistemicStatus::Stated,
+        })
+        .unwrap();
+    let removed = b
+        .add_atom(AtomDraft {
+            parents: vec![added],
+            ops: vec![PathOp::Delete {
+                path: "sub".into(),
+                status: EpistemicStatus::Stated,
+            }],
+            copies: vec![],
+            metadata: MetadataClaims::default(),
+            source: src(b"c2"),
+            status: EpistemicStatus::Stated,
+        })
+        .unwrap();
+    b.add_ref(RefRecord {
+        name: "main".into(),
+        kind: RefKind::Branch,
+        target: removed,
+        status: EpistemicStatus::Stated,
+        source: None,
+        annotation: None,
+    })
+    .unwrap();
+    let r = summary(&b.finish().unwrap());
+    assert_eq!(r.submodule_paths, 1, "it was in the history once");
+    assert_eq!(r.submodule_at_tips, 0, "but it holds no ref's tip");
 }

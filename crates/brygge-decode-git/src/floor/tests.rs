@@ -50,9 +50,10 @@ fn floor_identifiers_are_unique() {
 #[test]
 fn the_recorded_floor_string_is_pinned() {
     // `params["floor"]` is identity-bearing in every artifact; changing it is a reviewed, breaking change.
+    // RFC 021 D-3 (batch G): `submodule` left this list — a gitlink is carried, not refused.
     assert_eq!(
         super::joined(),
-        "submodule,replace-ref,grafts,shallow-clone,object-alternates,redirected-git-directory,\
+        "replace-ref,grafts,shallow-clone,object-alternates,redirected-git-directory,\
          non-utf8-path,non-utf8-ref-name,non-utf8-commit-header-name,sha256-object-format"
     );
 }

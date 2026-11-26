@@ -142,6 +142,14 @@ impl Content {
     pub fn blob(blob: BlobId, mode: u32) -> Self {
         Self::Blob { blob, mode }
     }
+
+    /// Convenience constructor for a pinned submodule reference — keeps call sites readable, the same
+    /// reason [`Self::blob`] exists (RFC 021 D-1, batch G). Does not check `commit`'s length; that is
+    /// [`crate::builder::IrBuilder::add_atom`]'s job, once, at the point an atom is actually built.
+    #[must_use]
+    pub fn submodule(commit: Vec<u8>) -> Self {
+        Self::Submodule { commit }
+    }
 }
 
 /// One path operation within an atom, each carrying its own epistemic status (D-2/D-3).

@@ -922,6 +922,16 @@ fn render_transforms_machine(ir: &Ir) -> String {
     s
 }
 
+/// How many of `atom`'s own ops carry a submodule (RFC 021 D-4, batch G refinement): `--atoms` prints
+/// counts, not individual ops (review 189), so this is the one number both `render_atoms_human` and
+/// `render_atoms_machine` need, computed once rather than twice.
+fn count_submodule_ops(atom: &brygge_ir::ChangeAtom) -> usize {
+    atom.ops
+        .iter()
+        .filter(|op| matches!(op.content(), Some(Content::Submodule { .. })))
+        .count()
+}
+
 fn render_atoms_human(ir: &Ir, contract: brygge_ir::ContractVersion) -> String {
     let mut s = String::new();
     let _ = writeln!(
@@ -942,9 +952,15 @@ fn render_atoms_human(ir: &Ir, contract: brygge_ir::ContractVersion) -> String {
     let _ = writeln!(s, "atoms (topological order):");
     for atom in &ir.atoms {
         let subject = message_subject(atom.metadata.message.as_ref());
+        let submodule_ops = count_submodule_ops(atom);
+        let submodule_suffix = if submodule_ops > 0 {
+            format!(", {submodule_ops} submodule")
+        } else {
+            String::new()
+        };
         let _ = writeln!(
             s,
-            "  {}  [{}]  src:{}  {} op(s)  {}",
+            "  {}  [{}]  src:{}  {} op(s){submodule_suffix}  {}",
             short_hex(&atom.id.0),
             status_label_human(&atom.status),
             short_hex(&atom.source.atom_id),
@@ -1041,6 +1057,9 @@ fn render_atoms_machine(ir: &Ir, contract: brygge_ir::ContractVersion) -> String
         }
         let _ = writeln!(s, "atom.{i}.source_id={}", hex(&atom.source.atom_id));
         let _ = writeln!(s, "atom.{i}.ops={}", atom.ops.len());
+        // RFC 021 D-4 (batch G refinement, review 189): `--atoms` prints counts, not individual ops, so
+        // a submodule entry is this count alone — never a per-op `submodule <hex>` line.
+        let _ = writeln!(s, "atom.{i}.submodule_ops={}", count_submodule_ops(atom));
         let _ = writeln!(s, "atom.{i}.parents={}", atom.parents.len());
         // The raw message bytes, percent-encoded once, like every other value: a consumer decodes to the
         // exact bytes (including non-UTF-8). Display escaping belongs to the human form only.
@@ -2938,6 +2957,20 @@ fn render_encode_git_report(
     for (kind, count) in &fidelity.flagged {
         let _ = writeln!(s, "encode_git.flagged.{}={count}", key_segment(kind));
     }
+    // RFC 021 D-4 (batch G): absent entirely when the artifact holds no submodule, like `decode`'s own
+    // `decode.submodules.*` (`honesty.rs`'s `FidelityReport`, which this report already reuses above).
+    if fidelity.submodule_paths > 0 {
+        let _ = writeln!(
+            s,
+            "encode_git.submodules.paths={}",
+            fidelity.submodule_paths
+        );
+        let _ = writeln!(
+            s,
+            "encode_git.submodules.at_tips={}",
+            fidelity.submodule_at_tips
+        );
+    }
     for (field, count) in &summary.supplied {
         let _ = writeln!(s, "encode_git.supplied.{}={count}", key_segment(field));
     }
@@ -3321,8 +3354,20 @@ fn run_encode_git_with_check(
         return exit::FAILURE;
     }
 
+    // RFC 021 D-4 (batch G): the same sentence `honesty.rs`'s `render_human` would print, since this
+    // line is a single stderr message rather than the rendered report blob — kept byte-identical to it
+    // by hand, so a reader sees the same words whichever of the two this build showed them.
+    let submodules_suffix = if fidelity.submodule_paths > 0 {
+        format!(
+            "; submodules: {} path(s) in the history, {} at the branch and tag tips; their own \
+             repositories were not read, imported or verified",
+            fidelity.submodule_paths, fidelity.submodule_at_tips
+        )
+    } else {
+        String::new()
+    };
     output::stderr(&format!(
-        "wrote {} ({} commit(s), {} tag(s), {} ref(s) total; default branch {}{})",
+        "wrote {} ({} commit(s), {} tag(s), {} ref(s) total; default branch {}{}){submodules_suffix}",
         out.display(),
         summary.commits,
         summary.tags,
