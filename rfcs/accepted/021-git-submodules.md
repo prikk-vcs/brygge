@@ -5,7 +5,9 @@
 against the owner's philosophy (review 184).
 **Refinement at batch K (the owner, 2026-11-26, review 186):** D-1's wire is **flat and additive**, not nested. A
 nested record would have changed every existing atom's id, because an id is the hash of its record's encoding.
-The model keeps `Content`. The identity rule below is added. It follows the owner's rulings of
+The model keeps `Content`. The identity rule below is added.
+**Refinement at batch G (the architect, 2026-11-27):** `inspect --atoms` prints counts, not ops, so D-4's marker
+there is the atom's op count gaining `, K submodule`, instead of `submodule <hex>`. It follows the owner's rulings of
 2026-11-26 (`.git-exclude/reviewed/182-…`):
 - the Git floor's `submodule` item is removed, **under conditions A and B**;
 - mergeinfo stays dropped (PR-8 and SRC-S2 unchanged).
