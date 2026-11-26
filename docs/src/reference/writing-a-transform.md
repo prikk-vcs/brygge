@@ -18,7 +18,9 @@ follows.
 A transform may:
 
 - change an atom's `author`, `author_time`, `committer`, `commit_time`, or `message`;
-- change an existing op's blob or mode, or move it to a new path;
+- change an existing blob op's blob or mode (`AtomEdit::set_op_blob`/`set_op_mode` refuse a submodule op
+  by name — RFC 021 D-5: a submodule has neither, and these never turn one into a file), or move any op
+  to a new path;
 - remove an atom, an op, or a copy, recording why;
 - remove a ref, or rename it, or change its annotation, recording why for a removal;
 - do nothing at all — an honest no-op step is accepted (see §3).
@@ -61,7 +63,16 @@ let output_ir = edit.finish()?; // computes every mark, rebuilds, and runs `chec
 hands back a working copy of every atom and ref. `atoms()`/`atom_mut(index)` give you an `AtomEdit` to
 change in place (`set_author`, `set_op_blob`, `move_op`, `remove_op`, …); `ref_mut`/`rename_ref`/
 `remove_ref` do the same for refs. Nothing here lets you add an atom or an op the input did not already
-have — every setter edits something that already exists. `finish()` then:
+have — every setter edits something that already exists.
+
+**What is at a path is a choice (RFC 021 D-1):** `PathOp::content()` is `Content::Blob { blob, mode }` or
+`Content::Submodule { commit }` — never both, never collapsed into a bare `BlobId` for you. **Hold a
+submodule, or refuse it by name; never write it as a file.** *Migrating from before 0.4.0:*
+`PathOp::Add`/`Modify`/`Replace` used to carry `blob`/`mode` directly; they now carry `content: Content`
+— a match on `PathOp::Add { blob, mode, .. }` becomes `PathOp::Add { content: Content::Blob { blob,
+mode }, .. }`, with the `Content::Submodule` case handled explicitly.
+
+`finish()` then:
 
 1. diffs your working copy against the input to compute exactly what changed, atom by atom and ref by
    ref;

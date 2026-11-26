@@ -8,6 +8,15 @@ Every handoff adds its own entry in its own commit.
 
 ## [Unreleased]
 
+### Breaking
+
+- Artifacts are written as IR contract 0.4.0 (RFC 021): an entry's content is a blob or a submodule.
+  brygge 0.9.0 and earlier cannot read them; this build reads 0.2.0, 0.3.0 and 0.4.0.
+- `brygge_ir::PathOp`'s `blob` and `mode` move into `content: Content`, which is `Content::Blob { blob,
+  mode }` or `Content::Submodule { commit }`. A match on `PathOp::Add { blob, mode, .. }` becomes
+  `PathOp::Add { content: Content::Blob { blob, mode }, .. }`, with the `Submodule` case handled
+  explicitly — every encoder and transform plugin must decide how to handle one.
+
 ## [0.9.0] — 2026-11-26
 
 **Subversion at real size and shape.** brygge's Subversion decoder now shares unchanged directories

@@ -1,4 +1,4 @@
-# IR artifact format — contract 0.3.0
+# IR artifact format — contract 0.4.0
 
 This is the published wire contract for a brygge IR artifact (requirement `PU-3`): everything a foreign
 encoder or reader needs to produce or consume one, without linking `brygge-ir` itself. It is normative —
@@ -54,7 +54,7 @@ Every rule below is enforced on read. Violating one is a decode failure (`Error:
 ```
 "BRYGGEIR" (8 bytes)
 · format: u8 = 2
-· version: uvarint(major) ‖ uvarint(minor) ‖ uvarint(patch)   -- 0, 3, 0
+· version: uvarint(major) ‖ uvarint(minor) ‖ uvarint(patch)   -- 0, 4, 0
 · digest: 32 bytes
 · metadata frames: frames
 · blob table: uvarint(count) ‖ ( id32 ‖ uvarint(raw_len) )*   -- in store order (§3b)
@@ -131,7 +131,7 @@ equals `SHA-256(bytes)`.
    `Error::Decode("unknown artifact format N")`.
 3. **The version.** A major or minor this build does not list as readable gives
    `Error::UnsupportedContract { found, supported }` ("artifact contract 0.Y is not supported by this
-   build (reads 0.2, 0.3)"). Any patch is accepted. See §4 for the exact acceptance rule.
+   build (reads 0.2, 0.3, 0.4)"). Any patch is accepted. See §4 for the exact acceptance rule.
 4. **Every frame, inflated** (§3c) — immediate refusal here bypasses the digest, as noted above.
 5. **The digest**, over the logical stream reconstructed above. A mismatch: `Error::DigestMismatch`,
    before any of the checks below.
@@ -148,10 +148,12 @@ other `y` is refused with the message above — and within an accepted `0.y`, un
 are skipped per rule 9. Once the major reaches `1` (a brygge 1.0 release), the familiar rule resumes:
 major is breaking, minor is additive, and a reader accepts any minor within its own major.
 
-`brygge-ir`'s `CURRENT` (what it **writes**) is `0.3.0`; `READABLE` (what it **reads**) is `{0.2, 0.3}`
-— RFC 018 D-7, OQ-2: a build that writes 0.3.0 keeps reading 0.2.0, the layout §8 describes.
-[`Decoded::digest`](https://docs.rs/brygge-ir) documents both contracts' digest definitions together,
-since they differ (this document's §3 for 0.3.0, §8 for 0.2.0).
+`brygge-ir`'s `CURRENT` (what it **writes**) is `0.4.0`; `READABLE` (what it **reads**) is `{0.2, 0.3,
+0.4}` — RFC 018 D-7 OQ-2 (0.2.0, the layout §8 describes) and RFC 021 D-2 (0.3.0, no longer written, but
+still read exactly as §3 describes). A build that writes 0.4.0 keeps reading both prior minors.
+[`Decoded::digest`](https://docs.rs/brygge-ir) documents every contract's digest definition together:
+§3 for 0.3.0 and 0.4.0 (the same framed layout — see §5's `PathOp` for the one place their metadata
+differs), §8 for 0.2.0.
 
 ## 5. Records
 
@@ -187,12 +189,37 @@ order. A reader recomputes this from the other six fields and rejects a mismatch
 
 ### `PathOp` (enum)
 
+What is at a path is a **choice** in the model (`brygge_ir::model::Content`: `Blob { blob, mode }` or
+`Submodule { commit }` — RFC 021 D-1), but the wire for it is **flat and additive**, not a nested
+record (review 186): a blob is fields 2 and 3, exactly as before this RFC; a submodule is the new field
+5. The two are mutually exclusive — a record naming both, or naming neither (for any variant but
+`Delete`), is `Error::NonCanonical`. Because a blob entry's own fields are byte-for-byte unchanged, an
+atom holding only blobs hashes to the exact same `AtomId` under contract 0.4.0 as it did under 0.3.0 —
+this RFC changes no existing identity, only adds a new one.
+
 | Variant | Name | Fields |
 |---|---|---|
-| 0 | Add | `{1 path: text req, 2 blob: id32 req, 3 mode: uvarint req, 4 status: EpistemicStatus req}` |
-| 1 | Modify | `{1 path, 2 blob, 3 mode, 4 status}` (same shape as Add) |
-| 2 | Delete | `{1 path req, 4 status req}` (no blob/mode) |
-| 3 | Replace | `{1 path, 2 blob, 3 mode, 4 status}` (RFC 011 D-7 — a source that distinguishes "replace in place" from "modify") |
+| 0 | Add | `{1 path: text req, 2 blob: id32, 3 mode: uvarint, 4 status: EpistemicStatus req, 5 submodule: bytes}` — exactly one of {2 and 3} or {5} |
+| 1 | Modify | `{1 path, 2 blob, 3 mode, 4 status, 5 submodule}` (same shape and rule as Add). Whether a `Modify`'s kind matches what was already at the path is not a wire-canonicity rule this page states — it is an IR-level honesty rule `brygge verify`'s replay enforces (a change of kind must be a `Replace`), over and above what this format page's reader alone can check. |
+| 2 | Delete | `{1 path req, 4 status req}` (no content at all) |
+| 3 | Replace | `{1 path, 2 blob, 3 mode, 4 status, 5 submodule}` (same shape and rule as Add; RFC 011 D-7 — a source that distinguishes "replace in place" from "modify", widened by RFC 021 D-1 to also cover a change of kind between a blob and a submodule) |
+
+**Field order.** Every record's fields are written in strictly ascending tag order (rule 4), which is
+field-**id** order here, not the order the table lists them in: a blob entry writes `1, 2, 3, 4`; a
+submodule entry writes `1, 4, 5` — `status` (field 4) comes *before* `submodule` (field 5), even though
+it comes *after* `blob`/`mode` (fields 2/3) in a blob entry.
+
+**`submodule` (field 5, bytes, RFC 021 D-1).** The pinned commit id of another Git repository, exactly
+as the source stated it: 20 bytes for a SHA-1 repository, 32 for SHA-256 — any other length is
+`Error::NonCanonical`. brygge never reads, fetches, or verifies that repository; the reference is
+carried exactly as the source recorded it, nothing more. This build's own Git decoder does not yet
+produce one (that is batch G); the reader and every other consumer are ready for one regardless.
+
+**Readers, by contract:**
+- **0.2.0 and 0.3.0** recognize fields 1–4 only. Field 5 is unknown to them: naming it is
+  `Error::UnknownCriticalField { record: "PathOp", tag: 5 }`, exactly as any other unrecognized critical
+  field would be (rule 9) — never silently read as, or mistaken for, a submodule.
+- **0.4.0** recognizes fields 1–5.
 
 ### `CopyRecord`
 
@@ -298,7 +325,7 @@ vocabulary (one for each of the three places `Transformed` may appear):
 | Context | Vocabulary |
 |---|---|
 | An atom's own status | `author`, `author-time`, `committer`, `commit-time`, `message`, `ops`, `copies` |
-| A `PathOp`'s own status | `blob`, `mode`, `path` |
+| A `PathOp`'s own status | `blob`, `mode`, `path` — `blob` also names a change to a submodule's own `commit` (RFC 021 D-1 adds no new word for it); `mode` never applies to a submodule, which has none |
 | A `RefRecord`'s own status | `annotation`, `kind`, `name`, `target` |
 
 A `CopyRecord`'s own status may never be `Transformed` at all — copies are not a valid location for it
@@ -447,8 +474,9 @@ side — a mismatch is a canonical-form violation, not something a reader repair
   non-`Transform` drop (which never has a `step`) sorts ahead of every `Transform` drop at the same class
   variant (moot in practice, since `Transform` is its own variant, but this is the rule a reader checks).
   **Flags** are strictly ascending by `(kind variant, what)`.
-- **Blobs:** every op that carries a `blob` (`Add`/`Modify`/`Replace`) names one present in the blob
-  store, and **every stored blob is referenced by at least one op** — no orphans either way.
+- **Blobs:** every op whose content is a blob (`Add`/`Modify`/`Replace` with fields 2/3, never a
+  submodule) names one present in the blob store, and **every stored blob is referenced by at least one
+  such op** — no orphans either way. A submodule's `commit` (field 5) is never a blob store reference.
 
 ### Transform chain (RFC 018 D-5)
 
@@ -505,142 +533,128 @@ only what it marked, and nothing else, needs that step's own input to compare ag
 `TransformRecord.consumed` names — which is a check over two artifacts, not one. That is batch P's own
 output-side verification, not something this reader-only format page can state or enforce.
 
-## 7. Worked example: a minimal one-atom artifact (contract 0.3.0)
+## 7. Worked example: a minimal one-atom artifact (contract 0.4.0)
 
 Built by hand (no decoder): one atom adding the path `a` with content `hi`, no parents, no refs, no
-drops, no flags, `Stated` throughout. 222 bytes total, shown here as verified hex (generated and
-hex-dumped, not estimated):
+drops, no flags, `Stated` throughout; `ImportProvenance{source: {kind: Git, atom_id: "repo"},
+brygge_version: "0.1.0", decoder: "d", decoder_version: "0.1.0"}`; the atom's own `source: {kind: Git,
+atom_id: "r1"}`. 232 bytes total, shown here as verified hex (generated and hex-dumped, not estimated):
 
 ```
-0000: 42 52 59 47 47 45 49 52 02 00 03 00 81 6f 2b 29
-0010: 42 47 1c 55 37 9d da 0e a6 68 01 11 2a 9a 65 8f
-0020: 21 5a 9f 3a 16 69 fb c9 bd 87 38 cb 01 00 84 01
-0030: 84 01 02 03 66 01 04 03 20 8d f0 ce 43 52 5d 8a
-0040: a7 3f a1 a9 af 11 9c c3 3c 9d 3b 1c a6 f0 74 2a
-0050: d8 0e 1c 52 aa 25 9a e6 6e 07 31 01 00 04 03 01
+0000: 42 52 59 47 47 45 49 52 02 00 04 00 00 35 94 03
+0010: 6e 13 8b f7 d1 3a 8c c4 57 d2 f4 38 dd c1 1d 0b
+0020: 32 a1 ae 41 31 66 06 6a f8 3f 8c 1f 01 00 8e 01
+0030: 8e 01 02 03 68 01 04 03 20 fb 34 ab c7 0f fe 87
+0040: bb 6d 5d 01 28 fe 5c 6e a8 7b c6 22 69 c5 a8 b2
+0050: 29 1a 95 78 21 3d 7d 3e 80 07 31 01 00 04 03 01
 0060: 61 05 20 8f 43 43 46 64 8f 6b 96 df 89 dd a9 01
 0070: c5 17 6b 10 a6 d8 39 61 dd 3c 1a c8 8b 59 b2 dc
-0080: 32 7a a4 07 03 a4 83 02 09 02 00 00 0d 09 03 03
-0090: 02 00 00 05 00 07 00 0f 02 00 00 07 19 04 03 09
-00a0: 03 03 02 00 00 05 00 07 00 05 05 30 2e 31 2e 30
-00b0: 07 01 64 09 01 31 01 8f 43 43 46 64 8f 6b 96 df
-00c0: 89 dd a9 01 c5 17 6b 10 a6 d8 39 61 dd 3c 1a c8
-00d0: 8b 59 b2 dc 32 7a a4 02 01 00 02 02 68 69
+0080: 32 7a a4 07 03 a4 83 02 09 02 00 00 0d 0b 03 03
+0090: 02 00 00 05 00 07 02 72 31 0f 02 00 00 07 21 04
+00a0: 03 0d 03 03 02 00 00 05 00 07 04 72 65 70 6f 05
+00b0: 05 30 2e 31 2e 30 07 01 64 09 05 30 2e 31 2e 30
+00c0: 01 8f 43 43 46 64 8f 6b 96 df 89 dd a9 01 c5 17
+00d0: 6b 10 a6 d8 39 61 dd 3c 1a c8 8b 59 b2 dc 32 7a
+00e0: a4 02 01 00 02 02 68 69
 ```
 
-Annotated, offset by offset. The `Ir` record's own internal fields (§5) are not re-derived here — this
-example's new ground, over contract 0.2.0's, is the frame structure wrapped around it:
+Annotated, offset by offset:
 
 | Offset | Bytes | Meaning |
 |---|---|---|
 | `0x00`–`0x07` | `42 52 59 47 47 45 49 52` | Magic, `"BRYGGEIR"`. |
 | `0x08` | `02` | Format `2`. |
-| `0x09`–`0x0b` | `00 03 00` | Version: major `0`, minor `3`, patch `0`. |
+| `0x09`–`0x0b` | `00 04 00` | Version: major `0`, minor `4`, patch `0`. |
 | `0x0c`–`0x2b` | (32 bytes) | The digest — `SHA-256` of the **logical stream** (§3), never these stored bytes directly. |
 | `0x2c` | `01` | Metadata frames: `uvarint(nframes)` = **1**. |
-| `0x2d` | `00` | That frame's codec: **0** (stored — DEFLATE did not shrink 132 bytes this repetitive). |
-| `0x2e`–`0x2f` | `84 01` | `raw_len` = **132** (two-byte `uvarint`: `0x84,0x01` → `0x04 \| (0x01 << 7)` = 132). |
-| `0x30`–`0x31` | `84 01` | `stored_len` = **132**, matching `raw_len` (codec 0's own rule). |
-| `0x32`–`0xb5` | (132 bytes) | The metadata frame's stored (= raw, here) bytes: the `Ir` record, byte-identical to what contract 0.2.0 would encode for the same `Ir` (§5's schema did not change) — same internal layout as the 0.2.0 example in §8, just a different example `Ir` here. |
-| `0xb6` | `01` | Blob table: `uvarint(count)` = **1**. |
-| `0xb7`–`0xd6` | (32 bytes) | The blob's `id32` — `8f43…7aa4`, `SHA-256("hi")`. |
-| `0xd7` | `02` | That blob's `raw_len` = **2** — the table entry, now *without* the bytes themselves (§3, vs. 0.2.0's interleaved `id ‖ len ‖ bytes` in §8). |
-| `0xd8` | `01` | Blob frames: `uvarint(nframes)` = **1** (one blob, one frame — well under the 1 MiB cap, §3a). |
-| `0xd9` | `00` | Codec: **0** (stored — 2 bytes of content never compresses smaller). |
-| `0xda` | `02` | `raw_len` = **2**. |
-| `0xdb` | `02` | `stored_len` = **2**. |
-| `0xdc`–`0xdd` | `68 69` | The content, `"hi"` — the file's end. |
+| `0x2d` | `00` | That frame's codec: **0** (stored). |
+| `0x2e`–`0x2f` | `8e 01` | `raw_len` = **142** (two-byte `uvarint`). |
+| `0x30`–`0x31` | `8e 01` | `stored_len` = **142**, matching `raw_len`. |
+| `0x32` | `02` | The `Ir` record's own field count: **2** (`atoms`, `provenance`). |
+| `0x33`–`0x35` | `03 68 01` | Field tag `3`→id `1` (`atoms`), length `104`: `list<ChangeAtom>` count `1`, the one `ChangeAtom` at `0x36`–`0x9c`. |
+| `0x36` | `04` | The `ChangeAtom`'s own field count: **4** (`id`, `ops`, `source`, `status`). |
+| `0x37`–`0x58` | `03 20` + (32 bytes) | Field `id` (tag `3`→id `1`, length `32`) — this atom's `AtomId`. |
+| `0x59`–`0x8b` | `07 31` … | Field `ops` (tag `7`→id `3`, length `49`): `list<PathOp>` count `1`, one `Add`. |
+| `0x5c` | `00` | `PathOp` variant **0** (`Add`). |
+| `0x5d` | `04` | `Add`'s own field count: **4** — `path`, `blob` (field 2), `mode` (field 3), `status`. This is the blob shape: fields 2 and 3 present, field 5 (`submodule`) absent — contrast §7a. |
+| `0x5e`–`0x60` | `03 01 61` | Field `path` (tag `3`→id `1`, length `1`): `"a"`. |
+| `0x61`–`0x82` | `05 20` + (32 bytes) | Field `blob` (tag `5`→id `2`, length `32`): `8f43…7aa4`, `SHA-256("hi")`. |
+| `0x83`–`0x87` | `07 03 a4 83 02` | Field `mode` (tag `7`→id `3`, length `3`): `uvarint(0o100644)`. |
+| `0x88`–`0x8b` | `09 02 00 00` | Field `status` (tag `9`→id `4`, length `2`): `Stated`. |
+| `0x8c`–`0x98` | `0d 0b` … | Field `source` (tag `13`→id `6`, length `11`): `SourceIdentity{kind: Git, repo_id: "", atom_id: "r1"}`. |
+| `0x99`–`0x9c` | `0f 02 00 00` | Field `status` (tag `15`→id `7`, length `2`): the atom's own status, `Stated`. |
+| `0x9d`–`0xbf` | `07 21` … | Back in the `Ir` record: field `provenance` (tag `7`→id `3`, length `33`): as stated above. |
+| `0xc0` | `01` | Blob table: `uvarint(count)` = **1**. |
+| `0xc1`–`0xe0` | (32 bytes) | The blob's `id32` — `8f43…7aa4`. |
+| `0xe1` | `02` | That blob's `raw_len` = **2**. |
+| `0xe2`–`0xe5` | `01 00 02 02` | Blob frames: `1`, codec `0` (stored), `raw_len`/`stored_len` both `2`. |
+| `0xe6`–`0xe7` | `68 69` | The content, `"hi"` — the file's end. |
 
 A reader following §3's read order would: verify the magic and format; parse the version and confirm it
-is in `READABLE`; inflate the one metadata frame and the one blob frame (both trivially, codec 0);
-reconstruct the logical stream and recompute its digest, comparing it with `0x0c`–`0x2b`; parse the
-132-byte `Ir` record (recursing into the one `ChangeAtom`, its `ops`, `source`, and `status`, and the
-`ImportProvenance`); check the blob table's one entry is in store order (trivially, with one blob) and
-its packing matches §3a's plan (trivially, one frame); verify the blob's content hashes to its declared
-id; then run the structural checks of §6 — a single atom with no parents is trivially "in canonical
-order", its `Add` op's blob is present, and the one stored blob is referenced by that op, so nothing is
-orphaned.
+is in `READABLE`; inflate the one metadata frame and the one blob frame; reconstruct the logical stream
+and recompute its digest, comparing it with `0x0c`–`0x2b`; parse the 142-byte `Ir` record; check the blob
+table's one entry is in store order and its packing matches §3a's plan; verify the blob's content hashes
+to its declared id; then run the structural checks of §6 — a single atom with no parents is trivially
+"in canonical order", its `Add` op's blob is present, and the one stored blob is referenced by that op,
+so nothing is orphaned.
 
-### 7a. Worked example: a one-record transform chain (RFC 018 D-5)
+**Everything from `0x2c` onward in a blob-only artifact like this one is byte-for-byte what a contract
+0.3.0 build would write for the same `Ir`** (review 186's own proof obligation): only the version byte
+at `0x0a` and the digest at `0x0c`–`0x2b` (which covers the version bytes) ever differ. `AtomId` —
+`0x39`–`0x58` above — is one of the bytes that does not move.
 
-Built with `IrBuilder` (not a decoder, and not the example above — a fresh artifact): the same one atom
-adding path `a` with content `hi`, no refs, no drops, no flags — but this time the atom's own status is
-`Transformed { step: 0, changed: [author], prior: Stated }`, and `Ir.transforms` holds the one
-`TransformRecord` that made it: name `"redact"`, version `"1.0.0"`, no params, `consumed` =
-`SHA-256("example-artifact-before-step-0")` (an arbitrary 32 bytes for this illustration — not a digest
-of anything real in this example, just something that looks like one). 302 bytes total, shown here as
-verified hex (generated from real code and hex-dumped, then cross-checked field by field against §5's
-rules by hand, offset by offset — not estimated):
+### 7a. Worked example: a submodule entry (RFC 021 D-1)
+
+The genuinely new shape: one atom adding a **submodule** at path `m`, pinning a 20-byte commit id, no
+parents, no refs, no drops, no flags, `Stated` throughout; the same provenance and atom source as §7.
+No blob is stored at all — a submodule has none. 175 bytes total, shown here as verified hex:
 
 ```
-0000: 42 52 59 47 47 45 49 52 02 00 03 00 ae c8 bd 0c
-0010: d4 38 8e 0c 85 46 a8 a5 eb 7d 4b fe 3a 1f 01 04
-0020: dc 7f 78 4a 17 61 74 f0 35 a7 43 ba 01 00 d4 01
-0030: d4 01 03 03 79 01 04 03 20 07 20 2a 6d fc 82 6a
-0040: bf 3a 13 12 b1 5b 56 66 b2 3d 39 09 dc 26 3e 5a
-0050: 17 c4 72 9f cd ef 39 c7 e3 07 31 01 00 04 03 01
-0060: 61 05 20 8f 43 43 46 64 8f 6b 96 df 89 dd a9 01
-0070: c5 17 6b 10 a6 d8 39 61 dd 3c 1a c8 8b 59 b2 dc
-0080: 32 7a a4 07 03 a4 83 02 09 02 00 00 0d 0b 03 03
-0090: 02 00 00 05 00 07 02 72 31 0f 13 02 03 03 01 00
-00a0: 05 08 01 06 61 75 74 68 6f 72 07 02 00 00 07 21
-00b0: 04 03 0d 03 03 02 00 00 05 00 07 04 72 65 70 6f
-00c0: 05 05 30 2e 31 2e 30 07 01 64 09 05 30 2e 31 2e
-00d0: 30 0d 33 01 03 03 06 72 65 64 61 63 74 05 05 31
-00e0: 2e 30 2e 30 09 20 23 a3 29 a6 8c 0a e6 6f ba 5e
-00f0: 69 34 ef 9b 0e 38 88 ec 08 3b 47 16 15 1c 66 7e
-0100: db 97 8c 58 c8 71 01 8f 43 43 46 64 8f 6b 96 df
-0110: 89 dd a9 01 c5 17 6b 10 a6 d8 39 61 dd 3c 1a c8
-0120: 8b 59 b2 dc 32 7a a4 02 01 00 02 02 68 69
+0000: 42 52 59 47 47 45 49 52 02 00 04 00 42 a1 78 b3
+0010: e9 4d 78 50 33 72 c1 37 b1 c5 27 b1 e2 da a2 41
+0020: a9 76 e9 58 00 99 8b 74 4e 70 b2 ff 01 00 7d 7d
+0030: 02 03 57 01 04 03 20 c5 cc 23 8c 79 fb f4 dc 9a
+0040: 52 9d e8 b7 5f ff ea 78 e9 99 d5 f1 1d 93 f2 2c
+0050: 7e 12 32 ae c1 30 d7 07 20 01 00 03 03 01 6d 09
+0060: 02 00 00 0b 14 8f 43 43 46 64 8f 6b 96 df 89 dd
+0070: a9 01 c5 17 6b 10 a6 d8 39 0d 0b 03 03 02 00 00
+0080: 05 00 07 02 72 31 0f 02 00 00 07 21 04 03 0d 03
+0090: 03 02 00 00 05 00 07 04 72 65 70 6f 05 05 30 2e
+00a0: 31 2e 30 07 01 64 09 05 30 2e 31 2e 30 00 00
 ```
-
-Annotated, offset by offset. The parts already walked in §7 (the container header, the atom's `id`/`ops`/
-`source`, the blob table and blob frame) are summarized rather than re-derived; this example's new ground
-is the `status` field's `Transformed` encoding and the `Ir` record's `transforms` field:
 
 | Offset | Bytes | Meaning |
 |---|---|---|
-| `0x00`–`0x0b` | — | Magic, format `2`, version `0.3.0` — as §7. |
-| `0x0c`–`0x2b` | (32 bytes) | The digest, over the logical stream (§3). |
-| `0x2c`–`0x31` | `01 00 d4 01 d4 01` | Metadata frames: `1`, codec `0` (stored), `raw_len`/`stored_len` both `212`. |
-| `0x32` | `03` | The `Ir` record's own field count: **3** (`atoms`, `provenance`, `transforms` — `refs`/`dropped`/`flags` are all empty and omitted). |
-| `0x33`–`0x34` | `03 79` | Field tag `3`→id `1` (`atoms`), length `121`: the one `ChangeAtom`, `0x35`–`0xad`. |
-| `0x36` | `04` | The `ChangeAtom`'s own field count: **4** (`id`, `ops`, `source`, `status`). |
-| `0x37`–`0x58` | — | Field `id` (32 bytes) — as §7, a different atom's `AtomId`. |
-| `0x59`–`0x8b` | — | Field `ops`: one `Add` of path `a`, blob `8f43…7aa4` (`SHA-256("hi")`), mode `0o100644` (`a4 83 02`), **the op's own status `Stated`** — this example's transform touched only the atom's status, not this op's. |
-| `0x8c`–`0x98` | — | Field `source`: `SourceIdentity{kind: Git, repo_id: "", atom_id: "r1"}`. |
-| `0x99`–`0xad` | `0f 13` … | Field `status` (tag `15`→id `7`, length `19`): **`EpistemicStatus::Transformed`** — broken out below. |
-| `0x9b` | `02` | `EpistemicStatus` variant **2** (`Transformed`). |
-| `0x9c` | `03` | Its own record's field count: **3** (`step`, `changed`, `prior`). |
-| `0x9d`–`0x9f` | `03 01 00` | Field `step` (tag `3`→id `1`, length `1`): **`0`** — the chain's first (and only) record. |
-| `0xa0`–`0xa9` | `05 08 01 06` `"author"` | Field `changed` (tag `5`→id `2`, length `8`): `list<text>` count **1**, one self-delimiting item `uvarint(6) ‖ "author"` — the vocabulary's spelling for an atom's claimed author. |
-| `0xaa`–`0xad` | `07 02 00 00` | Field `prior` (tag `7`→id `3`, length `2`): `EpistemicStatus::Stated` — what this atom's status was *before* step 0. |
-| `0xae`–`0xd0` | `07 21` … | Back in the `Ir` record: field `provenance` (tag `7`→id `3`, length `33`) — `ImportProvenance{source: {kind: Git, atom_id: "repo"}, brygge_version: "0.1.0", decoder: "d", decoder_version: "0.1.0"}`, same shape as §5/§7. |
-| `0xd1`–`0x105` | `0d 33` … | Field **`transforms`** (tag `13`→id **`6`**, length `51`) — broken out below. |
-| `0xd3` | `01` | `transforms`: `list<TransformRecord>` count = **1**. |
-| `0xd4` | `03` | The one `TransformRecord`'s own field count: **3** (`name`, `version`, `consumed`; `params` is empty and omitted). |
-| `0xd5`–`0xdc` | `03 06` `"redact"` | Field `name` (tag `3`→id `1`, length `6`): `"redact"`. |
-| `0xdd`–`0xe3` | `05 05` `"1.0.0"` | Field `version` (tag `5`→id `2`, length `5`): `"1.0.0"`. |
-| `0xe4`–`0x105` | `09 20` + (32 bytes) | Field `consumed` (tag `9`→id `4`, length `32`): the step's own `SHA-256("example-artifact-before-step-0")`. |
-| `0x106` | `01` | Blob table: `uvarint(count)` = **1**. |
-| `0x107`–`0x126` | (32 bytes) | The blob's `id32` — `8f43…7aa4`, `SHA-256("hi")`. |
-| `0x127` | `02` | That blob's `raw_len` = **2**. |
-| `0x128`–`0x12b` | `01 00 02 02` | Blob frames: `1`, codec `0` (stored), `raw_len`/`stored_len` both `2`. |
-| `0x12c`–`0x12d` | `68 69` | The content, `"hi"` — the file's end. |
+| `0x00`–`0x0b` | — | Magic, format `2`, version `0.4.0` — as §7. |
+| `0x0c`–`0x2b` | (32 bytes) | The digest, over this artifact's own logical stream. |
+| `0x2c`–`0x2f` | `01 00 7d 7d` | Metadata frames: `1`, codec `0` (stored); `raw_len` and `stored_len` are each the **single-byte** `uvarint` `0x7d` = **125** (both under 128, so each fits in one byte — unlike §7's two-byte `142`). |
+| `0x30` | `02` | The `Ir` record's own field count: **2** (`atoms`, `provenance`). |
+| `0x31`–`0x33` | `03 57 01` | Field `atoms` (tag `3`→id `1`, length `87`): `list<ChangeAtom>` count `1`, the one `ChangeAtom` at `0x34`–`0x89`. |
+| `0x34` | `04` | The `ChangeAtom`'s own field count: **4** (`id`, `ops`, `source`, `status`). |
+| `0x35`–`0x56` | `03 20` + (32 bytes) | Field `id` (tag `3`→id `1`, length `32`) — this atom's `AtomId`. |
+| `0x57`–`0x78` | `07 20` … | Field `ops` (tag `7`→id `3`, length `32`): `list<PathOp>` count `1`, one `Add`. |
+| `0x5a` | `00` | `PathOp` variant **0** (`Add`). |
+| `0x5b` | `03` | `Add`'s own field count: **3** — `path`, `status`, `submodule` (field 5). **Not 4**: fields 2 and 3 (`blob`/`mode`) are absent entirely, not merely zero. |
+| `0x5c`–`0x5e` | `03 01 6d` | Field `path` (tag `3`→id `1`, length `1`): `"m"`. |
+| `0x5f`–`0x62` | `09 02 00 00` | Field `status` (tag `9`→id `4`, length `2`): `Stated`. |
+| `0x63`–`0x78` | `0b 14` + (20 bytes) | Field **`submodule`** (tag `11`→id **`5`**, length `20`): the pinned commit id, `8f434346…a6d839`. This is the one field this RFC adds — note its tag (`11`) sorts **after** `status`'s (`9`), so it is written last, even though `blob`/`mode` would have sorted *before* `status` had this been a blob entry (§5's field-order note). |
+| `0x79`–`0x85` | `0d 0b` … | Field `source` (tag `13`→id `6`, length `11`): `SourceIdentity{kind: Git, repo_id: "", atom_id: "r1"}`. |
+| `0x86`–`0x89` | `0f 02 00 00` | Field `status` (tag `15`→id `7`, length `2`): the atom's own status, `Stated`. |
+| `0x8a`–`0xac` | `07 21` … | Back in the `Ir` record: field `provenance` (tag `7`→id `3`, length `33`): as §7. |
+| `0xad` | `00` | Blob table: `uvarint(count)` = **0** — a submodule references no blob, so this artifact's blob store is empty. |
+| `0xae` | `00` | Blob frames: `uvarint(nframes)` = **0**. |
 
-A reader would decode exactly as §7 up through the blob table, and additionally: on reaching the atom's
-`status` field, decode the `Transformed` enum (step `0`, one changed part `"author"`, `prior` `Stated`);
-on reaching the `Ir` record's field `6`, decode the one `TransformRecord`; then, as part of §6's
-structural checks, confirm `step` (`0`) is less than `Ir.transforms.len()` (`1`), confirm `"author"` is in
-the atom-context vocabulary, and confirm the one atom's status is the only `Transformed` anywhere (so
-nothing needed checking against a nested `prior`'s own step, and no `Transform`-class drop's step needed
-checking either, since there is no drop at all in this example).
+A reader would decode exactly as §7 through the digest check, then: on reaching the one `Add` op, see
+field `5` rather than fields `2`/`3` and build `Content::Submodule { commit }`, checking its length is
+20 or 32 (here, 20); confirm the blob table is empty and the blob-frame count is `0` (both legitimately
+— a submodule-only atom stores no blob), and run §6's structural checks exactly as before — trivially,
+since there is no blob to be orphaned either way.
 
 ## 8. Contract 0.2.0 (read only)
 
 This build still **reads** contract 0.2.0 (RFC 018 D-7, OQ-2) — the layout before RFC 018's frames —
-but never **writes** it; `write_to` only ever produces §3's contract 0.3.0. Kept here exactly, for a
-reader that still meets one of these artifacts.
+but never **writes** it; `write_to` only ever produces §3's contract 0.4.0 (RFC 021 D-2). Kept here
+exactly, for a reader that still meets one of these artifacts.
 
 ### 8a. Container
 

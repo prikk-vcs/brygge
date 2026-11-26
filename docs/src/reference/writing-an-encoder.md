@@ -25,16 +25,16 @@ the [IR artifact format](ir-artifact-format.md)):
 
 1. the container's magic and format byte;
 2. the contract **version** — an unknown contract is refused (`Error::UnsupportedContract`), before
-   anything else is even attempted; this build writes contract `0.3.0` and still reads `0.2.0`
-   (RFC 018 D-7);
+   anything else is even attempted; this build writes contract `0.4.0` and still reads `0.2.0` and
+   `0.3.0` (RFC 018 D-7, RFC 021 D-2);
 3. the integrity **digest** — nothing below is accepted before it matches (`Error::DigestMismatch`).
-   For a `0.3.0` artifact (compact artifacts, RFC 018 D-1) this is the SHA-256 of the **logical**
-   (decompressed) content, never of the on-disk, possibly-DEFLATE-compressed bytes; a `0.2.0` artifact's
-   digest is the prior definition, over the stored bytes directly. `Decoded::digest` is always the one
-   the reader actually checked, whichever contract it is;
+   For a `0.3.0` or `0.4.0` artifact (compact artifacts, RFC 018 D-1) this is the SHA-256 of the
+   **logical** (decompressed) content, never of the on-disk, possibly-DEFLATE-compressed bytes; a
+   `0.2.0` artifact's digest is the prior definition, over the stored bytes directly. `Decoded::digest`
+   is always the one the reader actually checked, whichever contract it is;
 4. the metadata's and blob store's **canonical form** — every atom id unique, every parent/ref target
-   known, no orphan or missing blob, and (for a `0.3.0` artifact) the blob table in **store order** —
-   see §2 — rather than ascending by id;
+   known, no orphan or missing blob, and (for a `0.3.0` or `0.4.0` artifact) the blob table in **store
+   order** — see §2 — rather than ascending by id;
 5. each blob's own **content address** — a blob's bytes are hashed and checked against its claimed id as
    they stream past.
 
@@ -45,6 +45,19 @@ it, the next read of that blob returns a typed `ArtifactChanged` error, never si
 Read blobs **one at a time**, with `ContentStore::get` — the whole point of the artifact-backed store
 (RFC 015 D-3/D-4) is that nothing beyond the metadata and a small index needs to be in memory at once;
 buffering every blob up front throws that away for no benefit.
+
+**What is at a path is a choice (RFC 021 D-1).** `PathOp::content()` returns `Option<&Content>`, and
+`Content` is `Blob { blob, mode }` (ordinary file content) or `Submodule { commit }` (a pinned reference
+to a commit in another Git repository, which brygge never reads). There is no accessor that collapses a
+submodule into a `BlobId` — your match on `Content` must cover both. **Hold a submodule, or refuse it by
+name; never write it as a file.** A submodule's `commit` is not file content, and treating it as such
+would silently misrepresent what the source recorded.
+
+*Migrating from before 0.4.0:* `PathOp::Add`/`Modify`/`Replace` used to carry `blob: BlobId` and
+`mode: u32` directly; they now carry `content: Content`. Where you matched `PathOp::Add { blob, mode,
+.. }`, match `PathOp::Add { content: Content::Blob { blob, mode }, .. }` instead (refusing or otherwise
+handling the `Content::Submodule` case explicitly) — your encoder will not compile against the new
+`brygge-ir` until it does.
 
 ## 2. The order
 
@@ -132,8 +145,9 @@ it. An encoder's job is to carry that distinction into the target, not to flatte
 
 Pin the **IR contract version** your encoder supports (`brygge_ir::version::CURRENT` is the one the
 `brygge-ir` you built against produces) — never the brygge tool's own release version. The two move on
-different schedules (`IX-07`): a contract version changes only when the wire format itself does: a
-3-release-old `brygge` binary and today's can both write contract `0.3.0` artifacts. `brygge-ir`'s own
+different schedules (`IX-07`): a contract version changes only when the wire format itself does, so
+several releases in a row can write the exact same contract (0.8.1 and 0.9.0 both wrote `0.3.0`; the
+release that carries RFC 021 D-2 moves to `0.4.0`). `brygge-ir`'s own
 reader already refuses an artifact whose contract it does not know
 ([`Error::UnsupportedContract`][contract]) before parsing a byte of its metadata — you inherit that
 refusal for free by reading through `from_bytes`/`read_from`/`from_file` rather than parsing the
