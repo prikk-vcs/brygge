@@ -2,7 +2,10 @@
 
 **Status.** **Accepted (2026-11-26)** by the owner: "Yes on both" (this RFC, and letter 008's sending). Handoffs:
 `rfcs/handoffs/021-git-submodules/`. Proposed (2026-11-26) by the architect, and revised the same day after the review
-against the owner's philosophy (review 184). It follows the owner's rulings of
+against the owner's philosophy (review 184).
+**Refinement at batch K (the owner, 2026-11-26, review 186):** D-1's wire is **flat and additive**, not nested. A
+nested record would have changed every existing atom's id, because an id is the hash of its record's encoding.
+The model keeps `Content`. The identity rule below is added. It follows the owner's rulings of
 2026-11-26 (`.git-exclude/reviewed/182-…`):
 - the Git floor's `submodule` item is removed, **under conditions A and B**;
 - mergeinfo stays dropped (PR-8 and SRC-S2 unchanged).
@@ -45,16 +48,27 @@ weighed:
   the source stated it;
 - **`Delete` is unchanged:** it removes whatever is at the path.
 
-**The wire (contract 0.4.0, `ir-artifact-format.md`): the wire mirrors the model.**
-- In Add, Modify and Replace, fields 2 (`blob`) and 3 (`mode`) are replaced by **one** field, `2 content:
-  Content req`;
-- `Content` is an enum record: variant 0 `Blob {1 blob: id32 req, 2 mode: uvarint req}`, variant 1
-  `Submodule {1 commit: bytes req}`;
-- **no "exactly one of" rule is needed:** a state with both, or neither, cannot be written at all;
-- `commit`'s length must be 20 or 32;
+**The wire (contract 0.4.0, `ir-artifact-format.md`): flat and additive (review 186).**
+- **A blob entry** in Add, Modify and Replace is `{1 path, 2 blob: id32, 3 mode: uvarint, 4 status}`, **byte for byte
+  as in 0.2.0 and 0.3.0**;
+- **a submodule entry** is `{1 path, 5 submodule: bytes, 4 status}`, with no field 2 or 3;
+- **exactly one** of {2 and 3 together} or {5} is present. The strict reader refuses anything else as
+  `NonCanonical`;
+- field 5's length must be 20 or 32;
 - the critical bit is set, as for every field.
-- **Why not three exclusive fields side by side** (the first draft): that would need a rule to forbid states the
-  layout itself allows. A nested choice makes them unrepresentable, which is cleaner and more robust.
+
+**Where illegal states are prevented:**
+- **in code,** by the type: `Content` cannot hold both or neither, and no encoder or transform can construct one;
+- **at the boundary,** by the canonical reader: bytes that state both or neither are refused, as the reader refuses
+  every other non-canonical form.
+- **Why not a nested record** (the draft that review 184 accepted, and review 186 reversed): an atom's id is the
+  SHA-256 of its record's encoding, so re-encoding blob entries would change the id of every atom ever made, for a
+  history that did not change.
+
+**The identity rule (added to `ir-artifact-format.md`):** an id is computed over the record's canonical encoding. **A
+contract may add fields and variants, but must never re-encode an existing one,** so the same content keeps the same
+id across contract versions. `brygge-bench ir-equal` (batch K §5) proves it for this contract: the same history,
+decoded by 0.9.0 and by 0.10.0, gives equal `Ir` values, ids included.
 
 **Kind changes:**
 - **`Modify` keeps the content's kind:** a blob stays a blob, and a submodule stays a submodule (a moved pointer);
@@ -181,9 +195,9 @@ Each judgment call, stated so it can be checked:
 
 | Clause | Where this RFC meets it |
 |---|---|
-| clean | one concept with one name (submodule); one content choice (D-1); a wire that mirrors the model; one contract per build (D-2) |
+| clean | one concept with one name (submodule); one content choice (D-1); **one encoding** for the wire and for identity; one contract per build (D-2) |
 | safe and secure | the submodule is never opened, fetched or followed; its path is checked; its id's length is checked; `.gitmodules` is handled as before, and its URL case is named |
-| robust | illegal states cannot be represented; a `Modify` across kinds is refused by `verify`; `--against-source` and G2 compare submodules; older readers refuse 0.4.0 at the gate |
+| robust | **the same content keeps the same id across contract versions** (the identity rule); illegal states cannot be constructed in code, and are refused at the boundary; a `Modify` across kinds is refused by `verify`; `--against-source` and G2 compare submodules; older readers refuse 0.4.0 at the gate |
 | sophisticated | the type makes every encoder and transform decide how to handle a submodule; nothing is generalized beyond its one real source |
 | no confusion or misunderstanding | D-4's sentences say what brygge did **not** do, wherever a submodule appears; the counts are defined in user terms; the guide names what `git submodule update` will contact |
 

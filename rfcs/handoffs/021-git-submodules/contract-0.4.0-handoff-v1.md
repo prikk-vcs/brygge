@@ -39,16 +39,15 @@ else changes.**
 ## 2. The wire (`artifact.rs`, `ir-artifact-format.md`)
 
 - **`version::CURRENT` is 0.4.0.** The writer always writes 0.4.0 (D-2).
-- **`PathOp` in 0.4.0:**
-  - Add, Modify and Replace are `{1 path: text req, 2 content: Content req, 4 status req}`, with field 3 unused, and
-    so refused if present;
-  - Delete is unchanged;
-  - `Content` is an enum record: variant 0 `Blob {1 blob: id32 req, 2 mode: uvarint req}`, variant 1
-    `Submodule {1 commit: bytes req}`;
-  - `commit`'s length is 20 or 32, otherwise `NonCanonical`.
+- **`PathOp` in 0.4.0 (flat and additive, review 186; this supersedes v1 of this section):**
+  - a blob entry is `{1 path, 2 blob, 3 mode, 4 status}`, **unchanged byte for byte**;
+  - a submodule entry is `{1 path, 5 submodule: bytes, 4 status}`;
+  - exactly one of {2 and 3} or {5}, otherwise `NonCanonical`;
+  - field 5's length is 20 or 32;
+  - `compute_id` keeps using the record encoding, so **every existing atom's id is unchanged**.
 - **The reader:**
-  - **0.2.0 and 0.3.0:** the existing layout, mapped to `Content::Blob`;
-  - **0.4.0:** the new layout only, with the old layout under 0.4.0 refused;
+  - **0.2.0 and 0.3.0:** fields 2 and 3 only (field 5 refused, being unknown to those contracts);
+  - **0.4.0:** fields 2 and 3, or field 5;
   - the version gate first, as today.
 - **The digest and the canonical form:** the digest covers the logical content as in 0.3.0 (RFC 018), so a
   submodule's `commit` bytes are inside it. Any ordering rule that names `blob` is restated for `content`.
