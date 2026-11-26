@@ -48,8 +48,9 @@ is written by the architect and reviewed/approved per `GOVERNANCE.md`.
 
 ## State
 
-**brygge 0.8.0 is released, Git as a target (2026-11-24). Artifacts are still IR contract `0.3.0` (RFC
-018); brygge still reads contract `0.2.0`.** Since 0.1.0 (2026-09-24), all four sources on the gradient
+**brygge 0.9.0 is released, Subversion at real size and shape (2026-11-26). Artifacts are still IR
+contract `0.3.0` (RFC 018); brygge still reads contract `0.2.0`.** Since 0.1.0 (2026-09-24), all four
+sources on the gradient
 decode into the IR (contract `0.2.0`, RFC 011; its artifacts are now written as contract `0.3.0`, RFC
 018). The RFCs that 0.1.0 implements
 are in `done/`. RFC 010 stays accepted: its first
@@ -59,7 +60,8 @@ increment (the input ceilings) shipped in 0.1.0, increments 3, 3b and 5 in 0.2.0
 is done in 0.4.0. RFC 015 (Scale at real size) and RFC 016 (Arch Linux packaging) are done in 0.5.0.
 RFC 017 (Extensibility) is done: Parts A and B in 0.6.0, Part C in 0.7.0, as designed by RFC 018. RFC 018
 (Contract 0.3.0: compact artifacts, and transforms that record themselves) is done in 0.7.0. RFC 019
-(Git as a target, with Amendment A, Subversion branch lines) is done in 0.8.0.
+(Git as a target, with Amendment A, Subversion branch lines) is done in 0.8.0. RFC 020 (Subversion at
+real size and shape: the shared tree, the ceilings re-expressed, the layout options) is done in 0.9.0.
 Per the lifecycle policy, **the folder an RFC lives in is the source of truth for its state**. This
 table is the index the policy asks each project to keep, grouped by state as RFC 000 recommends. Update it
 in the same commit that moves an RFC between folders.
@@ -92,6 +94,7 @@ in the same commit that moves an RFC between folders.
 | [017](done/017-extensibility.md) | Extensibility: the IR as the extension point (an encoder guide, an unsupported reference IR → Git encoder), external encoder plugins (`brygge encode <target>`), and honest transforms with the next contract revision. Parts A and B done in 0.6.0; Part C done in 0.7.0, as designed by RFC 018 | `handoffs/017-extensibility/` |
 | [018](done/018-contract-0.3.0.md) | Contract 0.3.0 (0.7.0): compact artifacts (DEFLATE frames, blobs grouped by path, the digest over the logical content) and transforms that record themselves (a chain, a `Transformed` status, `brygge transform` with brygge's output check); reads 0.2.0 artifacts. Done in 0.7.0 | `handoffs/018-contract-0.3.0/` |
 | [019](done/019-git-target.md) | Git as a target (0.8.0): `brygge encode git`, checked against the artifact; `verify --against-target git`; `brygge transform authors`; Subversion `--branch-lines` and the CVS `trunk` main line (Amendment A). Done in 0.8.0 | `handoffs/019-git-target/` |
+| [020](done/020-subversion-at-real-size-and-shape.md) | Subversion at real size and shape (0.9.0): the decoder's tree shares unchanged directories between revisions, so a copy costs O(depth), not O(files); the ceiling `max_retained_entries` is replaced by `max_tree_nodes`; `--layout-trunk`/`--layout-branches`/`--layout-tags` name a non-standard layout, each changing only its own container. Done in 0.9.0 | `handoffs/020-subversion-at-real-size-and-shape/` |
 
 ### Proposed
 

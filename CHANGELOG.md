@@ -8,6 +8,20 @@ Every handoff adds its own entry in its own commit.
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-11-26
+
+**Subversion at real size and shape.** brygge's Subversion decoder now shares unchanged directories
+between revisions, so a branch or tag copy costs almost nothing: memory follows the size of the history,
+not the number of tags times the number of files. On codeblocks (6,221 revisions), a decode is 9.5× to
+25.5× faster and needs about a quarter of the memory, and a history with thousands of tags now decodes,
+where 0.8.1 refused it. The new options `--layout-trunk`, `--layout-branches` and `--layout-tags` set the
+Subversion layout, each changing only its own directory, and `--layout-trunk .` decodes a repository with
+no trunk/branches/tags layout as one line, so it too can be encoded to Git. Every existing artifact is
+byte-identical. Install with `cargo install --locked brygge`, or download a binary from the GitHub
+release.
+
+The detailed changes that made up 0.9.0 follow.
+
 ### Added
 
 - `decode svn --layout-trunk`, `--layout-branches` and `--layout-tags` set the Subversion layout for
@@ -24,6 +38,9 @@ Every handoff adds its own entry in its own commit.
 
 - The ceiling `max_retained_entries` is replaced by `max_tree_nodes` (its message and exit code are as
   before).
+- `decode svn --reconstruct-refs`/`--branch-lines`'s machine output gains a new, independently-versioned
+  section: `decode_svn_layout_version=1`, `decode.svn.layout.trunk`, `.branches` and `.tags` (the last two
+  absent for the whole-repository form). Absent from every other decode, which is unchanged.
 
 ## [0.8.1] — 2026-11-25
 

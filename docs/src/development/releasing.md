@@ -65,7 +65,12 @@ Do these once, before the first automated release. Each is reversible in the sam
      fish-shell tortoisehg-thg`
      run **twice** — once with `fixtures/previous-release/<version>/brygge` (the previous release's real
      published binary, never a local rebuild), once with the new release build. Each run prints, per
-     repository, the artifact's size, the decode's time and peak RSS, and `verify`'s time and peak RSS,
+     repository, the artifact's size. Across releases an artifact's bytes, and so possibly its size,
+     differ by the version it records (in its provenance, and in every derived mark); that the history
+     is the same is proved by the cross-version `--against-source` check, not by bytes. A timing session
+     needs `uptime` under 16 (half the threads) at its start, or the figures are recorded as
+     "load-confounded", with no comparison drawn. Each run also prints the decode's time and peak RSS,
+     and `verify`'s time and peak RSS,
      with `os.wait4` giving each child's own `ru_maxrss` (never `RUSAGE_CHILDREN`'s running total across
      two calls — the review 099 lesson). Both rows go in `tools/bench/README.md`'s per-release table, so
      the previous release's row is re-measured on this machine too and machine drift between cycles

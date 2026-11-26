@@ -5,7 +5,7 @@ map: what brygge is, the state at handover, the invariants you must never regres
 lives, how to build and gate it, and the prioritized backlog. Everything it references is in this
 repository; nothing load-bearing lives only in someone's head.
 
-**Date of handover:** 2026-09-12. **Updated for the 0.8.1 release, 2026-11-25.** **State:** brygge
+**Date of handover:** 2026-09-12. **Updated for the 0.9.0 release, 2026-11-26.** **State:** brygge
 **0.1.0 is released**: the decode → IR half for all four named sources, on IR contract **0.2.0**.
 **0.1.1** added Windows support and the release workflow (RFC 012), **0.2.0** bounds long Git and
 CVS histories (RFC 010), **0.3.0** reaches SVN delta dumps, Mercurial's hashed store paths and CVS branch
@@ -25,7 +25,11 @@ it with brygge's own Git decoder before it is handed over; `verify --against-tar
 check on a kept repository; `brygge transform authors` maps source identities to Git identities; and
 Subversion `--branch-lines` and CVS's `trunk` main line give every branch and tag its own reachable line
 of history. This build still reads contract 0.2.0. **0.8.1** bounds decoding against amplifying inputs (a
-security patch, threat model v0.13).
+security patch, threat model v0.13). **0.9.0** removes the cause: the Subversion decoder's tree shares
+unchanged directories between revisions, so memory follows the size of the history, not tags × files
+(the ceiling `max_retained_entries` is replaced by `max_tree_nodes`); `--layout-trunk`,
+`--layout-branches` and `--layout-tags` name a non-standard layout, each changing only its own
+container, and `--layout-trunk .` decodes a repository with no layout as one line (threat model v0.14).
 All gates are green, and CI enforces them on the declared MSRV. The encode → prikk half waits on prikk's
 import foundations (see §8).
 
@@ -88,7 +92,7 @@ decoder**, enforced in CI by `tools/check-ir-isolation.sh` against a declared al
 | **`brygge-ir`** | The IR: types, canonical codec, content store, epistemic-status taxonomy, the versioned artifact, the recoverable fidelity report. The durable product boundary (PU-3). | `sha2` only |
 | **`brygge-decode-git`** | Git → IR. Every object verified against its id; renames inferred only on request (marked `Derived`). | `gix` (isolated; security-reviewed) |
 | **`brygge-decode-hg`** | Mercurial → IR. Pure-Rust revlog reader; the published view; every revision verified against its node; **stated** renames and copies carried as `Stated`. | `flate2`, `ruzstd` (decompression), `sha1-checked` (node verification) |
-| **`brygge-decode-svn`** | Subversion → IR. Pure-Rust dumpstream parser; branches/tags `Derived` by convention; `svnadmin` is an optional producer *subprocess*, not linked. | `md-5`, `sha1-checked` |
+| **`brygge-decode-svn`** | Subversion → IR. Pure-Rust dumpstream parser; branches/tags `Derived` by convention; `svnadmin` is an optional producer *subprocess*, not linked; the running tree shares unchanged directories between revisions, copy-on-write (RFC 020 D-1), so a copy costs O(depth), not O(files). | `md-5`, `sha1-checked` |
 | **`brygge-decode-cvs`** | CVS → IR. Pure-Rust RCS `,v` reader; main line only; **the changeset itself is `Derived`** (no atomic commit). | `sha2` (the repository fingerprint) |
 | **`brygge`** | The CLI. Wires the decoders in (permitted for the binary, RFC 009 D-1); the core and `verify`'s artifact-only checks still link none. | — |
 | **`tools/bench`** | Dev-only memory/time harness (RFC 010). Not published. | — |
@@ -323,7 +327,7 @@ the team inherits the reasoning, not just the TODO. `ROADMAP.md` is authoritativ
   streams: RFC 010 increments 2 and 4 are deferred by measurement.
 - **No progress reporting or cancellation.** Interrupting a decode is safe (the artifact write is atomic),
   but it produces nothing.
-- The threat model is the living document, revisited every release (v0.3 for 0.1.0, v0.4 for 0.1.1, v0.5 for 0.2.0, v0.6 for 0.3.0, v0.7 for 0.3.1, v0.8 for 0.4.0, v0.9 for 0.5.0, v0.10 for 0.6.0, v0.11 for 0.7.0, re-verified for 0.7.1, v0.12 for 0.8.0, v0.13 for 0.8.1).
+- The threat model is the living document, revisited every release (v0.3 for 0.1.0, v0.4 for 0.1.1, v0.5 for 0.2.0, v0.6 for 0.3.0, v0.7 for 0.3.1, v0.8 for 0.4.0, v0.9 for 0.5.0, v0.10 for 0.6.0, v0.11 for 0.7.0, re-verified for 0.7.1, v0.12 for 0.8.0, v0.13 for 0.8.1, v0.14 for 0.9.0).
 
 ---
 
