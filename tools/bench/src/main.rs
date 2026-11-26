@@ -397,13 +397,46 @@ fn ir_equal(a_path: &Path, b_path: &Path) -> bool {
         println!("DIFFER: transforms differ");
         return false;
     }
-    if a.ir.provenance != b.ir.provenance {
+    // RFC 021 batch G §5: compared field by field, and `params` key by key, so one differing key (for
+    // example `floor`, across a batch that changes it) is named on its own — never buried inside a
+    // whole-provenance Debug dump that would also hide any *other* difference sitting beside it.
+    if a.ir.provenance.source != b.ir.provenance.source {
         println!(
-            "DIFFER: provenance differs — a={:?} b={:?} (expected to differ only by \
-             brygge_version/decoder_version across a version bump; say so if it is not)",
-            a.ir.provenance, b.ir.provenance
+            "DIFFER: provenance.source differs — a={:?} b={:?}",
+            a.ir.provenance.source, b.ir.provenance.source
         );
         return false;
+    }
+    if a.ir.provenance.brygge_version != b.ir.provenance.brygge_version {
+        println!(
+            "DIFFER: provenance.brygge_version differs — a={:?} b={:?}",
+            a.ir.provenance.brygge_version, b.ir.provenance.brygge_version
+        );
+        return false;
+    }
+    if a.ir.provenance.decoder != b.ir.provenance.decoder {
+        println!(
+            "DIFFER: provenance.decoder differs — a={:?} b={:?}",
+            a.ir.provenance.decoder, b.ir.provenance.decoder
+        );
+        return false;
+    }
+    if a.ir.provenance.decoder_version != b.ir.provenance.decoder_version {
+        println!(
+            "DIFFER: provenance.decoder_version differs — a={:?} b={:?}",
+            a.ir.provenance.decoder_version, b.ir.provenance.decoder_version
+        );
+        return false;
+    }
+    let a_keys: std::collections::BTreeSet<&String> = a.ir.provenance.params.keys().collect();
+    let b_keys: std::collections::BTreeSet<&String> = b.ir.provenance.params.keys().collect();
+    for key in a_keys.union(&b_keys) {
+        let av = a.ir.provenance.params.get(*key);
+        let bv = b.ir.provenance.params.get(*key);
+        if av != bv {
+            println!("DIFFER: provenance.params[{key:?}] differs — a={av:?} b={bv:?}");
+            return false;
+        }
     }
 
     println!(
