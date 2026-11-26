@@ -165,24 +165,20 @@ fn restamp_op(op: PathOp, decoder: &str, decoder_version: &str) -> PathOp {
     match op {
         PathOp::Add {
             path,
-            blob,
-            mode,
+            content,
             status,
         } => PathOp::Add {
             path,
-            blob,
-            mode,
+            content,
             status: restamp_status(status, decoder, decoder_version),
         },
         PathOp::Modify {
             path,
-            blob,
-            mode,
+            content,
             status,
         } => PathOp::Modify {
             path,
-            blob,
-            mode,
+            content,
             status: restamp_status(status, decoder, decoder_version),
         },
         PathOp::Delete { path, status } => PathOp::Delete {
@@ -191,13 +187,11 @@ fn restamp_op(op: PathOp, decoder: &str, decoder_version: &str) -> PathOp {
         },
         PathOp::Replace {
             path,
-            blob,
-            mode,
+            content,
             status,
         } => PathOp::Replace {
             path,
-            blob,
-            mode,
+            content,
             status: restamp_status(status, decoder, decoder_version),
         },
     }

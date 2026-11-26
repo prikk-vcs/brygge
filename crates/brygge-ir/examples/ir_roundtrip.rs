@@ -12,7 +12,7 @@
 use std::collections::BTreeMap;
 
 use brygge_ir::{
-    AtomDraft, CopyRecord, Derivation, DerivationKind, DropRecord, EpistemicStatus,
+    AtomDraft, Content, CopyRecord, Derivation, DerivationKind, DropRecord, EpistemicStatus,
     ImportProvenance, IrBuilder, LossBoundary, LossClass, MetadataClaims, PathOp, RefKind,
     RefRecord, SourceIdentity, SourceKind, Text, from_bytes, summary, to_bytes,
 };
@@ -42,8 +42,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         parents: vec![],
         ops: vec![PathOp::Add {
             path: "readme.txt".into(),
-            blob: readme,
-            mode: 0o100_644,
+            content: Content::blob(readme, 0o100_644),
             status: EpistemicStatus::Stated,
         }],
         copies: vec![],
@@ -71,8 +70,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             },
             PathOp::Add {
                 path: "docs/readme.txt".into(),
-                blob: moved,
-                mode: 0o100_644,
+                content: Content::blob(moved, 0o100_644),
                 status: EpistemicStatus::Stated,
             },
         ],

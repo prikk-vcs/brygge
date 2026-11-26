@@ -18,7 +18,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Write;
 
 use brygge_ir::{
-    AtomId, BlobId, Ir, LossClass, PathOp, RefKind, RefRecord, SourceKind, TransformRecord,
+    AtomId, BlobId, Content, Ir, LossClass, PathOp, RefKind, RefRecord, SourceKind, TransformRecord,
 };
 
 mod check;
@@ -34,8 +34,9 @@ use trailers::{Altered, Supplied};
 const SCRATCH_REF: &str = "refs/heads/brygge-encode-git-scratch";
 
 /// A Unix file mode this encoder knows how to write (RFC 019 D-7: "only `100644`, `100755` and `120000`
-/// are accepted; `160000` cannot occur, since the IR has no submodule" — any other mode is refused by
-/// name, never silently coerced).
+/// are accepted" — any other mode is refused by name, never silently coerced). `160000` (a submodule)
+/// is never checked here: a submodule has no mode at all (RFC 021 D-1), and is refused earlier, by name,
+/// through [`submodule_refusals`].
 fn is_writable_mode(mode: u32) -> bool {
     matches!(mode, 0o100_644 | 0o100_755 | 0o120_000)
 }
@@ -97,6 +98,14 @@ pub(crate) enum Refusal {
         /// What would fix it, specific to how this artifact was made.
         fix: String,
     },
+    /// A path operation's content is a submodule (RFC 021 D-5): this build cannot yet write one.
+    /// Temporary — batch G replaces this with a real `160000` write.
+    Submodule {
+        /// The atom's own source id (already formatted, `trailers::source_id_text`).
+        atom_source_id: String,
+        /// The path holding the submodule.
+        path: String,
+    },
 }
 
 impl std::fmt::Display for Refusal {
@@ -132,6 +141,13 @@ impl std::fmt::Display for Refusal {
                 f,
                 "{count} atom(s) are not reachable from any ref, starting with {} — {fix}",
                 first.join(", ")
+            ),
+            Self::Submodule {
+                atom_source_id,
+                path,
+            } => write!(
+                f,
+                "atom {atom_source_id}: path {path:?} is a submodule; this build cannot yet write one"
             ),
         }
     }
@@ -199,15 +215,19 @@ fn ref_collisions(refs: &[RefRecord]) -> Vec<Refusal> {
     out
 }
 
-/// Every path operation whose mode Git cannot write (RFC 019 D-7).
+/// Every path operation whose mode Git cannot write (RFC 019 D-7). A submodule has no mode to check —
+/// [`submodule_refusals`] covers it instead.
 fn bad_modes(ir: &Ir) -> Vec<Refusal> {
     let mut out = Vec::new();
     for atom in &ir.atoms {
         for op in &atom.ops {
             let (path, mode) = match op {
-                PathOp::Add { path, mode, .. }
-                | PathOp::Modify { path, mode, .. }
-                | PathOp::Replace { path, mode, .. } => (path, *mode),
+                PathOp::Add { path, content, .. }
+                | PathOp::Modify { path, content, .. }
+                | PathOp::Replace { path, content, .. } => match content {
+                    Content::Blob { mode, .. } => (path, *mode),
+                    Content::Submodule { .. } => continue,
+                },
                 PathOp::Delete { .. } => continue,
             };
             if !is_writable_mode(mode) {
@@ -218,6 +238,34 @@ fn bad_modes(ir: &Ir) -> Vec<Refusal> {
                     )),
                     path: path.clone(),
                     mode,
+                });
+            }
+        }
+    }
+    out
+}
+
+/// Every path operation whose content is a submodule (RFC 021 D-5): refused by name until batch G gives
+/// this encoder a way to write one (`M 160000 <commit-hex> <path>`). No decoder in this build produces
+/// `Content::Submodule` yet, so this is unreachable in practice today — it exists so the day one does,
+/// nothing is silently written as a file.
+fn submodule_refusals(ir: &Ir) -> Vec<Refusal> {
+    let mut out = Vec::new();
+    for atom in &ir.atoms {
+        for op in &atom.ops {
+            let (path, content) = match op {
+                PathOp::Add { path, content, .. }
+                | PathOp::Modify { path, content, .. }
+                | PathOp::Replace { path, content, .. } => (path, content),
+                PathOp::Delete { .. } => continue,
+            };
+            if matches!(content, Content::Submodule { .. }) {
+                out.push(Refusal::Submodule {
+                    atom_source_id: trailers::truncate_for_refusal(&trailers::source_id_text(
+                        &atom.source.kind,
+                        &atom.source.atom_id,
+                    )),
+                    path: path.clone(),
                 });
             }
         }
@@ -330,16 +378,18 @@ fn unreachable_atoms(ir: &Ir) -> Vec<Refusal> {
     }]
 }
 
-/// Every IR-level refusal (RFC 019 D-7), before anything is written: bad modes, ref collisions,
-/// non-UTF-8 annotated-tag messages, and unreachable atoms. **Does not check ref name validity** — that
-/// needs `git check-ref-format`, which only the CLI can run (`commands.rs` merges its own
-/// [`Refusal::InvalidRefName`] entries into this same list before reporting).
+/// Every IR-level refusal (RFC 019 D-7, RFC 021 D-5), before anything is written: bad modes, ref
+/// collisions, non-UTF-8 annotated-tag messages, unreachable atoms, and (until batch G) any submodule.
+/// **Does not check ref name validity** — that needs `git check-ref-format`, which only the CLI can run
+/// (`commands.rs` merges its own [`Refusal::InvalidRefName`] entries into this same list before
+/// reporting).
 #[must_use]
 pub(crate) fn preflight(ir: &Ir) -> Vec<Refusal> {
     let mut out = bad_modes(ir);
     out.extend(ref_collisions(&ir.refs));
     out.extend(unreachable_atoms(ir));
     out.extend(non_utf8_tag_messages(ir));
+    out.extend(submodule_refusals(ir));
     out
 }
 
@@ -604,15 +654,16 @@ pub(crate) fn write_stream<W: Write>(
 
         for op in &atom.ops {
             match op {
-                PathOp::Add {
-                    path, blob, mode, ..
-                }
-                | PathOp::Modify {
-                    path, blob, mode, ..
-                }
-                | PathOp::Replace {
-                    path, blob, mode, ..
-                } => {
+                PathOp::Add { path, content, .. }
+                | PathOp::Modify { path, content, .. }
+                | PathOp::Replace { path, content, .. } => {
+                    // `preflight`'s own `submodule_refusals` already refused this artifact, before any
+                    // byte was written, if `content` were ever `Content::Submodule` (RFC 021 D-5): this
+                    // build cannot write one yet (batch G replaces this).
+                    #[allow(clippy::expect_used)]
+                    let Content::Blob { blob, mode } = content else {
+                        unreachable!("preflight refuses a submodule before this writer ever runs");
+                    };
                     #[allow(clippy::expect_used)]
                     let blob_mark = *blob_marks.get(blob).expect(
                         "every blob an op references was just emitted above, in this same atom",

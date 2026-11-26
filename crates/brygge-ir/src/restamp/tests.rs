@@ -8,8 +8,8 @@ use crate::ImportProvenance;
 use crate::artifact::{digest_of, from_bytes, to_bytes};
 use crate::builder::{AtomDraft, IrBuilder};
 use crate::model::{
-    ChangedPart, CopyRecord, Ir, MetadataClaims, PathOp, RefKind, RefRecord, SourceIdentity,
-    SourceKind, Text, TransformRecord,
+    ChangedPart, Content, CopyRecord, Ir, MetadataClaims, PathOp, RefKind, RefRecord,
+    SourceIdentity, SourceKind, Text, TransformRecord,
 };
 use crate::status::{Derivation, DerivationKind, EpistemicStatus};
 
@@ -70,8 +70,7 @@ fn fixture(v: &str) -> Ir {
             parents: vec![],
             ops: vec![PathOp::Add {
                 path: "a".into(),
-                blob: blob_a,
-                mode: 0o100_644,
+                content: Content::blob(blob_a, 0o100_644),
                 status: EpistemicStatus::Stated,
             }],
             copies: vec![],
@@ -98,8 +97,7 @@ fn fixture(v: &str) -> Ir {
             ops: vec![
                 PathOp::Add {
                     path: "b".into(),
-                    blob: blob_b,
-                    mode: 0o100_644,
+                    content: Content::blob(blob_b, 0o100_644),
                     status: EpistemicStatus::Transformed {
                         step: 0,
                         changed: vec![ChangedPart::Blob],
@@ -108,8 +106,7 @@ fn fixture(v: &str) -> Ir {
                 },
                 PathOp::Add {
                     path: "d".into(),
-                    blob: blob_c,
-                    mode: 0o100_644,
+                    content: Content::blob(blob_c, 0o100_644),
                     status: EpistemicStatus::Derived(foreign),
                 },
             ],

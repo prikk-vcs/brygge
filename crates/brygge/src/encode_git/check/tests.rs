@@ -8,8 +8,8 @@ use std::collections::BTreeMap;
 
 use super::*;
 use brygge_ir::{
-    AtomDraft, BlobId, ImportProvenance, IrBuilder, MetadataClaims, PathOp, SourceIdentity, Text,
-    Time,
+    AtomDraft, BlobId, Content, ImportProvenance, IrBuilder, MetadataClaims, PathOp,
+    SourceIdentity, Text, Time,
 };
 
 fn git_source(atom_id: &[u8]) -> SourceIdentity {
@@ -70,8 +70,7 @@ fn baseline_artifact() -> Baseline {
             parents: Vec::new(),
             ops: vec![PathOp::Add {
                 path: "f.txt".to_string(),
-                blob,
-                mode: 0o100_644,
+                content: Content::blob(blob, 0o100_644),
                 status: brygge_ir::EpistemicStatus::Stated,
             }],
             copies: Vec::new(),
@@ -126,8 +125,7 @@ fn matching_result(base: &Baseline) -> (Ir, Vec<GitRef>) {
             parents: Vec::new(),
             ops: vec![PathOp::Add {
                 path: "f.txt".to_string(),
-                blob: result_blob,
-                mode: 0o100_644,
+                content: Content::blob(result_blob, 0o100_644),
                 status: brygge_ir::EpistemicStatus::Stated,
             }],
             copies: Vec::new(),
@@ -200,8 +198,7 @@ fn two_artifact_atoms_sharing_one_source_id_are_not_checked() {
         parents,
         ops: vec![PathOp::Add {
             path: "x".to_string(),
-            blob,
-            mode: 0o100_644,
+            content: Content::blob(blob, 0o100_644),
             status: brygge_ir::EpistemicStatus::Stated,
         }],
         copies: Vec::new(),
@@ -233,8 +230,7 @@ fn perturbed_atom<F: FnOnce(&mut AtomDraft)>(
         parents: Vec::new(),
         ops: vec![PathOp::Add {
             path: "f.txt".to_string(),
-            blob: result_blob,
-            mode: 0o100_644,
+            content: Content::blob(result_blob, 0o100_644),
             status: brygge_ir::EpistemicStatus::Stated,
         }],
         copies: Vec::new(),
@@ -308,8 +304,7 @@ fn a_different_tree_is_caught() {
     let (result, refs) = perturbed_atom(&base, &digest_hex, |draft| {
         draft.ops = vec![PathOp::Add {
             path: "f.txt".to_string(),
-            blob: different_blob,
-            mode: 0o100_644,
+            content: Content::blob(different_blob, 0o100_644),
             status: brygge_ir::EpistemicStatus::Stated,
         }];
     });
@@ -431,8 +426,7 @@ fn baseline_with_a_dead_line() -> Baseline {
             parents: Vec::new(),
             ops: vec![PathOp::Add {
                 path: "f.txt".to_string(),
-                blob,
-                mode: 0o100_644,
+                content: Content::blob(blob, 0o100_644),
                 status: brygge_ir::EpistemicStatus::Stated,
             }],
             copies: Vec::new(),
@@ -464,8 +458,7 @@ fn baseline_with_a_dead_line() -> Baseline {
             parents: Vec::new(),
             ops: vec![PathOp::Add {
                 path: "dead.txt".to_string(),
-                blob,
-                mode: 0o100_644,
+                content: Content::blob(blob, 0o100_644),
                 status: brygge_ir::EpistemicStatus::Stated,
             }],
             copies: Vec::new(),
@@ -534,8 +527,7 @@ fn result_with_a_dead_line(base: &Baseline, dead_tree_matches: bool) -> (Ir, Vec
             parents: Vec::new(),
             ops: vec![PathOp::Add {
                 path: "f.txt".to_string(),
-                blob: live_blob,
-                mode: 0o100_644,
+                content: Content::blob(live_blob, 0o100_644),
                 status: brygge_ir::EpistemicStatus::Stated,
             }],
             copies: Vec::new(),
@@ -578,8 +570,7 @@ fn result_with_a_dead_line(base: &Baseline, dead_tree_matches: bool) -> (Ir, Vec
             parents: Vec::new(),
             ops: vec![PathOp::Add {
                 path: dead_path.to_string(),
-                blob: live_blob,
-                mode: 0o100_644,
+                content: Content::blob(live_blob, 0o100_644),
                 status: brygge_ir::EpistemicStatus::Stated,
             }],
             copies: Vec::new(),
@@ -706,8 +697,7 @@ fn two_result_commits_claiming_the_same_artifact_atom_are_named_by_their_own_com
         parents: Vec::new(),
         ops: vec![PathOp::Add {
             path: "f.txt".to_string(),
-            blob,
-            mode: 0o100_644,
+            content: Content::blob(blob, 0o100_644),
             status: brygge_ir::EpistemicStatus::Stated,
         }],
         copies: Vec::new(),
@@ -781,8 +771,7 @@ fn a_different_parent_is_caught() {
             parents: Vec::new(),
             ops: vec![PathOp::Add {
                 path: "f".to_string(),
-                blob,
-                mode: 0o100_644,
+                content: Content::blob(blob, 0o100_644),
                 status: brygge_ir::EpistemicStatus::Stated,
             }],
             copies: Vec::new(),
@@ -807,8 +796,7 @@ fn a_different_parent_is_caught() {
             parents: vec![root],
             ops: vec![PathOp::Modify {
                 path: "f".to_string(),
-                blob: blob2,
-                mode: 0o100_644,
+                content: Content::blob(blob2, 0o100_644),
                 status: brygge_ir::EpistemicStatus::Stated,
             }],
             copies: Vec::new(),
@@ -841,8 +829,7 @@ fn a_different_parent_is_caught() {
             parents: Vec::new(),
             ops: vec![PathOp::Add {
                 path: "f".to_string(),
-                blob: r_blob,
-                mode: 0o100_644,
+                content: Content::blob(r_blob, 0o100_644),
                 status: brygge_ir::EpistemicStatus::Stated,
             }],
             copies: Vec::new(),
@@ -874,8 +861,7 @@ fn a_different_parent_is_caught() {
             parents: vec![r_other_root],
             ops: vec![PathOp::Modify {
                 path: "f".to_string(),
-                blob: r_blob2,
-                mode: 0o100_644,
+                content: Content::blob(r_blob2, 0o100_644),
                 status: brygge_ir::EpistemicStatus::Stated,
             }],
             copies: Vec::new(),
@@ -937,8 +923,7 @@ fn a_shared_parent_used_as_both_first_and_merge_survives_to_its_linear_child() {
             parents: Vec::new(),
             ops: vec![PathOp::Add {
                 path: "c.txt".to_string(),
-                blob: blob_c,
-                mode: 0o100_644,
+                content: Content::blob(blob_c, 0o100_644),
                 status: brygge_ir::EpistemicStatus::Stated,
             }],
             copies: Vec::new(),
@@ -953,8 +938,7 @@ fn a_shared_parent_used_as_both_first_and_merge_survives_to_its_linear_child() {
             parents: Vec::new(),
             ops: vec![PathOp::Add {
                 path: "x.txt".to_string(),
-                blob: blob_x,
-                mode: 0o100_644,
+                content: Content::blob(blob_x, 0o100_644),
                 status: brygge_ir::EpistemicStatus::Stated,
             }],
             copies: Vec::new(),
@@ -969,8 +953,7 @@ fn a_shared_parent_used_as_both_first_and_merge_survives_to_its_linear_child() {
             parents: vec![c, x],
             ops: vec![PathOp::Add {
                 path: "b.txt".to_string(),
-                blob: blob_b,
-                mode: 0o100_644,
+                content: Content::blob(blob_b, 0o100_644),
                 status: brygge_ir::EpistemicStatus::Stated,
             }],
             copies: Vec::new(),
@@ -985,8 +968,7 @@ fn a_shared_parent_used_as_both_first_and_merge_survives_to_its_linear_child() {
             parents: vec![x],
             ops: vec![PathOp::Add {
                 path: "z.txt".to_string(),
-                blob: blob_z,
-                mode: 0o100_644,
+                content: Content::blob(blob_z, 0o100_644),
                 status: brygge_ir::EpistemicStatus::Stated,
             }],
             copies: Vec::new(),
@@ -1056,8 +1038,7 @@ fn a_shared_parent_used_as_both_first_and_merge_survives_to_its_linear_child() {
             parents: Vec::new(),
             ops: vec![PathOp::Add {
                 path: "c.txt".to_string(),
-                blob: r_blob_c,
-                mode: 0o100_644,
+                content: Content::blob(r_blob_c, 0o100_644),
                 status: brygge_ir::EpistemicStatus::Stated,
             }],
             copies: Vec::new(),
@@ -1083,8 +1064,7 @@ fn a_shared_parent_used_as_both_first_and_merge_survives_to_its_linear_child() {
             parents: Vec::new(),
             ops: vec![PathOp::Add {
                 path: "x.txt".to_string(),
-                blob: r_blob_x,
-                mode: 0o100_644,
+                content: Content::blob(r_blob_x, 0o100_644),
                 status: brygge_ir::EpistemicStatus::Stated,
             }],
             copies: Vec::new(),
@@ -1110,8 +1090,7 @@ fn a_shared_parent_used_as_both_first_and_merge_survives_to_its_linear_child() {
             parents: vec![r_c, r_x],
             ops: vec![PathOp::Add {
                 path: "b.txt".to_string(),
-                blob: r_blob_b,
-                mode: 0o100_644,
+                content: Content::blob(r_blob_b, 0o100_644),
                 status: brygge_ir::EpistemicStatus::Stated,
             }],
             copies: Vec::new(),
@@ -1148,8 +1127,7 @@ fn a_shared_parent_used_as_both_first_and_merge_survives_to_its_linear_child() {
             parents: vec![r_x],
             ops: vec![PathOp::Add {
                 path: "z.txt".to_string(),
-                blob: r_blob_z,
-                mode: 0o100_644,
+                content: Content::blob(r_blob_z, 0o100_644),
                 status: brygge_ir::EpistemicStatus::Stated,
             }],
             copies: Vec::new(),

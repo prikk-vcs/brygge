@@ -29,8 +29,9 @@ use sha2::{Digest, Sha256};
 use super::{from_bytes, read_from, to_bytes};
 use crate::builder::{AtomDraft, IrBuilder};
 use crate::model::{
-    ChangedPart, DropRecord, Flag, FlagKind, ImportProvenance, Ir, LossBoundary, LossClass,
-    MetadataClaims, PathOp, RefKind, RefRecord, SourceIdentity, SourceKind, TransformRecord,
+    ChangedPart, Content, DropRecord, Flag, FlagKind, ImportProvenance, Ir, LossBoundary,
+    LossClass, MetadataClaims, PathOp, RefKind, RefRecord, SourceIdentity, SourceKind,
+    TransformRecord,
 };
 use crate::status::EpistemicStatus;
 
@@ -65,8 +66,7 @@ fn richer_ir() -> Ir {
             parents: vec![],
             ops: vec![PathOp::Add {
                 path: "readme".into(),
-                blob,
-                mode: 0o100_644,
+                content: Content::blob(blob, 0o100_644),
                 status: EpistemicStatus::Stated,
             }],
             copies: vec![],
@@ -98,8 +98,7 @@ fn richer_ir() -> Ir {
             parents: vec![root],
             ops: vec![PathOp::Add {
                 path: "second".into(),
-                blob: child_blob,
-                mode: 0o100_644,
+                content: Content::blob(child_blob, 0o100_644),
                 status: EpistemicStatus::Transformed {
                     step: step as u64,
                     changed: vec![ChangedPart::Mode],
@@ -165,8 +164,7 @@ fn simple_ir() -> Ir {
         parents: vec![],
         ops: vec![PathOp::Add {
             path: "a".into(),
-            blob,
-            mode: 0o100_644,
+            content: Content::blob(blob, 0o100_644),
             status: EpistemicStatus::Stated,
         }],
         copies: vec![],
@@ -390,8 +388,7 @@ fn deflate_ir() -> Ir {
         parents: vec![],
         ops: vec![PathOp::Add {
             path: "big".into(),
-            blob,
-            mode: 0o100_644,
+            content: Content::blob(blob, 0o100_644),
             status: EpistemicStatus::Stated,
         }],
         copies: vec![],

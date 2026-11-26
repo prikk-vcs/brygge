@@ -12,8 +12,8 @@ use brygge_ir::BlobId;
 use brygge_ir::Storage;
 use brygge_ir::builder::{AtomDraft, IrBuilder};
 use brygge_ir::model::{
-    AtomId, DropRecord, Flag, FlagKind, Identity, ImportProvenance, Ir, LossBoundary, LossClass,
-    MetadataClaims, PathOp, RefKind, RefRecord, SourceIdentity, SourceKind, Text, Time,
+    AtomId, Content, DropRecord, Flag, FlagKind, Identity, ImportProvenance, Ir, LossBoundary,
+    LossClass, MetadataClaims, PathOp, RefKind, RefRecord, SourceIdentity, SourceKind, Text, Time,
 };
 use brygge_ir::status::{Derivation, DerivationKind, EpistemicStatus};
 
@@ -738,15 +738,13 @@ fn ops_for(revs: &[FileRev], tree: &mut BTreeMap<String, BlobId>) -> Result<Vec<
             if tree.insert(fr.path.clone(), blob).is_none() {
                 ops.push(PathOp::Add {
                     path: fr.path.clone(),
-                    blob,
-                    mode: MODE_REGULAR,
+                    content: Content::blob(blob, MODE_REGULAR),
                     status: EpistemicStatus::Stated,
                 });
             } else {
                 ops.push(PathOp::Modify {
                     path: fr.path.clone(),
-                    blob,
-                    mode: MODE_REGULAR,
+                    content: Content::blob(blob, MODE_REGULAR),
                     status: EpistemicStatus::Stated,
                 });
             }
@@ -1172,14 +1170,12 @@ fn build_branch(
         match parent_tree.get(path) {
             None => ops.push(PathOp::Add {
                 path: path.clone(),
-                blob: *blob,
-                mode: MODE_REGULAR,
+                content: Content::blob(*blob, MODE_REGULAR),
                 status: derived(&[("rule", "branch-point-tree")]),
             }),
             Some(b) if b != blob => ops.push(PathOp::Modify {
                 path: path.clone(),
-                blob: *blob,
-                mode: MODE_REGULAR,
+                content: Content::blob(*blob, MODE_REGULAR),
                 status: derived(&[("rule", "branch-point-tree")]),
             }),
             Some(_) => {}

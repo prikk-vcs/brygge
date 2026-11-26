@@ -55,7 +55,7 @@ use crate::artifact::mutation::{decompose, reassemble_v3};
 use crate::artifact::{from_bytes, to_bytes};
 use crate::builder::{AtomDraft, IrBuilder};
 use crate::model::{
-    Identity, ImportProvenance, MetadataClaims, PathOp, SourceIdentity, SourceKind, Text,
+    Content, Identity, ImportProvenance, MetadataClaims, PathOp, SourceIdentity, SourceKind, Text,
 };
 use crate::status::EpistemicStatus;
 
@@ -130,8 +130,7 @@ fn fixed_input() -> crate::artifact::Decoded {
             parents: vec![],
             ops: vec![PathOp::Add {
                 path: "a".into(),
-                blob,
-                mode: 0o100_644,
+                content: Content::blob(blob, 0o100_644),
                 status: EpistemicStatus::Stated,
             }],
             copies: vec![],
@@ -150,8 +149,7 @@ fn fixed_input() -> crate::artifact::Decoded {
         parents: vec![root],
         ops: vec![PathOp::Modify {
             path: "a".into(),
-            blob: child_blob,
-            mode: 0o100_644,
+            content: Content::blob(child_blob, 0o100_644),
             status: EpistemicStatus::Stated,
         }],
         copies: vec![],

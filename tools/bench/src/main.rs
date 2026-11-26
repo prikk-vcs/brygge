@@ -60,7 +60,7 @@ use brygge_decode_cvs::{Options as CvsOpts, Source as CvsSource};
 use brygge_decode_git::Options as GitOpts;
 use brygge_decode_svn::{Options as SvnOpts, Source as SvnSource};
 use brygge_ir::Ir;
-use brygge_ir::model::PathOp;
+use brygge_ir::model::{Content, PathOp};
 
 use corpus::Stats;
 
@@ -598,7 +598,14 @@ fn check_cvs_revs_content(ir: &Ir) -> Result<(), String> {
             return Err(format!("atom {idx} has {} ops, expected 1", atom.ops.len()));
         }
         let (path, blob) = match &atom.ops[0] {
-            PathOp::Add { path, blob, .. } | PathOp::Modify { path, blob, .. } => (path, blob),
+            PathOp::Add { path, content, .. } | PathOp::Modify { path, content, .. } => {
+                match content {
+                    Content::Blob { blob, .. } => (path, blob),
+                    Content::Submodule { .. } => {
+                        return Err(format!("atom {idx}: unexpected submodule"));
+                    }
+                }
+            }
             other => return Err(format!("atom {idx}: unexpected op {other:?}")),
         };
         let file: u64 = path

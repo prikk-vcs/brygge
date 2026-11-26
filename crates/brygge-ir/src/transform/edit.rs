@@ -10,8 +10,8 @@ use crate::artifact::Decoded;
 use crate::builder::{AtomDraft, IrBuilder};
 use crate::content::BlobId;
 use crate::model::{
-    Annotation, AtomId, ChangeAtom, ChangedPart, CopyRecord, DropRecord, Identity, Ir, LossClass,
-    MetadataClaims, PathOp, RefKind, RefRecord, Text, Time, TransformRecord,
+    Annotation, AtomId, ChangeAtom, ChangedPart, Content, CopyRecord, DropRecord, Identity, Ir,
+    LossClass, MetadataClaims, PathOp, RefKind, RefRecord, Text, Time, TransformRecord,
 };
 use crate::status::EpistemicStatus;
 use crate::{Error, Result};
@@ -67,36 +67,50 @@ impl AtomEdit {
             .ok_or_else(|| Error::Invariant(format!("no op at path {path:?} to edit")))
     }
 
-    /// Set an existing op's content address. Refuses a `Delete` op, which carries none.
+    /// Set an existing op's content address. Refuses a `Delete` op, which carries none, and a
+    /// submodule by name (RFC 021 D-5): a submodule has no blob, and this never turns one into a file.
     ///
     /// # Errors
-    /// [`Error::Invariant`] if there is no op at `path`, or it is a `Delete`.
+    /// [`Error::Invariant`] if there is no op at `path`, it is a `Delete`, or its content is a
+    /// submodule.
     pub fn set_op_blob(&mut self, path: &str, blob: BlobId) -> Result<()> {
         match self.find_op_mut(path)? {
-            PathOp::Add { blob: b, .. }
-            | PathOp::Modify { blob: b, .. }
-            | PathOp::Replace { blob: b, .. } => {
-                *b = blob;
-                Ok(())
-            }
+            PathOp::Add { content, .. }
+            | PathOp::Modify { content, .. }
+            | PathOp::Replace { content, .. } => match content {
+                Content::Blob { blob: b, .. } => {
+                    *b = blob;
+                    Ok(())
+                }
+                Content::Submodule { .. } => Err(Error::Invariant(format!(
+                    "op at path {path:?} is a submodule; it has no blob to set"
+                ))),
+            },
             PathOp::Delete { .. } => Err(Error::Invariant(format!(
                 "op at path {path:?} is a Delete; it has no blob to set"
             ))),
         }
     }
 
-    /// Set an existing op's file mode. Refuses a `Delete` op, which carries none.
+    /// Set an existing op's file mode. Refuses a `Delete` op, which carries none, and a submodule by
+    /// name (RFC 021 D-5): a submodule has no mode.
     ///
     /// # Errors
-    /// [`Error::Invariant`] if there is no op at `path`, or it is a `Delete`.
+    /// [`Error::Invariant`] if there is no op at `path`, it is a `Delete`, or its content is a
+    /// submodule.
     pub fn set_op_mode(&mut self, path: &str, mode: u32) -> Result<()> {
         match self.find_op_mut(path)? {
-            PathOp::Add { mode: m, .. }
-            | PathOp::Modify { mode: m, .. }
-            | PathOp::Replace { mode: m, .. } => {
-                *m = mode;
-                Ok(())
-            }
+            PathOp::Add { content, .. }
+            | PathOp::Modify { content, .. }
+            | PathOp::Replace { content, .. } => match content {
+                Content::Blob { mode: m, .. } => {
+                    *m = mode;
+                    Ok(())
+                }
+                Content::Submodule { .. } => Err(Error::Invariant(format!(
+                    "op at path {path:?} is a submodule; it has no mode to set"
+                ))),
+            },
             PathOp::Delete { .. } => Err(Error::Invariant(format!(
                 "op at path {path:?} is a Delete; it has no mode to set"
             ))),
@@ -445,16 +459,13 @@ impl<'a> Edit<'a> {
                 let path = op.path().to_string();
                 match in_ops.get(path.as_str()) {
                     Some(in_op) => {
-                        let (in_v, in_b, in_m) = super::op_payload(in_op);
-                        let (out_v, out_b, out_m) = super::op_payload(op);
+                        let (in_v, in_content) = super::op_payload(in_op);
+                        let (out_v, out_content) = super::op_payload(op);
                         debug_assert_eq!(in_v, out_v, "AtomEdit never changes an op's own kind");
-                        let mut changed = Vec::new();
-                        if in_b != out_b {
-                            changed.push(ChangedPart::Blob);
-                        }
-                        if in_m != out_m {
-                            changed.push(ChangedPart::Mode);
-                        }
+                        let changed: Vec<ChangedPart> =
+                            super::content_changed(in_content, out_content)
+                                .into_iter()
+                                .collect();
                         if changed.is_empty() {
                             final_ops.push(op.clone());
                         } else {
@@ -656,29 +667,20 @@ impl<'a> Edit<'a> {
 
 fn with_op_status(op: &PathOp, status: EpistemicStatus) -> PathOp {
     match op.clone() {
-        PathOp::Add {
-            path, blob, mode, ..
-        } => PathOp::Add {
+        PathOp::Add { path, content, .. } => PathOp::Add {
             path,
-            blob,
-            mode,
+            content,
             status,
         },
-        PathOp::Modify {
-            path, blob, mode, ..
-        } => PathOp::Modify {
+        PathOp::Modify { path, content, .. } => PathOp::Modify {
             path,
-            blob,
-            mode,
+            content,
             status,
         },
         PathOp::Delete { path, .. } => PathOp::Delete { path, status },
-        PathOp::Replace {
-            path, blob, mode, ..
-        } => PathOp::Replace {
+        PathOp::Replace { path, content, .. } => PathOp::Replace {
             path,
-            blob,
-            mode,
+            content,
             status,
         },
     }

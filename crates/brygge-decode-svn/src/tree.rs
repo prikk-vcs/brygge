@@ -61,7 +61,7 @@ use std::rc::Rc;
 
 use brygge_ir::BlobId;
 use brygge_ir::builder::IrBuilder;
-use brygge_ir::model::{AtomId, CopyRecord, PathOp};
+use brygge_ir::model::{AtomId, Content, CopyRecord, PathOp};
 use brygge_ir::status::EpistemicStatus;
 
 use crate::dumpstream::{
@@ -1121,8 +1121,7 @@ fn diff_dir(
 fn add_op(path: String, e: &FileEntry) -> PathOp {
     PathOp::Add {
         path,
-        blob: e.blob,
-        mode: e.mode,
+        content: Content::blob(e.blob, e.mode),
         status: EpistemicStatus::Stated,
     }
 }
@@ -1130,8 +1129,7 @@ fn add_op(path: String, e: &FileEntry) -> PathOp {
 fn modify_op(path: String, e: &FileEntry) -> PathOp {
     PathOp::Modify {
         path,
-        blob: e.blob,
-        mode: e.mode,
+        content: Content::blob(e.blob, e.mode),
         status: EpistemicStatus::Stated,
     }
 }
@@ -1139,8 +1137,7 @@ fn modify_op(path: String, e: &FileEntry) -> PathOp {
 fn replace_op(path: String, e: &FileEntry) -> PathOp {
     PathOp::Replace {
         path,
-        blob: e.blob,
-        mode: e.mode,
+        content: Content::blob(e.blob, e.mode),
         status: EpistemicStatus::Stated,
     }
 }

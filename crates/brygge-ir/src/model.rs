@@ -114,28 +114,55 @@ pub struct SourceIdentity {
     pub extras: Vec<Extra>,
 }
 
-/// One path operation within an atom, each carrying its own epistemic status (D-2/D-3).
+/// What is at a path (RFC 021 D-1): the only two things brygge ever carries there. The wire mirrors this
+/// choice exactly — a state with both a blob and a submodule, or neither, cannot be written at all.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PathOp {
-    /// A path created with the given content and mode.
-    Add {
-        /// Repo-relative path.
-        path: String,
+pub enum Content {
+    /// Ordinary file content.
+    Blob {
         /// Content address.
         blob: BlobId,
         /// Unix-style file mode.
         mode: u32,
+    },
+    /// A pinned reference to a commit in another Git repository; brygge never reads, fetches or
+    /// verifies that repository. `commit` is the pinned commit id, exactly as the source stated it: 20
+    /// bytes for a SHA-1 repository, 32 for SHA-256 (the floor's `sha256-object-format` keeps the
+    /// decoder from ever producing the latter today, but the wire admits it so lifting that floor item
+    /// later needs no contract change).
+    Submodule {
+        /// The pinned commit id (20 or 32 bytes).
+        commit: Vec<u8>,
+    },
+}
+
+impl Content {
+    /// Convenience constructor for ordinary file content — keeps call sites readable (RFC 021 D-1).
+    #[must_use]
+    pub fn blob(blob: BlobId, mode: u32) -> Self {
+        Self::Blob { blob, mode }
+    }
+}
+
+/// One path operation within an atom, each carrying its own epistemic status (D-2/D-3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PathOp {
+    /// A path created with the given content.
+    Add {
+        /// Repo-relative path.
+        path: String,
+        /// What is now at this path.
+        content: Content,
         /// Stated or derived.
         status: EpistemicStatus,
     },
-    /// A path's content (and/or mode) changed.
+    /// A path's content changed, its kind (blob or submodule) unchanged — a submodule's `Modify` is a
+    /// moved pointer, not a new kind (RFC 021 D-1). A change of kind at one path is `Replace`.
     Modify {
         /// Repo-relative path.
         path: String,
-        /// New content address.
-        blob: BlobId,
-        /// File mode.
-        mode: u32,
+        /// The new content, of the same kind the path already held.
+        content: Content,
         /// Stated or derived.
         status: EpistemicStatus,
     },
@@ -147,15 +174,14 @@ pub enum PathOp {
         status: EpistemicStatus,
     },
     /// A path replaced in place — a source that draws a distinction between "modify" and "replace"
-    /// (e.g. a symlink swapped for a regular file at the same path) states it here rather than being
-    /// folded into `Modify` (RFC 011 D-7).
+    /// (e.g. a symlink swapped for a regular file at the same path), or a change of kind between a
+    /// blob and a submodule (RFC 021 D-1), states it here rather than being folded into `Modify` (RFC
+    /// 011 D-7).
     Replace {
         /// Repo-relative path.
         path: String,
-        /// New content address.
-        blob: BlobId,
-        /// New file mode.
-        mode: u32,
+        /// The new content, of either kind.
+        content: Content,
         /// Stated or derived.
         status: EpistemicStatus,
     },
@@ -882,49 +908,75 @@ impl PathOp {
             | Self::Replace { status, .. } => status,
         }
     }
+    /// What this op puts at its path — `None` for `Delete` (RFC 021 D-1). No accessor collapses this to
+    /// a `BlobId`: a caller must match on the kind.
+    #[must_use]
+    pub fn content(&self) -> Option<&Content> {
+        match self {
+            Self::Add { content, .. }
+            | Self::Modify { content, .. }
+            | Self::Replace { content, .. } => Some(content),
+            Self::Delete { .. } => None,
+        }
+    }
+    /// `PathOp`'s wire is flat and additive (RFC 021 D-1, revised by review 186): a blob entry's fields
+    /// (`1 path, 2 blob, 3 mode, 4 status`) are **unchanged byte for byte** from before this RFC, so
+    /// [`ChangeAtom::compute_id`] — which hashes this same encoding — never changes for existing content.
+    /// A submodule entry instead carries `5 submodule: bytes`, never both 2/3 and 5 at once. Fields are
+    /// written in ascending id order, as every record requires: field 4 (`status`) therefore comes
+    /// *before* field 5 for a submodule entry, even though it comes *after* fields 2/3 for a blob entry.
     fn encode(&self) -> Vec<u8> {
         let mut w = CanonWriter::new();
-        let (variant, path, blob, mode, status) = match self {
+        let (variant, path, content, status) = match self {
             Self::Add {
                 path,
-                blob,
-                mode,
+                content,
                 status,
-            } => (0, path, Some(blob), Some(*mode), status),
+            } => (0, path, Some(content), status),
             Self::Modify {
                 path,
-                blob,
-                mode,
+                content,
                 status,
-            } => (1, path, Some(blob), Some(*mode), status),
-            Self::Delete { path, status } => (2, path, None, None, status),
+            } => (1, path, Some(content), status),
+            Self::Delete { path, status } => (2, path, None, status),
             Self::Replace {
                 path,
-                blob,
-                mode,
+                content,
                 status,
-            } => (3, path, Some(blob), Some(*mode), status),
+            } => (3, path, Some(content), status),
         };
         w.uvarint(variant);
         let mut rw = RecordWriter::new();
         rw.field(1, true, path.as_bytes().to_vec());
-        if let Some(blob) = blob {
-            rw.field(2, true, blob.as_bytes().to_vec());
+        match content {
+            Some(Content::Blob { blob, mode }) => {
+                rw.field(2, true, blob.as_bytes().to_vec());
+                rw.field(3, true, crate::canon::uvarint_value(u64::from(*mode)));
+                rw.field(4, true, status.encode());
+            }
+            Some(Content::Submodule { commit }) => {
+                rw.field(4, true, status.encode());
+                rw.field(5, true, commit.clone());
+            }
+            None => {
+                rw.field(4, true, status.encode());
+            }
         }
-        if let Some(mode) = mode {
-            rw.field(3, true, crate::canon::uvarint_value(u64::from(mode)));
-        }
-        rw.field(4, true, status.encode());
         rw.finish_into(&mut w);
         w.into_bytes()
     }
-    fn decode(r: &mut CanonReader) -> Result<Self, Error> {
+    /// Decode one `PathOp`. `minor` is the artifact's own contract minor (RFC 021 D-1, review 186):
+    /// `2` and `3` recognize fields 1–4 only (field 5 is unknown to them, and so refused as critical if
+    /// present); `4` and later also recognize field 5. Either way, a blob entry (fields 2 and 3) and a
+    /// submodule entry (field 5) are mutually exclusive — both, or neither, is `NonCanonical`.
+    fn decode(r: &mut CanonReader, minor: u32) -> Result<Self, Error> {
         let variant = r.uvarint()?;
         let mut path = None;
         let mut blob = None;
         let mut mode = None;
+        let mut commit = None;
         let mut status = None;
-        r.record_fields("PathOp", |r, id, len| match id {
+        let handle = |r: &mut CanonReader, id: u64, len: usize| match id {
             1 => {
                 path = Some(r.text(len)?);
                 Ok(true)
@@ -941,50 +993,55 @@ impl PathOp {
                 status = Some(EpistemicStatus::decode(r, 0)?);
                 Ok(true)
             }
+            5 if minor >= 4 => {
+                commit = Some(r.bytes_exact(len)?);
+                Ok(true)
+            }
             _ => Ok(false),
-        })?;
+        };
+        r.record_fields("PathOp", handle)?;
         let path =
             path.ok_or_else(|| Error::NonCanonical("PathOp missing field 1 (path)".to_string()))?;
         let status = status
             .ok_or_else(|| Error::NonCanonical("PathOp missing field 4 (status)".to_string()))?;
-        let need_blob_mode = |what: &'static str| {
-            let blob = blob.ok_or_else(|| {
-                Error::NonCanonical(format!("PathOp::{what} missing field 2 (blob)"))
-            })?;
-            let mode = mode.ok_or_else(|| {
-                Error::NonCanonical(format!("PathOp::{what} missing field 3 (mode)"))
-            })?;
-            Ok::<_, Error>((blob, mode))
+        let mut need_content = |what: &'static str| -> Result<Content, Error> {
+            match (blob, mode, commit.take()) {
+                (Some(blob), Some(mode), None) => Ok(Content::Blob { blob, mode }),
+                (None, None, Some(commit)) => {
+                    if commit.len() != 20 && commit.len() != 32 {
+                        return Err(Error::NonCanonical(format!(
+                            "PathOp::{what} field 5 (submodule) is {} bytes, must be 20 or 32",
+                            commit.len()
+                        )));
+                    }
+                    Ok(Content::Submodule { commit })
+                }
+                (None, None, None) => Err(Error::NonCanonical(format!(
+                    "PathOp::{what} has neither a blob (fields 2 and 3) nor a submodule (field 5)"
+                ))),
+                _ => Err(Error::NonCanonical(format!(
+                    "PathOp::{what} has both a blob and a submodule, or an incomplete blob (field 2 \
+                     without 3, or field 3 without 2)"
+                ))),
+            }
         };
         Ok(match variant {
-            0 => {
-                let (blob, mode) = need_blob_mode("Add")?;
-                Self::Add {
-                    path,
-                    blob,
-                    mode,
-                    status,
-                }
-            }
-            1 => {
-                let (blob, mode) = need_blob_mode("Modify")?;
-                Self::Modify {
-                    path,
-                    blob,
-                    mode,
-                    status,
-                }
-            }
+            0 => Self::Add {
+                path,
+                content: need_content("Add")?,
+                status,
+            },
+            1 => Self::Modify {
+                path,
+                content: need_content("Modify")?,
+                status,
+            },
             2 => Self::Delete { path, status },
-            3 => {
-                let (blob, mode) = need_blob_mode("Replace")?;
-                Self::Replace {
-                    path,
-                    blob,
-                    mode,
-                    status,
-                }
-            }
+            3 => Self::Replace {
+                path,
+                content: need_content("Replace")?,
+                status,
+            },
             o => return Err(Error::Decode(format!("unknown PathOp variant {o}"))),
         })
     }
@@ -1170,7 +1227,7 @@ impl ChangeAtom {
         rw.into_bytes()
     }
 
-    fn decode(r: &mut CanonReader) -> Result<Self, Error> {
+    fn decode(r: &mut CanonReader, minor: u32) -> Result<Self, Error> {
         let mut id = None;
         let mut parents = Vec::new();
         let mut ops = Vec::new();
@@ -1189,7 +1246,7 @@ impl ChangeAtom {
                 Ok(true)
             }
             3 => {
-                ops = r.list(PathOp::decode)?;
+                ops = r.list(|r| PathOp::decode(r, minor))?;
                 non_empty_list("ChangeAtom.ops", &ops)?;
                 Ok(true)
             }
@@ -1769,8 +1826,10 @@ impl Ir {
         rw.into_bytes()
     }
 
-    /// Decode the metadata record (blobs are read separately by [`crate::artifact`]).
-    pub(crate) fn decode_metadata(r: &mut CanonReader) -> Result<Self, Error> {
+    /// Decode the metadata record (blobs are read separately by [`crate::artifact`]). `minor` is the
+    /// artifact's own contract minor (RFC 021 D-1): it governs only how a [`PathOp`]'s content is laid
+    /// out on the wire, threaded down to [`PathOp::decode`] through [`ChangeAtom::decode`].
+    pub(crate) fn decode_metadata(r: &mut CanonReader, minor: u32) -> Result<Self, Error> {
         let mut atoms = Vec::new();
         let mut refs = Vec::new();
         let mut provenance = None;
@@ -1779,7 +1838,7 @@ impl Ir {
         let mut transforms = Vec::new();
         r.record_fields("Ir", |r, id, _len| match id {
             1 => {
-                atoms = r.list(ChangeAtom::decode)?;
+                atoms = r.list(|r| ChangeAtom::decode(r, minor))?;
                 non_empty_list("Ir.atoms", &atoms)?;
                 Ok(true)
             }

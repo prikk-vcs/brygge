@@ -531,27 +531,24 @@ fn filter_ops_for_root(ops: &[PathOp], root: &Root) -> Vec<PathOp> {
 fn with_path(op: &PathOp, path: String) -> PathOp {
     match op {
         PathOp::Add {
-            blob, mode, status, ..
+            content, status, ..
         } => PathOp::Add {
             path,
-            blob: *blob,
-            mode: *mode,
+            content: content.clone(),
             status: status.clone(),
         },
         PathOp::Modify {
-            blob, mode, status, ..
+            content, status, ..
         } => PathOp::Modify {
             path,
-            blob: *blob,
-            mode: *mode,
+            content: content.clone(),
             status: status.clone(),
         },
         PathOp::Replace {
-            blob, mode, status, ..
+            content, status, ..
         } => PathOp::Replace {
             path,
-            blob: *blob,
-            mode: *mode,
+            content: content.clone(),
             status: status.clone(),
         },
         PathOp::Delete { status, .. } => PathOp::Delete {

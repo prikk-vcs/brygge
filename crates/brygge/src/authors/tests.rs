@@ -6,8 +6,8 @@
 use std::collections::BTreeMap;
 
 use brygge_ir::{
-    Annotation, AtomDraft, EpistemicStatus, Identity, ImportProvenance, IrBuilder, MetadataClaims,
-    PathOp, RefKind, RefRecord, SourceIdentity, SourceKind, Text,
+    Annotation, AtomDraft, Content, EpistemicStatus, Identity, ImportProvenance, IrBuilder,
+    MetadataClaims, PathOp, RefKind, RefRecord, SourceIdentity, SourceKind, Text,
 };
 
 use super::*;
@@ -166,8 +166,7 @@ fn every_role_is_counted_once_per_atom_or_ref() {
             parents: vec![],
             ops: vec![PathOp::Add {
                 path: "a".into(),
-                blob,
-                mode: 0o100_644,
+                content: Content::blob(blob, 0o100_644),
                 status: EpistemicStatus::Stated,
             }],
             copies: vec![],
@@ -229,8 +228,7 @@ fn a_bare_name_and_a_name_with_an_email_are_distinct_identities() {
         parents: vec![],
         ops: vec![PathOp::Add {
             path: "a".into(),
-            blob,
-            mode: 0o100_644,
+            content: Content::blob(blob, 0o100_644),
             status: EpistemicStatus::Stated,
         }],
         copies: vec![],

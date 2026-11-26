@@ -15,8 +15,8 @@ use std::path::{Path, PathBuf};
 use brygge_ir::Storage;
 use brygge_ir::builder::{AtomDraft, IrBuilder};
 use brygge_ir::model::{
-    AtomId, CopyRecord, DropRecord, Extra, Identity, ImportProvenance, Ir, LossBoundary, LossClass,
-    MetadataClaims, PathOp, RefKind, RefRecord, SourceIdentity, SourceKind, Text, Time,
+    AtomId, Content, CopyRecord, DropRecord, Extra, Identity, ImportProvenance, Ir, LossBoundary,
+    LossClass, MetadataClaims, PathOp, RefKind, RefRecord, SourceIdentity, SourceKind, Text, Time,
 };
 use brygge_ir::status::EpistemicStatus;
 
@@ -377,8 +377,7 @@ fn diff_manifests(
         if is_add {
             ops.push(PathOp::Add {
                 path: path.clone(),
-                blob,
-                mode: entry.mode,
+                content: Content::blob(blob, entry.mode),
                 status: EpistemicStatus::Stated,
             });
             // A copy source recorded on an added file is a stated rename/copy (SRC-H2): carried Stated,
@@ -415,8 +414,7 @@ fn diff_manifests(
             }
             ops.push(PathOp::Modify {
                 path: path.clone(),
-                blob,
-                mode: entry.mode,
+                content: Content::blob(blob, entry.mode),
                 status: EpistemicStatus::Stated,
             });
         }

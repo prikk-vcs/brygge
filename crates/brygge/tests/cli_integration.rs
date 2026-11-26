@@ -525,15 +525,13 @@ fn big_artifact(n: usize) -> std::path::PathBuf {
         let op = if i == 0 {
             brygge_ir::model::PathOp::Add {
                 path: "f".into(),
-                blob,
-                mode: 0o100_644,
+                content: brygge_ir::model::Content::blob(blob, 0o100_644),
                 status: brygge_ir::status::EpistemicStatus::Stated,
             }
         } else {
             brygge_ir::model::PathOp::Modify {
                 path: "f".into(),
-                blob,
-                mode: 0o100_644,
+                content: brygge_ir::model::Content::blob(blob, 0o100_644),
                 status: brygge_ir::status::EpistemicStatus::Stated,
             }
         };

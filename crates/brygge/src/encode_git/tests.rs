@@ -6,8 +6,8 @@
 
 use super::*;
 use brygge_ir::{
-    Annotation, AtomDraft, ChangedPart, Derivation, DerivationKind, Identity, ImportProvenance,
-    IrBuilder, MetadataClaims, SourceIdentity, SourceKind, Text, Time,
+    Annotation, AtomDraft, ChangedPart, Content, Derivation, DerivationKind, Identity,
+    ImportProvenance, IrBuilder, MetadataClaims, SourceIdentity, SourceKind, Text, Time,
 };
 
 fn source(kind: SourceKind, atom_id: &[u8]) -> SourceIdentity {
@@ -113,8 +113,7 @@ fn minimal_ir_with_mode(mode: u32) -> brygge_ir::Ir {
             parents: Vec::new(),
             ops: vec![brygge_ir::PathOp::Add {
                 path: "f".to_string(),
-                blob,
-                mode,
+                content: Content::blob(blob, mode),
                 status: brygge_ir::EpistemicStatus::Stated,
             }],
             copies: Vec::new(),
@@ -174,8 +173,7 @@ fn three_refusal_kinds_at_once_are_all_collected() {
             parents: Vec::new(),
             ops: vec![brygge_ir::PathOp::Add {
                 path: "f".to_string(),
-                blob,
-                mode: 0o160_000, // bad mode
+                content: Content::blob(blob, 0o160_000), // bad mode
                 status: brygge_ir::EpistemicStatus::Stated,
             }],
             copies: Vec::new(),
@@ -251,8 +249,7 @@ fn ir_with_branch_names(names: &[&str]) -> brygge_ir::Ir {
             parents: Vec::new(),
             ops: vec![brygge_ir::PathOp::Add {
                 path: "f".to_string(),
-                blob,
-                mode: 0o100_644,
+                content: Content::blob(blob, 0o100_644),
                 status: brygge_ir::EpistemicStatus::Stated,
             }],
             copies: Vec::new(),
@@ -309,8 +306,7 @@ fn tags_only_gives_main_that_does_not_exist() {
             parents: Vec::new(),
             ops: vec![brygge_ir::PathOp::Add {
                 path: "f".to_string(),
-                blob,
-                mode: 0o100_644,
+                content: Content::blob(blob, 0o100_644),
                 status: brygge_ir::EpistemicStatus::Stated,
             }],
             copies: Vec::new(),
@@ -348,8 +344,7 @@ fn a_commit_carries_encoded_source_id_and_artifact_trailers() {
             parents: Vec::new(),
             ops: vec![brygge_ir::PathOp::Add {
                 path: "f.txt".to_string(),
-                blob,
-                mode: 0o100_644,
+                content: Content::blob(blob, 0o100_644),
                 status: brygge_ir::EpistemicStatus::Stated,
             }],
             copies: Vec::new(),
@@ -415,8 +410,7 @@ fn an_other_ref_is_written_outside_the_branch_and_tag_namespaces() {
             parents: Vec::new(),
             ops: vec![brygge_ir::PathOp::Add {
                 path: "f".to_string(),
-                blob,
-                mode: 0o100_644,
+                content: Content::blob(blob, 0o100_644),
                 status: brygge_ir::EpistemicStatus::Stated,
             }],
             copies: Vec::new(),
@@ -454,8 +448,7 @@ fn an_annotated_tag_carries_encoded_and_artifact_but_not_source_id() {
             parents: Vec::new(),
             ops: vec![brygge_ir::PathOp::Add {
                 path: "f".to_string(),
-                blob,
-                mode: 0o100_644,
+                content: Content::blob(blob, 0o100_644),
                 status: brygge_ir::EpistemicStatus::Stated,
             }],
             copies: Vec::new(),
@@ -529,8 +522,7 @@ fn a_transformed_atom_over_a_derived_prior_orders_the_transform_trailer_first() 
             parents: Vec::new(),
             ops: vec![brygge_ir::PathOp::Add {
                 path: "f".to_string(),
-                blob,
-                mode: 0o100_644,
+                content: Content::blob(blob, 0o100_644),
                 status: brygge_ir::EpistemicStatus::Stated,
             }],
             copies: Vec::new(),
@@ -581,8 +573,7 @@ fn a_transformed_branch_ref_puts_its_mark_in_the_summary_not_a_trailer() {
             parents: Vec::new(),
             ops: vec![brygge_ir::PathOp::Add {
                 path: "f".to_string(),
-                blob,
-                mode: 0o100_644,
+                content: Content::blob(blob, 0o100_644),
                 status: brygge_ir::EpistemicStatus::Stated,
             }],
             copies: Vec::new(),
@@ -626,8 +617,7 @@ fn supplied_and_altered_are_counted_in_the_summary() {
             parents: Vec::new(),
             ops: vec![brygge_ir::PathOp::Add {
                 path: "f".to_string(),
-                blob,
-                mode: 0o100_644,
+                content: Content::blob(blob, 0o100_644),
                 status: brygge_ir::EpistemicStatus::Stated,
             }],
             copies: Vec::new(),
@@ -682,8 +672,7 @@ fn ir_with_no_refs(kind: SourceKind) -> brygge_ir::Ir {
             parents: Vec::new(),
             ops: vec![brygge_ir::PathOp::Add {
                 path: "f".to_string(),
-                blob,
-                mode: 0o100_644,
+                content: Content::blob(blob, 0o100_644),
                 status: brygge_ir::EpistemicStatus::Stated,
             }],
             copies: Vec::new(),
@@ -739,8 +728,7 @@ fn a_transform_drop_naming_a_ref_names_its_step_in_the_fix() {
             parents: Vec::new(),
             ops: vec![brygge_ir::PathOp::Add {
                 path: "f".to_string(),
-                blob,
-                mode: 0o100_644,
+                content: Content::blob(blob, 0o100_644),
                 status: brygge_ir::EpistemicStatus::Stated,
             }],
             copies: Vec::new(),
@@ -779,8 +767,7 @@ fn partial_reachability_names_only_the_unreachable_count() {
             parents: Vec::new(),
             ops: vec![brygge_ir::PathOp::Add {
                 path: "a".to_string(),
-                blob: blob1,
-                mode: 0o100_644,
+                content: Content::blob(blob1, 0o100_644),
                 status: brygge_ir::EpistemicStatus::Stated,
             }],
             copies: Vec::new(),
@@ -795,8 +782,7 @@ fn partial_reachability_names_only_the_unreachable_count() {
             parents: Vec::new(),
             ops: vec![brygge_ir::PathOp::Add {
                 path: "b".to_string(),
-                blob: blob2,
-                mode: 0o100_644,
+                content: Content::blob(blob2, 0o100_644),
                 status: brygge_ir::EpistemicStatus::Stated,
             }],
             copies: Vec::new(),
@@ -834,8 +820,7 @@ fn full_reachability_through_a_parent_chain_passes() {
             parents: Vec::new(),
             ops: vec![brygge_ir::PathOp::Add {
                 path: "a".to_string(),
-                blob: blob1,
-                mode: 0o100_644,
+                content: Content::blob(blob1, 0o100_644),
                 status: brygge_ir::EpistemicStatus::Stated,
             }],
             copies: Vec::new(),
@@ -850,8 +835,7 @@ fn full_reachability_through_a_parent_chain_passes() {
             parents: vec![parent_id],
             ops: vec![brygge_ir::PathOp::Add {
                 path: "b".to_string(),
-                blob: blob2,
-                mode: 0o100_644,
+                content: Content::blob(blob2, 0o100_644),
                 status: brygge_ir::EpistemicStatus::Stated,
             }],
             copies: Vec::new(),
@@ -886,8 +870,7 @@ fn svn_with_refs_present_says_no_reconstructed_ref_reaches_not_reconstruct_refs(
             parents: Vec::new(),
             ops: vec![brygge_ir::PathOp::Add {
                 path: "a".to_string(),
-                blob: blob1,
-                mode: 0o100_644,
+                content: Content::blob(blob1, 0o100_644),
                 status: brygge_ir::EpistemicStatus::Stated,
             }],
             copies: Vec::new(),
@@ -902,8 +885,7 @@ fn svn_with_refs_present_says_no_reconstructed_ref_reaches_not_reconstruct_refs(
             parents: Vec::new(),
             ops: vec![brygge_ir::PathOp::Add {
                 path: "b".to_string(),
-                blob: blob2,
-                mode: 0o100_644,
+                content: Content::blob(blob2, 0o100_644),
                 status: brygge_ir::EpistemicStatus::Stated,
             }],
             copies: Vec::new(),
@@ -943,8 +925,7 @@ fn cvs_with_refs_present_says_no_reconstructed_ref_reaches_these_atoms() {
             parents: Vec::new(),
             ops: vec![brygge_ir::PathOp::Add {
                 path: "a".to_string(),
-                blob: blob1,
-                mode: 0o100_644,
+                content: Content::blob(blob1, 0o100_644),
                 status: brygge_ir::EpistemicStatus::Stated,
             }],
             copies: Vec::new(),
@@ -959,8 +940,7 @@ fn cvs_with_refs_present_says_no_reconstructed_ref_reaches_these_atoms() {
             parents: Vec::new(),
             ops: vec![brygge_ir::PathOp::Add {
                 path: "b".to_string(),
-                blob: blob2,
-                mode: 0o100_644,
+                content: Content::blob(blob2, 0o100_644),
                 status: brygge_ir::EpistemicStatus::Stated,
             }],
             copies: Vec::new(),

@@ -163,14 +163,12 @@ fn path_op_roundtrips_every_variant() {
     let ops = [
         PathOp::Add {
             path: "a".into(),
-            blob,
-            mode: 0o100644,
+            content: Content::blob(blob, 0o100644),
             status: status.clone(),
         },
         PathOp::Modify {
             path: "a".into(),
-            blob,
-            mode: 0o100644,
+            content: Content::blob(blob, 0o100644),
             status: status.clone(),
         },
         PathOp::Delete {
@@ -179,16 +177,167 @@ fn path_op_roundtrips_every_variant() {
         },
         PathOp::Replace {
             path: "a".into(),
-            blob,
-            mode: 0o120000,
+            content: Content::blob(blob, 0o120000),
             status,
         },
     ];
     for op in ops {
         let bytes = op.encode();
         let mut r = CanonReader::new(&bytes);
-        assert_eq!(PathOp::decode(&mut r).unwrap(), op);
+        assert_eq!(PathOp::decode(&mut r, 4).unwrap(), op);
         assert!(r.is_empty());
+    }
+}
+
+/// RFC 021 D-1: a submodule entry round-trips for every variant that carries content, at both commit
+/// lengths the wire admits (20 bytes, SHA-1; 32, SHA-256 — the floor refuses the decoder from
+/// producing the latter today, but the reader accepts it).
+#[test]
+fn path_op_roundtrips_a_submodule_at_every_variant_and_commit_length() {
+    let status = EpistemicStatus::Stated;
+    for commit_len in [20usize, 32] {
+        let content = Content::Submodule {
+            commit: vec![0xab; commit_len],
+        };
+        let ops = [
+            PathOp::Add {
+                path: "modules/x".into(),
+                content: content.clone(),
+                status: status.clone(),
+            },
+            PathOp::Modify {
+                path: "modules/x".into(),
+                content: content.clone(),
+                status: status.clone(),
+            },
+            PathOp::Replace {
+                path: "modules/x".into(),
+                content: content.clone(),
+                status: status.clone(),
+            },
+        ];
+        for op in ops {
+            let bytes = op.encode();
+            let mut r = CanonReader::new(&bytes);
+            assert_eq!(PathOp::decode(&mut r, 4).unwrap(), op);
+            assert!(r.is_empty());
+        }
+    }
+}
+
+/// RFC 021 D-1/review 186: a blob entry's wire bytes (fields 1 path, 2 blob, 3 mode, 4 status) are
+/// unchanged byte for byte from before this RFC — the direct proof `AtomId` cannot change for existing
+/// content, since [`ChangeAtom::compute_id`] hashes this same encoding.
+#[test]
+fn a_blob_entrys_wire_bytes_are_unchanged_by_rfc_021() {
+    let op = PathOp::Add {
+        path: "a".into(),
+        content: Content::blob(BlobId([7u8; 32]), 0o100_644),
+        status: EpistemicStatus::Stated,
+    };
+    let mut expected = RecordWriter::new();
+    expected.field(1, true, b"a".to_vec());
+    expected.field(2, true, [7u8; 32].to_vec());
+    expected.field(3, true, crate::canon::uvarint_value(0o100_644));
+    expected.field(4, true, EpistemicStatus::Stated.encode());
+    let mut w = crate::canon::CanonWriter::new();
+    w.uvarint(0); // the Add variant tag
+    expected.finish_into(&mut w);
+    assert_eq!(op.encode(), w.into_bytes());
+}
+
+/// RFC 021 D-1/§2: a blob (fields 2+3) and a submodule (field 5) are mutually exclusive — both, or
+/// neither, is refused as `NonCanonical`, each malformed case named.
+#[test]
+fn path_op_refuses_both_a_blob_and_a_submodule_or_neither() {
+    let status_bytes = EpistemicStatus::Stated.encode();
+
+    // Both: fields 2, 3 and 5 all present.
+    let mut rw = RecordWriter::new();
+    rw.field(1, true, b"a".to_vec());
+    rw.field(2, true, [7u8; 32].to_vec());
+    rw.field(3, true, crate::canon::uvarint_value(0o100_644));
+    rw.field(4, true, status_bytes.clone());
+    rw.field(5, true, vec![0xab; 20]);
+    let mut w = crate::canon::CanonWriter::new();
+    w.uvarint(0);
+    rw.finish_into(&mut w);
+    let bytes = w.into_bytes();
+    let mut r = CanonReader::new(&bytes);
+    match PathOp::decode(&mut r, 4) {
+        Err(Error::NonCanonical(msg)) => assert!(msg.contains("both a blob and a submodule")),
+        other => panic!("expected NonCanonical, got {other:?}"),
+    }
+
+    // Neither: only path and status.
+    let mut rw = RecordWriter::new();
+    rw.field(1, true, b"a".to_vec());
+    rw.field(4, true, status_bytes.clone());
+    let mut w = crate::canon::CanonWriter::new();
+    w.uvarint(0);
+    rw.finish_into(&mut w);
+    let bytes = w.into_bytes();
+    let mut r = CanonReader::new(&bytes);
+    match PathOp::decode(&mut r, 4) {
+        Err(Error::NonCanonical(msg)) => assert!(msg.contains("neither a blob")),
+        other => panic!("expected NonCanonical, got {other:?}"),
+    }
+
+    // A partial blob: field 2 (blob) present without field 3 (mode).
+    let mut rw = RecordWriter::new();
+    rw.field(1, true, b"a".to_vec());
+    rw.field(2, true, [7u8; 32].to_vec());
+    rw.field(4, true, status_bytes);
+    let mut w = crate::canon::CanonWriter::new();
+    w.uvarint(0);
+    rw.finish_into(&mut w);
+    let bytes = w.into_bytes();
+    let mut r = CanonReader::new(&bytes);
+    match PathOp::decode(&mut r, 4) {
+        Err(Error::NonCanonical(_)) => {}
+        other => panic!("expected NonCanonical, got {other:?}"),
+    }
+}
+
+/// RFC 021 D-1: field 5's commit must be 20 or 32 bytes.
+#[test]
+fn path_op_refuses_a_submodule_commit_of_the_wrong_length() {
+    let mut rw = RecordWriter::new();
+    rw.field(1, true, b"a".to_vec());
+    rw.field(4, true, EpistemicStatus::Stated.encode());
+    rw.field(5, true, vec![0xab; 19]);
+    let mut w = crate::canon::CanonWriter::new();
+    w.uvarint(0);
+    rw.finish_into(&mut w);
+    let bytes = w.into_bytes();
+    let mut r = CanonReader::new(&bytes);
+    match PathOp::decode(&mut r, 4) {
+        Err(Error::NonCanonical(msg)) => assert!(msg.contains("20 or 32")),
+        other => panic!("expected NonCanonical, got {other:?}"),
+    }
+}
+
+/// RFC 021 D-1/§2: contract 0.2.0 and 0.3.0 do not know field 5 at all — a hand-built record naming it,
+/// critical as every field is, is refused at the generic unknown-critical-field rule, never read as a
+/// submodule.
+#[test]
+fn path_op_field_5_is_refused_under_contract_0_2_0_and_0_3_0() {
+    for minor in [2u32, 3] {
+        let mut rw = RecordWriter::new();
+        rw.field(1, true, b"a".to_vec());
+        rw.field(4, true, EpistemicStatus::Stated.encode());
+        rw.field(5, true, vec![0xab; 20]);
+        let mut w = crate::canon::CanonWriter::new();
+        w.uvarint(0);
+        rw.finish_into(&mut w);
+        let bytes = w.into_bytes();
+        let mut r = CanonReader::new(&bytes);
+        match PathOp::decode(&mut r, minor) {
+            Err(Error::UnknownCriticalField { tag: 5, .. }) => {}
+            other => {
+                panic!("minor {minor}: expected UnknownCriticalField for tag 5, got {other:?}")
+            }
+        }
     }
 }
 
@@ -431,7 +580,7 @@ fn atom_decode_rejects_a_wrong_stored_id() {
     a.id = AtomId([0xAB; 32]); // corrupt the stored id
     let bytes = a.encode();
     let mut r = CanonReader::new(&bytes);
-    assert!(ChangeAtom::decode(&mut r).is_err());
+    assert!(ChangeAtom::decode(&mut r, 4).is_err());
 }
 
 #[test]
@@ -442,8 +591,7 @@ fn atom_roundtrips_with_ops_and_copies() {
         ops: vec![
             PathOp::Add {
                 path: "a.txt".into(),
-                blob: BlobId([2u8; 32]),
-                mode: 0o100644,
+                content: Content::blob(BlobId([2u8; 32]), 0o100644),
                 status: EpistemicStatus::Stated,
             },
             PathOp::Delete {
@@ -466,7 +614,7 @@ fn atom_roundtrips_with_ops_and_copies() {
 
     let bytes = a.encode();
     let mut r = CanonReader::new(&bytes);
-    assert_eq!(ChangeAtom::decode(&mut r).unwrap(), a);
+    assert_eq!(ChangeAtom::decode(&mut r, 4).unwrap(), a);
 }
 
 #[test]
@@ -492,7 +640,7 @@ fn ops_out_of_order_are_rejected() {
     rw.field(7, true, EpistemicStatus::Stated.encode());
     let bytes = rw.into_bytes();
     let mut r = CanonReader::new(&bytes);
-    match ChangeAtom::decode(&mut r) {
+    match ChangeAtom::decode(&mut r, 4) {
         Err(Error::NonCanonical(_)) => {}
         other => panic!("expected NonCanonical, got {other:?}"),
     }
@@ -526,7 +674,7 @@ fn copies_out_of_order_are_rejected() {
     rw.field(7, true, EpistemicStatus::Stated.encode());
     let bytes = rw.into_bytes();
     let mut r = CanonReader::new(&bytes);
-    match ChangeAtom::decode(&mut r) {
+    match ChangeAtom::decode(&mut r, 4) {
         Err(Error::NonCanonical(_)) => {}
         other => panic!("expected NonCanonical, got {other:?}"),
     }
@@ -541,7 +689,7 @@ fn metadata_encoded_but_every_claim_absent_is_rejected() {
     rw.field(7, true, EpistemicStatus::Stated.encode());
     let bytes = rw.into_bytes();
     let mut r = CanonReader::new(&bytes);
-    match ChangeAtom::decode(&mut r) {
+    match ChangeAtom::decode(&mut r, 4) {
         Err(Error::NonCanonical(_)) => {}
         other => panic!("expected NonCanonical, got {other:?}"),
     }
@@ -603,7 +751,7 @@ fn ir_refs_out_of_order_are_rejected() {
     rw.field(3, true, prov.encode());
     let bytes = rw.into_bytes();
     let mut r = CanonReader::new(&bytes);
-    match Ir::decode_metadata(&mut r) {
+    match Ir::decode_metadata(&mut r, 4) {
         Err(Error::NonCanonical(_)) => {}
         other => panic!("expected NonCanonical, got {other:?}"),
     }
@@ -644,7 +792,7 @@ fn ir_dropped_out_of_order_is_rejected() {
     );
     let bytes = rw.into_bytes();
     let mut r = CanonReader::new(&bytes);
-    match Ir::decode_metadata(&mut r) {
+    match Ir::decode_metadata(&mut r, 4) {
         Err(Error::NonCanonical(_)) => {}
         other => panic!("expected NonCanonical, got {other:?}"),
     }
@@ -675,7 +823,7 @@ fn ir_flags_out_of_order_are_rejected() {
     );
     let bytes = rw.into_bytes();
     let mut r = CanonReader::new(&bytes);
-    match Ir::decode_metadata(&mut r) {
+    match Ir::decode_metadata(&mut r, 4) {
         Err(Error::NonCanonical(_)) => {}
         other => panic!("expected NonCanonical, got {other:?}"),
     }

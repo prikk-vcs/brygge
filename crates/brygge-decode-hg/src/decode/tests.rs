@@ -1656,16 +1656,24 @@ impl Repo {
 /// Every path in the IR's atoms, with the nodes (hex) of the atoms that add or modify it and the content each
 /// carried.
 fn history_of(ir: &brygge_ir::Ir, path: &str) -> Vec<(String, Vec<u8>)> {
-    use brygge_ir::model::PathOp;
+    use brygge_ir::model::{Content, PathOp};
     let mut out = Vec::new();
     for atom in &ir.atoms {
         for op in &atom.ops {
-            if let PathOp::Add { path: p, blob, .. } | PathOp::Modify { path: p, blob, .. } = op {
+            if let PathOp::Add {
+                path: p, content, ..
+            }
+            | PathOp::Modify {
+                path: p, content, ..
+            } = op
+            {
                 if p == path {
-                    out.push((
-                        crate::util::hex(&atom.source.atom_id),
-                        ir.content.get(blob).unwrap().unwrap(),
-                    ));
+                    if let Content::Blob { blob, .. } = content {
+                        out.push((
+                            crate::util::hex(&atom.source.atom_id),
+                            ir.content.get(blob).unwrap().unwrap(),
+                        ));
+                    }
                 }
             }
         }

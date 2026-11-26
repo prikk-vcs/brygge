@@ -547,8 +547,7 @@ fn a_genuine_internal_failure_dominates_the_exit_even_when_against_source_is_als
         parents: vec![a1],
         ops: vec![PathOp::Modify {
             path: "never-added".into(),
-            blob,
-            mode: 0o100_644,
+            content: Content::blob(blob, 0o100_644),
             status: EpistemicStatus::Stated,
         }],
         copies: vec![],
@@ -1135,8 +1134,7 @@ fn src(kind: brygge_ir::SourceKind, atom: &[u8]) -> brygge_ir::SourceIdentity {
 fn stated_add(path: &str, blob: brygge_ir::BlobId) -> PathOp {
     PathOp::Add {
         path: path.into(),
-        blob,
-        mode: 0o100_644,
+        content: Content::blob(blob, 0o100_644),
         status: EpistemicStatus::Stated,
     }
 }
@@ -1261,8 +1259,7 @@ fn two_ops_for_one_path_is_now_rejected_at_build_time_not_verify_time() {
             stated_add("a", blob),
             PathOp::Modify {
                 path: "a".into(),
-                blob: blob2,
-                mode: 0o100_644,
+                content: Content::blob(blob2, 0o100_644),
                 status: EpistemicStatus::Stated,
             },
         ],
@@ -1289,8 +1286,7 @@ fn verify_replay_fails_on_modify_of_an_absent_path() {
             parents: vec![],
             ops: vec![PathOp::Modify {
                 path: "never-added".into(),
-                blob,
-                mode: 0o100_644,
+                content: Content::blob(blob, 0o100_644),
                 status: EpistemicStatus::Stated,
             }],
             copies: vec![],
@@ -1646,6 +1642,145 @@ fn replay_of_a_branch_point_clones_once_for_the_earlier_sibling_only() {
     assert_eq!(
         stats.clones, 1,
         "exactly one of the two children clones; the other takes the original"
+    );
+}
+
+// ---- RFC 021 D-1/§3: the replay's kind rule ------------------------------------------------------
+
+/// A `Modify` that changes a path's kind (blob to submodule) is refused by `verify`'s replay (handoff
+/// §3): a moved pointer is fine, a change of kind is not — that is what `Replace` is for.
+#[test]
+fn replay_refuses_a_modify_that_changes_kind_from_blob_to_submodule() {
+    let mut b = IrBuilder::new(blank_provenance(
+        brygge_ir::SourceKind::Git,
+        "brygge-decode-git",
+    ));
+    let blob = b.add_blob(b"root".to_vec()).unwrap();
+    let root = b
+        .add_atom(AtomDraft {
+            parents: vec![],
+            ops: vec![stated_add("gitlink", blob)],
+            copies: vec![],
+            metadata: MetadataClaims::default(),
+            source: src(brygge_ir::SourceKind::Git, b"root"),
+            status: EpistemicStatus::Stated,
+        })
+        .unwrap();
+    let _child = b
+        .add_atom(AtomDraft {
+            parents: vec![root],
+            ops: vec![PathOp::Modify {
+                path: "gitlink".into(),
+                content: Content::Submodule {
+                    commit: vec![0x11; 20],
+                },
+                status: EpistemicStatus::Stated,
+            }],
+            copies: vec![],
+            metadata: MetadataClaims::default(),
+            source: src(brygge_ir::SourceKind::Git, b"child"),
+            status: EpistemicStatus::Stated,
+        })
+        .unwrap();
+    let ir = b.finish().unwrap();
+    let (outcome, _stats) = replay_ir(&ir);
+    match outcome {
+        CheckOutcome::Fail(msg) => assert!(
+            msg.contains("change of kind"),
+            "unexpected refusal text: {msg:?}"
+        ),
+        other => panic!("expected Fail, got {other:?}"),
+    }
+}
+
+/// A `Replace` from a blob to a submodule at the same path is accepted — exactly the case `Replace`
+/// exists for (RFC 021 D-1, handoff §3).
+#[test]
+fn replay_accepts_a_replace_that_changes_kind_from_blob_to_submodule() {
+    let mut b = IrBuilder::new(blank_provenance(
+        brygge_ir::SourceKind::Git,
+        "brygge-decode-git",
+    ));
+    let blob = b.add_blob(b"root".to_vec()).unwrap();
+    let root = b
+        .add_atom(AtomDraft {
+            parents: vec![],
+            ops: vec![stated_add("gitlink", blob)],
+            copies: vec![],
+            metadata: MetadataClaims::default(),
+            source: src(brygge_ir::SourceKind::Git, b"root"),
+            status: EpistemicStatus::Stated,
+        })
+        .unwrap();
+    let _child = b
+        .add_atom(AtomDraft {
+            parents: vec![root],
+            ops: vec![PathOp::Replace {
+                path: "gitlink".into(),
+                content: Content::Submodule {
+                    commit: vec![0x22; 20],
+                },
+                status: EpistemicStatus::Stated,
+            }],
+            copies: vec![],
+            metadata: MetadataClaims::default(),
+            source: src(brygge_ir::SourceKind::Git, b"child"),
+            status: EpistemicStatus::Stated,
+        })
+        .unwrap();
+    let ir = b.finish().unwrap();
+    let (outcome, _stats) = replay_ir(&ir);
+    assert!(
+        matches!(outcome, CheckOutcome::Pass),
+        "a Replace across kinds is accepted: {outcome:?}"
+    );
+}
+
+/// A `Modify` that keeps the same kind (a submodule's pointer moved to a different commit) is accepted
+/// — only a change of *kind* is refused, not a change of *content* (handoff §3).
+#[test]
+fn replay_accepts_a_modify_that_moves_a_submodules_pointer() {
+    let mut b = IrBuilder::new(blank_provenance(
+        brygge_ir::SourceKind::Git,
+        "brygge-decode-git",
+    ));
+    let root = b
+        .add_atom(AtomDraft {
+            parents: vec![],
+            ops: vec![PathOp::Add {
+                path: "gitlink".into(),
+                content: Content::Submodule {
+                    commit: vec![0x11; 20],
+                },
+                status: EpistemicStatus::Stated,
+            }],
+            copies: vec![],
+            metadata: MetadataClaims::default(),
+            source: src(brygge_ir::SourceKind::Git, b"root"),
+            status: EpistemicStatus::Stated,
+        })
+        .unwrap();
+    let _child = b
+        .add_atom(AtomDraft {
+            parents: vec![root],
+            ops: vec![PathOp::Modify {
+                path: "gitlink".into(),
+                content: Content::Submodule {
+                    commit: vec![0x22; 20],
+                },
+                status: EpistemicStatus::Stated,
+            }],
+            copies: vec![],
+            metadata: MetadataClaims::default(),
+            source: src(brygge_ir::SourceKind::Git, b"child"),
+            status: EpistemicStatus::Stated,
+        })
+        .unwrap();
+    let ir = b.finish().unwrap();
+    let (outcome, _stats) = replay_ir(&ir);
+    assert!(
+        matches!(outcome, CheckOutcome::Pass),
+        "a Modify that keeps the same kind is accepted: {outcome:?}"
     );
 }
 

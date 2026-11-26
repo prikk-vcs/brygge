@@ -9,10 +9,11 @@ use super::*;
 use crate::Error;
 use crate::artifact::{Decoded, digest_of, from_bytes, to_bytes};
 use crate::builder::{AtomDraft, IrBuilder};
+use crate::content::BlobId;
 use crate::model::{
-    Annotation, ChangedPart, CopyRecord, DropRecord, Flag, FlagKind, Identity, ImportProvenance,
-    Ir, LossBoundary, LossClass, MetadataClaims, PathOp, RefKind, RefRecord, SourceIdentity,
-    SourceKind, Text, TransformRecord,
+    Annotation, ChangedPart, Content, CopyRecord, DropRecord, Flag, FlagKind, Identity,
+    ImportProvenance, Ir, LossBoundary, LossClass, MetadataClaims, PathOp, RefKind, RefRecord,
+    SourceIdentity, SourceKind, Text, TransformRecord,
 };
 use crate::status::{Derivation, DerivationKind, EpistemicStatus};
 
@@ -52,8 +53,7 @@ fn decoded_fixture() -> Decoded {
             parents: vec![],
             ops: vec![PathOp::Add {
                 path: "a".into(),
-                blob: blob_a,
-                mode: 0o100_644,
+                content: Content::blob(blob_a, 0o100_644),
                 status: EpistemicStatus::Stated,
             }],
             copies: vec![],
@@ -75,8 +75,7 @@ fn decoded_fixture() -> Decoded {
             parents: vec![root],
             ops: vec![PathOp::Add {
                 path: "b".into(),
-                blob: blob_b,
-                mode: 0o100_644,
+                content: Content::blob(blob_b, 0o100_644),
                 status: EpistemicStatus::Stated,
             }],
             copies: vec![],
@@ -111,8 +110,7 @@ fn richer_decoded_fixture() -> Decoded {
             parents: vec![],
             ops: vec![PathOp::Add {
                 path: "a".into(),
-                blob: blob_a,
-                mode: 0o100_644,
+                content: Content::blob(blob_a, 0o100_644),
                 status: EpistemicStatus::Stated,
             }],
             copies: vec![],
@@ -134,8 +132,7 @@ fn richer_decoded_fixture() -> Decoded {
             parents: vec![root],
             ops: vec![PathOp::Add {
                 path: "b".into(),
-                blob: blob_b,
-                mode: 0o100_644,
+                content: Content::blob(blob_b, 0o100_644),
                 status: EpistemicStatus::Stated,
             }],
             copies: vec![],
@@ -153,8 +150,7 @@ fn richer_decoded_fixture() -> Decoded {
             parents: vec![mid],
             ops: vec![PathOp::Add {
                 path: "c".into(),
-                blob: blob_c,
-                mode: 0o100_644,
+                content: Content::blob(blob_c, 0o100_644),
                 status: EpistemicStatus::Stated,
             }],
             copies: vec![CopyRecord {
@@ -547,8 +543,7 @@ fn an_invented_atom_is_refused() {
             parents: vec![],
             ops: vec![PathOp::Add {
                 path: "invented".into(),
-                blob,
-                mode: 0o100_644,
+                content: Content::blob(blob, 0o100_644),
                 status: EpistemicStatus::Stated,
             }],
             copies: vec![],
@@ -580,8 +575,7 @@ fn an_invented_op_is_refused() {
     ir.content.insert(b"invented".to_vec()).unwrap();
     ir.atoms[0].ops.push(PathOp::Add {
         path: "invented".into(),
-        blob,
-        mode: 0o100_644,
+        content: Content::blob(blob, 0o100_644),
         status: EpistemicStatus::Transformed {
             step: 0,
             changed: vec![ChangedPart::Path],
@@ -633,8 +627,7 @@ fn more_moved_ops_than_gone_ones_is_refused() {
     ir.content.insert(b"extra".to_vec()).unwrap();
     ir.atoms[0].ops.push(PathOp::Add {
         path: "also-new".into(),
-        blob,
-        mode: 0o100_644,
+        content: Content::blob(blob, 0o100_644),
         status: EpistemicStatus::Transformed {
             step: 0,
             changed: vec![ChangedPart::Path],
@@ -705,8 +698,7 @@ fn an_edited_earlier_drop_is_refused() {
         parents: vec![],
         ops: vec![PathOp::Add {
             path: "a".into(),
-            blob,
-            mode: 0o100_644,
+            content: Content::blob(blob, 0o100_644),
             status: EpistemicStatus::Stated,
         }],
         copies: vec![],
@@ -749,8 +741,7 @@ fn duplicate_source_identities_in_the_input_are_refused() {
         parents: vec![],
         ops: vec![PathOp::Add {
             path: "a".into(),
-            blob: blob1,
-            mode: 0o100_644,
+            content: Content::blob(blob1, 0o100_644),
             status: EpistemicStatus::Stated,
         }],
         copies: vec![],
@@ -764,8 +755,7 @@ fn duplicate_source_identities_in_the_input_are_refused() {
         parents: vec![],
         ops: vec![PathOp::Add {
             path: "b".into(),
-            blob: blob2,
-            mode: 0o100_644,
+            content: Content::blob(blob2, 0o100_644),
             status: EpistemicStatus::Stated,
         }],
         copies: vec![],

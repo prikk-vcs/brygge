@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use super::*;
 use crate::builder::{AtomDraft, IrBuilder};
 use crate::model::{
-    CopyRecord, DropRecord, Flag, FlagKind, ImportProvenance, LossBoundary, LossClass,
+    Content, CopyRecord, DropRecord, Flag, FlagKind, ImportProvenance, LossBoundary, LossClass,
     MetadataClaims, PathOp, SourceIdentity, SourceKind,
 };
 use crate::status::{Derivation, DerivationKind, EpistemicStatus};
@@ -47,8 +47,7 @@ fn build() -> Ir {
             parents: vec![],
             ops: vec![PathOp::Add {
                 path: "a".into(),
-                blob,
-                mode: 0o100_644,
+                content: Content::blob(blob, 0o100_644),
                 status: EpistemicStatus::Stated,
             }],
             copies: vec![],
@@ -63,8 +62,7 @@ fn build() -> Ir {
             parents: vec![root],
             ops: vec![PathOp::Add {
                 path: "b".into(),
-                blob: child_blob,
-                mode: 0o100_644,
+                content: Content::blob(child_blob, 0o100_644),
                 status: EpistemicStatus::Stated,
             }],
             copies: vec![CopyRecord {
@@ -191,8 +189,7 @@ fn human_form_shows_flagged_section_only_when_non_empty() {
             parents: vec![],
             ops: vec![PathOp::Add {
                 path: "a".into(),
-                blob,
-                mode: 0o100_644,
+                content: Content::blob(blob, 0o100_644),
                 status: EpistemicStatus::Stated,
             }],
             copies: vec![],
@@ -214,8 +211,7 @@ fn a_clean_import_reports_no_derivations() {
             parents: vec![],
             ops: vec![PathOp::Add {
                 path: "a".into(),
-                blob,
-                mode: 0o100_644,
+                content: Content::blob(blob, 0o100_644),
                 status: EpistemicStatus::Stated,
             }],
             copies: vec![],
@@ -256,8 +252,7 @@ fn a_representation_drop_is_counted_on_the_not_history_line_not_recorded_loss() 
             parents: vec![],
             ops: vec![PathOp::Add {
                 path: "a".into(),
-                blob,
-                mode: 0o100_644,
+                content: Content::blob(blob, 0o100_644),
                 status: EpistemicStatus::Stated,
             }],
             copies: vec![],

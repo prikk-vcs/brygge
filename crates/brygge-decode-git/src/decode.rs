@@ -16,7 +16,7 @@ use gix::bstr::ByteSlice;
 use brygge_ir::Storage;
 use brygge_ir::builder::{AtomDraft, IrBuilder};
 use brygge_ir::model::{
-    Annotation, AtomId, CopyRecord, DropRecord, Extra, Identity, ImportProvenance, Ir,
+    Annotation, AtomId, Content, CopyRecord, DropRecord, Extra, Identity, ImportProvenance, Ir,
     LossBoundary, LossClass, MetadataClaims, PathOp, RefKind, RefRecord, Signature, SourceIdentity,
     SourceKind, Text, Time,
 };
@@ -1018,8 +1018,7 @@ fn diff_to_ops(
                 let blob = builder.add_blob(blob_bytes(repo, *oid, limits)?)?;
                 ops.push(PathOp::Add {
                     path: path.clone(),
-                    blob,
-                    mode: *mode,
+                    content: Content::blob(blob, *mode),
                     status: EpistemicStatus::Stated,
                 });
                 added_by_oid.entry(*oid).or_default().push(path.clone());
@@ -1029,8 +1028,7 @@ fn diff_to_ops(
                     let blob = builder.add_blob(blob_bytes(repo, *oid, limits)?)?;
                     ops.push(PathOp::Modify {
                         path: path.clone(),
-                        blob,
-                        mode: *mode,
+                        content: Content::blob(blob, *mode),
                         status: EpistemicStatus::Stated,
                     });
                 }

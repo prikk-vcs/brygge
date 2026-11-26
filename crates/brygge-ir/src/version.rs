@@ -52,14 +52,18 @@ impl std::fmt::Display for ContractVersion {
     }
 }
 
-/// The IR contract version this build **writes** (RFC 018 D-1, compact artifacts; re-cuts RFC 011's
-/// 0.2.0). [`READABLE`] is what it **reads** — a strict superset while this build also keeps reading the
-/// prior minor (RFC 018 D-7, OQ-2).
-pub const CURRENT: ContractVersion = ContractVersion::new(0, 3, 0);
+/// The IR contract version this build **writes** (RFC 021 D-2, re-cutting RFC 018's 0.3.0: an entry's
+/// content is a blob or a submodule). [`READABLE`] is what it **reads** — a strict superset while this
+/// build also keeps reading the prior minors (RFC 018 D-7 OQ-2; RFC 021 D-2).
+pub const CURRENT: ContractVersion = ContractVersion::new(0, 4, 0);
 
 /// Every contract minor this build reads (any patch), oldest first. [`write_to`](crate::artifact::write_to)
 /// only ever writes [`CURRENT`] — this list is the read gate's alone.
-pub const READABLE: &[ContractVersion] = &[ContractVersion::new(0, 2, 0), CURRENT];
+pub const READABLE: &[ContractVersion] = &[
+    ContractVersion::new(0, 2, 0),
+    ContractVersion::new(0, 3, 0),
+    CURRENT,
+];
 
 /// Check that an artifact's declared contract version is readable, else [`Error::UnsupportedContract`].
 ///

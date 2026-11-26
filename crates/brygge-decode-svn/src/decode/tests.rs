@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use brygge_ir::model::{PathOp, RefKind};
+use brygge_ir::model::{Content, PathOp, RefKind};
 use brygge_ir::status::EpistemicStatus;
 
 use super::decode as decode_unchecked;
@@ -391,11 +391,19 @@ fn a_symlink_and_an_executable_get_their_modes() {
     let ir = decode_dump(&d.buf, &Options::default()).unwrap();
     let ops: Vec<_> = ir.atoms.iter().flat_map(|a| &a.ops).collect();
     let exec = ops.iter().find_map(|o| match o {
-        PathOp::Add { path, mode, .. } if path == "run.sh" => Some(*mode),
+        PathOp::Add {
+            path,
+            content: Content::Blob { mode, .. },
+            ..
+        } if path == "run.sh" => Some(*mode),
         _ => None,
     });
     let link = ops.iter().find_map(|o| match o {
-        PathOp::Add { path, mode, .. } if path == "link" => Some(*mode),
+        PathOp::Add {
+            path,
+            content: Content::Blob { mode, .. },
+            ..
+        } if path == "link" => Some(*mode),
         _ => None,
     });
     assert_eq!(exec, Some(0o100_755));
@@ -652,7 +660,11 @@ fn cr_07_1_a_symlink_retargeted_without_a_property_block_strips_the_link_prefix(
         .iter()
         .flat_map(|a| &a.ops)
         .find_map(|o| match o {
-            PathOp::Modify { path, blob, .. } if path == "link" => Some(*blob),
+            PathOp::Modify {
+                path,
+                content: Content::Blob { blob, .. },
+                ..
+            } if path == "link" => Some(*blob),
             _ => None,
         })
         .expect("a Modify op for 'link' in revision 2");

@@ -2,15 +2,17 @@
 //! (RFC 003 D-3/D-6, container re-cut by RFC 011 §2.3, compacted by RFC 018 D-1).
 //!
 //! Layout: `magic (8)` · `format (1)` · `version (uvarint × 3)` · `digest (32)` · then, for the contract
-//! this build writes (0.3.0): metadata frames, the blob table (`count`, then `id(32) + raw_len` per
-//! blob, in [`store_order`]), and the blob frames — see [`frame`] for the frame codec and the packing
-//! rules. A frame is a run of raw bytes, stored either as they are or DEFLATE-compressed; **the digest
-//! is SHA-256 of the *logical* (decompressed) stream** — `version bytes ‖ uvarint(meta_len) ‖ metadata
-//! record ‖ uvarint(count) ‖ (id32 ‖ uvarint(raw_len))* ‖ every blob's bytes, in store order` — never a
-//! frame header or a compressed byte, so the same content always digests the same way regardless of how
-//! it was compressed (RFC 018 D-3). A 0.2.0 artifact (still read, never written — RFC 018 D-7, OQ-2) uses
-//! the prior, unframed layout instead, where the digest is SHA-256 of the stored bytes directly; see
-//! [`Decoded::digest`] for both definitions stated together.
+//! this build writes (0.4.0 — RFC 021 D-2; 0.3.0 reads the same framed layout): metadata frames, the
+//! blob table (`count`, then `id(32) + raw_len` per blob, in [`store_order`]), and the blob frames —
+//! see [`frame`] for the frame codec and the packing rules. A frame is a run of raw bytes, stored either
+//! as they are or DEFLATE-compressed; **the digest is SHA-256 of the *logical* (decompressed) stream**
+//! — `version bytes ‖ uvarint(meta_len) ‖ metadata record ‖ uvarint(count) ‖ (id32 ‖ uvarint(raw_len))*
+//! ‖ every blob's bytes, in store order` — never a frame header or a compressed byte, so the same
+//! content always digests the same way regardless of how it was compressed (RFC 018 D-3). A 0.2.0
+//! artifact (still read, never written — RFC 018 D-7, OQ-2) uses the prior, unframed layout instead,
+//! where the digest is SHA-256 of the stored bytes directly; see [`Decoded::digest`] for both
+//! definitions stated together. Only the metadata record's `PathOp` layout differs between 0.3.0 and
+//! 0.4.0 (RFC 021 D-1) — the container and frame format are otherwise identical.
 //!
 //! **Read order matters** (RFC 011 §2.3): magic, then format, then version, then the digest — all before
 //! a single byte of metadata is parsed, so a pre-release or unsupported-contract artifact is refused
@@ -26,7 +28,7 @@ use sha2::{Digest, Sha256};
 
 use crate::canon::{self, CanonReader, CanonWriter};
 use crate::content::{BlobId, ContentStore};
-use crate::model::{AtomId, ChangedPart, Ir, LossClass, PathOp};
+use crate::model::{AtomId, ChangedPart, Content, Ir, LossClass};
 use crate::status::EpistemicStatus;
 use crate::version::{self, ContractVersion};
 use crate::{Error, Result};
@@ -49,22 +51,22 @@ pub struct Decoded {
     pub ir: Ir,
     /// How many non-critical fields with an id this build does not recognize were skipped.
     pub skipped_non_critical_fields: u64,
-    /// The artifact's own contract version, as declared in its header (RFC 018 D-7): `0.2.0` or `0.3.0`
-    /// for anything this build reads today.
+    /// The artifact's own contract version, as declared in its header (RFC 018 D-7, RFC 021 D-2):
+    /// `0.2.0`, `0.3.0` or `0.4.0` for anything this build reads today.
     pub contract: ContractVersion,
     /// The artifact's own integrity digest, as checked by the reader (RFC 017 D-2). Not re-read from a
     /// fixed file offset — that would bypass the reader's own verification — but the exact digest the
     /// reader already computed and compared against the stored one before returning.
     ///
-    /// **Two definitions, by contract** (RFC 018 D-3): for a 0.3.0 artifact, the SHA-256 of the
-    /// *logical* (decompressed) stream — see the module doc. For a 0.2.0 artifact, the prior
+    /// **Two definitions, by contract** (RFC 018 D-3): for a 0.3.0 or 0.4.0 artifact, the SHA-256 of
+    /// the *logical* (decompressed) stream — see the module doc. For a 0.2.0 artifact, the prior
     /// definition: the SHA-256 of the stored bytes directly, from the first version byte to the end of
-    /// the input. Comparing a 0.2.0 and a 0.3.0 digest of the same content is meaningless; compare
-    /// [`Ir`]s instead (`verify --against-source` does).
+    /// the input. Comparing digests across contracts is meaningless; compare [`Ir`]s instead
+    /// (`verify --against-source` does).
     pub digest: [u8; 32],
 }
 
-/// Serialize `ir` to a self-contained artifact, contract [`version::CURRENT`] (0.3.0 — RFC 018 D-1),
+/// Serialize `ir` to a self-contained artifact, contract [`version::CURRENT`] (0.4.0 — RFC 021 D-2),
 /// streaming the blob store straight from [`crate::content::ContentStore`]'s own bytes with no
 /// intermediate copy (RFC 015 D-2). `out` must support [`Seek`]: the digest is written at its fixed
 /// offset only after the body that it covers has already been written and hashed, then the cursor is
@@ -424,14 +426,13 @@ pub fn store_order(ir: &Ir) -> Vec<BlobId> {
     let mut first_use: Vec<(Vec<u8>, usize, BlobId)> = Vec::new();
     for (atom_index, atom) in ir.atoms.iter().enumerate() {
         for op in &atom.ops {
-            let (path, blob) = match op {
-                PathOp::Add { path, blob, .. }
-                | PathOp::Modify { path, blob, .. }
-                | PathOp::Replace { path, blob, .. } => (path, *blob),
-                PathOp::Delete { .. } => continue,
+            let path = op.path();
+            let Some(Content::Blob { blob, .. }) = op.content() else {
+                continue;
             };
+            let blob = *blob;
             if seen.insert(blob) {
-                first_use.push((path.clone().into_bytes(), atom_index, blob));
+                first_use.push((path.to_string().into_bytes(), atom_index, blob));
             }
         }
     }
@@ -521,7 +522,7 @@ fn from_bytes_v2(
     let meta_len = r.uvarint_len()?;
     let meta_bytes = r.raw(meta_len)?;
     let mut mr = CanonReader::new(meta_bytes);
-    let mut ir = Ir::decode_metadata(&mut mr)?;
+    let mut ir = Ir::decode_metadata(&mut mr, found.minor)?;
     if !mr.is_empty() {
         return Err(Error::NonCanonical(
             "trailing bytes in metadata".to_string(),
@@ -668,9 +669,10 @@ impl<'a> BlobBoundaryWalker<'a> {
     }
 }
 
-/// [`from_bytes`] over a **contract 0.3.0** artifact (RFC 018 D-1): reconstructs the logical stream by
-/// inflating every frame (a failure here is immediate — "a frame that does not inflate", the format
-/// page's one exception to the digest-first rule, since there is no logical stream left to hash), then
+/// [`from_bytes`] over a **contract 0.3.0 or 0.4.0** artifact (RFC 018 D-1, RFC 021 D-2):
+/// reconstructs the logical stream by inflating every frame (a failure here is immediate — "a frame
+/// that does not inflate", the format page's one exception to the digest-first rule, since there is
+/// no logical stream left to hash), then
 /// hashes that reconstruction exactly as [`write_to`] does and compares it with `stored_digest` **before
 /// trusting any of its structure** — matching [`from_bytes_v2`]'s own precedence. Only once the digest
 /// matches are the packing rules, the blob table's order, and each blob's content address checked.
@@ -774,7 +776,7 @@ fn from_bytes_v3(
     }
 
     let mut mr = CanonReader::new(&meta_bytes);
-    let mut ir = Ir::decode_metadata(&mut mr)?;
+    let mut ir = Ir::decode_metadata(&mut mr, found.minor)?;
     if !mr.is_empty() {
         return Err(Error::NonCanonical(
             "trailing bytes in metadata".to_string(),
@@ -819,7 +821,7 @@ fn from_bytes_v3(
 }
 
 /// Parse an artifact by reading `r` forward exactly once (RFC 015 D-4): every byte past the stored
-/// digest is read (and, for a 0.3.0 artifact, inflated) as the pass advances, and a blob's bytes are
+/// digest is read (and, for a 0.3.0 or 0.4.0 artifact, inflated) as the pass advances, and a blob's bytes are
 /// never kept beyond the one frame that is verifying them. The resulting [`Ir`]'s content store
 /// re-reads a blob from `r` — re-hashing it against its [`BlobId`] — only if something later actually
 /// asks for it ([`crate::content`]'s `Backing::Artifact`/`Backing::ArtifactCompact`); nothing is copied
@@ -953,7 +955,7 @@ fn read_body_v2<R: Read>(sr: &mut sequential::SeqReader<R>) -> Result<BodyV2> {
         .map_err(|_| Error::Decode("length too large".to_string()))?;
     let meta_bytes = sr.hashed(meta_len, "metadata")?;
     let mut mr = CanonReader::new(&meta_bytes);
-    let ir = Ir::decode_metadata(&mut mr)?;
+    let ir = Ir::decode_metadata(&mut mr, 2)?;
     if !mr.is_empty() {
         return Err(Error::NonCanonical(
             "trailing bytes in metadata".to_string(),
@@ -989,8 +991,9 @@ fn read_body_v2<R: Read>(sr: &mut sequential::SeqReader<R>) -> Result<BodyV2> {
     Ok(BodyV2 { ir, index, skipped })
 }
 
-/// [`read_from`] over a **contract 0.3.0** artifact (RFC 018 D-1): streams forward exactly once,
-/// inflating each frame through a fixed 64 KiB buffer ([`frame::inflate_streamed`]) to feed the
+/// [`read_from`] over a **contract 0.3.0 or 0.4.0** artifact (RFC 018 D-1, RFC 021 D-2): streams
+/// forward exactly once, inflating each frame through a fixed 64 KiB buffer
+/// ([`frame::inflate_streamed`]) to feed the
 /// logical-stream digest — metadata's bytes are kept (metadata has always been held whole, and each of
 /// its frames is capped at 1 MiB by the fixed-chunking rule, checked before it is inflated); a blob
 /// frame's decompressed bytes are hashed, chunk by chunk, against both the overall digest and whichever
@@ -1111,7 +1114,7 @@ fn read_from_v3<R: Read + Seek + std::fmt::Debug + 'static>(
     }
 
     let mut mr = CanonReader::new(&meta_bytes);
-    let mut ir = Ir::decode_metadata(&mut mr)?;
+    let mut ir = Ir::decode_metadata(&mut mr, found.minor)?;
     if !mr.is_empty() {
         return Err(Error::NonCanonical(
             "trailing bytes in metadata".to_string(),
@@ -1209,10 +1212,7 @@ fn check_structure(ir: &Ir, contract: ContractVersion) -> Result<()> {
     let mut referenced: BTreeSet<BlobId> = BTreeSet::new();
     for atom in &ir.atoms {
         for op in &atom.ops {
-            if let PathOp::Add { blob, .. }
-            | PathOp::Modify { blob, .. }
-            | PathOp::Replace { blob, .. } = op
-            {
+            if let Some(Content::Blob { blob, .. }) = op.content() {
                 if !ir.content.contains(blob) {
                     return Err(Error::Decode(
                         "an operation references a blob missing from the store".to_string(),

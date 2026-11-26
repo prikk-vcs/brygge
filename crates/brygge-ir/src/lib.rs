@@ -36,9 +36,9 @@ pub use builder::{AtomDraft, IrBuilder};
 pub use content::{BlobId, ContentStore, Storage};
 pub use honesty::{FidelityReport, summary};
 pub use model::{
-    Annotation, AtomId, ChangeAtom, ChangedPart, CopyRecord, DropRecord, Extra, Flag, FlagKind,
-    Identity, ImportProvenance, Ir, LossBoundary, LossClass, MetadataClaims, PathOp, RefKind,
-    RefRecord, Signature, SourceIdentity, SourceKind, Text, Time, TransformRecord,
+    Annotation, AtomId, ChangeAtom, ChangedPart, Content, CopyRecord, DropRecord, Extra, Flag,
+    FlagKind, Identity, ImportProvenance, Ir, LossBoundary, LossClass, MetadataClaims, PathOp,
+    RefKind, RefRecord, Signature, SourceIdentity, SourceKind, Text, Time, TransformRecord,
 };
 pub use status::{Derivation, DerivationKind, EpistemicStatus};
 pub use version::ContractVersion;

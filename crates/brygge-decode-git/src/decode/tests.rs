@@ -2583,7 +2583,10 @@ fn a_revert_back_to_an_older_tree_is_diffed_correctly() {
     let ir = decode(r.path(), &Options::default()).unwrap();
     assert_eq!(ir.atoms.len(), 5);
     let content = |op: &PathOp| match op {
-        PathOp::Add { blob, .. } | PathOp::Modify { blob, .. } => ir.content.get(blob).unwrap(),
+        PathOp::Add { content, .. } | PathOp::Modify { content, .. } => match content {
+            Content::Blob { blob, .. } => ir.content.get(blob).unwrap(),
+            Content::Submodule { .. } => None,
+        },
         _ => None,
     };
     let ops: Vec<(String, Vec<u8>)> = ir

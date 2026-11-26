@@ -10,9 +10,8 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use crate::artifact::Decoded;
-use crate::content::BlobId;
 use crate::model::{
-    AtomId, ChangeAtom, ChangedPart, CopyRecord, LossClass, PathOp, RefKind, RefRecord,
+    AtomId, ChangeAtom, ChangedPart, Content, CopyRecord, LossClass, PathOp, RefKind, RefRecord,
     SourceIdentity,
 };
 use crate::status::EpistemicStatus;
@@ -129,14 +128,44 @@ fn mapped_parents(
     out
 }
 
-/// An op's own payload, variant-aware: `(variant tag, blob, mode)` — `Delete` carries neither.
-fn op_payload(op: &PathOp) -> (u8, Option<BlobId>, Option<u32>) {
+/// An op's own payload, variant-aware: `(variant tag, content)` — `Delete` carries no content.
+fn op_payload(op: &PathOp) -> (u8, Option<&Content>) {
     match op {
-        PathOp::Add { blob, mode, .. } => (0, Some(*blob), Some(*mode)),
-        PathOp::Modify { blob, mode, .. } => (1, Some(*blob), Some(*mode)),
-        PathOp::Delete { .. } => (2, None, None),
-        PathOp::Replace { blob, mode, .. } => (3, Some(*blob), Some(*mode)),
+        PathOp::Add { content, .. } => (0, Some(content)),
+        PathOp::Modify { content, .. } => (1, Some(content)),
+        PathOp::Delete { .. } => (2, None),
+        PathOp::Replace { content, .. } => (3, Some(content)),
     }
+}
+
+/// What differs between an op's input and output content (RFC 021 D-1): the same
+/// [`ChangedPart::Blob`]/[`ChangedPart::Mode`] vocabulary as before this RFC when both sides are
+/// ordinary blobs (so an existing chmod-only transform still marks `Mode` alone); for anything
+/// involving a submodule — a moved pointer, or a change of kind between a blob and a submodule — marked
+/// `Blob` alone, since a submodule has no mode and the closed vocabulary gains no new word for it.
+fn content_changed(
+    in_content: Option<&Content>,
+    out_content: Option<&Content>,
+) -> BTreeSet<ChangedPart> {
+    let mut expected = BTreeSet::new();
+    match (in_content, out_content) {
+        (
+            Some(Content::Blob { blob: ib, mode: im }),
+            Some(Content::Blob { blob: ob, mode: om }),
+        ) => {
+            if ib != ob {
+                expected.insert(ChangedPart::Blob);
+            }
+            if im != om {
+                expected.insert(ChangedPart::Mode);
+            }
+        }
+        (a, b) if a != b => {
+            expected.insert(ChangedPart::Blob);
+        }
+        _ => {}
+    }
+    expected
 }
 
 /// Whether `input` has two atoms sharing one [`SourceIdentity`] — the same condition [`check`] itself
@@ -384,21 +413,15 @@ pub fn check(
                 }
                 continue;
             };
-            let (in_variant, in_blob, in_mode) = op_payload(in_op);
-            let (out_variant, out_blob, out_mode) = op_payload(out_op);
+            let (in_variant, in_content) = op_payload(in_op);
+            let (out_variant, out_content) = op_payload(out_op);
             if in_variant != out_variant {
                 return Err(Violation::new(format!(
                     "atom {} (source {:?}): op {path:?} changed kind, which no transform may do",
                     in_atom.id, in_atom.source
                 )));
             }
-            let mut expected = BTreeSet::new();
-            if in_blob != out_blob {
-                expected.insert(ChangedPart::Blob);
-            }
-            if in_mode != out_mode {
-                expected.insert(ChangedPart::Mode);
-            }
+            let expected = content_changed(in_content, out_content);
             match out_op.status() {
                 EpistemicStatus::Transformed {
                     step,

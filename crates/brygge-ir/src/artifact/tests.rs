@@ -9,7 +9,7 @@ use super::*;
 use crate::builder::{AtomDraft, IrBuilder};
 use crate::canon::CanonReader;
 use crate::model::{
-    ChangedPart, DropRecord, Flag, FlagKind, ImportProvenance, LossBoundary, LossClass,
+    ChangedPart, Content, DropRecord, Flag, FlagKind, ImportProvenance, LossBoundary, LossClass,
     MetadataClaims, PathOp, RefKind, RefRecord, SourceIdentity, SourceKind, TransformRecord,
 };
 use crate::status::EpistemicStatus;
@@ -38,8 +38,7 @@ fn build() -> Ir {
             parents: vec![],
             ops: vec![PathOp::Add {
                 path: "readme".into(),
-                blob,
-                mode: 0o100_644,
+                content: Content::blob(blob, 0o100_644),
                 status: EpistemicStatus::Stated,
             }],
             copies: vec![],
@@ -63,8 +62,7 @@ fn build() -> Ir {
             parents: vec![root],
             ops: vec![PathOp::Add {
                 path: "second".into(),
-                blob: child_blob,
-                mode: 0o100_644,
+                content: Content::blob(child_blob, 0o100_644),
                 status: EpistemicStatus::Stated,
             }],
             copies: vec![],
@@ -109,14 +107,12 @@ fn build_rich() -> Ir {
             ops: vec![
                 PathOp::Add {
                     path: "empty".into(),
-                    blob: empty_blob,
-                    mode: 0o100_644,
+                    content: Content::blob(empty_blob, 0o100_644),
                     status: EpistemicStatus::Stated,
                 },
                 PathOp::Add {
                     path: "large".into(),
-                    blob: large_blob,
-                    mode: 0o100_644,
+                    content: Content::blob(large_blob, 0o100_644),
                     status: EpistemicStatus::Stated,
                 },
             ],
@@ -275,8 +271,7 @@ fn a_blob_changed_in_the_file_after_the_pass_is_never_read_as_the_new_bytes() {
         parents: vec![],
         ops: vec![PathOp::Add {
             path: "big".into(),
-            blob,
-            mode: 0o100_644,
+            content: Content::blob(blob, 0o100_644),
             status: EpistemicStatus::Stated,
         }],
         copies: vec![],
@@ -896,7 +891,11 @@ fn builder_with_atoms() -> IrBuilder {
     let mut b = IrBuilder::new(ir.provenance.clone());
     for atom in &ir.atoms {
         for op in &atom.ops {
-            if let PathOp::Add { blob, .. } = op {
+            if let PathOp::Add {
+                content: Content::Blob { blob, .. },
+                ..
+            } = op
+            {
                 b.add_blob(ir.content.get(blob).unwrap().unwrap()).unwrap();
             }
         }
@@ -1132,14 +1131,12 @@ fn fixture_ir() -> Ir {
             ops: vec![
                 PathOp::Add {
                     path: "empty".into(),
-                    blob: empty_blob,
-                    mode: 0o100_644,
+                    content: Content::blob(empty_blob, 0o100_644),
                     status: EpistemicStatus::Stated,
                 },
                 PathOp::Add {
                     path: "readme".into(),
-                    blob,
-                    mode: 0o100_644,
+                    content: Content::blob(blob, 0o100_644),
                     status: EpistemicStatus::Stated,
                 },
             ],
@@ -1175,8 +1172,7 @@ fn fixture_ir() -> Ir {
             parents: vec![root],
             ops: vec![PathOp::Add {
                 path: "second".into(),
-                blob: child_blob,
-                mode: 0o100_644,
+                content: Content::blob(child_blob, 0o100_644),
                 status: EpistemicStatus::Stated,
             }],
             copies: vec![],
@@ -1223,13 +1219,13 @@ fn fixture_data_path(name: &str) -> std::path::PathBuf {
         .join(name)
 }
 
-/// RFC 018 §6.3: `to_bytes` must reproduce `contract-0.3.0.ir` byte for byte. A failure here means a
+/// RFC 021 D-2: `to_bytes` must reproduce `contract-0.4.0.ir` byte for byte. A failure here means a
 /// codec or writer change altered the file's bytes — note it in the CHANGELOG, and regenerate
-/// (`UPDATE_GOLDEN=1 cargo test -p brygge-ir --lib golden_bytes_contract_0_3_0`).
+/// (`UPDATE_GOLDEN=1 cargo test -p brygge-ir --lib golden_bytes_contract_0_4_0`).
 #[test]
-fn golden_bytes_contract_0_3_0() {
+fn golden_bytes_contract_0_4_0() {
     let bytes = to_bytes(&fixture_ir());
-    let path = fixture_data_path("contract-0.3.0.ir");
+    let path = fixture_data_path("contract-0.4.0.ir");
     if std::env::var("UPDATE_GOLDEN").is_ok() {
         std::fs::write(&path, &bytes).unwrap();
         return;
@@ -1247,6 +1243,27 @@ fn golden_bytes_contract_0_3_0() {
          bytes. If intentional, note it in the CHANGELOG and regenerate the file.",
         path.display()
     );
+}
+
+/// RFC 021 D-1/D-2 (review 186): the committed **0.3.0** golden fixture (frozen when `CURRENT` was
+/// 0.3.0, never rewritten) still reads, reports contract `0.3.0`, and decodes to an `Ir` **equal** to
+/// `fixture_ir()` — including every atom's own id. Because a blob entry's wire fields (1 path, 2 blob,
+/// 3 mode, 4 status) are unchanged byte for byte by this RFC, re-decoding bytes written under the prior
+/// contract must still recompute the exact same `AtomId`s: the direct proof that this RFC does not
+/// silently reidentify any existing atom.
+#[test]
+fn reads_the_0_3_0_fixture() {
+    let path = fixture_data_path("contract-0.3.0.ir");
+    let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+
+    let via_from_bytes = from_bytes(&bytes).unwrap();
+    assert_eq!(via_from_bytes.contract, ContractVersion::new(0, 3, 0));
+    assert_eq!(via_from_bytes.ir, fixture_ir());
+
+    let via_read_from = read_from(std::io::Cursor::new(bytes)).unwrap();
+    assert_eq!(via_read_from.contract, ContractVersion::new(0, 3, 0));
+    assert_eq!(via_read_from.digest, via_from_bytes.digest);
+    assert_eq!(via_read_from.ir, via_from_bytes.ir);
 }
 
 /// Write `ir` as a **contract 0.2.0** artifact directly (the prior, unframed layout — `write_to` no
@@ -1469,11 +1486,12 @@ fn a_blob_table_out_of_store_order_is_rejected() {
     }
 }
 
-/// RFC 018 §6.5: a `0.1` and a `0.4` artifact are both refused (too old for `READABLE`, too new).
+/// RFC 018 §6.5, widened by RFC 021 D-2: a `0.1` and a `0.5` artifact are both refused (too old for
+/// `READABLE`, too new).
 #[test]
 fn versions_outside_readable_are_refused() {
     let ir = build();
-    for (major, minor, patch) in [(0u64, 1u64, 0u64), (0, 4, 0)] {
+    for (major, minor, patch) in [(0u64, 1u64, 0u64), (0, 5, 0)] {
         let bytes = container_with_version(&ir, major, minor, patch);
         match from_bytes(&bytes) {
             Err(Error::UnsupportedContract { .. }) => {}
@@ -1532,8 +1550,7 @@ fn deflate_bomb_bytes() -> Vec<u8> {
         parents: vec![],
         ops: vec![PathOp::Add {
             path: "big".into(),
-            blob: real_id,
-            mode: 0o100_644,
+            content: Content::blob(real_id, 0o100_644),
             status: EpistemicStatus::Stated,
         }],
         copies: vec![],
@@ -1803,8 +1820,7 @@ fn many_frame_ir() -> Ir {
         let blob = b.add_blob(content).unwrap();
         ops.push(PathOp::Add {
             path: format!("file-{i:03}"),
-            blob,
-            mode: 0o100_644,
+            content: Content::blob(blob, 0o100_644),
             status: EpistemicStatus::Stated,
         });
     }
@@ -1813,8 +1829,7 @@ fn many_frame_ir() -> Ir {
         let blob = b.add_blob(content).unwrap();
         ops.push(PathOp::Add {
             path: format!("large-{i}"),
-            blob,
-            mode: 0o100_644,
+            content: Content::blob(blob, 0o100_644),
             status: EpistemicStatus::Stated,
         });
     }
@@ -1857,9 +1872,9 @@ fn parallel_blob_frame_compression_is_byte_identical_to_the_serial_writer() {
     // `write_blob_frames` on purpose (so a bug shared by both would not cancel out): one frame's raw
     // bytes assembled, compressed, and written, one at a time, exactly as the pre-R-6 writer did.
     let mut version = CanonWriter::new();
-    version.uvarint(0);
-    version.uvarint(3);
-    version.uvarint(0);
+    version.uvarint(u64::from(version::CURRENT.major));
+    version.uvarint(u64::from(version::CURRENT.minor));
+    version.uvarint(u64::from(version::CURRENT.patch));
     let meta_bytes = ir.encode_metadata();
     let mut hasher = Sha256::new();
     hasher.update(version.as_bytes());
@@ -1928,8 +1943,7 @@ fn transform_chain_ir() -> Ir {
             parents: vec![],
             ops: vec![PathOp::Add {
                 path: "readme".into(),
-                blob,
-                mode: 0o100_644,
+                content: Content::blob(blob, 0o100_644),
                 status: EpistemicStatus::Stated,
             }],
             copies: vec![],
@@ -1963,8 +1977,7 @@ fn transform_chain_ir() -> Ir {
             parents: vec![root],
             ops: vec![PathOp::Add {
                 path: "second".into(),
-                blob: child_blob,
-                mode: 0o100_755,
+                content: Content::blob(child_blob, 0o100_755),
                 status: EpistemicStatus::Transformed {
                     step: step0 as u64,
                     changed: vec![ChangedPart::Mode],
@@ -2110,8 +2123,7 @@ fn an_ops_changed_using_the_atom_vocabulary_is_rejected() {
         parents: vec![],
         ops: vec![PathOp::Add {
             path: "p".into(),
-            blob,
-            mode: 0o100_644,
+            content: Content::blob(blob, 0o100_644),
             status: EpistemicStatus::Transformed {
                 step: step as u64,
                 changed: vec![ChangedPart::Author], // valid on an atom, not on an op

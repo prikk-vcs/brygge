@@ -11,8 +11,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::content::{BlobId, ContentStore, Storage};
 use crate::model::{
-    AtomId, ChangeAtom, CopyRecord, Flag, ImportProvenance, Ir, LossBoundary, MetadataClaims,
-    PathOp, RefRecord, SourceIdentity, TransformRecord,
+    AtomId, ChangeAtom, Content, CopyRecord, Flag, ImportProvenance, Ir, LossBoundary,
+    MetadataClaims, PathOp, RefRecord, SourceIdentity, TransformRecord,
 };
 use crate::status::EpistemicStatus;
 use crate::{Error, Result};
@@ -147,6 +147,20 @@ impl IrBuilder {
                     "two ops on one path in one atom: {:?}",
                     a.path()
                 )));
+            }
+        }
+        // RFC 021 D-1: a submodule's pinned commit id must be 20 bytes (SHA-1) or 32 (SHA-256) — the
+        // only two lengths a Git repository's own object format ever produces. This check applies to
+        // `Content::Submodule` only; a blob's address is already fixed-length by its type.
+        for op in &ops {
+            if let Some(Content::Submodule { commit }) = op.content() {
+                if commit.len() != 20 && commit.len() != 32 {
+                    return Err(Error::Invariant(format!(
+                        "a submodule's commit id is {} bytes at {:?}, must be 20 or 32",
+                        commit.len(),
+                        op.path()
+                    )));
+                }
             }
         }
         let mut copies = draft.copies;
@@ -284,11 +298,9 @@ impl IrBuilder {
         let referenced: BTreeSet<BlobId> = ordered
             .iter()
             .flat_map(|a| a.ops.iter())
-            .filter_map(|op| match op {
-                PathOp::Add { blob, .. }
-                | PathOp::Modify { blob, .. }
-                | PathOp::Replace { blob, .. } => Some(*blob),
-                PathOp::Delete { .. } => None,
+            .filter_map(|op| match op.content() {
+                Some(Content::Blob { blob, .. }) => Some(*blob),
+                Some(Content::Submodule { .. }) | None => None,
             })
             .collect();
         let mut content = self.content;

@@ -60,8 +60,7 @@ fn build() -> Ir {
             b"aaa",
             vec![PathOp::Add {
                 path: "readme".into(),
-                blob,
-                mode: 0o100_644,
+                content: Content::blob(blob, 0o100_644),
                 status: EpistemicStatus::Stated,
             }],
             vec![],
@@ -74,8 +73,7 @@ fn build() -> Ir {
             b"bbb",
             vec![PathOp::Modify {
                 path: "docs/readme".into(),
-                blob: child_blob,
-                mode: 0o100_644,
+                content: Content::blob(child_blob, 0o100_644),
                 status: EpistemicStatus::Stated,
             }],
             vec![CopyRecord {
@@ -149,8 +147,7 @@ fn two_ops_on_one_path_is_rejected() {
         vec![
             PathOp::Add {
                 path: "a".into(),
-                blob,
-                mode: 0o100_644,
+                content: Content::blob(blob, 0o100_644),
                 status: EpistemicStatus::Stated,
             },
             PathOp::Delete {
@@ -190,8 +187,7 @@ fn two_copy_records_with_the_same_to_from_from_atom_are_rejected() {
             b"aaa",
             vec![PathOp::Add {
                 path: "readme".into(),
-                blob,
-                mode: 0o100_644,
+                content: Content::blob(blob, 0o100_644),
                 status: EpistemicStatus::Stated,
             }],
             vec![],
@@ -229,8 +225,7 @@ fn finish_prunes_a_blob_no_op_references() {
         b"aaa",
         vec![PathOp::Add {
             path: "a".into(),
-            blob: referenced,
-            mode: 0o100_644,
+            content: Content::blob(referenced, 0o100_644),
             status: EpistemicStatus::Stated,
         }],
         vec![],
@@ -288,8 +283,7 @@ fn add_ops(n: usize, blob: BlobId, start: usize) -> Vec<PathOp> {
     (start..start + n)
         .map(|i| PathOp::Add {
             path: format!("f{i}"),
-            blob,
-            mode: 0o100_644,
+            content: Content::blob(blob, 0o100_644),
             status: EpistemicStatus::Stated,
         })
         .collect()

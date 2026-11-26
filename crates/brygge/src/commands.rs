@@ -3,7 +3,7 @@
 //! own output; `main` maps the code to `std::process::exit`. Every string that can originate in a source
 //! repository is routed through [`crate::display`] before it reaches stdout or stderr (CR-19).
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::io::Write as IoWrite;
 use std::path::{Path, PathBuf};
@@ -15,7 +15,7 @@ use brygge_decode_hg::Error as HgError;
 use brygge_decode_svn::{
     Error as SvnError, LayoutPolicy, Options as SvnOptions, Source as SvnSource,
 };
-use brygge_ir::model::{AtomId, ChangedPart, FlagKind, PathOp, RefKind, Text};
+use brygge_ir::model::{AtomId, ChangedPart, Content, FlagKind, PathOp, RefKind, Text};
 use brygge_ir::status::{Derivation, DerivationKind, EpistemicStatus};
 use brygge_ir::{Decoded, Ir, LossClass};
 
@@ -1110,6 +1110,7 @@ fn render_atoms_machine(ir: &Ir, contract: brygge_ir::ContractVersion) -> String
 /// The outcome of one internal check: it can always fail, and `not-checked` is reserved for a check that
 /// could not run (and says why) — never a way to hide a failure. It is the same word `against_source`
 /// uses for "requested but could not run".
+#[derive(Debug)]
 enum CheckOutcome {
     Pass,
     Fail(String),
@@ -1183,6 +1184,24 @@ struct ReplayStats {
     clones: usize,
 }
 
+/// What [`replay_ir`]'s tree tracks at each path (RFC 021 D-1): not the content itself (the replay never
+/// needs it), only which of the two kinds is there, so a `Modify` across kinds can be told from one that
+/// merely moves a blob's bytes or a submodule's pinned commit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PathKind {
+    Blob,
+    Submodule,
+}
+
+impl PathKind {
+    fn of(content: &Content) -> Self {
+        match content {
+            Content::Blob { .. } => Self::Blob,
+            Content::Submodule { .. } => Self::Submodule,
+        }
+    }
+}
+
 /// `replay`: replay each atom's ops against its first parent's tree (a root replays against the empty
 /// tree). `Add` needs the path absent; `Modify`/`Delete`/`Replace` need it present. Every copy's `to` is
 /// checked as part of its atom's own ops (it is always produced by an `Add`/`Modify`/`Replace` in that
@@ -1201,7 +1220,7 @@ fn replay_ir(ir: &Ir) -> (CheckOutcome, ReplayStats) {
             *refcount.entry(copy.from_atom).or_insert(0) += 1;
         }
     }
-    let mut trees: HashMap<AtomId, BTreeSet<String>> = HashMap::new();
+    let mut trees: HashMap<AtomId, BTreeMap<String, PathKind>> = HashMap::new();
     let mut stats = ReplayStats::default();
 
     macro_rules! fail {
@@ -1237,17 +1256,17 @@ fn replay_ir(ir: &Ir) -> (CheckOutcome, ReplayStats) {
                     }
                 }
             }
-            None => BTreeSet::new(),
+            None => BTreeMap::new(),
         };
 
         // Copies are checked against the tree state *before* this atom's own ops apply, since
         // `from_atom` is always an earlier atom, never this one (RFC 011 §2.5).
         for copy in &atom.copies {
             let source_tree_has_it = if Some(copy.from_atom) == p0 {
-                tree.contains(&copy.from)
+                tree.contains_key(&copy.from)
             } else {
                 match trees.get(&copy.from_atom) {
-                    Some(t) => t.contains(&copy.from),
+                    Some(t) => t.contains_key(&copy.from),
                     None => {
                         fail!("a copy's from_atom tree is unavailable (a structural inconsistency)")
                     }
@@ -1271,18 +1290,27 @@ fn replay_ir(ir: &Ir) -> (CheckOutcome, ReplayStats) {
 
         for op in &atom.ops {
             match op {
-                PathOp::Add { path, .. } => {
-                    if !tree.insert(path.clone()) {
+                PathOp::Add { path, content, .. } => {
+                    if tree.insert(path.clone(), PathKind::of(content)).is_some() {
                         fail!("an Add op names an already-present path");
                     }
                 }
-                PathOp::Modify { path, .. } | PathOp::Replace { path, .. } => {
-                    if !tree.contains(path) {
+                PathOp::Modify { path, content, .. } => match tree.get(path) {
+                    None => fail!("a Modify/Replace op names an absent path"),
+                    Some(&existing) if existing != PathKind::of(content) => fail!(
+                        "a Modify op changes a path's kind (a blob and a submodule); a change of \
+                         kind is a Replace"
+                    ),
+                    Some(_) => {}
+                },
+                PathOp::Replace { path, content, .. } => {
+                    if !tree.contains_key(path) {
                         fail!("a Modify/Replace op names an absent path");
                     }
+                    tree.insert(path.clone(), PathKind::of(content));
                 }
                 PathOp::Delete { path, .. } => {
-                    if !tree.remove(path) {
+                    if tree.remove(path).is_none() {
                         fail!("a Delete op names an absent path");
                     }
                 }

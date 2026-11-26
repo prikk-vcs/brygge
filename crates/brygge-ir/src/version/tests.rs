@@ -9,23 +9,26 @@ fn current_is_readable() {
 }
 
 #[test]
-fn the_contract_is_0_3_0() {
-    // RFC 018 D-1: compact artifacts re-cut the contract to 0.3.0.
-    assert_eq!(CURRENT, ContractVersion::new(0, 3, 0));
+fn the_contract_is_0_4_0() {
+    // RFC 021 D-2: an entry's content is a blob or a submodule re-cuts the contract to 0.4.0.
+    assert_eq!(CURRENT, ContractVersion::new(0, 4, 0));
 }
 
 #[test]
-fn the_prior_minor_is_still_readable() {
-    // RFC 018 D-7, OQ-2: this build reads 0.2.0 artifacts (the unchanged 0.6.0 layout) as well as 0.3.0.
-    let prior = ContractVersion::new(0, 2, 0);
-    assert!(READABLE.contains(&prior));
-    assert!(prior.accepts());
-    assert!(ensure_readable(prior).is_ok());
+fn every_prior_minor_is_still_readable() {
+    // RFC 018 D-7 OQ-2 (0.2.0, the unchanged 0.6.0 layout) and RFC 021 D-2 (0.3.0): this build reads
+    // both, as well as its own 0.4.0.
+    for prior in [ContractVersion::new(0, 2, 0), ContractVersion::new(0, 3, 0)] {
+        assert!(READABLE.contains(&prior));
+        assert!(prior.accepts());
+        assert!(ensure_readable(prior).is_ok());
+    }
 }
 
 #[test]
-fn a_minor_two_behind_is_refused() {
-    let too_old = ContractVersion::new(0, CURRENT.minor - 2, 0);
+fn a_minor_before_the_readable_range_is_refused() {
+    let oldest_readable = READABLE.iter().map(|v| v.minor).min().unwrap_or(0);
+    let too_old = ContractVersion::new(0, oldest_readable - 1, 0);
     assert!(!too_old.accepts());
     assert!(ensure_readable(too_old).is_err());
 }

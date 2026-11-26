@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use brygge_ir::builder::{AtomDraft, IrBuilder};
 use brygge_ir::model::{
-    ChangedPart, DropRecord, Flag, FlagKind, ImportProvenance, LossBoundary, LossClass,
+    ChangedPart, Content, DropRecord, Flag, FlagKind, ImportProvenance, LossBoundary, LossClass,
     MetadataClaims, PathOp, RefKind, RefRecord, SourceIdentity, SourceKind, Text, TransformRecord,
 };
 use brygge_ir::status::EpistemicStatus;
@@ -62,8 +62,7 @@ fn seed_ir() -> brygge_ir::Ir {
             parents: vec![],
             ops: vec![PathOp::Add {
                 path: "readme".into(),
-                blob,
-                mode: 0o100_644,
+                content: Content::blob(blob, 0o100_644),
                 status: EpistemicStatus::Stated,
             }],
             copies: vec![],
@@ -93,8 +92,7 @@ fn seed_ir() -> brygge_ir::Ir {
             parents: vec![root],
             ops: vec![PathOp::Add {
                 path: "second".into(),
-                blob: child_blob,
-                mode: 0o100_644,
+                content: Content::blob(child_blob, 0o100_644),
                 status: EpistemicStatus::Transformed {
                     step: step as u64,
                     changed: vec![ChangedPart::Mode],
@@ -251,8 +249,8 @@ fn parse(bytes: &[u8]) -> Parsed {
     let _patch = read_uvarint(bytes, &mut pos);
     assert_eq!(
         (major, minor),
-        (0, 3),
-        "this module reads contract 0.3.0 only"
+        (0, 4),
+        "this module reads contract 0.4.0 only"
     );
     let version_bytes = bytes[version_start..pos].to_vec();
     pos += 32; // the stored digest, not re-read here (recomputed on resign)

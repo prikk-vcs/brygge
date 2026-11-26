@@ -16,7 +16,8 @@ use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 
 use brygge_ir::{
-    AtomId, BlobId, ChangeAtom, Identity, Ir, PathOp, RefKind, RefRecord, SourceKind, Text, Time,
+    AtomId, BlobId, ChangeAtom, Content, Identity, Ir, PathOp, RefKind, RefRecord, SourceKind,
+    Text, Time,
 };
 
 use super::trailers;
@@ -87,17 +88,17 @@ type TreeState = BTreeMap<String, (u32, BlobId)>;
 fn apply_ops(state: &mut TreeState, ops: &[PathOp]) {
     for op in ops {
         match op {
-            PathOp::Add {
-                path, blob, mode, ..
-            }
-            | PathOp::Modify {
-                path, blob, mode, ..
-            }
-            | PathOp::Replace {
-                path, blob, mode, ..
-            } => {
-                state.insert(path.clone(), (*mode, *blob));
-            }
+            PathOp::Add { path, content, .. }
+            | PathOp::Modify { path, content, .. }
+            | PathOp::Replace { path, content, .. } => match content {
+                // A submodule's state is not yet tracked here (RFC 021 D-6 defers this comparison to
+                // batch G, alongside the Git decoder that would first produce one) — `encode_git`'s own
+                // `preflight` already refuses any artifact holding one before this ever runs.
+                Content::Blob { blob, mode } => {
+                    state.insert(path.clone(), (*mode, *blob));
+                }
+                Content::Submodule { .. } => {}
+            },
             PathOp::Delete { path, .. } => {
                 state.remove(path);
             }

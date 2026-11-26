@@ -14,7 +14,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use brygge_ir::Ir;
-use brygge_ir::model::PathOp;
+use brygge_ir::model::{Content, PathOp};
 
 use super::{decode, decode_with};
 use crate::checksum::{md5_hex, sha1_hex};
@@ -370,15 +370,12 @@ fn tree_at(ir: &Ir, idx: usize) -> BTreeMap<String, (Vec<u8>, u32)> {
     for atom in &ir.atoms[..=idx] {
         for op in &atom.ops {
             match op {
-                PathOp::Add {
-                    path, blob, mode, ..
-                }
-                | PathOp::Modify {
-                    path, blob, mode, ..
-                }
-                | PathOp::Replace {
-                    path, blob, mode, ..
-                } => {
+                PathOp::Add { path, content, .. }
+                | PathOp::Modify { path, content, .. }
+                | PathOp::Replace { path, content, .. } => {
+                    let Content::Blob { blob, mode } = content else {
+                        panic!("the SVN decoder never produces a submodule");
+                    };
                     tree.insert(
                         path.clone(),
                         (ir.content.get(blob).unwrap().unwrap(), *mode),
