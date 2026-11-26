@@ -94,6 +94,18 @@ artifact.
 | `transformed_refs.<step>` | as `transformed_atoms.<step>`, for refs | |
 | `transformed_drops.<step>` | as `transformed_atoms.<step>`, for `Transform`-class drops | |
 
+**The Subversion layout, `decode` only (RFC 020 D-3), governed by its own `decode_svn_layout_version`,
+independent of `report_version`.** Appended after the lines above, present only for `decode svn
+--reconstruct-refs` or `--branch-lines` — absent from every other decode (not Subversion, or Subversion
+without either option), which is unchanged.
+
+| Key | Value | Enc. |
+|---|---|---|
+| `decode_svn_layout_version` | `1` | |
+| `decode.svn.layout.trunk` | the trunk container's path, or `.` for the whole-repository form (`--layout-trunk .`) | ● |
+| `decode.svn.layout.branches` | the branches container's path; absent under the whole-repository form | ● |
+| `decode.svn.layout.tags` | the tags container's path; absent under the whole-repository form | ● |
+
 ### 3.2 The transform chain — `inspect` (governed by `inspect_version`)
 
 Printed right after §3.1's lines, for **any** `inspect <artifact>` call (RFC 018 D-5, batch T) —

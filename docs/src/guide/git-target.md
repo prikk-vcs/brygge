@@ -98,8 +98,9 @@ hint depends on whether the artifact has any ref at all:
 For Git or Mercurial this split does not change the hint: a removed ref is the only way an atom there goes
 unreached, whether or not other refs still exist.
 
-**One known limit** of a Subversion repository with no `trunk`/`branches`/`tags` layout at all is covered
-in "Limits in 0.8.0" below.
+**A Subversion repository with no `trunk`/`branches`/`tags` layout at all** reaches Git with
+`--layout-trunk .` (RFC 020 D-3; see "Layout" in the Subversion guide): the whole repository decodes as
+one line, since there is nothing to split it by.
 
 **For Subversion, the documented path is** `decode svn --branch-lines`, then `inspect --authors`, then
 `transform authors`, then `encode git` (see "Mapping authors" below for the middle two steps).
@@ -231,11 +232,6 @@ brygge encode git mapped.ir --out repo.git
 
 ## Limits in 0.8.0
 
-- **A Subversion repository with no `trunk`/`branches`/`tags` layout at all:** under `--branch-lines`,
-  `decode svn` refuses — every revision would touch no root, so the decode would yield no atoms, and a
-  decode that turns a whole history into nothing is never a success. Decode without `--branch-lines`
-  instead: the result is still faithful, it just keeps the whole repository tree in every commit (see
-  "The mapping" above).
 - **Merges are not inferred.** Subversion's `svn:mergeinfo` is not read; a merge commit is not detected,
   and no Git merge commit is written. Each branch line is a plain, single-parent chain.
 - **Non-UTF-8 annotated-tag messages are refused,** named in the pre-flight report before anything is

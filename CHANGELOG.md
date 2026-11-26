@@ -8,6 +8,12 @@ Every handoff adds its own entry in its own commit.
 
 ## [Unreleased]
 
+### Added
+
+- `decode svn --layout-trunk`, `--layout-branches` and `--layout-tags` set the Subversion layout for
+  `--reconstruct-refs` and `--branch-lines`, each changing only its own container. `--layout-trunk .`
+  decodes a repository with no layout as one line, so it can be encoded to Git (RFC 020).
+
 ### Changed
 
 - The Subversion decoder shares unchanged directories between revisions: a branch or tag copy no longer

@@ -149,6 +149,57 @@ Each ref points at the last revision that touched its directory. Every reconstru
 Without `--reconstruct-refs`, no refs are produced, and the history is carried as the plain directory
 tree it is.
 
+## Layout
+
+The standard `trunk`/`branches`/`tags` convention is the default, but not every repository follows it
+by that name, or follows it at the repository's own root. Three options (RFC 020 D-3), each with
+`--reconstruct-refs` or `--branch-lines`, name where each container actually is:
+
+```
+brygge decode svn repo --branch-lines --layout-trunk mainline
+brygge decode svn repo --branch-lines --layout-branches devel/branches --layout-tags devel/tags
+```
+
+- **Each option changes only its own container.** `--layout-trunk mainline` alone still expects the
+  standard `branches` and `tags` — an option you do not give is never silently removed, unlike
+  `git svn`'s `-T`/`-b`/`-t` (see the mapping below).
+- **`--layout-trunk .` means the whole repository is the trunk, with no separate branches or tags
+  container at all.** Giving `--layout-branches` or `--layout-tags` alongside it is a usage error (exit
+  `2`): there is nothing left for them to name. This is how a repository with **no** layout at all
+  reaches Git (see "Limits in 0.8.0" in the Git-target guide): `--layout-trunk . --branch-lines` decodes
+  it as one line, since a copy that creates a root has no ops of its own (RFC 019 D-9) — the whole
+  history still carries, just without a reconstructed branch/tag split.
+- **A path value** is a repository-relative directory, never the whole filesystem path and never
+  starting with `/`: no leading `/`, no `..` or empty segment, and no trailing `/`. `.` is accepted only
+  as the whole value of `--layout-trunk`.
+- **Two containers may not collide** once the options you did not give are filled in with their
+  standard names: the same path twice, or one inside another (`--layout-trunk branches/main` is refused
+  with the standard `branches`, since it is inside that container), is a usage error.
+- **A project in a subdirectory of a larger repository:**
+  ```
+  brygge decode svn repo --branch-lines \
+      --layout-trunk proj-a/trunk --layout-branches proj-a/branches --layout-tags proj-a/tags
+  ```
+  decodes `proj-a` alone; every path under a sibling project (`proj-b/…`) is outside the layout, so it
+  is flagged and recorded as dropped — never silently lost.
+- **What is recorded.** `params["layout"]` carries whichever containers were actually used — the
+  standard ones if none were given — so `verify --against-source` re-derives with the same policy a later
+  reader would otherwise have to guess. The default label is unchanged from before this RFC
+  (`trunk=trunk,branches=branches,tags=tags`), so every existing artifact and default decode stays
+  byte-identical.
+- **For `git svn` users:** the flags map directly, with one difference.
+
+  | `git svn` | brygge |
+  |---|---|
+  | `-T <path>`/`--trunk=<path>` | `--layout-trunk <path>` |
+  | `-b <path>`/`--branches=<path>` | `--layout-branches <path>` |
+  | `-t <path>`/`--tags=<path>` | `--layout-tags <path>` |
+  | `-s`/`--stdlayout` | no option — the standard layout is the default |
+
+  **The one difference:** in `git svn`, giving `-T` alone means the repository has no branches at all —
+  the options not given are dropped, not defaulted. In brygge, an option you do not give always keeps
+  its standard name; nothing is ever silently removed.
+
 ## One line of history per branch (`--branch-lines`)
 
 Without `--branch-lines`, every commit's tree is the *whole* repository — `trunk/`, `branches/x/`,
@@ -182,9 +233,9 @@ or tag it touches**, holding only that root's own files, at the root of its tree
 - **A branch or tag copied from a path outside every root** (not from another branch or tag) starts a
   fresh line, with no parent, and its first atom is exactly the copied content — counted in the same
   convention-violation flag as "a root created from outside the layout (N)".
-- **One known limit:** a repository with no `trunk`/`branches`/`tags` layout at all gets no refs even
-  with `--reconstruct-refs`, so `--branch-lines` has nothing to build lines from either — it is not
-  encodable to Git with brygge 0.8.0.
+- **A repository with no `trunk`/`branches`/`tags` layout at all** gets no refs from the standard
+  convention, and `--branch-lines` has nothing to build lines from — unless `--layout-trunk .` is given
+  (see "Layout" above), which makes the whole repository the one trunk line.
 
 ## Repositories brygge refuses
 
