@@ -4671,3 +4671,32 @@ fn transform_authors_result_text_machine_is_keyed_and_versioned() {
     assert!(s.contains("transform.authors.mapped=1"), "{s}");
     assert!(s.contains("transform.authors.unmapped=0"), "{s}");
 }
+
+/// Review 172 N-1: an odd value (holding the line's own `,`/`=` separators) must be quoted, or the
+/// line can be misread as more fields than it is.
+#[test]
+fn render_svn_layout_human_quotes_values_holding_the_lines_own_separators() {
+    let layout = LayoutPolicy {
+        trunk: "tr,u=nk".to_string(),
+        branches: Some("branches".to_string()),
+        tags: Some("tags".to_string()),
+    };
+    assert_eq!(
+        render_svn_layout_human(&layout),
+        "layout: trunk='tr,u=nk', branches='branches', tags='tags'\n"
+    );
+}
+
+/// The root form (`--layout-trunk .`) names no container at all, so there is nothing to quote.
+#[test]
+fn render_svn_layout_human_root_form_is_unquoted_prose() {
+    let layout = LayoutPolicy {
+        trunk: ".".to_string(),
+        branches: None,
+        tags: None,
+    };
+    assert_eq!(
+        render_svn_layout_human(&layout),
+        "layout: the whole repository as trunk\n"
+    );
+}

@@ -658,16 +658,20 @@ pub fn run_decode(
 
 /// RFC 020 D-3 §2: the human-facing "what layout did this decode use" line, one line, whether the
 /// values were given on the command line or are the standard ones.
+///
+/// Review 172 N-1: each value is quoted (`'…'`), the same way `cli.rs`'s own usage errors quote a
+/// layout value — without it, a value containing `,` or `=` (the line's own separators) could be
+/// misread as more fields than it is.
 fn render_svn_layout_human(layout: &LayoutPolicy) -> String {
     if layout.trunk == "." {
         "layout: the whole repository as trunk\n".to_string()
     } else {
-        let mut s = format!("layout: trunk={}", layout.trunk);
+        let mut s = format!("layout: trunk='{}'", layout.trunk);
         if let Some(branches) = &layout.branches {
-            let _ = write!(s, ", branches={branches}");
+            let _ = write!(s, ", branches='{branches}'");
         }
         if let Some(tags) = &layout.tags {
-            let _ = write!(s, ", tags={tags}");
+            let _ = write!(s, ", tags='{tags}'");
         }
         s.push('\n');
         s
