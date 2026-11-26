@@ -13,6 +13,7 @@
 //!   brygge-bench real-fetch <real.toml> <cache-dir>   # fetch whatever real-corpus entry is missing (network)
 //!   brygge-bench real-check <real.toml> <cache-dir>   # verify every present entry's pin/hash (no network)
 //!   brygge-bench real <real.toml> <cache-dir>         # check (never fetch), decode and measure every entry
+//!   brygge-bench ir-equal <a> <b>                     # RFC 021 batch K §5: compare two artifacts' decoded Ir
 //!
 //! Scenarios:
 //!   svn-revs <n>     — an SVN dump of ~n revisions with tiny per-revision content and one branch copy at
@@ -252,6 +253,21 @@ fn main() {
             };
             profile::run_spill(&kind, &path, &spill_dir);
         }
+        Some("ir-equal") => {
+            // RFC 021 batch K §5: compares two artifacts' decoded `Ir` values, of any supported
+            // contract — the cross-version proof that the same source history gives the same `Ir`
+            // (including every atom's `AtomId`) regardless of which contract wrote the artifact.
+            let (Some(a_path), Some(b_path)) = (
+                args.get(2).map(PathBuf::from),
+                args.get(3).map(PathBuf::from),
+            ) else {
+                eprintln!("usage: brygge-bench ir-equal <a> <b>");
+                std::process::exit(2);
+            };
+            if !ir_equal(&a_path, &b_path) {
+                std::process::exit(1);
+            }
+        }
         Some("corpus") => {
             // Write a scenario's corpus and stop (no decode): so the same input can be decoded by two builds
             // of the `brygge` CLI and the artifacts compared byte for byte (the A/B of a byte-identical change).
@@ -275,6 +291,125 @@ fn main() {
         }
         _ => run_matrix(),
     }
+}
+
+/// RFC 021 batch K §5: read two artifacts (of any contract this build supports) and compare their
+/// decoded `Ir` values — atoms (matched by `source`, never by `AtomId`: the point is to find out
+/// whether the ids themselves agree, not to assume they do), refs, the loss record, flags, transforms,
+/// and provenance. Each artifact's own contract version is printed, never compared (a 0.3.0 and a
+/// 0.4.0 artifact of the same history are expected to differ only in which contract wrote them).
+/// Reports the **first** difference found, naming the atom's own source id where the difference is
+/// atom-level. Returns `true` when every part is equal.
+fn ir_equal(a_path: &Path, b_path: &Path) -> bool {
+    let a = match brygge_ir::from_file(a_path) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("{}: {e}", a_path.display());
+            return false;
+        }
+    };
+    let b = match brygge_ir::from_file(b_path) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("{}: {e}", b_path.display());
+            return false;
+        }
+    };
+    println!("a: {} (contract {})", a_path.display(), a.contract);
+    println!("b: {} (contract {})", b_path.display(), b.contract);
+
+    if a.ir.atoms.len() != b.ir.atoms.len() {
+        println!(
+            "DIFFER: {} atom(s) in a, {} in b",
+            a.ir.atoms.len(),
+            b.ir.atoms.len()
+        );
+        return false;
+    }
+
+    let b_by_source: std::collections::HashMap<&brygge_ir::SourceIdentity, &brygge_ir::ChangeAtom> =
+        b.ir.atoms.iter().map(|at| (&at.source, at)).collect();
+    for a_atom in &a.ir.atoms {
+        let Some(&b_atom) = b_by_source.get(&a_atom.source) else {
+            println!(
+                "DIFFER: atom (source {:?}) in a has no match in b (by source identity)",
+                a_atom.source
+            );
+            return false;
+        };
+        if a_atom.id != b_atom.id {
+            println!(
+                "DIFFER: atom (source {:?}): id a={} b={}",
+                a_atom.source, a_atom.id, b_atom.id
+            );
+            return false;
+        }
+        if a_atom.parents != b_atom.parents {
+            println!(
+                "DIFFER: atom {} (source {:?}): parents differ",
+                a_atom.id, a_atom.source
+            );
+            return false;
+        }
+        if a_atom.ops != b_atom.ops {
+            println!(
+                "DIFFER: atom {} (source {:?}): ops differ",
+                a_atom.id, a_atom.source
+            );
+            return false;
+        }
+        if a_atom.copies != b_atom.copies {
+            println!(
+                "DIFFER: atom {} (source {:?}): copies differ",
+                a_atom.id, a_atom.source
+            );
+            return false;
+        }
+        if a_atom.metadata != b_atom.metadata {
+            println!(
+                "DIFFER: atom {} (source {:?}): metadata differ",
+                a_atom.id, a_atom.source
+            );
+            return false;
+        }
+        if a_atom.status != b_atom.status {
+            println!(
+                "DIFFER: atom {} (source {:?}): status differ",
+                a_atom.id, a_atom.source
+            );
+            return false;
+        }
+    }
+
+    if a.ir.refs != b.ir.refs {
+        println!("DIFFER: refs differ");
+        return false;
+    }
+    if a.ir.loss != b.ir.loss {
+        println!("DIFFER: loss boundary differs");
+        return false;
+    }
+    if a.ir.flags != b.ir.flags {
+        println!("DIFFER: flags differ");
+        return false;
+    }
+    if a.ir.transforms != b.ir.transforms {
+        println!("DIFFER: transforms differ");
+        return false;
+    }
+    if a.ir.provenance != b.ir.provenance {
+        println!(
+            "DIFFER: provenance differs — a={:?} b={:?} (expected to differ only by \
+             brygge_version/decoder_version across a version bump; say so if it is not)",
+            a.ir.provenance, b.ir.provenance
+        );
+        return false;
+    }
+
+    println!(
+        "EQUAL: every atom (including its id), ref, drop, flag, transform and the provenance match."
+    );
+    true
 }
 
 /// Run every (scenario, scale) as a subprocess and print a table. A scenario whose self-check fails (or that

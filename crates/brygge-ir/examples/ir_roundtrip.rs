@@ -1,6 +1,6 @@
 //! Build a tiny IR by hand, serialize it, read it back, and show the honesty surfaces — with **no
 //! source repository and no decoder** (RFC 001 handoff §9). Demonstrates the whole light core standing
-//! alone: the model, the canonical tagged-record content-addressed + digested artifact (contract 0.2.0,
+//! alone: the model, the canonical tagged-record content-addressed + digested artifact (contract 0.4.0,
 //! RFC 011), and the recoverable fidelity report.
 //!
 //! Run from the workspace root:

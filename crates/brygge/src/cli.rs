@@ -250,7 +250,7 @@ COMMANDS:
            decoding, in a private file removed when brygge exits — --spill-dir <DIR> chooses where (it
            must already exist); the default is --out's own directory. The option never changes the
            artifact; a RAM-backed directory (tmpfs) moves the memory cost rather than removing it.
-           Artifacts are compressed (contract 0.3.0)
+           Artifacts are compressed (contract 0.4.0)
   inspect  print the fidelity report an artifact alone reproduces; --atoms adds the per-atom
            listing: epistemic status, source ids, derived parameters, and the loss boundary.
            --authors lists every distinct author/committer/tagger identity instead, already in map-file
