@@ -70,8 +70,9 @@ brygge encode git mapped.ir --out repo.git
 | A `Tag` ref, with an annotation | An annotated tag object, `refs/tags/<name>` |
 | A `Tag` ref, without one | A lightweight tag, `refs/tags/<name>` |
 | An `Other` ref | `refs/brygge/other/<name>` — outside both the branch and tag namespaces, so it never reads as either |
-| A path's mode `100644`/`100755`/`120000` | A regular, executable, or symlink Git blob mode |
-| Any other mode | Refused by name before anything is written — the IR has no submodule mode, so this should not occur |
+| A path's blob content, mode `100644`/`100755`/`120000` | A regular, executable, or symlink Git blob mode |
+| A path's submodule content | A gitlink, mode `160000` (`M 160000 <commit> <path>`), the pinned commit id written exactly as the source held it |
+| Any other mode | Refused by name before anything is written — this should not occur |
 
 **The default branch** (`HEAD`) is the first of `trunk`, `main`, `master` or `default` that the IR has as
 a branch-like ref; otherwise the first branch-like ref in the artifact's own canonical order. With no
@@ -107,6 +108,24 @@ one line, since there is nothing to split it by.
 `--branch-lines` (RFC 019 Amendment A) gives each branch and tag its own line of history, with its own
 files at the root of its tree — **without it, the result keeps the whole repository tree in every
 commit**, which is faithful but not a usable migration.
+
+## Submodules
+
+A submodule carried from the source (see "Submodules" in the Git guide) is written back as a gitlink
+(mode `160000`), the same path and the same pinned commit id. The report states the count (D-4 of RFC
+021), and both G2's own check and `verify --against-target git` compare it like any other entry: path,
+kind and commit id.
+
+Four things to know before relying on the result:
+
+- **The result's submodules point at the same commits as the source's.** Nothing is re-pinned or
+  updated.
+- **`git submodule update` on the result fetches from the URLs in `.gitmodules`** — the source's own,
+  carried unchanged — so running it contacts those hosts. brygge itself contacts none.
+- **brygge checked none of the submodules' own repositories.** A pinned commit id is carried as opaque
+  bytes; it is never opened, fetched or verified.
+- **A submodule path missing from `.gitmodules`** is carried exactly as the source held it, and Git then
+  cannot fetch it — that is the source's own state, not something this encoder introduces.
 
 ## The trailers
 
@@ -236,9 +255,9 @@ brygge encode git mapped.ir --out repo.git
   and no Git merge commit is written. Each branch line is a plain, single-parent chain.
 - **Non-UTF-8 annotated-tag messages are refused,** named in the pre-flight report before anything is
   written: `git fast-import` has no `encoding` command for a tag, unlike a commit message.
-- **Not supported:** submodules, LFS, SHA-256 object-format repositories, incremental or continuous
-  synchronization, pushing to a hosting service, and `git-svn` metadata. All are out of scope for this
-  release.
+- **Not supported:** LFS, SHA-256 object-format repositories, incremental or continuous synchronization,
+  pushing to a hosting service, and `git-svn` metadata. All are out of scope for this release.
+  Submodules are supported (RFC 021): see "Submodules" above.
 
 ## Evidence
 

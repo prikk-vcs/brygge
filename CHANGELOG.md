@@ -8,6 +8,16 @@ Every handoff adds its own entry in its own commit.
 
 ## [Unreleased]
 
+### Added
+
+- Git repositories with submodules decode: each submodule is carried as a pinned reference (its path
+  and the commit it pins), and its own repository is never read, imported or verified. `encode git`
+  writes it back as a submodule (RFC 021).
+
+### Changed
+
+- The Git floor no longer refuses `submodule`.
+
 ### Breaking
 
 - Artifacts are written as IR contract 0.4.0 (RFC 021): an entry's content is a blob or a submodule.

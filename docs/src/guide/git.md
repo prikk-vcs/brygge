@@ -40,6 +40,22 @@ walk visits, not the number of distinct Git objects involved.
   its id stops the decode, so a preserved commit id is always a true link to its content. History is
   walked from the commits themselves, never from the commit-graph cache.
 
+## Submodules
+
+A submodule (a gitlink, mode `160000`) is carried as exactly what Git records at that path: the path
+itself, and the commit id it pins in another repository. brygge never reads, fetches, imports or
+verifies that other repository — it is never opened, and a commit id no object in this repository has
+is normal for a submodule, not an error.
+
+Wherever one appears — `decode`, `inspect`, `encode git` — the report states:
+
+> `submodules: P path(s) in the history, T at the branch and tag tips; their own repositories were not
+> read, imported or verified`
+
+`.gitmodules`, the file mapping each submodule path to a URL, is ordinary content: brygge carries it like
+any other file, change for change. A submodule pointing at a commit its own repository no longer has is
+carried as the source holds it — Git, not brygge, decides later whether that commit is still fetchable.
+
 ## What it does not carry
 
 Each of these is recorded in the artifact with its count, never dropped silently.
@@ -84,7 +100,6 @@ A refusal exits `20`, names the identifier below, and writes nothing.
 
 | Identifier | Refused | What you can do |
 |---|---|---|
-| `submodule` | a submodule (gitlink) in any tree | decode the submodule's repository separately |
 | `replace-ref` | any `refs/replace/*` ref | `git replace -d <object>` if unwanted, or make it permanent (`git filter-repo`) |
 | `grafts` | an `info/grafts` file | make it permanent (`git filter-repo`), or delete it if unwanted |
 | `shallow-clone` | a shallow clone | `git fetch --unshallow`, then decode |

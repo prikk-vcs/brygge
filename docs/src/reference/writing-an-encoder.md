@@ -59,6 +59,24 @@ would silently misrepresent what the source recorded.
 handling the `Content::Submodule` case explicitly) — your encoder will not compile against the new
 `brygge-ir` until it does.
 
+Two shapes this match can take, each valid depending on what your target can hold:
+
+```rust
+// Hold it — a target with its own gitlink-like concept (`encode git` does this):
+match content {
+    Content::Blob { blob, mode } => write_blob(blob, mode)?,
+    Content::Submodule { commit } => write_gitlink(commit)?,
+}
+
+// Refuse it by name — a target with nothing to hold it in:
+match content {
+    Content::Blob { blob, mode } => write_blob(blob, mode)?,
+    Content::Submodule { .. } => return Err(Refusal::Submodule { path: path.clone() }),
+}
+```
+
+Either is honest. Writing a submodule's `commit` bytes as if they were file content is not.
+
 ## 2. The order
 
 `ir.atoms` is already in **canonical order**: parents before children. You do not need to sort or

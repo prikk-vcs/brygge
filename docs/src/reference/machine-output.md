@@ -106,6 +106,17 @@ without either option), which is unchanged.
 | `decode.svn.layout.branches` | the branches container's path; absent under the whole-repository form | ● |
 | `decode.svn.layout.tags` | the tags container's path; absent under the whole-repository form | ● |
 
+**Submodules (RFC 021 D-4), governed by its own `decode_submodules_version`, independent of
+`report_version`.** Appended after the lines above, for both `decode` and `inspect` (either prints the
+same fidelity report), present only when the history holds at least one submodule — absent entirely
+otherwise, so an ordinary repository's report is unchanged.
+
+| Key | Value | Enc. |
+|---|---|---|
+| `decode_submodules_version` | `1` | |
+| `decode.submodules.paths` | distinct paths that ever held a submodule anywhere in the history | |
+| `decode.submodules.at_tips` | distinct paths holding a submodule at any ref's own target | |
+
 ### 3.2 The transform chain — `inspect` (governed by `inspect_version`)
 
 Printed right after §3.1's lines, for **any** `inspect <artifact>` call (RFC 018 D-5, batch T) —
@@ -140,12 +151,13 @@ The listing is appended after §3.1's lines. It does not repeat `atoms`: every k
 | Key | Value | Enc. |
 |---|---|---|
 | `inspect_version` | `4` | |
-| `contract_version` | the artifact's own IR contract version, `major.minor.patch` (this build writes `0.3.0`; an older artifact may report `0.2.0`) | |
+| `contract_version` | the artifact's own IR contract version, `major.minor.patch` (this build writes `0.4.0`; an older artifact may report `0.2.0` or `0.3.0`) | |
 | `atom.N.id` | the atom's IR id (hex) | |
 | `atom.N.status` | `stated`, or `derived:<kind>` with `<kind>` a label (`inferred-rename`, `reconstructed-changeset`, `reconstructed-branch`, `inferred-merge`, `normalized-metadata`, `other`) | |
 | `atom.N.status_other` | present only when the status is `derived:other`: the kind's own name | ● |
 | `atom.N.source_id` | the source's own id for the atom (hex; empty if none) | |
 | `atom.N.ops` | number of path operations | |
+| `atom.N.submodule_ops` | how many of those ops carry a submodule (RFC 021 D-4); `0` when none | |
 | `atom.N.parents` | number of parents | |
 | `atom.N.message` | the message's exact bytes (empty when there is none) | ● |
 | `atom.N.copy.M.from` | copy source path | ● |
@@ -338,6 +350,8 @@ can run the same check again afterward over a repository brygge did write.
 | `encode_git.check` | always `corresponds` — this report is only ever written once the in-process check above has already passed | |
 | `encode_git.dropped.<class>` | as `dropped.<class>` in the fidelity report (§3.1), for the artifact encoded | |
 | `encode_git.flagged.<kind>` | as `flagged.<kind>` in the fidelity report (§3.1) | |
+| `encode_git.submodules.paths` | as `decode.submodules.paths` above (RFC 021 D-4); present only when the artifact holds at least one submodule | |
+| `encode_git.submodules.at_tips` | as `decode.submodules.at_tips` above; present only alongside `encode_git.submodules.paths` | |
 | `encode_git.supplied.<field>` | how many times that field was `Brygge-Supplied` | ● |
 | `encode_git.altered.<field>` | how many times that field was `Brygge-Altered` | ● |
 | `encode_git.unplaced_ref_transform.N` | a `Transformed` mark on a ref with no message of its own to carry it (a lightweight tag, a branch, a bookmark, a named branch, or an `Other` ref) — one line per such ref, naming it | ● |
