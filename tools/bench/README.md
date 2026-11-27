@@ -688,6 +688,35 @@ stops the cut.
 
 Machine: the same as the table above, same session.
 
+### The 0.10.0 cut (request 091)
+
+The Git decoder, the IR reader and writer, and `verify` changed this cycle (RFC 021), so the real corpus run is due
+(111 N-2). The rows below are from one session on this machine: `fixtures/previous-release/0.9.0/brygge`, then the
+0.10.0 release build, each the median of three.
+
+**Load-confounded, so no time comparison is drawn** (review 174's rule):
+- `uptime` was 13.81 at the start of the 0.9.0 leg and about 24.8 at the start of the 0.10.0 leg;
+- the 0.9.0 binary's own three fish-shell decodes ranged from 58,007 to 95,088 ms;
+- **the peaks do not depend on machine load, and are comparable:** every one is within about 5%;
+- the artifact sizes differ by a few bytes, from the version string in provenance (review 174). That the history is
+  the same is proved by the cross-version check, not by bytes.
+
+| Release | Repository | Artifact size | Decode time | Decode peak RSS | `verify` time | `verify` peak RSS |
+|---|---|---:|---:|---:|---:|---:|
+| 0.9.0 (re-measured) | eza | 10,727,417 B | 1,551 ms | 104,580 KiB | 161 ms | 16,880 KiB |
+| 0.9.0 (re-measured) | fish-shell | 991,301,357 B | 73,947 ms | 432,628 KiB | 10,756 ms | 79,088 KiB |
+| 0.9.0 (re-measured) | tortoisehg-thg | 336,240,068 B | 81,025 ms | 253,004 KiB | 3,664 ms | 55,436 KiB |
+| 0.10.0 | eza | 10,727,410 B | 1,437 ms | 105,948 KiB | 161 ms | 17,784 KiB |
+| 0.10.0 | fish-shell | 991,301,349 B | 62,497 ms | 430,660 KiB | 10,379 ms | 80,968 KiB |
+| 0.10.0 | tortoisehg-thg | 336,240,069 B | 87,997 ms | 256,136 KiB | 3,573 ms | 56,152 KiB |
+| 0.10.0 | jq (new: 0.9.0 refuses it) | 27,397,705 B | 1,165 ms | 109,524 KiB | 284 ms | 10,896 KiB |
+
+**The times are to be re-measured** in a quiet session (load under 16 for both legs). That is the first item of the
+next cycle.
+
+**The 0.8.1 and 0.9.0 cuts' corpus figures** are in their cut requests (080, 085). They were not copied here, which
+is an omission this section names rather than repairs from memory.
+
 ## Result — Git target (RFC 019 D-8)
 
 One row per run: the real decode (and, where the handoff's §1 "Before encoding" step applies,
