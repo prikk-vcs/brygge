@@ -73,6 +73,7 @@ in the same commit that moves an RFC between folders.
 |---|---|---|
 | [010](accepted/010-bounded-memory-and-streaming.md) | Bounded memory & streaming (increment 1 shipped in 0.1.0; increments 3, 3b and 5 in 0.2.0; increments 2 and 4 deferred by measurement) | `handoffs/010-bounded-memory-and-streaming/` |
 | [012](accepted/012-release-automation.md) | Release automation: CI on Linux, macOS and Windows; tag-triggered, owner-approved publication (crates.io trusted publishing); binaries with provenance; GitHub release from the CHANGELOG | `handoffs/012-release-automation/` |
+| [022](accepted/022-long-runs.md) | Long runs (0.11.0): progress on a terminal, and a clean stop (OP-02, OP-03), by a silent watchdog that removes what brygge made, with `std` only, no `unsafe` and no new dependency | `handoffs/022-long-runs/` |
 
 ### Done
 
