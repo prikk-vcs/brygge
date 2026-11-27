@@ -694,7 +694,8 @@ The Git decoder, the IR reader and writer, and `verify` changed this cycle (RFC 
 (111 N-2). The rows below are from one session on this machine: `fixtures/previous-release/0.9.0/brygge`, then the
 0.10.0 release build, each the median of three.
 
-**Load-confounded, so no time comparison is drawn** (review 174's rule):
+**Load-confounded, so no time comparison was drawn from this session** (review 174's rule; kept below, labelled, for
+the record — superseded by the quiet re-measurement that follows):
 - `uptime` was 13.81 at the start of the 0.9.0 leg and about 24.8 at the start of the 0.10.0 leg;
 - the 0.9.0 binary's own three fish-shell decodes ranged from 58,007 to 95,088 ms;
 - **the peaks do not depend on machine load, and are comparable:** every one is within about 5%;
@@ -703,19 +704,41 @@ The Git decoder, the IR reader and writer, and `verify` changed this cycle (RFC 
 
 | Release | Repository | Artifact size | Decode time | Decode peak RSS | `verify` time | `verify` peak RSS |
 |---|---|---:|---:|---:|---:|---:|
-| 0.9.0 (re-measured) | eza | 10,727,417 B | 1,551 ms | 104,580 KiB | 161 ms | 16,880 KiB |
-| 0.9.0 (re-measured) | fish-shell | 991,301,357 B | 73,947 ms | 432,628 KiB | 10,756 ms | 79,088 KiB |
-| 0.9.0 (re-measured) | tortoisehg-thg | 336,240,068 B | 81,025 ms | 253,004 KiB | 3,664 ms | 55,436 KiB |
-| 0.10.0 | eza | 10,727,410 B | 1,437 ms | 105,948 KiB | 161 ms | 17,784 KiB |
-| 0.10.0 | fish-shell | 991,301,349 B | 62,497 ms | 430,660 KiB | 10,379 ms | 80,968 KiB |
-| 0.10.0 | tortoisehg-thg | 336,240,069 B | 87,997 ms | 256,136 KiB | 3,573 ms | 56,152 KiB |
+| 0.9.0 (re-measured, load-confounded) | eza | 10,727,417 B | 1,551 ms | 104,580 KiB | 161 ms | 16,880 KiB |
+| 0.9.0 (re-measured, load-confounded) | fish-shell | 991,301,357 B | 73,947 ms | 432,628 KiB | 10,756 ms | 79,088 KiB |
+| 0.9.0 (re-measured, load-confounded) | tortoisehg-thg | 336,240,068 B | 81,025 ms | 253,004 KiB | 3,664 ms | 55,436 KiB |
+| 0.10.0 (load-confounded) | eza | 10,727,410 B | 1,437 ms | 105,948 KiB | 161 ms | 17,784 KiB |
+| 0.10.0 (load-confounded) | fish-shell | 991,301,349 B | 62,497 ms | 430,660 KiB | 10,379 ms | 80,968 KiB |
+| 0.10.0 (load-confounded) | tortoisehg-thg | 336,240,069 B | 87,997 ms | 256,136 KiB | 3,573 ms | 56,152 KiB |
 | 0.10.0 | jq (new: 0.9.0 refuses it) | 27,397,705 B | 1,165 ms | 109,524 KiB | 284 ms | 10,896 KiB |
-
-**The times are to be re-measured** in a quiet session (load under 16 for both legs). That is the first item of the
-next cycle.
 
 **The 0.8.1 and 0.9.0 cuts' corpus figures** are in their cut requests (080, 085). They were not copied here, which
 is an omission this section names rather than repairs from memory.
+
+### The quiet re-measurement (request 093)
+
+**The binaries, named by their own SHA-256, never a local rebuild** (review 195's Q-1):
+- **0.9.0:** `d1e2e35d…ca500e`, the published `brygge-x86_64-unknown-linux-gnu.tar.gz`'s `brygge`, fetched fresh for
+  this run, checked against its own `.sha256` and attestation, and deleted afterwards;
+- **0.10.0:** `0ad7bd3e…f28856`, `fixtures/previous-release/0.10.0/brygge`, the pinned, published, attested binary
+  (`tools/fixtures.sha256`).
+
+Six runs, alternating binaries (0.9.0, 0.10.0, 0.9.0, 0.10.0, 0.9.0, 0.10.0) in one sitting on one machine, each
+checked against `uptime`'s 1-minute average **immediately before that run started**; the threshold held for every
+run (the highest reading, 13.61, was still comfortably under 16), so **no run was discarded this time.** Three runs
+per binary; the table gives the median of three for each.
+
+| Release | Repository | Artifact size | Decode time (median) | Decode peak RSS (median) | `verify` time (median) | `verify` peak RSS (median) |
+|---|---|---:|---:|---:|---:|---:|
+| 0.9.0 | eza | 10,727,417 B | 1,213 ms | 105,236 KiB | 144 ms | 16,448 KiB |
+| 0.9.0 | fish-shell | 991,301,357 B | 49,695 ms | 438,496 KiB | 9,559 ms | 79,240 KiB |
+| 0.9.0 | tortoisehg-thg | 336,240,068 B | 69,762 ms | 254,196 KiB | 3,553 ms | 56,432 KiB |
+| 0.10.0 | eza | 10,727,410 B | 1,214 ms (+0.1%) | 105,388 KiB (+0.1%) | 143 ms (−0.7%) | 17,260 KiB (+4.9%) |
+| 0.10.0 | fish-shell | 991,301,349 B | 49,707 ms (+0.0%) | 436,484 KiB (−0.5%) | 9,238 ms (−3.4%) | 80,892 KiB (+2.1%) |
+| 0.10.0 | tortoisehg-thg | 336,240,069 B | 68,299 ms (−2.1%) | 256,808 KiB (+1.0%) | 3,373 ms (−5.1%) | 56,648 KiB (+0.4%) |
+
+**The worst adverse swing is eza's `verify` peak RSS at +4.9%, well under the 10% gate.** No figure moved by a
+multiple, the shape a real regression would show. **Judgment: no stop, no regression.**
 
 ## Result — Git target (RFC 019 D-8)
 
