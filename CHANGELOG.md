@@ -8,6 +8,18 @@ Every handoff adds its own entry in its own commit.
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-11-27
+
+**Git submodules.** brygge now decodes Git repositories that contain submodules, which it refused until
+this release. Each submodule is carried as exactly what Git records, its path and the commit it pins in
+another repository, and its own repository is never read, imported or verified: every report says so
+wherever a submodule appears. `brygge encode git` writes each one back as a submodule, and checks it
+against the artifact. Artifacts are now written as IR contract 0.4.0, which brygge 0.9.0 and earlier
+cannot read. Every existing atom keeps its id, and this build still reads 0.2.0 and 0.3.0 artifacts.
+Install with `cargo install --locked brygge`, or download a binary from the GitHub release.
+
+The detailed changes that made up 0.10.0 follow.
+
 ### Added
 
 - Git repositories with submodules decode: each submodule is carried as a pinned reference (its path
@@ -26,6 +38,10 @@ Every handoff adds its own entry in its own commit.
   mode }` or `Content::Submodule { commit }`. A match on `PathOp::Add { blob, mode, .. }` becomes
   `PathOp::Add { content: Content::Blob { blob, mode }, .. }`, with the `Submodule` case handled
   explicitly — every encoder and transform plugin must decide how to handle one.
+- New machine-output keys: `decode_submodules_version=1` governs `decode.submodules.paths` and
+  `decode.submodules.at_tips` (also printed by `inspect`); `atom.N.submodule_ops` is new under
+  `inspect --atoms`; `encode_git.submodules.paths` and `encode_git.submodules.at_tips` are new under
+  the unchanged `encode_git_version=2`.
 
 ## [0.9.0] — 2026-11-26
 

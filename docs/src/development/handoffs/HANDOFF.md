@@ -5,7 +5,7 @@ map: what brygge is, the state at handover, the invariants you must never regres
 lives, how to build and gate it, and the prioritized backlog. Everything it references is in this
 repository; nothing load-bearing lives only in someone's head.
 
-**Date of handover:** 2026-09-12. **Updated for the 0.9.0 release, 2026-11-26.** **State:** brygge
+**Date of handover:** 2026-09-12. **Updated for the 0.10.0 release, 2026-11-27.** **State:** brygge
 **0.1.0 is released**: the decode → IR half for all four named sources, on IR contract **0.2.0**.
 **0.1.1** added Windows support and the release workflow (RFC 012), **0.2.0** bounds long Git and
 CVS histories (RFC 010), **0.3.0** reaches SVN delta dumps, Mercurial's hashed store paths and CVS branch
@@ -29,9 +29,12 @@ security patch, threat model v0.13). **0.9.0** removes the cause: the Subversion
 unchanged directories between revisions, so memory follows the size of the history, not tags × files
 (the ceiling `max_retained_entries` is replaced by `max_tree_nodes`); `--layout-trunk`,
 `--layout-branches` and `--layout-tags` name a non-standard layout, each changing only its own
-container, and `--layout-trunk .` decodes a repository with no layout as one line (threat model v0.14).
-All gates are green, and CI enforces them on the declared MSRV. The encode → prikk half waits on prikk's
-import foundations (see §8).
+container, and `--layout-trunk .` decodes a repository with no layout as one line. **0.10.0** carries Git
+submodules: a Git repository with a submodule, refused until now, decodes with each submodule carried as
+a pinned reference (its path and the commit id it pins), never its own repository; `encode git` writes
+it back and checks it; artifacts are now contract **0.4.0**, and every existing atom keeps its id across
+the bump (threat model v0.15). All gates are green, and CI enforces them on the declared MSRV. The
+encode → prikk half waits on prikk's import foundations (see §8).
 
 ---
 
@@ -50,7 +53,7 @@ where told. The governing upstream contract is prikk **RFC 113** (History import
 | Area | State |
 |---|---|
 | **Decode → IR (Track A)** | **Released in 0.1.0** for all four sources: Git, Mercurial, Subversion, CVS (main line). See `CHANGELOG.md` and the user guides in `docs/src/guide/`. |
-| **IR contract** | **0.3.0** (RFC 018, compact artifacts: DEFLATE frames, blobs grouped by path, a digest over the logical stream; this build still reads 0.2.0). Tagged fields with a critical bit, a strict canonical form; published in `docs/src/reference/ir-artifact-format.md`. |
+| **IR contract** | **0.4.0** (RFC 021, an entry's content is a blob or a submodule, carried as exactly what Git records; the identity rule — a contract may add fields, but never re-encode an existing one, so every existing atom keeps its id; this build still reads 0.2.0 and 0.3.0). Tagged fields with a critical bit, a strict canonical form; published in `docs/src/reference/ir-artifact-format.md`. |
 | **CLI** | `brygge decode <git\|hg\|svn\|cvs> <source> --out <artifact>`, `inspect <artifact> [--atoms\|--authors]`, `verify <artifact> [--against-source <source>\|--against-target git <repo>]`, `encode <target> <artifact> [-- <plugin args>]` / `encode --list` (RFC 017 D-3; `git` is a reserved, built-in, checked target, RFC 019 D-1/D-6; every other target is an external plugin found on `PATH` only), `transform <name> <artifact> --out <file> [-- <plugin args>]` / `transform --list` (RFC 018 D-6; `authors` is a reserved, built-in transform, RFC 019 D-4; every other name is an external plugin, checked against its input before anything is written); human and versioned machine output (`docs/src/reference/machine-output.md`); CL-08 exit classes. |
 | **Encode → prikk (Track B)** | **Not started past design.** prikk ruled OQ-1…OQ-3 (2026-09-13) and UD-4 (2026-09-23); the encoder waits on prikk building UD-1 and UD-2 (RFC 008; see §8). `brygge encode` (RFC 017 D-3) runs an *external* plugin for every target but the reserved built-ins (`git`, supported since 0.8.0; `prikk`, reserved and still unavailable until this lands). |
 | **Gates** | fmt · clippy `-D warnings` · test · `cargo deny` · `cargo audit` · `tools/check-ir-isolation.sh` · `tools/check-links.sh` · `tools/test-release-tools.sh`, all `--locked`, on the default toolchain **and** on MSRV 1.87; CI-enforced (§7). CI runs fmt, clippy and test on Linux x86_64, Linux arm64, macOS (Apple Silicon) and Windows (RFC 012 D-9). |
@@ -90,7 +93,7 @@ decoder**, enforced in CI by `tools/check-ir-isolation.sh` against a declared al
 | Crate | Role | Third-party deps |
 |---|---|---|
 | **`brygge-ir`** | The IR: types, canonical codec, content store, epistemic-status taxonomy, the versioned artifact, the recoverable fidelity report. The durable product boundary (PU-3). | `sha2` only |
-| **`brygge-decode-git`** | Git → IR. Every object verified against its id; renames inferred only on request (marked `Derived`). | `gix` (isolated; security-reviewed) |
+| **`brygge-decode-git`** | Git → IR. Every object verified against its id; renames inferred only on request (marked `Derived`); a submodule entry is carried as a pinned reference (its path and commit id), never opened, fetched or followed (RFC 021). | `gix` (isolated; security-reviewed) |
 | **`brygge-decode-hg`** | Mercurial → IR. Pure-Rust revlog reader; the published view; every revision verified against its node; **stated** renames and copies carried as `Stated`. | `flate2`, `ruzstd` (decompression), `sha1-checked` (node verification) |
 | **`brygge-decode-svn`** | Subversion → IR. Pure-Rust dumpstream parser; branches/tags `Derived` by convention; `svnadmin` is an optional producer *subprocess*, not linked; the running tree shares unchanged directories between revisions, copy-on-write (RFC 020 D-1), so a copy costs O(depth), not O(files). | `md-5`, `sha1-checked` |
 | **`brygge-decode-cvs`** | CVS → IR. Pure-Rust RCS `,v` reader; main line only; **the changeset itself is `Derived`** (no atomic commit). | `sha2` (the repository fingerprint) |
@@ -112,7 +115,7 @@ module style (`foo.rs` + `foo/`, no `mod.rs`), tests as siblings (`#[cfg(test)] 
 | How to import from each source, what is carried, refused and why | `docs/src/guide/` (one guide per source) |
 | The machine-readable output (keys, versions, exit codes) | `docs/src/reference/machine-output.md` |
 | The whole docs set as a book | `docs/src/SUMMARY.md` (mdbook) |
-| The exact IR artifact wire format (for a foreign encoder or reader) | `docs/src/reference/ir-artifact-format.md` (contract `0.3.0`, RFC 018, PU-3; reads `0.2.0` too) |
+| The exact IR artifact wire format (for a foreign encoder or reader) | `docs/src/reference/ir-artifact-format.md` (contract `0.4.0`, RFC 021, PU-3; reads `0.2.0` and `0.3.0` too) |
 | Direction, milestones, release cycles, prikk dependencies | `ROADMAP.md` |
 | How decisions are made, who approves what, the gates | `GOVERNANCE.md` |
 | Every design decision + its build spec | `rfcs/` — see `rfcs/README.md` (the index and the source of truth for RFC state) |
@@ -327,7 +330,7 @@ the team inherits the reasoning, not just the TODO. `ROADMAP.md` is authoritativ
   streams: RFC 010 increments 2 and 4 are deferred by measurement.
 - **No progress reporting or cancellation.** Interrupting a decode is safe (the artifact write is atomic),
   but it produces nothing.
-- The threat model is the living document, revisited every release (v0.3 for 0.1.0, v0.4 for 0.1.1, v0.5 for 0.2.0, v0.6 for 0.3.0, v0.7 for 0.3.1, v0.8 for 0.4.0, v0.9 for 0.5.0, v0.10 for 0.6.0, v0.11 for 0.7.0, re-verified for 0.7.1, v0.12 for 0.8.0, v0.13 for 0.8.1, v0.14 for 0.9.0).
+- The threat model is the living document, revisited every release (v0.3 for 0.1.0, v0.4 for 0.1.1, v0.5 for 0.2.0, v0.6 for 0.3.0, v0.7 for 0.3.1, v0.8 for 0.4.0, v0.9 for 0.5.0, v0.10 for 0.6.0, v0.11 for 0.7.0, re-verified for 0.7.1, v0.12 for 0.8.0, v0.13 for 0.8.1, v0.14 for 0.9.0, v0.15 for 0.10.0).
 
 ---
 

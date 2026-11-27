@@ -7,17 +7,18 @@ design ids (e.g. `PR-4`, `IX-06`, `HO-1`, `INV-2`) refer to the design set in
 model). The governing upstream is prikk **RFC 113** (the import contract; accepted, owner-ruled
 2026-09-13).
 
-> **Status (2026-11-26): brygge 0.9.0 is released, Subversion at real size and shape** (RFC 020), after
-> 0.8.1 (a security patch on 0.8.0, amplification bounds), 0.8.0 (Git as a target, RFC 019 and Amendment
-> A), 0.7.1 (Rust 1.100 and the AUR), 0.7.0 (Contract 0.3.0), 0.6.0 (Extensibility), 0.5.0 (Scale at real
-> size), 0.4.0 (Hardening), 0.3.1 (Security), 0.3.0 (Source reach), 0.2.0 (Scale), 0.1.1 (Windows, and
-> release automation) and 0.1.0 (the first release).
+> **Status (2026-11-27): brygge 0.10.0 is released, Git submodules** (RFC 021), after
+> 0.9.0 (Subversion at real size and shape, RFC 020), 0.8.1 (a security patch on 0.8.0, amplification
+> bounds), 0.8.0 (Git as a target, RFC 019 and Amendment A), 0.7.1 (Rust 1.100 and the AUR), 0.7.0
+> (Contract 0.3.0), 0.6.0 (Extensibility), 0.5.0 (Scale at real size), 0.4.0 (Hardening), 0.3.1
+> (Security), 0.3.0 (Source reach), 0.2.0 (Scale), 0.1.1 (Windows, and release automation) and 0.1.0 (the
+> first release).
 > All four sources (Git, hg, SVN, CVS) decode into the IR (contract 0.2.0, RFC 011); artifacts are
-> written as contract 0.3.0, and brygge still reads 0.2.0 (see `CHANGELOG.md`). `brygge encode git`
-> writes a new bare Git repository from an artifact, checked against it before it is handed over. The
-> Subversion decoder's tree now shares unchanged directories between revisions, so memory follows the
-> size of the history, not tags × files, and `--layout-trunk`/`--layout-branches`/`--layout-tags` name a
-> non-standard layout. Next: **0.10.0, Git submodules** (RFC 021, accepted 2026-11-26). brygge is in **v0 development**: breaking changes made to
+> written as contract 0.4.0, and brygge still reads 0.2.0 and 0.3.0 (see `CHANGELOG.md`). `brygge encode
+> git` writes a new bare Git repository from an artifact, checked against it before it is handed over.
+> A Git submodule is carried as a pinned reference (its path and the commit id it pins), never its own
+> repository, and `encode git` writes it back; every report says so. Next: **to be planned.** brygge is
+> in **v0 development**: breaking changes made to
 > improve or fix it are acceptable, and are stated in the release notes. Track B (encode → prikk):
 > **prikk decides, brygge informs proactively**. brygge sends its import requirements to prikk; the encoder
 > is built once prikk's import foundations exist (see Track B). For the invariants, the architecture and
@@ -201,7 +202,7 @@ design (prikk RFC 113 §6).
 | **0.8.0** (**released 2026-11-24**) | **Git as a target** | RFC 019: `brygge encode git`, a supported encoder that writes a bare Git repository from an artifact, every commit labelled with `Brygge-` trailers, then checked against the artifact by brygge's own Git decoder; a supported authors map (`brygge transform authors`); Subversion branch lines (`decode svn --branch-lines`, RFC 019 Amendment A); the CVS `trunk` main line; `faster-hex` 0.10.1 (RUSTSEC-2026-0306); two released faults fixed (a Subversion copy-record duplicate, and an `Edit` transform refusal) | RFC 019 accepted (2026-11-21); B1 still waiting on prikk | Subversion, CVS, Mercurial and Git → Git on the real corpus, each passing the check; deterministic commit ids; the threat model updated |
 | **0.8.1** — patch (**released 2026-11-25**) | **Security: amplification bounds** | four declared ceilings (tree entries, copy expansion, retained snapshots, artifact operations) | 0.8.0 released | the corpus byte-identical; the threat model v0.13 |
 | **0.9.0** (**released 2026-11-26**) | **Subversion at real size and shape** | RFC 020: the Subversion tree shares unchanged directories, so memory follows the history's size, not tags × files (the 0.8.1 ceilings stop mattering for real repositories); `--layout-trunk`, `--layout-branches`, `--layout-tags`, including `--layout-trunk .` for a repository with no layout | RFC 020 accepted (2026-11-25); B1 still waiting on prikk | every decode byte-identical to 0.8.1; the N-tags benchmark linear in N; codeblocks' peak against 0.8.1's; a layout-less repository encoded to Git; the threat model updated |
-| **0.10.0** (planned) | **Git submodules** | RFC 021: a Git submodule is carried as a pinned reference (its path and the commit id it pins), never its own repository; contract 0.4.0 (an entry's content is a blob or a submodule); `encode git` writes it back; every report says the submodules' repositories were not read, imported or verified | RFC 021 accepted (2026-11-26); letter 008 to prikk sent before release; B1 still waiting on prikk | jq decodes, verifies against its source and encodes to Git with its submodule at the same path and commit; every other corpus entry the same history as 0.9.0; the threat model updated |
+| **0.10.0** (**released 2026-11-27**) | **Git submodules** | RFC 021: a Git submodule is carried as a pinned reference (its path and the commit id it pins), never its own repository; contract 0.4.0 (an entry's content is a blob or a submodule); `encode git` writes it back; every report says the submodules' repositories were not read, imported or verified | RFC 021 accepted (2026-11-26); letter 008 to prikk sent before release; B1 still waiting on prikk | jq decodes, verifies against its source and encodes to Git with its submodule at the same path and commit; every other corpus entry the same history as 0.9.0; the threat model updated |
 | **B0** | **Requirements to prikk** | Letter 001: an importer's requirements and questions (no code) | RFC 011 accepted | **Done 2026-09-23:** sent and answered (see Track B0) |
 | **B1** | **prikk encoder** | RFC 008, conforming to prikk's import foundations | prikk's foundations accepted (see Track B) | Per RFC 008 |
 | **1.0.0** | — | The owner's decision alone. Its criteria are to be restated when 1.0 is discussed (the former "prikk proposal encoder (B0)" criterion was withdrawn with B0) | — | — |
@@ -267,6 +268,10 @@ Re-verified against prikk 0.46.0 on 2026-09-23:
   - UD-1: an import-shaped `Attestation`, with the direction set to provenance per import, a prikk format
     change;
   - UD-2: an authorized `Import` block kind.
+- **Letter 008 (2026-11-26) sent:** contract 0.4.0 (0.10.0) carries Git submodules as pinned references;
+  RFC 113 OQ-3 for Git is unchanged, and brygge's own prikk encoder refuses a submodule by name until
+  prikk decides otherwise. Informs only; asks nothing that needs an answer before prikk's import work is
+  scheduled.
 - **prikk's import theme (theme 17) is unscheduled.** brygge informs it proactively (Track B0); the
   encoder waits for it (Track B1).
 

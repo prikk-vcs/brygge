@@ -12,6 +12,8 @@ there is the atom's op count gaining `, K submodule`, instead of `submodule <hex
 - the Git floor's `submodule` item is removed, **under conditions A and B**;
 - mergeinfo stays dropped (PR-8 and SRC-S2 unchanged).
 
+**Done (2026-11-27): implemented in 0.10.0.**
+
 ## Summary
 
 - **The gap today:** a Git repository with even one submodule is refused entirely. One of the corpus's three Git
