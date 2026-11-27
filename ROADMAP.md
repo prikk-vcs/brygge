@@ -111,7 +111,7 @@ design (prikk RFC 113 §6).
     identity-bearing,** so re-imports reproduce ids (brygge's UD-4, ruled by prikk).
   - **Personal data:** identities are carried as-is; pseudonymisation is a later owner decision on the
     target side.
-  - **Git submodules (brygge letter 008, sent 2026-11-27):** contract 0.4.0 (brygge 0.10.0) carries a submodule as a
+  - **Git submodules (brygge letter 008, sent 2026-11-26):** contract 0.4.0 (brygge 0.10.0) carries a submodule as a
     pinned reference (its path and the commit it pins), never its repository. brygge's prikk encoder will refuse one by
     name until prikk decides. The letter informs, and asks nothing.
   - **Path rules (prikk 0.57.0; brygge letter 007, prikk reply 006, 2026-11-14):** non-ASCII names in NFC
