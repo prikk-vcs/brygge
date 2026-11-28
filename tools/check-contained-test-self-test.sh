@@ -162,6 +162,7 @@ grep -E "^oom_kill " "$cg/memory.events" >"$MEM_EVENTS_FILE" 2>/dev/null || echo
 '
     systemd-run --user --scope -p MemoryMax=256M -p MemorySwapMax=0 \
         --setenv="MEM_EVENTS_FILE=$mem_events_file" -- bash -c "$mem_hog"
+    mem_scope_rc=$?
 
     oom_kill_count=$(awk '{print $2}' "$mem_events_file" 2>/dev/null)
     echo "self-test: checked memory.events' oom_kill after holding ~512 MB under a 256M cap: ${oom_kill_count:-unknown}"
@@ -169,6 +170,11 @@ grep -E "^oom_kill " "$cg/memory.events" >"$MEM_EVENTS_FILE" 2>/dev/null || echo
         echo "OK: the containment's memory bound killed the process that exceeded it (memory proof)"
     else
         echo "FAILED: memory.events' oom_kill was not above 0 — the memory bound was not enforced" >&2
+        echo "DIAGNOSTIC (temporary, review 205 round 2): systemd-run exit code was $mem_scope_rc" >&2
+        echo "DIAGNOSTIC: recent user journal:" >&2
+        journalctl --user --no-pager -n 60 2>&1 | tail -n 60 >&2 || true
+        echo "DIAGNOSTIC: recent kernel log:" >&2
+        dmesg 2>&1 | tail -n 40 >&2 || true
         fail=1
     fi
 else
