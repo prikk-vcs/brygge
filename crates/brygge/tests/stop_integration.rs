@@ -630,7 +630,12 @@ fn run_to_completion(mut cmd: Command) -> std::process::Output {
 fn decode_big_artifact(dir: &Path, dump: &Path) -> PathBuf {
     let artifact = dir.join("big.ir");
     let mut cmd = Command::new(bin());
-    cmd.args(["decode", "svn"])
+    // `--reconstruct-refs`: a plain `decode svn` with no refs at all would have every atom refused as
+    // unreachable by `encode git`'s own preflight (RFC 019 D-7) — this fixture's `trunk` becomes a real
+    // branch ref, so the one atom it carries is reachable. `verify --against-source`'s own re-decode
+    // reads this same option back from the artifact's own provenance automatically, so this choice does
+    // not need repeating at that call site.
+    cmd.args(["decode", "svn", "--reconstruct-refs"])
         .arg(dump)
         .arg("--out")
         .arg(&artifact)
@@ -681,13 +686,25 @@ fn dir_total_bytes(dir: &Path) -> u64 {
     total
 }
 
-/// Spawn `cmd` with piped stderr, returning the child, its pid, and a receiver for its full stderr once
-/// both it and its watchdog (sharing the same pipe) have closed it — the same shape `start_decode`
-/// above uses, generalized over an arbitrary already-built [`Command`].
+/// Spawn `cmd` with piped stderr, returning the child, its pid, and a continuously updated shared
+/// buffer of everything written to it so far.
+///
+/// **Deliberately never waits for the pipe to close (end of file) to read it** — `brygge transform`'s
+/// own plugin, and `encode git`'s own `git init`/`git fast-import`, each inherit brygge's stdout/stderr
+/// by design (`plugin.rs::run`'s own doc: "inheriting stdin/stdout/stderr", so the plugin's own output
+/// reaches the user transparently; `GitEnv::apply`'s call sites leave Git's stdio at the Rust default,
+/// which is also inherit). When brygge itself is killed mid-run, such a child can still be alive and
+/// running on its own for a while afterward (the whole point of this suite's `--sleep-ms`/the large
+/// fixture: there must *be* a window to kill brygge in) — and for as long as it is, it still holds that
+/// same, shared pipe's write end open, so the pipe's real end-of-file can be arbitrarily delayed past
+/// however long *that* unrelated child happens to keep running. A real terminal has no such problem (the
+/// user simply sees the line the moment the watchdog writes it); this is purely an artifact of this
+/// suite's own choice to collect output through a pipe, so this suite polls the growing buffer for the
+/// content it expects instead of ever demanding the stream's own end.
 struct RunningCommand {
     child: std::process::Child,
-    stderr_rx: mpsc::Receiver<Vec<u8>>,
     pid: u32,
+    stderr_buf: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
 }
 
 fn spawn_piped(mut cmd: Command) -> RunningCommand {
@@ -699,34 +716,86 @@ fn spawn_piped(mut cmd: Command) -> RunningCommand {
         .expect("spawn brygge");
     let pid = child.id();
     let mut stderr = child.stderr.take().expect("piped stderr");
-    let (tx, rx) = mpsc::channel();
+    let buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let buf_writer = std::sync::Arc::clone(&buf);
     thread::spawn(move || {
-        let mut buf = Vec::new();
-        let _ = stderr.read_to_end(&mut buf);
-        let _ = tx.send(buf);
+        let mut chunk = [0u8; 4096];
+        loop {
+            match stderr.read(&mut chunk) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => buf_writer.lock().unwrap().extend_from_slice(&chunk[..n]),
+            }
+        }
     });
     RunningCommand {
         child,
-        stderr_rx: rx,
         pid,
+        stderr_buf: buf,
     }
 }
 
-fn stop_and_collect_stderr_generic_within(
+/// The buffer's current content, as a lossy string — a snapshot, taken under the lock, never blocking on
+/// anything further.
+fn stderr_so_far(running: &RunningCommand) -> String {
+    String::from_utf8_lossy(&running.stderr_buf.lock().unwrap()).into_owned()
+}
+
+/// Stop `running`, then poll its stderr buffer for `cond` to hold, for at most `within`; panics naming
+/// what had actually arrived if `cond` never holds in time. Returns the buffer's content at the moment
+/// `cond` first held (never the buffer's *final* content — nothing after that moment is this function's
+/// concern; the caller's own assertions check exactly what it needs from what is returned).
+fn stop_and_poll_stderr(
     mut running: RunningCommand,
     stop: impl FnOnce(u32),
     within: Duration,
+    cond: impl Fn(&str) -> bool,
+) -> String {
+    stop(running.pid);
+    let mut seen = String::new();
+    let ok = poll_until(within, || {
+        seen = stderr_so_far(&running);
+        cond(&seen)
+    });
+    assert!(
+        ok,
+        "the expected stderr content did not appear within {within:?}; seen so far: {seen:?}"
+    );
+    let _ = running.child.wait();
+    seen
+}
+
+/// As [`stop_and_poll_stderr`], for a case that expects a specific sentence to appear (`contains`,
+/// never requiring the stream to end).
+fn stop_and_collect_stderr_generic_within(
+    running: RunningCommand,
+    stop: impl FnOnce(u32),
+    within: Duration,
+    expect_contains: &str,
+) -> String {
+    stop_and_poll_stderr(running, stop, within, |s| s.contains(expect_contains))
+}
+
+fn stop_and_collect_stderr_generic(
+    running: RunningCommand,
+    stop: impl FnOnce(u32),
+    expect_contains: &str,
+) -> String {
+    stop_and_collect_stderr_generic_within(running, stop, Duration::from_secs(10), expect_contains)
+}
+
+/// For a case that expects *no* sentence at all (`verify --against-source`, which registers nothing):
+/// stop, wait a fixed, generous span for the watchdog to have exited on its own (nothing is registered,
+/// so its own loop ends the moment the pipe closes, with nothing further to decide), then take one
+/// snapshot. There is nothing to poll for here — the whole point is that nothing ever arrives.
+fn stop_and_wait_then_snapshot(
+    mut running: RunningCommand,
+    stop: impl FnOnce(u32),
+    wait: Duration,
 ) -> String {
     stop(running.pid);
     let _ = running.child.wait();
-    let bytes = running.stderr_rx.recv_timeout(within).unwrap_or_else(|_| {
-        panic!("the watchdog's sentence did not reach stderr within {within:?}")
-    });
-    String::from_utf8_lossy(&bytes).into_owned()
-}
-
-fn stop_and_collect_stderr_generic(running: RunningCommand, stop: impl FnOnce(u32)) -> String {
-    stop_and_collect_stderr_generic_within(running, stop, Duration::from_secs(10))
+    thread::sleep(wait);
+    stderr_so_far(&running)
 }
 
 #[cfg(unix)]
@@ -781,7 +850,12 @@ fn run_encode_git_stopped_case(stop: impl FnOnce(u32)) {
 
     // The watchdog's own D-3 ceiling for a directory is 30 s; this stop case can legitimately take up
     // to that long to report, so its own wait allows a comfortable margin past it.
-    let stderr = stop_and_collect_stderr_generic_within(running, stop, Duration::from_secs(45));
+    let stderr = stop_and_collect_stderr_generic_within(
+        running,
+        stop,
+        Duration::from_secs(45),
+        "interrupted:",
+    );
 
     // D-3: the partial directory is removed once it stops changing (or, if a slow filesystem or a loaded
     // runner means it is still changing after the watchdog's own 30 s ceiling, it is named instead —
@@ -845,7 +919,12 @@ fn run_transform_stopped_case(stop: impl FnOnce(u32)) {
         .arg("--out")
         .arg(&out)
         .arg("--")
-        .args(["--sleep-ms", "20000"])
+        // Just long enough that the plugin is still sleeping (and so still holding brygge's inherited
+        // stderr open, long after brygge itself has died — see `RunningCommand`'s own doc) well past
+        // the handful of milliseconds this test needs to find the tmp file and send the stop; the
+        // stderr collection below polls the growing buffer rather than ever waiting for that pipe to
+        // close, so this no longer has to be long enough to matter for the test's own total runtime.
+        .args(["--sleep-ms", "2000"])
         .env("PATH", scratch.path());
     let running = spawn_piped(cmd);
     let pid = running.pid;
@@ -854,7 +933,9 @@ fn run_transform_stopped_case(stop: impl FnOnce(u32)) {
     let tmp = poll_for_entry_with_prefix(scratch.path(), &tmp_prefix, Duration::from_secs(30))
         .expect("the scratch output file never appeared");
 
-    let stderr = stop_and_collect_stderr_generic(running, stop);
+    let humanized = tmp.display().to_string().replace('\\', "\\\\");
+    let expected_sentence = format!("interrupted: removed {humanized}; nothing was written");
+    let stderr = stop_and_collect_stderr_generic(running, stop, &expected_sentence);
 
     assert!(
         poll_until(Duration::from_secs(10), || !tmp.exists()),
@@ -862,8 +943,6 @@ fn run_transform_stopped_case(stop: impl FnOnce(u32)) {
         tmp.display()
     );
     assert!(!out.exists(), "no artifact may exist after a clean stop");
-    let humanized = tmp.display().to_string().replace('\\', "\\\\");
-    let expected_sentence = format!("interrupted: removed {humanized}; nothing was written");
     assert!(
         stderr.trim_end().ends_with(&expected_sentence),
         "stderr does not end with the expected sentence.\nexpected suffix: {expected_sentence}\nactual: \
@@ -958,7 +1037,7 @@ fn run_verify_stopped_case(stop: impl FnOnce(u32)) {
         "verify --against-source finished before the stop was even sent; this case would be vacuous"
     );
 
-    let stderr = stop_and_collect_stderr_generic(running, stop);
+    let stderr = stop_and_wait_then_snapshot(running, stop, Duration::from_secs(2));
 
     assert!(
         !stderr.contains("interrupted:"),
@@ -1007,10 +1086,13 @@ fn a_planted_leftover_from_another_pid_is_named_and_left_in_place() {
     assert!(output.status.success(), "{output:?}");
     let stderr = String::from_utf8_lossy(&output.stderr);
 
+    // `display::human` (CR-19) doubles every literal backslash before a path reaches the sentence —
+    // on Windows that means every path separator (the same transform the decode cases above apply to
+    // their own expected text).
+    let humanized = leftover.display().to_string().replace('\\', "\\\\");
     let expected_prefix = format!(
-        "found {} ({}), a temporary file of brygge process {other_pid}; if no brygge is running, \
-         remove it with: ",
-        leftover.display(),
+        "found {humanized} ({}), a temporary file of brygge process {other_pid}; if no brygge is \
+         running, remove it with: ",
         "leftover content".len()
     );
     assert!(
@@ -1018,15 +1100,9 @@ fn a_planted_leftover_from_another_pid_is_named_and_left_in_place() {
         "D-4's exact notice must appear: {stderr}"
     );
     if cfg!(windows) {
-        assert!(
-            stderr.contains(&format!("del {}", leftover.display())),
-            "{stderr}"
-        );
+        assert!(stderr.contains(&format!("del {humanized}")), "{stderr}");
     } else {
-        assert!(
-            stderr.contains(&format!("rm {}", leftover.display())),
-            "{stderr}"
-        );
+        assert!(stderr.contains(&format!("rm {humanized}")), "{stderr}");
     }
     // D-4 never deletes: the planted leftover is still exactly where it was.
     assert!(leftover.exists());
