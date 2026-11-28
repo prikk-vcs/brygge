@@ -188,7 +188,42 @@ fn tmp_artifact_path(dir: &Path, pid: u32) -> PathBuf {
     dir.join(format!(".a.ir.brygge-tmp-{pid}"))
 }
 
-/// Spawn the real binary against `dump`, writing to `<dir>/a.ir`, with its stderr piped so the caller can
+/// R-1: a unique name for a throwaway copy of the real binary — for example `brygge-stoptest-4242-3`
+/// (`.exe` appended on Windows) — specific enough that nothing else on a CI runner could coincidentally
+/// share it. Since the watchdog is always `current_exe()` (`watchdog.rs`'s module doc), the watchdog
+/// started from this copy carries this exact name too, which is the whole point.
+fn unique_copy_name() -> String {
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let base = format!("brygge-stoptest-{}-{n}", std::process::id());
+    if cfg!(windows) {
+        format!("{base}.exe")
+    } else {
+        base
+    }
+}
+
+/// R-1: copy the real binary to a uniquely named file inside `dir` (a test's own [`ScratchDir`], so P-6's
+/// `Drop` removes the copy along with everything else) and return its path. This touches only the test —
+/// the production spawn path in `watchdog.rs` is untouched, and still always spawns `current_exe()`,
+/// whatever that resolves to.
+fn copy_binary_into(dir: &Path) -> PathBuf {
+    let dest = dir.join(unique_copy_name());
+    std::fs::copy(bin(), &dest).expect("copy the brygge binary into the test's scratch directory");
+    // `std::fs::copy` already carries the source's permission bits on Unix (so the copy is already
+    // executable); this is defensive, not load-bearing.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&dest)
+            .expect("stat the copied binary")
+            .permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&dest, perms).expect("make the copied binary executable");
+    }
+    dest
+}
+
+/// Spawn `bin_path` against `dump`, writing to `<dir>/a.ir`, with its stderr piped so the caller can
 /// read it after the process (and its watchdog, sharing the same pipe) have both closed it.
 struct RunningDecode {
     child: std::process::Child,
@@ -197,9 +232,9 @@ struct RunningDecode {
     out: PathBuf,
 }
 
-fn start_decode(dump: &Path, dir: &Path) -> RunningDecode {
+fn start_decode(bin_path: impl AsRef<Path>, dump: &Path, dir: &Path) -> RunningDecode {
     let out = dir.join("a.ir");
-    let mut child = Command::new(bin())
+    let mut child = Command::new(bin_path.as_ref())
         .args(["decode", "svn"])
         .arg(dump)
         .arg("--out")
@@ -258,9 +293,11 @@ fn taskkill(pid: u32) {
     assert!(status.success(), "taskkill /F /PID {pid} failed");
 }
 
-/// Linux-only, strong form of handoff §4 step 6: no process anywhere on the system still carries this
-/// run's watchdog marker, checked by reading every `/proc/<pid>/environ` (best effort: a process that
-/// exits mid-scan, or one this user cannot read, is simply skipped, never treated as a match).
+/// Linux: no process anywhere on the system still carries this run's exact watchdog marker, checked by
+/// reading every `/proc/<pid>/environ` (best effort: a process that exits mid-scan, or one this user
+/// cannot read, is simply skipped, never treated as a match). Review 208 calls this "already stricter"
+/// than the copied-binary check used on the other two platforms, so it is kept as is; `copy_name` is
+/// unused here but kept in the shared signature below for a uniform call site.
 #[cfg(target_os = "linux")]
 fn no_process_carries_the_marker(marker: &str) -> bool {
     let Ok(entries) = std::fs::read_dir("/proc") else {
@@ -279,44 +316,127 @@ fn no_process_carries_the_marker(marker: &str) -> bool {
     true
 }
 
+/// R-1: is a process carrying this run's watchdog identity found right now? Linux keeps its own
+/// marker-based check (review 208: already stricter); macOS and Windows query by the copied binary's
+/// unique name, since the watchdog is always `current_exe()`, which is that exact copy.
 #[cfg(target_os = "linux")]
-fn assert_no_watchdog_left(pid: u32) {
-    let marker = format!("BRYGGE_INTERNAL_WATCHDOG={pid}");
+fn watchdog_is_present(pid: u32, _copy_name: &str) -> bool {
+    !no_process_carries_the_marker(&format!("BRYGGE_INTERNAL_WATCHDOG={pid}"))
+}
+
+/// R-1, macOS: `ps -A -o comm=` lists every process's command name/path; a line containing the copy's
+/// unique name is treated as a match (deliberately not an exact-equals, since `comm` may render either
+/// the bare name or a full path depending on the system — the name itself is unique enough either way).
+#[cfg(target_os = "macos")]
+fn watchdog_is_present(_pid: u32, copy_name: &str) -> bool {
+    let output = Command::new("ps")
+        .args(["-A", "-o", "comm="])
+        .output()
+        .expect("run ps -A -o comm=");
+    let text = String::from_utf8_lossy(&output.stdout);
+    text.lines().any(|line| line.contains(copy_name))
+}
+
+/// R-1, Windows: `tasklist /FI "IMAGENAME eq <name>.exe" /NH` lists only processes with that exact image
+/// name (already includes `.exe`, from [`unique_copy_name`]); any output line naming it is a match.
+#[cfg(windows)]
+fn watchdog_is_present(_pid: u32, copy_name: &str) -> bool {
+    let output = Command::new("tasklist")
+        .args(["/FI", &format!("IMAGENAME eq {copy_name}"), "/NH"])
+        .output()
+        .expect("run tasklist /FI ... /NH");
+    let text = String::from_utf8_lossy(&output.stdout);
+    text.lines().any(|line| line.contains(copy_name))
+}
+
+/// R-1 point 4: prove the later absence check (`assert_no_watchdog_left`) is not vacuous — while the
+/// decode (and the watchdog it started, the same copy under `current_exe()`) is still running, the exact
+/// same query must find it. Logs the outcome with `eprintln!` (not captured by the test harness even on
+/// a pass) so CI's raw log carries direct evidence of this positive case.
+fn assert_watchdog_is_running(pid: u32, copy_name: &str) {
+    let found = poll_until(Duration::from_secs(10), || {
+        watchdog_is_present(pid, copy_name)
+    });
+    eprintln!(
+        "stop_integration: while the decode (pid {pid}) was running, a process for {copy_name:?} was \
+         {}",
+        if found {
+            "found (expected)"
+        } else {
+            "NOT found"
+        }
+    );
     assert!(
-        poll_until(Duration::from_secs(10), || no_process_carries_the_marker(
-            &marker
-        )),
-        "a process still carries {marker} 10 s after the stop"
+        found,
+        "the watchdog ({copy_name}) was never observed running while the decode was in progress; the \
+         later check for its absence would be vacuous"
     );
 }
 
-/// Elsewhere (macOS, Windows): the handoff's own mechanism for this check (§4 step 6, "a second,
-/// test-only pipe it inherits") would require the production spawn path in `watchdog.rs` to grow a new,
-/// test-only, environment-gated behavior — exactly the shape of change review 207 ruled out for *which*
-/// program `start()` spawns, and which this implementation does not add unreviewed for *any* reason,
-/// including this one. Flagged back to the architect in the batch's report rather than guessed at here;
-/// this platform's proof stays on the temp-path and stderr-sentence assertions, which already require
-/// the watchdog to have run its D-3 pass to completion.
-#[cfg(not(target_os = "linux"))]
-fn assert_no_watchdog_left(_pid: u32) {}
+/// Within 10 s of the stop, no process anywhere on the system may carry this run's watchdog identity.
+/// Logs the outcome with `eprintln!` (see [`assert_watchdog_is_running`]) so CI's raw log carries direct
+/// evidence of this negative case too.
+fn assert_no_watchdog_left(pid: u32, copy_name: &str) {
+    let gone = poll_until(Duration::from_secs(10), || {
+        !watchdog_is_present(pid, copy_name)
+    });
+    eprintln!(
+        "stop_integration: within 10s of the stop, a process for {copy_name:?} is now {}",
+        if gone {
+            "absent (expected)"
+        } else {
+            "STILL PRESENT"
+        }
+    );
+    assert!(
+        gone,
+        "a process for {copy_name} is still present 10 s after the stop"
+    );
+}
 
 fn run_stopped_case(stop: impl FnOnce(u32)) {
     let scratch = ScratchDir::new("stopped");
     let dump = scratch.path().join("dump.svndump");
     std::fs::write(&dump, svn_dump_fixture()).unwrap();
 
-    let running = start_decode(&dump, scratch.path());
+    // R-1: a uniquely named copy of the real binary, inside this test's own scratch directory (so P-6's
+    // `Drop` removes it with everything else). The watchdog is always `current_exe()`, so it carries
+    // this exact unique name too.
+    let copy = copy_binary_into(scratch.path());
+    let copy_name = copy
+        .file_name()
+        .expect("the copy has a file name")
+        .to_string_lossy()
+        .into_owned();
+
+    let running = start_decode(&copy, &dump, scratch.path());
     let pid = running.pid;
     let tmp = tmp_artifact_path(scratch.path(), pid);
 
     // Handoff §4 step 3: poll for the temp path, at most 60 s. Never passes vacuously — a timeout fails
     // the test outright, it never silently moves on.
-    let appeared = poll_until(Duration::from_secs(60), || tmp.exists());
+    //
+    // R-5: polling for mere existence would be flaky — `atomic_write` calls `guard.register(&tmp)`
+    // right after `create_new(true)` creates the empty file, but *before* any content is written
+    // (`commands.rs::atomic_write`: `create_new` -> `guard.register(&tmp)` -> `write_body` -> `rename`
+    // -> `guard.release(&tmp)`). A kill landing in that narrow window would leave the file behind
+    // (never registered, so the watchdog was never told to protect it), an avoidable flake rather than
+    // a real bug. Polling for a nonzero length instead is safe proof that `write_body` — which only
+    // starts after `register` has already completed — is under way.
+    let appeared = poll_until(Duration::from_secs(60), || {
+        std::fs::metadata(&tmp)
+            .map(|m| m.len() > 0)
+            .unwrap_or(false)
+    });
     assert!(
         appeared,
-        "the write phase's temp path {} never appeared; the test caught nothing",
+        "the write phase's temp path {} never appeared with content; the test caught nothing",
         tmp.display()
     );
+
+    // R-1 point 4: prove the check below is not vacuous — while the decode is still running, the same
+    // query that will shortly prove the watchdog's absence must find it present.
+    assert_watchdog_is_running(pid, &copy_name);
 
     let out = running.out.clone();
     let stderr = stop_and_collect_stderr(running, stop);
@@ -337,7 +457,7 @@ fn run_stopped_case(stop: impl FnOnce(u32)) {
         "stderr does not end with the expected sentence.\nexpected suffix: {expected_sentence}\nactual: \
          {stderr}"
     );
-    assert_no_watchdog_left(pid);
+    assert_no_watchdog_left(pid, &copy_name);
 }
 
 #[cfg(unix)]
@@ -368,7 +488,7 @@ fn a_decode_that_is_not_stopped_is_byte_identical_to_before_this_batch() {
     let dump = scratch.path().join("dump.svndump");
     std::fs::write(&dump, svn_dump_fixture()).unwrap();
 
-    let running = start_decode(&dump, scratch.path());
+    let running = start_decode(bin(), &dump, scratch.path());
     let pid = running.pid;
     let out = running.out.clone();
     let tmp = tmp_artifact_path(scratch.path(), pid);

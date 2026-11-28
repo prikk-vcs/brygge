@@ -37,10 +37,6 @@
 //! panic, an abort, the out-of-memory killer, or `kill -9` of brygge itself. The watchdog then removes
 //! every path still registered (D-3), then writes one sentence to stderr, and exits `0`.
 
-// W0a, P-1(b)/(c): the guard exists before the spawn it guards did. W0 wires it into the real
-// `Watchdog::start()`'s non-test form below.
-#![allow(dead_code)]
-
 use std::fmt::Write as _;
 use std::io::{BufRead, BufReader, ErrorKind, IsTerminal, Read, Write as _};
 use std::path::{Path, PathBuf};
@@ -59,12 +55,18 @@ const MARKER_ENV: &str = "BRYGGE_INTERNAL_WATCHDOG";
 
 /// How long [`Watchdog::start`] waits for the spawned child's `ready <pid>` line before giving up on it
 /// (D-1a(d)).
+// R-6: only the non-test `start()` reads this; the `#[cfg(test)]` form (P-1(c)) never spawns anything
+// and so never waits on a handshake, which makes this constant unused in a test build specifically.
+#[cfg_attr(test, allow(dead_code))]
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// [`CREATE_NEW_PROCESS_GROUP`](https://learn.microsoft.com/windows/win32/procthread/process-creation-flags),
 /// `0x00000200`: the watchdog gets its own console process group on Windows, so a Ctrl-C delivered to
 /// brygge's own group never reaches it (RFC 022 D-1, D-7).
+// R-6: like `HANDSHAKE_TIMEOUT`, only the non-test `start()` reads this; a Windows test build's
+// `#[cfg(test)]` `start()` never spawns anything, so this is unused there specifically.
 #[cfg(windows)]
+#[cfg_attr(test, allow(dead_code))]
 const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
 
 /// P-1(b): may this process start a watchdog? `false` whenever [`MARKER_ENV`] is already present in its
@@ -95,6 +97,10 @@ pub enum Guard {
 
 impl Guard {
     /// What every unit test passes. Can never start a process, however the function under test calls it.
+    // R-6: only `#[cfg(test)]` code ever constructs this (every unit test does, directly or through
+    // `commands/tests.rs`); a non-test build never has a reason to build a `Guard` other than
+    // `Watchdog::start`'s own `Active` form, so this is genuinely unused there.
+    #[cfg_attr(not(test), allow(dead_code))]
     #[must_use]
     pub fn disabled() -> Self {
         Guard::Disabled
@@ -206,19 +212,26 @@ impl Watchdog {
     }
 
     /// Tell the watchdog that `path` now exists and, if brygge dies before [`release`] is called for it,
-    /// should be removed.
+    /// should be removed. R-4: when `path` cannot be registered at all (Windows only — see
+    /// [`encode_path`]), nothing is sent, and the one-line notice is printed instead; the write itself is
+    /// unaffected, only this one file's clean-stop safety net is missing.
     pub fn register(&mut self, path: &Path) {
-        self.send("temp", path);
+        match registration_line_or_notice(path) {
+            Ok(line) => self.write_line(&line),
+            Err(notice) => output::stderr(&notice),
+        }
     }
 
     /// Tell the watchdog that `path` is safely in its final place (or already removed) and no longer
-    /// needs protecting.
+    /// needs protecting. A no-op for a `path` that [`register`](Self::register) never managed to send in
+    /// the first place (R-4): there is nothing registered to release.
     pub fn release(&mut self, path: &Path) {
-        self.send("done", path);
+        if let Some(encoded) = encode_path(path) {
+            self.write_line(&format!("done {encoded}\n"));
+        }
     }
 
-    fn send(&mut self, verb: &str, path: &Path) {
-        let line = format!("{verb} {}\n", encode_path(path));
+    fn write_line(&mut self, line: &str) {
         if self.stdin.write_all(line.as_bytes()).is_err() && !self.unreachable_reported {
             self.unreachable_reported = true;
             output::stderr(
@@ -285,20 +298,42 @@ fn await_ready(
     }
 }
 
-/// Percent-encode `path` with the same alphabet [`display::machine_bytes`] uses for every other
-/// machine-format value (RFC 022 D-1: "one encoding serves both"). On Unix this is exact over every byte,
-/// since a path is just bytes there; on Windows (the only other supported target), it is the path's
-/// lossless UTF-8 form where the path is valid Unicode, which is the only form brygge itself ever
-/// constructs for a temporary name.
-#[cfg(unix)]
-fn encode_path(path: &Path) -> String {
-    use std::os::unix::ffi::OsStrExt;
-    display::machine_bytes(path.as_os_str().as_bytes())
+/// What [`Watchdog::register`] should send for `path`: the `temp` line to write, or — only possible on
+/// Windows, where [`encode_path`] can fail — the one-line stderr notice that this path cannot be
+/// protected. Split out from `register` itself (R-4) so the decision is testable without a real pipe or
+/// child process, the same pure/impure split [`is_unmarked`]/[`may_spawn`] and
+/// [`classify_internal_entry`] use.
+fn registration_line_or_notice(path: &Path) -> Result<String, String> {
+    match encode_path(path) {
+        Some(encoded) => Ok(format!("temp {encoded}\n")),
+        None => Err(format!(
+            "the watchdog cannot protect {}: its path is not valid Unicode, so this run continues \
+             without a clean-stop safety net for it",
+            path.display()
+        )),
+    }
 }
 
+/// Percent-encode `path` with the same alphabet [`display::machine_bytes`] uses for every other
+/// machine-format value (RFC 022 D-1: "one encoding serves both"), or `None` when `path` cannot be
+/// encoded without loss (R-4; Windows only — see below).
+///
+/// On Unix this is exact over every byte, since a path is just bytes there, so it always succeeds.
+#[cfg(unix)]
+fn encode_path(path: &Path) -> Option<String> {
+    use std::os::unix::ffi::OsStrExt;
+    Some(display::machine_bytes(path.as_os_str().as_bytes()))
+}
+
+/// On Windows, a path is UTF-16 and not every such path is valid Unicode (an unpaired surrogate, for
+/// example). `to_string_lossy` would silently substitute replacement characters there, registering a
+/// *different* name than the path actually on disk — a registration that can never be found again, with
+/// no sign anything went wrong (R-4, review 208). `to_str` instead returns `None` for exactly that case,
+/// so the caller can refuse to register it rather than register the wrong thing. Every temporary name
+/// brygge itself ever constructs is plain ASCII, so this can only fail for a caller-supplied `--out`.
 #[cfg(windows)]
-fn encode_path(path: &Path) -> String {
-    display::machine_value(&path.to_string_lossy())
+fn encode_path(path: &Path) -> Option<String> {
+    path.to_str().map(display::machine_value)
 }
 
 /// The inverse of [`encode_path`]. `None` for anything malformed (D-1: a line that does not parse is
@@ -340,7 +375,12 @@ enum Message {
 /// environment variable. Called from `main`, **before** argument parsing.
 #[must_use]
 pub fn maybe_run_internal_entry() -> Option<i32> {
-    let marker = std::env::var(MARKER_ENV).ok()?;
+    // R-3: `var_os`, never `var`. `var(...).ok()` turns a *present but non-UTF-8* marker into `None`,
+    // indistinguishable from the marker being absent at all — which would fall through to ordinary
+    // command dispatch with the marker still set in the environment, the exact bug this guards against.
+    // `var_os` never fails on non-UTF-8: it just hands back the raw value for
+    // `classify_internal_entry` to judge.
+    let marker = std::env::var_os(MARKER_ENV)?;
     match classify_internal_entry(&marker, std::io::stdin().is_terminal()) {
         Ok(pid) => Some(run_watchdog_loop(pid)),
         Err(code) => {
@@ -354,11 +394,16 @@ pub fn maybe_run_internal_entry() -> Option<i32> {
 /// terminal, decide whether to run the loop (`Ok(pid)`) or refuse (`Err(exit code)`). Testable without
 /// mutating the real environment or a real terminal (`std::env::set_var` is `unsafe` in this edition,
 /// which the workspace forbids entirely) — the same pure/impure split [`is_unmarked`]/[`may_spawn`] use.
-fn classify_internal_entry(marker: &str, stdin_is_terminal: bool) -> Result<u32, i32> {
-    // D-2: a marker that is not a decimal process id, or a terminal stdin, is refused outright — never
-    // guessed at, and never run with a fallback pid that could coincidentally match something real.
-    match marker.trim().parse::<u32>() {
-        Ok(pid) if !stdin_is_terminal => Ok(pid),
+///
+/// Takes an [`std::ffi::OsStr`] rather than `&str` (R-3) so a marker that is present but not valid UTF-8
+/// can be represented and tested at all: [`std::ffi::OsStr::to_str`] returns `None` for one, and that is
+/// treated exactly like a UTF-8 string that merely is not decimal — refused, never treated as absent.
+fn classify_internal_entry(marker: &std::ffi::OsStr, stdin_is_terminal: bool) -> Result<u32, i32> {
+    // D-2/R-3: a marker that is not a decimal process id (whether because it is not UTF-8 at all, or
+    // because it is UTF-8 but not decimal), or a terminal stdin, is refused outright — never guessed
+    // at, and never run with a fallback pid that could coincidentally match something real.
+    match marker.to_str().and_then(|s| s.trim().parse::<u32>().ok()) {
+        Some(pid) if !stdin_is_terminal => Ok(pid),
         _ => Err(exit::USAGE),
     }
 }
@@ -376,31 +421,54 @@ fn run_watchdog_loop(pid: u32) -> i32 {
     let _ = output::stdout(&format!("ready {own_pid}\n"));
     let stdin = std::io::stdin();
     let lines = stdin.lock().lines().map_while(Result::ok);
-    let (removed, not_removed) =
+    let (removed, not_removed, malformed) =
         apply_registrations(lines, pid, |p: &Path| std::fs::remove_file(p));
+    // R-2: a skipped `done` is harmless, but a skipped `temp` leaves a file the watchdog was never told
+    // to protect, with no visible sign anything went wrong — so a malformed line is counted and
+    // reported, never merely dropped in silence.
+    if let Some(notice) = malformed_registrations_notice(malformed) {
+        output::stderr(&notice);
+    }
     if !removed.is_empty() || !not_removed.is_empty() {
         output::stderr(&sentence(&removed, &not_removed));
     }
     exit::CLEAN
 }
 
+/// R-2's one line, or `None` when there was nothing to report (never prints `0 registration line(s)`
+/// — the message exists only to call out a real brygge bug, and zero malformed lines is the ordinary,
+/// unremarkable case).
+fn malformed_registrations_notice(malformed: usize) -> Option<String> {
+    if malformed == 0 {
+        None
+    } else {
+        Some(format!(
+            "watchdog: {malformed} registration line(s) could not be read and were ignored"
+        ))
+    }
+}
+
 /// The testable core of [`run_watchdog_loop`], over any line source and any removal function (so a test
 /// can observe exactly what would have been removed without touching the real filesystem, or can plant a
 /// fake failure). Replays `lines` into the registered-paths list exactly as the real loop does (a
-/// malformed line is refused: skipped, nothing it named is touched), then applies D-3 to whatever is
-/// still registered when the source ends, returning the paths actually removed and the paths left alone
-/// with why, both in registration order.
+/// malformed line is refused: skipped, nothing it named is touched, but counted — R-2), then applies D-3
+/// to whatever is still registered when the source ends, returning the paths actually removed, the paths
+/// left alone with why (both in registration order), and how many lines could not be read at all.
 fn apply_registrations(
     lines: impl Iterator<Item = String>,
     pid: u32,
     mut remove: impl FnMut(&Path) -> std::io::Result<()>,
-) -> (Vec<PathBuf>, Vec<(PathBuf, String)>) {
+) -> (Vec<PathBuf>, Vec<(PathBuf, String)>, usize) {
     let mut registered: Vec<PathBuf> = Vec::new();
+    let mut malformed = 0usize;
     for line in lines {
         match parse_line(&line) {
             Some(Message::Temp(path)) => registered.push(path),
             Some(Message::Done(path)) => registered.retain(|p| p != &path),
-            None => {} // a malformed line is refused: skipped, nothing it named is touched.
+            // R-2: a malformed line is still refused — skipped, nothing it named is touched — but it
+            // can only come from a brygge bug (brygge itself always writes well-formed lines), so it is
+            // counted instead of vanishing without a trace.
+            None => malformed += 1,
         }
     }
 
@@ -416,7 +484,7 @@ fn apply_registrations(
             Some(reason) => not_removed.push((path, reason)),
         }
     }
-    (removed, not_removed)
+    (removed, not_removed, malformed)
 }
 
 /// D-3: may the watchdog remove `path`, which it must still believe is registered by `pid`? `None` means

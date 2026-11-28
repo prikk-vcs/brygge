@@ -93,24 +93,54 @@ fn await_ready_times_out_when_the_writer_never_writes() {
 
 #[test]
 fn classify_internal_entry_accepts_a_decimal_pid_on_a_non_terminal_stdin() {
-    assert_eq!(classify_internal_entry("4242", false), Ok(4242));
-    assert_eq!(classify_internal_entry("  4242  ", false), Ok(4242));
+    assert_eq!(
+        classify_internal_entry(std::ffi::OsStr::new("4242"), false),
+        Ok(4242)
+    );
+    assert_eq!(
+        classify_internal_entry(std::ffi::OsStr::new("  4242  "), false),
+        Ok(4242)
+    );
 }
 
 #[test]
 fn classify_internal_entry_refuses_a_marker_that_is_not_a_decimal_pid() {
     assert_eq!(
-        classify_internal_entry("not-a-pid", false),
+        classify_internal_entry(std::ffi::OsStr::new("not-a-pid"), false),
         Err(exit::USAGE)
     );
-    assert_eq!(classify_internal_entry("", false), Err(exit::USAGE));
-    assert_eq!(classify_internal_entry("-1", false), Err(exit::USAGE));
-    assert_eq!(classify_internal_entry("4242.0", false), Err(exit::USAGE));
+    assert_eq!(
+        classify_internal_entry(std::ffi::OsStr::new(""), false),
+        Err(exit::USAGE)
+    );
+    assert_eq!(
+        classify_internal_entry(std::ffi::OsStr::new("-1"), false),
+        Err(exit::USAGE)
+    );
+    assert_eq!(
+        classify_internal_entry(std::ffi::OsStr::new("4242.0"), false),
+        Err(exit::USAGE)
+    );
 }
 
 #[test]
 fn classify_internal_entry_refuses_a_terminal_stdin_even_with_a_valid_pid() {
-    assert_eq!(classify_internal_entry("4242", true), Err(exit::USAGE));
+    assert_eq!(
+        classify_internal_entry(std::ffi::OsStr::new("4242"), true),
+        Err(exit::USAGE)
+    );
+}
+
+// R-3: a marker that is present but not valid UTF-8 (in any encoding, under any interpretation) must
+// still be refused — never treated as absent, which is what `env::var(...).ok()` used to do.
+#[cfg(unix)]
+#[test]
+fn classify_internal_entry_refuses_a_marker_that_is_not_utf8() {
+    use std::os::unix::ffi::OsStrExt;
+    // 0xFF is never a valid UTF-8 lead or continuation byte, so this is not valid UTF-8 under any
+    // interpretation.
+    let invalid = std::ffi::OsStr::from_bytes(&[0xFF, 0xFE, b'4', b'2']);
+    assert_eq!(classify_internal_entry(invalid, false), Err(exit::USAGE));
 }
 
 // ---- the protocol: encode, then parse (handoff §1, level 1) ------------------------------------------
@@ -125,17 +155,60 @@ fn parse_line_round_trips_paths_with_a_newline_percent_space_and_non_ascii() {
         "non-ascii-日本語.txt",
     ] {
         let path = std::path::PathBuf::from(raw);
-        let line = format!("temp {}", encode_path(&path));
+        let encoded =
+            encode_path(&path).expect("every path built from a Rust &str is valid Unicode");
+        let line = format!("temp {encoded}");
         match parse_line(&line) {
             Some(Message::Temp(p)) => assert_eq!(p, path, "round trip for {raw:?}"),
             other => panic!("expected Message::Temp({path:?}), got {other:?}"),
         }
-        let line = format!("done {}", encode_path(&path));
+        let line = format!("done {encoded}");
         match parse_line(&line) {
             Some(Message::Done(p)) => assert_eq!(p, path, "round trip for {raw:?}"),
             other => panic!("expected Message::Done({path:?}), got {other:?}"),
         }
     }
+}
+
+// ---- R-4: encode_path/registration_line_or_notice, the Windows-only failure case -----------------------
+
+#[test]
+fn registration_line_or_notice_builds_a_temp_line_for_an_encodable_path() {
+    let path = std::path::Path::new("plain.txt");
+    let encoded = encode_path(path).expect("plain ASCII is always encodable");
+    assert_eq!(
+        registration_line_or_notice(path),
+        Ok(format!("temp {encoded}\n"))
+    );
+}
+
+// Only Windows's `encode_path` can ever return `None` (a path that is not valid Unicode); Unix paths are
+// raw bytes and `encode_path` is `Some` unconditionally there (see its doc comment), so this case can
+// only be exercised, honestly, on a Windows build. `OsString::from_wide` with a lone UTF-16 surrogate
+// constructs a real Windows path that round-trips through the OS exactly, yet is not valid Unicode —
+// `to_str()` on it is always `None` — so this is a real proof of the refusal, not a simulation of one.
+#[cfg(windows)]
+#[test]
+fn encode_path_refuses_a_path_that_is_not_valid_unicode() {
+    use std::os::windows::ffi::OsStringExt;
+    let os_string = std::ffi::OsString::from_wide(&[0xD800]); // a lone (unpaired) high surrogate.
+    let path = std::path::PathBuf::from(os_string);
+    assert_eq!(encode_path(&path), None);
+}
+
+#[cfg(windows)]
+#[test]
+fn registration_line_or_notice_refuses_a_path_that_is_not_valid_unicode() {
+    use std::os::windows::ffi::OsStringExt;
+    let os_string = std::ffi::OsString::from_wide(&[0xD800]);
+    let path = std::path::PathBuf::from(os_string);
+    let Err(notice) = registration_line_or_notice(&path) else {
+        panic!("a non-Unicode Windows path must be refused, not registered");
+    };
+    assert!(
+        notice.contains("not valid Unicode"),
+        "the notice should say why: {notice}"
+    );
 }
 
 #[test]
@@ -230,17 +303,27 @@ fn why_not_removable_refuses_a_symbolic_link_even_in_brygges_own_temporary_form(
 
 // ---- apply_registrations: the loop's testable core ----------------------------------------------------
 
+/// A valid-Unicode path's `temp`/`done` line, for tests that only care about well-formed input.
+/// `encode_path` only ever returns `None` for a non-Unicode Windows path (R-4), which none of these are.
+fn well_formed_line(verb: &str, path: &Path) -> String {
+    format!(
+        "{verb} {}",
+        encode_path(path).expect("a plain test path is always encodable")
+    )
+}
+
 #[test]
 fn apply_registrations_removes_only_what_is_still_registered_at_end_of_file() {
     let dir = ScratchDir::new("apply-removed");
     let pid = std::process::id();
     let path = dir.join(format!(".out.ir.brygge-tmp-{pid}"));
     std::fs::write(&path, b"x").unwrap();
-    let lines = vec![format!("temp {}", encode_path(&path))].into_iter();
-    let (removed, not_removed) =
+    let lines = vec![well_formed_line("temp", &path)].into_iter();
+    let (removed, not_removed, malformed) =
         apply_registrations(lines, pid, |p: &Path| std::fs::remove_file(p));
     assert_eq!(removed, vec![path.clone()]);
     assert!(not_removed.is_empty());
+    assert_eq!(malformed, 0);
     assert!(!path.exists());
 }
 
@@ -251,14 +334,15 @@ fn apply_registrations_leaves_a_done_path_alone() {
     let path = dir.join(format!(".out.ir.brygge-tmp-{pid}"));
     std::fs::write(&path, b"x").unwrap();
     let lines = vec![
-        format!("temp {}", encode_path(&path)),
-        format!("done {}", encode_path(&path)),
+        well_formed_line("temp", &path),
+        well_formed_line("done", &path),
     ]
     .into_iter();
-    let (removed, not_removed) =
+    let (removed, not_removed, malformed) =
         apply_registrations(lines, pid, |p: &Path| std::fs::remove_file(p));
     assert!(removed.is_empty());
     assert!(not_removed.is_empty());
+    assert_eq!(malformed, 0);
     assert!(path.exists(), "released before end of file: never touched");
 }
 
@@ -269,12 +353,33 @@ fn apply_registrations_skips_a_malformed_line_and_touches_nothing_it_names() {
     let path = dir.join(format!(".out.ir.brygge-tmp-{pid}"));
     std::fs::write(&path, b"x").unwrap();
     // A malformed line naming the same path must not register it.
-    let lines = vec![format!("frobnicate {}", encode_path(&path))].into_iter();
-    let (removed, not_removed) =
+    let lines = vec![well_formed_line("frobnicate", &path)].into_iter();
+    let (removed, not_removed, malformed) =
         apply_registrations(lines, pid, |p: &Path| std::fs::remove_file(p));
     assert!(removed.is_empty());
     assert!(not_removed.is_empty());
+    // R-2: a malformed line is still skipped, but no longer silently — it is counted.
+    assert_eq!(malformed, 1);
     assert!(path.exists());
+}
+
+// R-2: a malformed line is counted even when it does not merely rename something that already exists —
+// the count tracks every line `parse_line` refuses, regardless of what came before or after it.
+#[test]
+fn apply_registrations_counts_every_malformed_line() {
+    let lines = vec![
+        "frobnicate /tmp/x".to_string(),
+        "temp".to_string(), // no path at all.
+        "also not a real line".to_string(),
+    ]
+    .into_iter();
+    let (removed, not_removed, malformed) =
+        apply_registrations(lines, std::process::id(), |p: &Path| {
+            std::fs::remove_file(p)
+        });
+    assert!(removed.is_empty());
+    assert!(not_removed.is_empty());
+    assert_eq!(malformed, 3);
 }
 
 #[test]
@@ -284,13 +389,33 @@ fn apply_registrations_names_a_path_it_refuses_to_remove() {
     // Not one of brygge's own temporary forms: D-3 refuses it, by name alone.
     let path = dir.join("not-a-brygge-temp-name.txt");
     std::fs::write(&path, b"x").unwrap();
-    let lines = vec![format!("temp {}", encode_path(&path))].into_iter();
-    let (removed, not_removed) =
+    let lines = vec![well_formed_line("temp", &path)].into_iter();
+    let (removed, not_removed, malformed) =
         apply_registrations(lines, pid, |p: &Path| std::fs::remove_file(p));
     assert!(removed.is_empty());
     assert_eq!(not_removed.len(), 1);
     assert_eq!(not_removed[0].0, path);
+    assert_eq!(malformed, 0);
     assert!(path.exists());
+}
+
+// ---- R-2: the one-line notice (or its deliberate absence) ----------------------------------------------
+
+#[test]
+fn malformed_registrations_notice_is_none_when_nothing_was_malformed() {
+    assert_eq!(malformed_registrations_notice(0), None);
+}
+
+#[test]
+fn malformed_registrations_notice_names_the_count_when_above_zero() {
+    assert_eq!(
+        malformed_registrations_notice(1),
+        Some("watchdog: 1 registration line(s) could not be read and were ignored".to_string())
+    );
+    assert_eq!(
+        malformed_registrations_notice(3),
+        Some("watchdog: 3 registration line(s) could not be read and were ignored".to_string())
+    );
 }
 
 // ---- the one sentence ---------------------------------------------------------------------------------
