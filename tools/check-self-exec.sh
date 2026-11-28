@@ -9,10 +9,16 @@
 # This script enforces HANDOFF.md §7a's rule: "a program that re-runs itself is allowed only at a site
 # listed in tools/check-self-exec.sh, which names each site's guard." It is a count, not a line-number
 # pin (line numbers drift on an unrelated edit; a changed *count* is the thing worth failing on): for
-# each reviewed file below, it counts how many *real code* lines (comments excluded) contain
-# `current_exe(`, and fails if that count differs from what is on record — whether the count rose (an
-# unreviewed new site) or fell (the list is stale and should be tightened). Any file containing
-# `current_exe(` that is not in this list at all fails outright.
+# each reviewed file below, it counts how many *real code* lines (comments excluded) contain any of the
+# patterns a program can use to find its own executable — `current_exe(`, `args().next()`,
+# `args_os().next()`, `.nth(0)`, or `/proc/self/exe` (review 205, correcting 204's narrower search) —
+# and fails if that count differs from what is on record — whether the count rose (an unreviewed new
+# site) or fell (the list is stale and should be tightened). Any file containing one of these patterns
+# that is not in this list at all fails outright.
+#
+# Known blind spot (review 205, small point): this is a count per file, not an identity check on each
+# site. One self-exec site being swapped for another in the same file, while the total count for that
+# file stays the same, passes unnoticed. Accepted as a tradeoff — not fixed here.
 #
 # Usage: tools/check-self-exec.sh
 set -euo pipefail
@@ -27,13 +33,26 @@ crates/brygge/src/watchdog.rs	0	P-1(a)/(d): the future watchdog's real, non-test
 tools/bench/src/main.rs	1	P-2: spawn_self_run, #[cfg(not(test))] only, refuses when BENCH_CHILD_ENV is already set
 tools/bench/src/profile.rs	1	P-2: run() learns this process's own path unconditionally (harmless by itself: only the later spawn is dangerous); spawn_self_profile_one, #[cfg(not(test))] only, takes that path as a parameter and does the actual spawning, refusing when BENCH_CHILD_ENV is already set
 tools/bench/src/real.rs	2	P-2 (spawn_self_decode_one, #[cfg(not(test))] only, refuses when BENCH_CHILD_ENV is already set); the second site is brygge_bin(), which only locates the sibling `brygge` binary's path and spawns nothing of its own
+tools/transform-test-plugin/src/main.rs	1	review 205 R-5: name only, no spawn
 EOF
 )
 
 fail=0
 
-# --- count every real-code `current_exe(` occurrence, file by file -----------------------------------
-actual_files=$(grep -rl 'current_exe(' crates/ tools/ examples/ --include='*.rs' 2>/dev/null | sort -u || true)
+# --- the patterns a program can use to find its own executable (review 205 R-5) ----------------------
+self_exec_patterns=('current_exe(' 'args().next()' 'args_os().next()' '.nth(0)' '/proc/self/exe')
+
+matches_self_exec() {
+    local line="$1" pat
+    for pat in "${self_exec_patterns[@]}"; do
+        [[ "$line" == *"$pat"* ]] && return 0
+    done
+    return 1
+}
+
+# --- count every real-code self-exec occurrence, file by file ------------------------------------------
+actual_files=$(grep -rlF -e 'current_exe(' -e 'args().next()' -e 'args_os().next()' -e '.nth(0)' \
+    -e '/proc/self/exe' crates/ tools/ examples/ --include='*.rs' 2>/dev/null | sort -u || true)
 
 for f in $actual_files; do
     count=0
@@ -42,7 +61,7 @@ for f in $actual_files; do
         case "$trimmed" in
         //*) continue ;; # a `//`/`///`/`//!` comment line is prose, not code
         esac
-        if [[ "$line" == *'current_exe('* ]]; then
+        if matches_self_exec "$line"; then
             count=$((count + 1))
         fi
     done <"$f"
@@ -50,13 +69,13 @@ for f in $actual_files; do
 
     expected=$(echo "$reviewed" | awk -F'\t' -v f="$f" '$1 == f { print $2 }')
     if [ -z "$expected" ]; then
-        echo "FAILED: $f has $count real current_exe( call(s)), and is not in tools/check-self-exec.sh's" \
+        echo "FAILED: $f has $count real self-exec call(s), and is not in tools/check-self-exec.sh's" \
             "reviewed list at all"
         fail=1
         continue
     fi
     if [ "$count" -ne "$expected" ]; then
-        echo "FAILED: $f has $count real current_exe( call(s)), but the reviewed list expects $expected" \
+        echo "FAILED: $f has $count real self-exec call(s), but the reviewed list expects $expected" \
             "— a site was added, removed, or the list is stale"
         fail=1
     fi
@@ -66,18 +85,18 @@ done
 while IFS=$'\t' read -r f expected _note; do
     [ "$expected" -eq 0 ] && continue
     if ! echo "$actual_files" | grep -qxF "$f"; then
-        echo "FAILED: tools/check-self-exec.sh's reviewed list expects $expected real current_exe(" \
-            "call(s)) in $f, but that file has none (or does not exist) — the list is stale"
+        echo "FAILED: tools/check-self-exec.sh's reviewed list expects $expected real self-exec" \
+            "call(s) in $f, but that file has none (or does not exist) — the list is stale"
         fail=1
     fi
 done <<<"$reviewed"
 
 if [ "$fail" -ne 0 ]; then
     echo
-    echo "A program that re-runs itself (current_exe()) is allowed only at a site named in" \
-        "tools/check-self-exec.sh's own reviewed list (HANDOFF.md §7a). Review the new or changed" \
-        "site, add it with its guard, or revert it."
+    echo "A program that re-runs itself (current_exe(), args().next()/args_os().next()/.nth(0), or" \
+        "/proc/self/exe) is allowed only at a site named in tools/check-self-exec.sh's own reviewed" \
+        "list (HANDOFF.md §7a). Review the new or changed site, add it with its guard, or revert it."
     exit 1
 fi
 
-echo "OK: every real current_exe( call matches tools/check-self-exec.sh's reviewed list."
+echo "OK: every real self-exec call matches tools/check-self-exec.sh's reviewed list."
