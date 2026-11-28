@@ -5,46 +5,52 @@
 # to the whole job.** Never run this locally.
 #
 # It picks the same containment `tools/contained-test.sh` would (systemd-run's cgroup scope, or the
-# `ulimit` fallback), then tries to start up to 300 background `sleep` processes under it — a hard cap
-# this script itself enforces (the loop below, bounded at 300, runs regardless of whether the
-# containment underneath it works, so this self-test can never itself exceed the limit it is testing).
-# `spawn_up_to_300` exits 0 the moment a spawn is refused (the containment worked, well before 300) and
-# exits 1 if it reaches 300 with nothing ever refused (the containment did not bind anything) — the one
-# thing this script checks is that exit status, under each containment form in turn. Everything spawned
-# is killed before this script exits, successful or not.
+# `ulimit` fallback), then tries to start 300 background `sleep` processes under it — a hard cap this
+# script itself enforces (the loop below always attempts exactly 300, succeed or not, so this self-test
+# can never itself exceed the limit it is testing), and counts how many actually ended up alive.
 #
 # Usage: tools/check-contained-test-self-test.sh
-set -uo pipefail # not -e: a spawn failure past the limit is the expected, asserted outcome, not a bug
+set -uo pipefail # not -e: a refused spawn, or the shell's own fork-retry noise, is expected, not a bug
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-pids=()
-cleanup() {
-    for pid in "${pids[@]:-}"; do
-        kill "$pid" >/dev/null 2>&1 || true
-    done
-}
-trap cleanup EXIT
-
-# Exits 0 (refused before the cap) or 1 (reached the cap unrefused). Prints which, for the log.
-# `$!` is checked for both non-empty and actually alive (`kill -0`), not trusted alone: if the shell's
-# own fork for `&` fails, `$!` can be left unset or stale, and a bare `[ -n "$!" ]` would not catch that.
+# Attempts exactly 300 spawns, **never stopping early**: a single failed `fork()` does not reliably
+# leave `$!` empty or unset (a review of this self-test's first CI run found it can instead leave `$!`
+# holding an *earlier, still-running* pid, which a per-iteration `kill -0 "$!"` check then misreads as
+# "this spawn succeeded" — exactly the false pass an in-loop check risks). This counts ground truth
+# instead, once, at the end: of every `$!` this loop ever saw, how many are *distinct and currently
+# alive*. Bash's own stderr noise while fork() is failing ("fork: retry: Resource temporarily
+# unavailable", then "fork: Resource temporarily unavailable") is cosmetic here and never inspected —
+# the live-process count afterward is the only thing that decides the result.
+#
+# Kills everything it started before returning, so nothing outlives this function (relevant for the
+# `ulimit` branch, which runs this in a subshell of this very script; the `systemd-run` branch's own
+# scope is torn down by systemd once its process exits, independently of this).
 spawn_up_to_300() {
-    local started=0
+    local attempted=()
     local i newpid
     for ((i = 0; i < 300; i++)); do
         sleep 30 &
         newpid=$!
-        if [ -n "$newpid" ] && kill -0 "$newpid" 2>/dev/null; then
-            pids+=("$newpid")
-            started=$((started + 1))
-        else
-            echo "refused at spawn #$((i + 1)) (after $started succeeded)"
-            return 0
+        [ -n "$newpid" ] && attempted+=("$newpid")
+    done
+
+    local -A seen=()
+    local alive_count=0
+    local p
+    for p in "${attempted[@]}"; do
+        if [ -z "${seen[$p]:-}" ]; then
+            seen[$p]=1
+            kill -0 "$p" 2>/dev/null && alive_count=$((alive_count + 1))
         fi
     done
-    echo "reached 300 with none refused"
-    return 1
+
+    for p in "${!seen[@]}"; do
+        kill "$p" >/dev/null 2>&1 || true
+    done
+
+    echo "$alive_count distinct process(es) actually alive after 300 spawn attempts"
+    [ "$alive_count" -lt 300 ]
 }
 
 if command -v systemd-run >/dev/null 2>&1 &&
@@ -55,9 +61,9 @@ if command -v systemd-run >/dev/null 2>&1 &&
     # so the child shell `systemd-run` starts has it, without re-sourcing this file.
     if systemd-run --user --scope -p TasksMax=256 -p MemoryMax=8G -- \
         bash -c "$(declare -f spawn_up_to_300); spawn_up_to_300"; then
-        echo "OK: the systemd-run scope's TasksMax=256 refused further processes before 300"
+        echo "OK: the systemd-run scope's TasksMax=256 refused some processes before 300"
     else
-        echo "FAILED: the systemd-run scope never refused a spawn before 300 processes" >&2
+        echo "FAILED: all 300 processes started under the systemd-run scope's TasksMax=256" >&2
         exit 1
     fi
 else
@@ -66,9 +72,9 @@ else
         ulimit -u 512 -v 8000000
         spawn_up_to_300
     ); then
-        echo "OK: ulimit -u 512 refused further processes before 300"
+        echo "OK: ulimit -u 512 refused some processes before 300"
     else
-        echo "FAILED: ulimit -u 512 never refused a spawn before 300 processes" >&2
+        echo "FAILED: all 300 processes started under ulimit -u 512" >&2
         exit 1
     fi
 fi

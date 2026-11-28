@@ -477,7 +477,10 @@ fn spawn_self_run(scenario: &str, n: u64) -> std::process::Output {
 /// [`std::process::Command`] at all, so calling it can never spawn anything, whatever the environment.
 #[cfg(test)]
 fn spawn_self_run(_scenario: &str, _n: u64) -> std::process::Output {
-    panic!("a self re-run is never compiled into a test build (P-2, incident 094)");
+    panic!(
+        "a self re-run is never compiled into a test build (P-2, incident 094); its non-test form \
+         guards with {BENCH_CHILD_ENV}"
+    );
 }
 
 /// Run every (scenario, scale) as a subprocess and print a table. A scenario whose self-check fails (or that
@@ -1008,19 +1011,11 @@ fn parse(line: &str) -> std::collections::BTreeMap<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{BENCH_CHILD_ENV, spawn_self_run};
+    use super::spawn_self_run;
 
     #[test]
     #[should_panic(expected = "a self re-run is never compiled into a test build")]
     fn run_matrix_never_spawns_in_a_unit_test_build() {
         spawn_self_run("svn-revs", 1);
-    }
-
-    // The marker is referenced only inside the three `#[cfg(not(test))]` self-exec sites, so a
-    // unit-test build has no other use for it; this keeps it from reading as dead code there, by
-    // checking the one property every one of those sites actually depends on: it is non-empty.
-    #[test]
-    fn the_bench_child_marker_is_a_real_name() {
-        assert!(!BENCH_CHILD_ENV.is_empty());
     }
 }
