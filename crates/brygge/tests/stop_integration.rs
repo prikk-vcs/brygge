@@ -908,8 +908,11 @@ fn run_encode_git_stopped_case(stop: impl FnOnce(u32)) {
         "the watchdog's sentence must appear: {stderr}"
     );
     if gone {
+        // `display::human` (CR-19) doubles every literal backslash before a path reaches the
+        // sentence — on Windows that means every path separator.
+        let humanized = partial.display().to_string().replace('\\', "\\\\");
         assert!(
-            stderr.contains(&partial.display().to_string()),
+            stderr.contains(&humanized),
             "the sentence must name the removed partial directory: {stderr}"
         );
     } else {

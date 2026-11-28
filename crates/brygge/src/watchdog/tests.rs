@@ -254,6 +254,65 @@ fn classify_temp_name_accepts_the_encode_git_partial_form() {
     );
 }
 
+// Regression: CI run 46156356130 (Windows) found that `encode git`'s own private HOME, its
+// GIT_CONFIG_GLOBAL, and its D-6 check's own spill directory were registered but never recognized by
+// `classify_temp_name` at all, so a real, correctly registered stop left them named "not removed" —
+// refused for a reason that was itself a bug, not a real symlink/type mismatch.
+#[test]
+fn classify_temp_name_accepts_encode_gits_own_env_and_check_spill_forms() {
+    assert_eq!(
+        classify_temp_name("brygge-encode-git-home-4242-1700000000000000000-0"),
+        Some(4242)
+    );
+    assert_eq!(
+        classify_temp_name("brygge-encode-git-gitconfig-4242-1700000000000000000-3"),
+        Some(4242)
+    );
+    assert_eq!(
+        classify_temp_name("brygge-encode-git-check-spill-4242-1700000000000000000-0"),
+        Some(4242)
+    );
+}
+
+#[test]
+fn classify_temp_name_rejects_encode_git_env_lookalikes() {
+    for name in [
+        "brygge-encode-git-home-4242",                  // missing nanos/attempt
+        "brygge-encode-git-home-4242-1700000000",       // missing attempt
+        "brygge-encode-git-home-abc-1700000000-0",      // pid not decimal
+        "brygge-encode-git-homebrew-4242-1700000000-0", // not actually the `home` label
+        "brygge-encode-git-home-4242-1700000000-0-extra", // one group too many
+    ] {
+        assert_eq!(
+            classify_temp_name(name),
+            None,
+            "{name:?} must not be recognized"
+        );
+    }
+}
+
+#[test]
+fn why_not_removable_accepts_encode_gits_home_directory_for_the_given_pid() {
+    let dir = ScratchDir::new("accept-encode-git-home");
+    let pid = std::process::id();
+    let path = dir.join(format!(
+        "brygge-encode-git-home-{pid}-1700000000000000000-0"
+    ));
+    std::fs::create_dir_all(&path).unwrap();
+    assert_eq!(why_not_removable(&path, pid, Kind::Dir), None);
+}
+
+#[test]
+fn why_not_removable_accepts_encode_gits_gitconfig_file_for_the_given_pid() {
+    let dir = ScratchDir::new("accept-encode-git-gitconfig");
+    let pid = std::process::id();
+    let path = dir.join(format!(
+        "brygge-encode-git-gitconfig-{pid}-1700000000000000000-0"
+    ));
+    std::fs::write(&path, b"x").unwrap();
+    assert_eq!(why_not_removable(&path, pid, Kind::File), None);
+}
+
 #[test]
 fn classify_temp_name_rejects_names_that_only_resemble_a_form() {
     for name in [

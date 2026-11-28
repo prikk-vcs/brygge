@@ -694,11 +694,16 @@ fn wait_for_dir_to_stop_changing(path: &Path) -> bool {
 ///   `.brygge-transform-<pid>-<nanos>-<attempt>`;
 /// - `encode git`'s partial output repository (a directory) or its report's temporary sibling (a file) —
 ///   the two share one scheme, and are told apart only by what is registered and what is actually on
-///   disk, never by the name alone: `<name>.partial-<pid>-<attempt>`.
+///   disk, never by the name alone: `<name>.partial-<pid>-<attempt>`;
+/// - `encode git`'s own private environment and its D-6 check's own spill directory
+///   (`commands.rs::unique_temp_path`, under the system temp directory, never beside `--out`):
+///   `brygge-encode-git-home-<pid>-<nanos>-<attempt>` (a directory), `brygge-encode-git-gitconfig-<pid>-\
+///   <nanos>-<attempt>` (a file), `brygge-encode-git-check-spill-<pid>-<nanos>-<attempt>` (a directory).
 fn classify_temp_name(name: &str) -> Option<u32> {
     parse_atomic_write_name(name)
         .or_else(|| parse_transform_scratch_name(name))
         .or_else(|| parse_encode_git_partial_name(name))
+        .or_else(|| parse_encode_git_env_name(name))
 }
 
 fn parse_decimal(s: &str) -> Option<u32> {
@@ -745,6 +750,44 @@ fn parse_encode_git_partial_name(name: &str) -> Option<u32> {
         return None;
     }
     parse_decimal(pid_str)
+}
+
+/// `commands.rs::unique_temp_path`'s own three labels (`home`, `gitconfig`, `check-spill`):
+/// `brygge-encode-git-<label>-<pid>-<nanos>-<attempt>`, exactly three numeric groups after the label,
+/// the same structural check [`parse_transform_scratch_name`] applies to its own three-group suffix.
+fn parse_encode_git_env_name(name: &str) -> Option<u32> {
+    for label in ["home", "gitconfig", "check-spill"] {
+        let Some(rest) = name
+            .strip_prefix("brygge-encode-git-")
+            .and_then(|r| r.strip_prefix(label))
+            .and_then(|r| r.strip_prefix('-'))
+        else {
+            continue;
+        };
+        let mut parts = rest.split('-');
+        let Some(pid_str) = parts.next() else {
+            continue;
+        };
+        let Some(nanos_str) = parts.next() else {
+            continue;
+        };
+        let Some(attempt_str) = parts.next() else {
+            continue;
+        };
+        if parts.next().is_some() {
+            continue;
+        }
+        if nanos_str.is_empty() || !nanos_str.bytes().all(|b| b.is_ascii_digit()) {
+            continue;
+        }
+        if attempt_str.is_empty() || !attempt_str.bytes().all(|b| b.is_ascii_digit()) {
+            continue;
+        }
+        if let Some(pid) = parse_decimal(pid_str) {
+            return Some(pid);
+        }
+    }
+    None
 }
 
 /// D-3: may the watchdog remove `path`, which it must still believe is registered by `pid` as `kind`?
