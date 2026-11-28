@@ -134,6 +134,9 @@ jobs:
   # above still run bare `cargo test` on every platform; this is the one job that proves the *contained*
   # path too, on Linux, where contained-test.sh's real containment (systemd-run) is exercised — a single
   # combined run, not a per-OS matrix, same as contained-test-self-test above.
+  #
+  # This job also satisfies handoff §3's no-identity run: a GitHub-hosted runner carries no Git identity
+  # by default, so this run is already identity-less, with nothing extra to configure here.
   contained-test:
     name: cargo test, through tools/contained-test.sh (P-5, P-6)
     runs-on: ubuntu-latest
