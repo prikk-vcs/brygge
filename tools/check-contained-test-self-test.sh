@@ -143,14 +143,15 @@ fi
 #      it, so no single process ever actually holds the 512 MB in memory at once.
 #   2. A Python one-liner building `bytearray(512 * 1024 * 1024)`: measured against a real 256M scope on
 #      this batch's own dev machine, this allocation finished successfully, `memory.current` never rose
-#      above ~25 MB, and no OOM kill occurred — `bytearray`'s zero-fill is apparently cheap enough (zero
-#      pages, deduplicated by the kernel) that it is never actually forced into distinct physical pages,
-#      so it does not hold real memory either, for a different reason than `tail -c` does not.
+#      above ~25 MB, and no OOM kill occurred. The cause (review 206): a large zeroed allocation is lazy
+#      — the allocator maps zero pages, but a page is only committed to real memory once something
+#      writes to it. `bytearray(n)` never writes to the bytes it allocates, so almost nothing is ever
+#      committed; it does not hold real memory, for a different reason than `tail -c` does not.
 # What does hold real memory, confirmed the same way (measured, not assumed): `os.urandom(512 * 1024 *
-# 1024)` — genuinely non-deterministic bytes, so the kernel has nothing to deduplicate or share, and
-# every page is forced into distinct physical memory. Against the same 256M scope, this reliably drove
-# `memory.current` well past the cap and produced a clean `oom_kill 1` with the process killed by
-# `SIGKILL`, the scope's wrapping shell surviving to report it.
+# 1024)` holds it because it writes every one of those bytes, forcing every page it touches to be
+# committed. Against the same 256M scope, this reliably drove `memory.current` well past the cap and
+# produced a clean `oom_kill 1` with the process killed by `SIGKILL`, the scope's wrapping shell
+# surviving to report it.
 #
 # `-p OOMPolicy=continue` is also needed, and was not obvious from a local, otherwise-identical run:
 # this scope's *default* OOMPolicy (confirmed with `systemctl --user show -p OOMPolicy`) is `stop` —

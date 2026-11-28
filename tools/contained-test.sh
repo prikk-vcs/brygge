@@ -7,10 +7,12 @@
 # It tries `systemd-run --user --scope` first (a real cgroup bound: at most 256 tasks, 8 GiB of memory
 # with no swap, for the whole contained run, processes and threads together); where that is
 # unavailable, or where it is accepted but not actually enforced (review 205 R-2, below), a subshell
-# under `ulimit -u 512 -v 8000000` (processes, and virtual memory in KiB — no cgroup, so no memory.swap
-# control either, but this machine's swap is zram, compressed RAM, so a ulimit'd process's own growth is
-# still bounded well short of it). It states which it used, and why, on its first line of output, and
-# never runs unlimited either way.
+# under `ulimit -u 512 -v 8000000` instead (review 206: weaker, plainly). `-v 8000000` bounds each
+# process's own address space to 8 GB, and `-u 512` bounds the user's process count — but not their sum:
+# 512 processes at 8 GB each is far beyond this machine, and `ulimit` has no cgroup to put a ceiling on
+# the total. `-u 512` also counts every process this user already has (a browser, a desktop session), so
+# on a busy desktop the fallback may refuse to start at all — that fails closed, which is acceptable. It
+# states which it used, and why, on its first line of output, and never runs unlimited either way.
 #
 # review 205 R-1: `MemoryMax` alone does not bound swap — above it, the kernel swaps a cgroup out
 # instead of stopping it, and this machine's 62 GB zram swap device means a leaking test could still
