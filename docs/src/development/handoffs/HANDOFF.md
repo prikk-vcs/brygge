@@ -266,6 +266,13 @@ the owner's machine twice. These rules exist so that it cannot happen again.
 - **A program that re-runs itself** (`current_exe()`) is allowed only at a site listed in
   `tools/check-self-exec.sh`, which names each site's guard. CI fails on any unlisted site. **Under `cfg(test)`, no
   such re-run is compiled in.**
+- **The clean-stop watchdog's own internal entry (RFC 022 D-2) is one such site, `watchdog.rs`'s own `current_exe()`
+  call, already listed in `tools/check-self-exec.sh`.** It is internal, never user-facing: reached only when
+  `BRYGGE_INTERNAL_WATCHDOG=<pid>` is already set in the process's own environment — which nothing but
+  `Watchdog::start` ever sets, on the one child it spawns — checked in `main`, before argument parsing, before
+  `--help`, and before any ordinary command can be reached. A terminal stdin, or a marker that is not a decimal
+  process id, refuses it outright (exit `2`) rather than guessing. It is not part of the command surface and is not
+  documented as a command anywhere a user would read.
 - **After any run that hangs or exhausts the machine:** stop, report at once, and never re-run it until the cause is
   fixed in the code.
 - **Every CI job has a `timeout-minutes`.**

@@ -14,6 +14,9 @@
 //!   refuses it; `brygge transform` must then delete the temp file and leave `--out` untouched.
 //! - `--marker <path>`: write an empty file there as the very first thing it does, proving it started
 //!   (used to prove the opposite: that `transform`'s verify-first gate kept it from starting at all).
+//! - `--sleep-ms <n>`: sleep for `n` milliseconds before doing anything else (RFC 022 W1's own
+//!   stop-integration cases need a reliable window in which `brygge transform` has created and
+//!   registered its own temp output file, but this plugin has not yet finished and renamed it away).
 //! - `--then-exit <n>`: exit with code `n` (default `0`) after the steps above.
 //! - `--then-abort`: call [`std::process::abort`] instead of exiting normally — raises `SIGABRT` (6) on
 //!   Unix, with no handler installed, so the process dies by that signal.
@@ -41,6 +44,7 @@ fn main() {
     let mut mode = "copy-unchanged".to_string();
     let mut then_exit: i32 = 0;
     let mut then_abort = false;
+    let mut sleep_ms: u64 = 0;
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
@@ -58,8 +62,16 @@ fn main() {
                 then_exit = n.parse().expect("--then-exit needs an integer");
             }
             "--then-abort" => then_abort = true,
+            "--sleep-ms" => {
+                let n = it.next().expect("--sleep-ms needs a value");
+                sleep_ms = n.parse().expect("--sleep-ms needs an integer");
+            }
             _ => {}
         }
+    }
+
+    if sleep_ms > 0 {
+        std::thread::sleep(std::time::Duration::from_millis(sleep_ms));
     }
 
     if then_abort {

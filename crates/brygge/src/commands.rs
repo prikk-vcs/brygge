@@ -26,6 +26,7 @@ use crate::encode_git;
 use crate::exit;
 use crate::output;
 use crate::plugin;
+use crate::watchdog;
 use crate::watchdog::Guard;
 
 // RFC 019 D-6 (batch G2): `verify.against_target`[.detail] is a new machine key.
@@ -570,6 +571,15 @@ pub fn run_decode(
     format: Format,
 ) -> i32 {
     output::stderr(faithfulness_statement(kind));
+
+    // D-4: before writing, name any of brygge's own temporary forms already sitting in `out`'s own
+    // directory under a different process id — purely informational, never deleted here.
+    watchdog::scan_for_leftovers(
+        out.parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new(".")),
+        std::process::id(),
+    );
 
     let dir = match spill_dir {
         Some(dir) => {
@@ -2343,13 +2353,22 @@ pub(crate) fn verify_internal_report(artifact: &Path, format: Format) -> (String
 /// same rule `decode`'s own `--spill-dir` follows (RFC 015 D-4), checked before any work starts. Exit
 /// `50` if anything fails; exit `1` if a requested comparison could not be checked at all and nothing
 /// that ran failed (the three-valued verdict, review 003 R-5).
+// RFC 022 D-1a(a)/W1: `guard` is accepted for the same uniform shape every writing command's function
+// takes (`main` starts the watchdog through one function, for exactly these forms) — but nothing below
+// ever registers anything with it. `verify --against-source`/`--against-target` re-derive only through
+// `brygge_ir::Storage::Spill`'s own content-store spill file, which is unlinked immediately after it is
+// opened (Unix) or opened delete-on-close (Windows) — the handoff's own named exception ("a spill file
+// that is unlinked at once needs no registration") — and `verify` writes nothing else to disk at all (it
+// has no `--out`). See the request's evidence plan for the full accounting.
 pub fn run_verify(
+    guard: &mut Guard,
     artifact: &Path,
     against_source: Option<&Path>,
     against_target: Option<&Path>,
     spill_dir: Option<&Path>,
     format: Format,
 ) -> i32 {
+    let _ = &guard; // intentionally unused: see the doc comment above.
     let storage = if against_source.is_some() || against_target.is_some() {
         let dir = match spill_dir {
             Some(dir) => {
@@ -2867,6 +2886,23 @@ impl Drop for GitEnv {
     }
 }
 
+/// Tell `guard` that `env`'s own temporary paths (its HOME directory and its `GIT_CONFIG_GLOBAL` file)
+/// are no longer in use — `GitEnv`'s own `Drop` still physically removes them, whenever its last owner
+/// goes out of scope; this only stops the watchdog from protecting them too, once this process is no
+/// longer relying on either (RFC 022 D-1, W1).
+fn release_git_env(guard: &mut Guard, env: &GitEnv) {
+    guard.release(&env.home);
+    guard.release(&env.global_config);
+}
+
+/// Remove `encode git`'s own partial output repository and tell `guard` it is gone, on any path that
+/// refuses to write `out` after `partial` was created (RFC 022 D-1, W1: paired register/release around
+/// the one risky span, exactly as `atomic_write` pairs them around its own temp artifact).
+fn cleanup_partial(guard: &mut Guard, partial: &Path) {
+    let _ = std::fs::remove_dir_all(partial);
+    guard.release(partial);
+}
+
 /// `git check-ref-format <name>`, under the same fixed environment. `Ok(())` if Git accepts the name;
 /// `Err(reason)` otherwise — `check-ref-format` itself prints nothing explaining why, so the reason is
 /// brygge's own, naming the exit code.
@@ -3014,8 +3050,16 @@ fn key_segment(label: &str) -> String {
 /// into place, the result is decoded in-process and checked against the artifact
 /// ([`encode_git::compare_git_target`]); any difference refuses the write, exactly as a pre-flight
 /// refusal does, and nothing is left at `<dir>`.
-pub fn run_encode_git(artifact: &Path, out: &Path, format: Format) -> i32 {
-    run_encode_git_with_check(artifact, out, format, real_encode_git_check)
+pub fn run_encode_git(guard: &mut Guard, artifact: &Path, out: &Path, format: Format) -> i32 {
+    // D-4: before writing, name any of brygge's own temporary forms already sitting beside `out` under
+    // a different process id — purely informational, never deleted here.
+    watchdog::scan_for_leftovers(
+        out.parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new(".")),
+        std::process::id(),
+    );
+    run_encode_git_with_check(guard, artifact, out, format, real_encode_git_check)
 }
 
 /// The real D-6 check: lists the partial repository's refs, decodes it in-process with
@@ -3024,6 +3068,7 @@ pub fn run_encode_git(artifact: &Path, out: &Path, format: Format) -> i32 {
 /// test can inject a different closure here (RFC 019 D-6 §3: "an internal seam… never an environment
 /// variable or a flag in the shipped product") — [`run_encode_git`] always passes this one.
 fn real_encode_git_check(
+    guard: &mut Guard,
     ir: &Ir,
     digest: &[u8; 32],
     partial: &Path,
@@ -3047,6 +3092,11 @@ fn real_encode_git_check(
             ));
         }
     };
+    // D-3 (W1): this directory holds nothing but the comparison's own content-store spill file, which
+    // is itself unlinked at once (the handoff's named exception) — but the *directory* is explicitly
+    // removed below, by this process, and so is registered like any other of brygge's own temp
+    // directories, in case a stop lands mid-decode.
+    guard.register_dir(&spill_dir);
     let opts = SourceOpts {
         infer_renames: false,
         reconstruct_refs: false,
@@ -3062,6 +3112,7 @@ fn real_encode_git_check(
     let storage = brygge_ir::Storage::Spill(spill_dir.clone());
     let result = decode_source(SourceKind::Git, partial, &opts, &storage);
     let _ = std::fs::remove_dir_all(&spill_dir);
+    guard.release(&spill_dir);
     let result_ir = match result {
         Ok(ir) => ir,
         Err((_, msg)) => {
@@ -3088,11 +3139,14 @@ fn encode_git_check_spill_dir() -> std::io::Result<PathBuf> {
     ))
 }
 
+#[allow(clippy::too_many_arguments)] // guard (RFC 022 D-1a(a)), plus one parameter per the real
+// repository write this function performs end to end; no fewer would still say what each one means.
 fn run_encode_git_with_check(
+    guard: &mut Guard,
     artifact: &Path,
     out: &Path,
     format: Format,
-    check: impl Fn(&Ir, &[u8; 32], &Path, &Path, &GitEnv, &str) -> encode_git::Comparison,
+    check: impl Fn(&mut Guard, &Ir, &[u8; 32], &Path, &Path, &GitEnv, &str) -> encode_git::Comparison,
 ) -> i32 {
     if out.symlink_metadata().is_ok() {
         output::stderr(&format!(
@@ -3144,9 +3198,17 @@ fn run_encode_git_with_check(
             return exit::FAILURE;
         }
     };
+    // D-3 (W1): `encode git`'s own private HOME (a directory) and GIT_CONFIG_GLOBAL (a file), each
+    // named with this process's own pid (`GitEnv::new`/`unique_temp_path`). Released together, right
+    // after the last point either is used (below) — `GitEnv`'s own `Drop` still physically removes them
+    // on every return path, exactly as before; this registration is only the clean-stop safety net for
+    // a kill in between.
+    guard.register_dir(&env.home);
+    guard.register(&env.global_config);
 
     let refusals = encode_git_preflight(ir, &git, &env);
     if !refusals.is_empty() {
+        release_git_env(guard, &env);
         output::stderr(&render_encode_git_refusals(format, &refusals));
         return exit::USAGE;
     }
@@ -3172,6 +3234,7 @@ fn run_encode_git_with_check(
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
                 Err(e) => {
+                    release_git_env(guard, &env);
                     output::stderr(&format!(
                         "cannot create a working directory beside {}: {e}",
                         out.display()
@@ -3183,14 +3246,16 @@ fn run_encode_git_with_check(
         match p {
             Some(p) => p,
             None => {
+                release_git_env(guard, &env);
                 output::stderr("cannot create a working directory: too many attempts");
                 return exit::FAILURE;
             }
         }
     };
-    let cleanup = |partial: &Path| {
-        let _ = std::fs::remove_dir_all(partial);
-    };
+    // D-3 (W1): the partial output repository itself — a directory, `<out name>.partial-<pid>-<n>`,
+    // removed with `remove_dir_all` only once it has stopped changing. Released together with `partial`
+    // being renamed into place, or removed by `cleanup`, whichever happens.
+    guard.register_dir(&partial);
 
     let mut init = Subprocess::new(&git);
     env.apply(&mut init);
@@ -3204,12 +3269,14 @@ fn run_encode_git_with_check(
     match init.status() {
         Ok(status) if status.success() => {}
         Ok(status) => {
-            cleanup(&partial);
+            cleanup_partial(guard, &partial);
+            release_git_env(guard, &env);
             output::stderr(&format!("git init failed (exit {:?})", status.code()));
             return exit::FAILURE;
         }
         Err(e) => {
-            cleanup(&partial);
+            cleanup_partial(guard, &partial);
+            release_git_env(guard, &env);
             output::stderr(&format!("cannot start git: {e}"));
             return exit::FAILURE;
         }
@@ -3223,7 +3290,8 @@ fn run_encode_git_with_check(
     let mut child = match import.spawn() {
         Ok(c) => c,
         Err(e) => {
-            cleanup(&partial);
+            cleanup_partial(guard, &partial);
+            release_git_env(guard, &env);
             output::stderr(&format!("cannot start git fast-import: {e}"));
             return exit::FAILURE;
         }
@@ -3242,7 +3310,8 @@ fn run_encode_git_with_check(
     let summary = match (summary, status) {
         (Ok(summary), Ok(status)) if status.success() => summary,
         (Ok(_), Ok(status)) => {
-            cleanup(&partial);
+            cleanup_partial(guard, &partial);
+            release_git_env(guard, &env);
             output::stderr(&format!(
                 "git fast-import failed (exit {:?})",
                 status.code()
@@ -3250,12 +3319,14 @@ fn run_encode_git_with_check(
             return exit::FAILURE;
         }
         (Err(e), _) => {
-            cleanup(&partial);
+            cleanup_partial(guard, &partial);
+            release_git_env(guard, &env);
             output::stderr(&format!("writing the fast-import stream failed: {e}"));
             return exit::FAILURE;
         }
         (Ok(_), Err(e)) => {
-            cleanup(&partial);
+            cleanup_partial(guard, &partial);
+            release_git_env(guard, &env);
             output::stderr(&format!("cannot wait for git fast-import: {e}"));
             return exit::FAILURE;
         }
@@ -3264,17 +3335,22 @@ fn run_encode_git_with_check(
     // RFC 019 D-6 (batch G2): before the partial directory is renamed into place, decode it in-process
     // and check it against the artifact. Any difference refuses the write, same as a pre-flight refusal.
     let default_branch_ref = format!("refs/heads/{}", default_branch.name);
-    match check(
+    let comparison = check(
+        guard,
         ir,
         &decoded.digest,
         &partial,
         &git,
         &env,
         &default_branch_ref,
-    ) {
+    );
+    // `env` (its HOME directory and GIT_CONFIG_GLOBAL file) is never used again past this point,
+    // whichever way the comparison came out — only `partial`/`report_tmp` and ordinary renames follow.
+    release_git_env(guard, &env);
+    match comparison {
         encode_git::Comparison::Corresponds => {}
         encode_git::Comparison::DoesNotCorrespond(diffs) => {
-            cleanup(&partial);
+            cleanup_partial(guard, &partial);
             output::stderr(&format!(
                 "the result does not match the artifact; refusing to write {}:",
                 out.display()
@@ -3289,7 +3365,7 @@ fn run_encode_git_with_check(
             return exit::FAILURE;
         }
         encode_git::Comparison::NotChecked(reason) => {
-            cleanup(&partial);
+            cleanup_partial(guard, &partial);
             output::stderr(&format!(
                 "the result could not be checked against the artifact: {reason}"
             ));
@@ -3323,12 +3399,16 @@ fn run_encode_git_with_check(
                 .and_then(|mut f| f.write_all(report_text.as_bytes()).map(|()| f))
             {
                 Ok(_) => {
+                    // D-3 (W1): the report's own temporary sibling — a *file*, under the exact same
+                    // `<name>.partial-<pid>-<n>` scheme `partial` itself uses for a directory; told
+                    // apart from it only by the kind registered here, never by the name.
+                    guard.register(&candidate);
                     p = Some(candidate);
                     break;
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
                 Err(e) => {
-                    cleanup(&partial);
+                    cleanup_partial(guard, &partial);
                     let _ = std::fs::remove_file(&candidate);
                     output::stderr(&format!(
                         "cannot write a temporary report beside {}: {e}",
@@ -3341,7 +3421,7 @@ fn run_encode_git_with_check(
         match p {
             Some(p) => p,
             None => {
-                cleanup(&partial);
+                cleanup_partial(guard, &partial);
                 output::stderr("cannot write a temporary report: too many attempts");
                 return exit::FAILURE;
             }
@@ -3349,13 +3429,17 @@ fn run_encode_git_with_check(
     };
 
     if let Err(e) = std::fs::rename(&partial, out) {
-        cleanup(&partial);
+        cleanup_partial(guard, &partial);
         let _ = std::fs::remove_file(&report_tmp);
+        guard.release(&report_tmp);
         output::stderr(&format!("cannot write {}: {e}", out.display()));
         return exit::FAILURE;
     }
+    // `partial` is now `out`, under its final name: no longer a temporary path at all.
+    guard.release(&partial);
     if let Err(e) = std::fs::rename(&report_tmp, &report_path) {
         let _ = std::fs::remove_file(&report_tmp);
+        guard.release(&report_tmp);
         output::stderr(&format!(
             "the repository was written at {}, but its report could not be put at {}: {e}",
             out.display(),
@@ -3363,6 +3447,7 @@ fn run_encode_git_with_check(
         ));
         return exit::FAILURE;
     }
+    guard.release(&report_tmp);
 
     // RFC 021 D-4 (batch G): the same sentence `honesty.rs`'s `render_human` would print, since this
     // line is a single stderr message rather than the rendered report blob — kept byte-identical to it
@@ -3590,6 +3675,7 @@ fn transform_result_text(format: Format, summary: &brygge_ir::transform::StepSum
 /// silently overwriting whatever was there. Any failure along the way removes the temp file and leaves
 /// `--out` untouched.
 pub fn run_transform(
+    guard: &mut Guard,
     name: &str,
     artifact: &Path,
     out: &Path,
@@ -3639,6 +3725,9 @@ pub fn run_transform(
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
+    // D-4: before writing, name any of brygge's own temporary forms already sitting in `dir` under a
+    // different process id — purely informational, never deleted here.
+    watchdog::scan_for_leftovers(dir, std::process::id());
     let tmp = match create_transform_temp(dir) {
         Ok(p) => p,
         Err(e) => {
@@ -3649,6 +3738,9 @@ pub fn run_transform(
             return exit::FAILURE;
         }
     };
+    // D-3 (W1): the plugin's own scratch output file. Released below, paired with every place that
+    // removes it or renames it away.
+    guard.register(&tmp);
 
     let mut argv: Vec<std::ffi::OsString> = vec![
         "--artifact".into(),
@@ -3662,16 +3754,19 @@ pub fn run_transform(
         plugin::Ran::Exited(0) => {}
         plugin::Ran::Exited(code) => {
             let _ = std::fs::remove_file(&tmp);
+            guard.release(&tmp);
             output::stderr(&transform_exit_text(format, name, code));
             return code;
         }
         plugin::Ran::Signaled(signal) => {
             let _ = std::fs::remove_file(&tmp);
+            guard.release(&tmp);
             output::stderr(&transform_signal_text(format, name, signal));
             return exit::FAILURE;
         }
         plugin::Ran::CannotStart(e) => {
             let _ = std::fs::remove_file(&tmp);
+            guard.release(&tmp);
             output::stderr(&format!(
                 "cannot start brygge-transform-{name} ({}): {e}",
                 path.display()
@@ -3684,6 +3779,7 @@ pub fn run_transform(
     let (checks, internal_pass) = compute_internal_checks(&parsed_output);
     if !internal_pass {
         let _ = std::fs::remove_file(&tmp);
+        guard.release(&tmp);
         let detail = checks
             .iter()
             .find_map(|(name, outcome)| match outcome {
@@ -3700,6 +3796,7 @@ pub fn run_transform(
         // Unreachable: `internal_pass` is only true when `compute_internal_checks` saw `Ok(_)` (its
         // "integrity" check fails immediately on `Err`, which already returned above).
         let _ = std::fs::remove_file(&tmp);
+        guard.release(&tmp);
         return exit::FAILURE;
     };
 
@@ -3712,14 +3809,17 @@ pub fn run_transform(
             drop(output_decoded);
             if let Err(e) = std::fs::rename(&tmp, out) {
                 let _ = std::fs::remove_file(&tmp);
+                guard.release(&tmp);
                 output::stderr(&format!("cannot write {}: {e}", out.display()));
                 return exit::FAILURE;
             }
+            guard.release(&tmp);
             output::stderr(&transform_result_text(format, &summary));
             final_exit
         }
         Err(violation) => {
             let _ = std::fs::remove_file(&tmp);
+            guard.release(&tmp);
             output::stderr(&display::human(&format!(
                 "the transform's output was refused: {violation}"
             )));
@@ -3787,6 +3887,7 @@ fn transform_authors_result_text(
 /// build its own output — never a subprocess, never a temp file for the *input* side, but still the
 /// same output check, atomic write, and `--out` rules `transform`'s plugin path uses.
 pub fn run_transform_authors(
+    guard: &mut Guard,
     artifact: &Path,
     map_path: &Path,
     out: &Path,
@@ -3916,6 +4017,9 @@ pub fn run_transform_authors(
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
+    // D-4: before writing, name any of brygge's own temporary forms already sitting in `dir` under a
+    // different process id — purely informational, never deleted here.
+    watchdog::scan_for_leftovers(dir, std::process::id());
     let tmp = match create_transform_temp(dir) {
         Ok(p) => p,
         Err(e) => {
@@ -3926,8 +4030,12 @@ pub fn run_transform_authors(
             return exit::FAILURE;
         }
     };
+    // D-3 (W1): the same scratch-output form `run_transform`'s plugin path registers; here it is
+    // written in-process instead of by a plugin, but the file and its risk are identical.
+    guard.register(&tmp);
     if let Err(e) = std::fs::write(&tmp, brygge_ir::to_bytes(&output_ir)) {
         let _ = std::fs::remove_file(&tmp);
+        guard.release(&tmp);
         output::stderr(&format!(
             "cannot write a temp file in {}: {e}",
             dir.display()
@@ -3939,6 +4047,7 @@ pub fn run_transform_authors(
     let (checks, internal_pass) = compute_internal_checks(&parsed_output);
     if !internal_pass {
         let _ = std::fs::remove_file(&tmp);
+        guard.release(&tmp);
         let detail = checks
             .iter()
             .find_map(|(name, outcome)| match outcome {
@@ -3954,6 +4063,7 @@ pub fn run_transform_authors(
     let Ok(output_decoded) = parsed_output else {
         // Unreachable, as in `run_transform`: `internal_pass` is only true on `Ok(_)`.
         let _ = std::fs::remove_file(&tmp);
+        guard.release(&tmp);
         return exit::FAILURE;
     };
 
@@ -3963,9 +4073,11 @@ pub fn run_transform_authors(
             drop(output_decoded);
             if let Err(e) = std::fs::rename(&tmp, out) {
                 let _ = std::fs::remove_file(&tmp);
+                guard.release(&tmp);
                 output::stderr(&format!("cannot write {}: {e}", out.display()));
                 return exit::FAILURE;
             }
+            guard.release(&tmp);
             output::stderr(&transform_authors_result_text(
                 format,
                 &summary,
@@ -3976,6 +4088,7 @@ pub fn run_transform_authors(
         }
         Err(violation) => {
             let _ = std::fs::remove_file(&tmp);
+            guard.release(&tmp);
             output::stderr(&display::human(&format!(
                 "the transform's output was refused: {violation}"
             )));

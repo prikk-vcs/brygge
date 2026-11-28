@@ -442,6 +442,22 @@ The exit code carries the outcome class, so a gate can branch without parsing ou
 
 When several classes apply to one `decode`, `30` takes precedence over `10`.
 
+**D-7: the status after a stop is the operating system's own, never one of this table's classes, and
+`40` stays reserved and unused** (it is not assigned to a stop, or to anything else, in this release). A
+writing command stopped before it finishes (`decode`, `encode git`, `transform`, or `verify
+--against-source`) ends with whatever status the shell or the parent process sees for the way it was
+stopped, not a brygge-chosen code:
+- **Unix:** the shell's own 128+signal convention — `130` after Ctrl-C (`SIGINT`, 2), `143` after
+  `SIGTERM` (15).
+- **Windows has no POSIX signals**, so there is no single Windows number playing 130/143's role; a parent
+  process (anything using `std::process::Command`/`ExitStatus::code()`) sees exactly the mechanism that
+  stopped brygge, not a synthesized 128+signal figure: `taskkill /F` terminates the process with
+  `TerminateProcess`'s own default exit code, **`1`**; an unhandled `CTRL_C_EVENT`/`CTRL_BREAK_EVENT`
+  (Ctrl-C at a console with no handler installed) ends the process with `STATUS_CONTROL_C_EXIT`
+  (`0xC000013A`), which `ExitStatus::code()` reports as **`-1073741510`**.
+
+See the user guide's note on what a stop leaves behind and the next-run notice.
+
 **`encode git`'s in-process check (RFC 019 D-6, batch G2)** sits between the pre-flight and this table's
 own `0`/`10`/`30` exit: if it finds any difference, `encode git` exits `1`, the same runtime-failure code
 as any other reason it could not finish — nothing in this table's other rows is reached that run.

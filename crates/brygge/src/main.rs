@@ -48,6 +48,14 @@ fn main() {
 }
 
 fn run(cmd: Command) -> i32 {
+    // RFC 022 D-1a(a)/W1: exactly one function (`run_writing`, below) ever calls `Watchdog::start()`,
+    // and only for the forms `watchdog::command_needs_watchdog` names — itself the one, independently
+    // tested, pure source of truth for which commands those are. Every command function still takes the
+    // guard by `&mut` (`Guard::disabled()` for every other command, and for every unit test) — a command
+    // function can never start a watchdog merely by being called, however a test calls it.
+    if watchdog::command_needs_watchdog(&cmd) {
+        return run_writing(cmd);
+    }
     match cmd {
         Command::Version => {
             let report = format!(
@@ -66,47 +74,6 @@ fn run(cmd: Command) -> i32 {
             }
             exit::CLEAN
         }
-        Command::Decode {
-            kind,
-            source,
-            out,
-            infer_renames,
-            reconstruct_refs,
-            branch_lines,
-            layout_trunk,
-            layout_branches,
-            layout_tags,
-            spill_dir,
-            format,
-        } => {
-            // RFC 022 D-1a(a): only `main` ever calls `Watchdog::start()`. `run_decode` itself never
-            // does, and takes the guard by `&mut` instead, exactly as every one of its unit tests does
-            // with `Guard::disabled()` — a command function can never start a watchdog merely by being
-            // called, however a test calls it.
-            let mut guard = match watchdog::Watchdog::start() {
-                Ok(w) => watchdog::Guard::Active(w),
-                Err(e) => {
-                    output::stderr(&format!("note: no clean-stop watchdog for this run: {e}"));
-                    watchdog::Guard::Disabled
-                }
-            };
-            let code = commands::run_decode(
-                &mut guard,
-                kind,
-                &source,
-                &out,
-                infer_renames,
-                reconstruct_refs,
-                branch_lines,
-                layout_trunk,
-                layout_branches,
-                layout_tags,
-                spill_dir.as_deref(),
-                format,
-            );
-            guard.finish();
-            code
-        }
         Command::Inspect {
             artifact,
             atoms,
@@ -115,6 +82,8 @@ fn run(cmd: Command) -> i32 {
         Command::InspectAuthors { artifact, format } => {
             commands::run_inspect_authors(&artifact, format)
         }
+        // Reached only when `against_source` is `None` (otherwise `command_needs_watchdog` already
+        // routed this command to `run_writing`, above) — read-only, so `Guard::disabled()`.
         Command::Verify {
             artifact,
             against_source,
@@ -122,6 +91,7 @@ fn run(cmd: Command) -> i32 {
             spill_dir,
             format,
         } => commands::run_verify(
+            &mut watchdog::Guard::Disabled,
             &artifact,
             against_source.as_deref(),
             against_target.as_deref(),
@@ -135,25 +105,98 @@ fn run(cmd: Command) -> i32 {
             format,
         } => commands::run_encode(&target, &artifact, &plugin_args, format),
         Command::EncodeList { format } => commands::run_encode_list(format),
+        Command::TransformList { format } => commands::run_transform_list(format),
+        // `command_needs_watchdog` is unconditionally `true` for these three forms, so `run_writing`
+        // above always returns before any of them would be matched here.
+        Command::Decode { .. } | Command::EncodeGit { .. } | Command::Transform { .. } => {
+            unreachable!("command_needs_watchdog is true for this form unconditionally")
+        }
+        Command::TransformAuthors { .. } => {
+            unreachable!("command_needs_watchdog is true for transform authors unconditionally")
+        }
+    }
+}
+
+/// The one function (handoff §2) that starts the clean-stop watchdog, for exactly the forms
+/// [`watchdog::command_needs_watchdog`] accepts — called only from [`run`], and only once that check has
+/// already passed. Builds the [`watchdog::Guard`] (D-1a(a): only `main` ever calls
+/// [`watchdog::Watchdog::start`]), dispatches to the one matching command function, and calls
+/// [`watchdog::Guard::finish`] before returning — so the watchdog's own wait (and any sentence it has to
+/// print on a stop) completes before this process's exit code is returned.
+fn run_writing(cmd: Command) -> i32 {
+    let mut guard = match watchdog::Watchdog::start() {
+        Ok(w) => watchdog::Guard::Active(w),
+        Err(e) => {
+            output::stderr(&format!("note: no clean-stop watchdog for this run: {e}"));
+            watchdog::Guard::Disabled
+        }
+    };
+    let code = match cmd {
+        Command::Decode {
+            kind,
+            source,
+            out,
+            infer_renames,
+            reconstruct_refs,
+            branch_lines,
+            layout_trunk,
+            layout_branches,
+            layout_tags,
+            spill_dir,
+            format,
+        } => commands::run_decode(
+            &mut guard,
+            kind,
+            &source,
+            &out,
+            infer_renames,
+            reconstruct_refs,
+            branch_lines,
+            layout_trunk,
+            layout_branches,
+            layout_tags,
+            spill_dir.as_deref(),
+            format,
+        ),
         Command::EncodeGit {
             artifact,
             out,
             format,
-        } => commands::run_encode_git(&artifact, &out, format),
+        } => commands::run_encode_git(&mut guard, &artifact, &out, format),
         Command::Transform {
             name,
             artifact,
             out,
             plugin_args,
             format,
-        } => commands::run_transform(&name, &artifact, &out, &plugin_args, format),
-        Command::TransformList { format } => commands::run_transform_list(format),
+        } => commands::run_transform(&mut guard, &name, &artifact, &out, &plugin_args, format),
         Command::TransformAuthors {
             artifact,
             map,
             out,
             require_all,
             format,
-        } => commands::run_transform_authors(&artifact, &map, &out, require_all, format),
-    }
+        } => {
+            commands::run_transform_authors(&mut guard, &artifact, &map, &out, require_all, format)
+        }
+        Command::Verify {
+            artifact,
+            against_source,
+            against_target,
+            spill_dir,
+            format,
+        } => commands::run_verify(
+            &mut guard,
+            &artifact,
+            against_source.as_deref(),
+            against_target.as_deref(),
+            spill_dir.as_deref(),
+            format,
+        ),
+        _ => unreachable!(
+            "run_writing is only ever called for a command command_needs_watchdog accepts"
+        ),
+    };
+    guard.finish();
+    code
 }

@@ -560,3 +560,475 @@ fn a_decode_that_is_not_stopped_is_byte_identical_to_before_this_batch() {
         "the watchdog must change nothing about the normal-path stderr"
     );
 }
+
+// ======================================================================================================
+// RFC 022 batch W1: the watchdog extended to the three other writing commands, and D-4's leftover scan.
+// ======================================================================================================
+
+fn git_available() -> bool {
+    Command::new("git")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+fn exe_name(name: &str) -> String {
+    if cfg!(windows) {
+        format!("{name}.exe")
+    } else {
+        name.to_string()
+    }
+}
+
+/// As `transform_integration.rs`'s own helper of the same name: every workspace binary built in the same
+/// `cargo build`/`cargo test --workspace` session lands beside `brygge`'s own binary.
+fn workspace_bin_dir() -> PathBuf {
+    Path::new(bin())
+        .parent()
+        .expect("CARGO_BIN_EXE_brygge has a parent")
+        .to_path_buf()
+}
+
+fn test_plugin_bin() -> PathBuf {
+    let path = workspace_bin_dir().join(exe_name("brygge-transform-test-plugin"));
+    assert!(
+        path.is_file(),
+        "brygge-transform-test-plugin was not built: build the workspace: `cargo test --workspace`"
+    );
+    path
+}
+
+fn install_transform_plugin(dir: &Path, name: &str, src: &Path) -> PathBuf {
+    let dest = dir.join(exe_name(&format!("brygge-transform-{name}")));
+    std::fs::copy(src, &dest).expect("copy plugin binary");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    dest
+}
+
+/// Run the real `brygge` binary (never a copy — these three cases do not need R-1's unique-copy
+/// process-presence trick, which only `decode`'s own cases above rely on) to completion, asserting it
+/// succeeds, and return its stdout/stderr pair.
+fn run_to_completion(mut cmd: Command) -> std::process::Output {
+    let out = cmd.output().expect("run brygge");
+    assert!(
+        out.status.success(),
+        "setup step must succeed: {:?}\nstderr: {}",
+        out,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    out
+}
+
+/// Decodes `dump` (handoff §4's own 40×4 MiB pseudo-random fixture, reused here so the three new stop
+/// cases below have the same reliably-slow-to-process content the existing `decode` cases do) into a
+/// fresh IR artifact at `<dir>/big.ir`, via a real, run-to-completion `brygge decode svn`.
+fn decode_big_artifact(dir: &Path, dump: &Path) -> PathBuf {
+    let artifact = dir.join("big.ir");
+    let mut cmd = Command::new(bin());
+    cmd.args(["decode", "svn"])
+        .arg(dump)
+        .arg("--out")
+        .arg(&artifact)
+        .stdin(Stdio::null());
+    run_to_completion(cmd);
+    artifact
+}
+
+/// The first directory entry directly under `dir` whose name starts with `prefix`, polled for — so a
+/// caller never has to predict an unpredictable suffix (a `nanos`-based attempt count) ahead of time.
+fn poll_for_entry_with_prefix(dir: &Path, prefix: &str, within: Duration) -> Option<PathBuf> {
+    let mut found = None;
+    poll_until(within, || {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return false;
+        };
+        for entry in entries.flatten() {
+            if entry.file_name().to_string_lossy().starts_with(prefix) {
+                found = Some(entry.path());
+                return true;
+            }
+        }
+        false
+    });
+    found
+}
+
+/// A recursive total-byte-length snapshot of everything under `dir` — used only to poll for "the
+/// directory's content is visibly growing", never for correctness.
+fn dir_total_bytes(dir: &Path) -> u64 {
+    let mut total = 0u64;
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&d) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(meta) = entry.metadata() else {
+                continue;
+            };
+            if meta.is_dir() {
+                stack.push(entry.path());
+            } else {
+                total += meta.len();
+            }
+        }
+    }
+    total
+}
+
+/// Spawn `cmd` with piped stderr, returning the child, its pid, and a receiver for its full stderr once
+/// both it and its watchdog (sharing the same pipe) have closed it — the same shape `start_decode`
+/// above uses, generalized over an arbitrary already-built [`Command`].
+struct RunningCommand {
+    child: std::process::Child,
+    stderr_rx: mpsc::Receiver<Vec<u8>>,
+    pid: u32,
+}
+
+fn spawn_piped(mut cmd: Command) -> RunningCommand {
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn brygge");
+    let pid = child.id();
+    let mut stderr = child.stderr.take().expect("piped stderr");
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = stderr.read_to_end(&mut buf);
+        let _ = tx.send(buf);
+    });
+    RunningCommand {
+        child,
+        stderr_rx: rx,
+        pid,
+    }
+}
+
+fn stop_and_collect_stderr_generic_within(
+    mut running: RunningCommand,
+    stop: impl FnOnce(u32),
+    within: Duration,
+) -> String {
+    stop(running.pid);
+    let _ = running.child.wait();
+    let bytes = running.stderr_rx.recv_timeout(within).unwrap_or_else(|_| {
+        panic!("the watchdog's sentence did not reach stderr within {within:?}")
+    });
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+fn stop_and_collect_stderr_generic(running: RunningCommand, stop: impl FnOnce(u32)) -> String {
+    stop_and_collect_stderr_generic_within(running, stop, Duration::from_secs(10))
+}
+
+#[cfg(unix)]
+fn stop_unix(pid: u32) {
+    send_signal(pid, "-INT");
+}
+
+#[cfg(windows)]
+fn stop_windows(pid: u32) {
+    taskkill(pid);
+}
+
+// ---- `encode git`, stopped while the partial repository exists (handoff §1, level 2) -------------------
+
+fn run_encode_git_stopped_case(stop: impl FnOnce(u32)) {
+    if !git_available() {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let scratch = ScratchDir::new("stopped-encode-git");
+    let dump = scratch.path().join("dump.svndump");
+    std::fs::write(&dump, svn_dump_fixture()).unwrap();
+    let artifact = decode_big_artifact(scratch.path(), &dump);
+
+    let out = scratch.path().join("repo.git");
+    let out_name = out.file_name().unwrap().to_string_lossy().into_owned();
+    let mut cmd = Command::new(bin());
+    cmd.args(["encode", "git"])
+        .arg(&artifact)
+        .arg("--out")
+        .arg(&out);
+    let running = spawn_piped(cmd);
+    let pid = running.pid;
+
+    // The partial repository directory is created, and registered with the watchdog, before `git
+    // init`/`fast-import` even start — poll for its name (an unpredictable `-<attempt>` suffix, though
+    // in an empty scratch directory it is always `-0`) rather than assuming it.
+    let partial_prefix = format!("{out_name}.partial-{pid}-");
+    let partial =
+        poll_for_entry_with_prefix(scratch.path(), &partial_prefix, Duration::from_secs(30))
+            .expect("the partial repository directory never appeared");
+
+    // R-5 (as the decode case above): poll for its content to be visibly growing, not merely for its
+    // existence, so the kill lands while `git fast-import` is actually writing objects into it, never
+    // in the narrow window right after `mkdir`/`git init` before any blob has been written.
+    let grew = poll_until(Duration::from_secs(60), || dir_total_bytes(&partial) > 0);
+    assert!(
+        grew,
+        "the partial repository {} never grew; the test caught nothing",
+        partial.display()
+    );
+
+    // The watchdog's own D-3 ceiling for a directory is 30 s; this stop case can legitimately take up
+    // to that long to report, so its own wait allows a comfortable margin past it.
+    let stderr = stop_and_collect_stderr_generic_within(running, stop, Duration::from_secs(45));
+
+    // D-3: the partial directory is removed once it stops changing (or, if a slow filesystem or a loaded
+    // runner means it is still changing after the watchdog's own 30 s ceiling, it is named instead —
+    // either way, never left as a bare, unregistered leak, and `<out>` itself never exists).
+    let gone = poll_until(Duration::from_secs(35), || !partial.exists());
+    assert!(!out.exists(), "no repository may exist after a clean stop");
+    let report_path = {
+        let mut p = out.as_os_str().to_os_string();
+        p.push(".brygge-report");
+        PathBuf::from(p)
+    };
+    assert!(
+        !report_path.exists(),
+        "no report may exist after a clean stop"
+    );
+    assert!(
+        stderr.contains("interrupted:"),
+        "the watchdog's sentence must appear: {stderr}"
+    );
+    if gone {
+        assert!(
+            stderr.contains(&partial.display().to_string()),
+            "the sentence must name the removed partial directory: {stderr}"
+        );
+    } else {
+        eprintln!(
+            "note: the partial directory was still changing at the 30s ceiling on this run and was \
+             named instead of removed — itself a pass of D-3's rule, not a failure: {stderr}"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn encode_git_stopped_with_sigint_leaves_no_partial_repository() {
+    run_encode_git_stopped_case(stop_unix);
+}
+
+#[cfg(windows)]
+#[test]
+fn encode_git_stopped_with_taskkill_leaves_no_partial_repository() {
+    run_encode_git_stopped_case(stop_windows);
+}
+
+// ---- `transform`, stopped while its scratch output file exists (handoff §1, level 2) --------------------
+
+fn run_transform_stopped_case(stop: impl FnOnce(u32)) {
+    let scratch = ScratchDir::new("stopped-transform");
+    // `transform` needs no source-control content at all (it reads an already-decoded artifact and
+    // hands it to a plugin), so a tiny, directly-built artifact is enough — unlike the other two new
+    // cases, nothing here depends on `decode`'s own slow fixture.
+    let artifact = scratch.path().join("in.ir");
+    std::fs::write(&artifact, empty_git_artifact()).unwrap();
+    let plugin = test_plugin_bin();
+    install_transform_plugin(scratch.path(), "slow", &plugin);
+
+    let out = scratch.path().join("out.ir");
+    let mut cmd = Command::new(bin());
+    cmd.args(["transform", "slow"])
+        .arg(&artifact)
+        .arg("--out")
+        .arg(&out)
+        .arg("--")
+        .args(["--sleep-ms", "20000"])
+        .env("PATH", scratch.path());
+    let running = spawn_piped(cmd);
+    let pid = running.pid;
+
+    let tmp_prefix = format!(".brygge-transform-{pid}-");
+    let tmp = poll_for_entry_with_prefix(scratch.path(), &tmp_prefix, Duration::from_secs(30))
+        .expect("the scratch output file never appeared");
+
+    let stderr = stop_and_collect_stderr_generic(running, stop);
+
+    assert!(
+        poll_until(Duration::from_secs(10), || !tmp.exists()),
+        "the temp path {} is still there 10 s after the stop",
+        tmp.display()
+    );
+    assert!(!out.exists(), "no artifact may exist after a clean stop");
+    let humanized = tmp.display().to_string().replace('\\', "\\\\");
+    let expected_sentence = format!("interrupted: removed {humanized}; nothing was written");
+    assert!(
+        stderr.trim_end().ends_with(&expected_sentence),
+        "stderr does not end with the expected sentence.\nexpected suffix: {expected_sentence}\nactual: \
+         {stderr}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn transform_stopped_with_sigint_leaves_no_temp_artifact() {
+    run_transform_stopped_case(stop_unix);
+}
+
+#[cfg(windows)]
+#[test]
+fn transform_stopped_with_taskkill_leaves_no_temp_artifact() {
+    run_transform_stopped_case(stop_windows);
+}
+
+/// Builds a one-commit git repository in a throwaway directory, decodes it with a real `brygge decode
+/// git`, and returns the resulting artifact's bytes. Skips by panicking with a clear message if `git` is
+/// not on `PATH` — every CI runner this suite proves itself on has `git` (RFC 022 handoff §0), so this is
+/// not an additional, optional dependency for this suite in practice.
+fn empty_git_artifact() -> Vec<u8> {
+    assert!(git_available(), "git must be on PATH for this test suite");
+    let dir = empty_git_repo();
+    let artifact = dir.0.join("a.ir");
+    let out = Command::new(bin())
+        .args(["decode", "git"])
+        .arg(dir.path())
+        .arg("--out")
+        .arg(&artifact)
+        .output()
+        .expect("run brygge decode git");
+    assert!(out.status.success(), "decode failed: {out:?}");
+    std::fs::read(&artifact).unwrap()
+}
+
+fn empty_git_repo() -> ScratchDir {
+    let dir = ScratchDir::new("minimal-git-src");
+    let repo = dir.path();
+    let git = |args: &[&str]| {
+        let status = Command::new("git")
+            .current_dir(repo)
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "A U Thor")
+            .env("GIT_AUTHOR_EMAIL", "author@example.com")
+            .env("GIT_AUTHOR_DATE", "2005-04-07T22:13:13 +0000")
+            .env("GIT_COMMITTER_NAME", "C O Mitter")
+            .env("GIT_COMMITTER_EMAIL", "committer@example.com")
+            .env("GIT_COMMITTER_DATE", "2005-04-07T22:13:13 +0000")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .status()
+            .expect("run git");
+        assert!(status.success(), "git {args:?} failed");
+    };
+    git(&["init", "-q", "--initial-branch=main"]);
+    std::fs::write(repo.join("a.txt"), "one\n").unwrap();
+    git(&["add", "-A"]);
+    git(&["-c", "commit.gpgsign=false", "commit", "-q", "-m", "c1"]);
+    dir
+}
+
+// ---- `verify --against-source`, stopped: nothing is ever registered, so the sentence never appears ----
+
+fn run_verify_stopped_case(stop: impl FnOnce(u32)) {
+    let scratch = ScratchDir::new("stopped-verify");
+    let dump = scratch.path().join("dump.svndump");
+    std::fs::write(&dump, svn_dump_fixture()).unwrap();
+    let artifact = decode_big_artifact(scratch.path(), &dump);
+
+    let mut cmd = Command::new(bin());
+    cmd.args(["verify"])
+        .arg(&artifact)
+        .arg("--against-source")
+        .arg(&dump);
+    let mut running = spawn_piped(cmd);
+
+    // Nothing `verify --against-source` ever does is registered with the watchdog (its own re-decode
+    // spills through the same already-exempt content-store spill file `decode` itself uses, and it
+    // writes no artifact of its own at all — see the request's evidence plan) — so there is no
+    // registered path to poll for, the way every other case above does. The re-decode of the same
+    // 40×4 MiB fixture is slow enough that a short, fixed wait reliably lands the stop while it is
+    // still running; `try_wait` (never the process-name scan R-1 uses for a *uniquely named copy*,
+    // which this case does not use) proves it had not already finished on its own, so the later
+    // assertion that no sentence appears is not vacuous.
+    thread::sleep(Duration::from_millis(300));
+    assert_eq!(
+        running.child.try_wait().unwrap(),
+        None,
+        "verify --against-source finished before the stop was even sent; this case would be vacuous"
+    );
+
+    let stderr = stop_and_collect_stderr_generic(running, stop);
+
+    assert!(
+        !stderr.contains("interrupted:"),
+        "verify --against-source registers nothing, so no watchdog sentence should ever appear: {stderr}"
+    );
+    log_line(&format!(
+        "stop_integration: verify --against-source stopped; stderr was: {stderr:?}"
+    ));
+}
+
+#[cfg(unix)]
+#[test]
+fn verify_against_source_stopped_with_sigint_prints_no_sentence() {
+    run_verify_stopped_case(stop_unix);
+}
+
+#[cfg(windows)]
+#[test]
+fn verify_against_source_stopped_with_taskkill_prints_no_sentence() {
+    run_verify_stopped_case(stop_windows);
+}
+
+// ---- D-4: a planted leftover from another pid is named, and left in place (handoff §1, level 2) --------
+
+#[test]
+fn a_planted_leftover_from_another_pid_is_named_and_left_in_place() {
+    let scratch = ScratchDir::new("d4-leftover");
+    let other_pid = std::process::id().wrapping_add(1).max(1);
+    let leftover = scratch.path().join(format!(".x.ir.brygge-tmp-{other_pid}"));
+    std::fs::write(&leftover, b"leftover content").unwrap();
+
+    let artifact = scratch.path().join("in.ir");
+    std::fs::write(&artifact, empty_git_artifact()).unwrap();
+    let plugin = test_plugin_bin();
+    install_transform_plugin(scratch.path(), "quick", &plugin);
+    let out = scratch.path().join("out.ir");
+
+    let output = Command::new(bin())
+        .args(["transform", "quick"])
+        .arg(&artifact)
+        .arg("--out")
+        .arg(&out)
+        .env("PATH", scratch.path())
+        .output()
+        .expect("run brygge transform");
+    assert!(output.status.success(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    let expected_prefix = format!(
+        "found {} ({}), a temporary file of brygge process {other_pid}; if no brygge is running, \
+         remove it with: ",
+        leftover.display(),
+        "leftover content".len()
+    );
+    assert!(
+        stderr.contains(&expected_prefix),
+        "D-4's exact notice must appear: {stderr}"
+    );
+    if cfg!(windows) {
+        assert!(
+            stderr.contains(&format!("del {}", leftover.display())),
+            "{stderr}"
+        );
+    } else {
+        assert!(
+            stderr.contains(&format!("rm {}", leftover.display())),
+            "{stderr}"
+        );
+    }
+    // D-4 never deletes: the planted leftover is still exactly where it was.
+    assert!(leftover.exists());
+    assert_eq!(std::fs::read(&leftover).unwrap(), b"leftover content");
+}

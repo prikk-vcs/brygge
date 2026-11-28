@@ -1,13 +1,15 @@
-//! The watchdog (RFC 022 D-1/D-2/D-3, refined D-1a): a clean stop without a signal handler, `std` only,
-//! and no `unsafe` (the workspace forbids it).
+//! The watchdog (RFC 022 D-1/D-2/D-3/D-4, refined D-1a): a clean stop without a signal handler, `std`
+//! only, and no `unsafe` (the workspace forbids it).
 //!
 //! **Incident 094:** a pre-incident draft spawned [`std::env::current_exe`] from inside a function unit
 //! tests called in-process. Under `cargo test`, `current_exe()` resolves to the *test harness*, which has
 //! no notion of this crate's marker and simply reran its whole default test suite — a fork bomb that hung
-//! the owner's machine twice. This batch (W0) builds the real, non-test [`Watchdog::start`] onto the
-//! guards W0a already put in place (`may_spawn`, the `cfg(test)` `start`), plus the design-level guard
-//! that closes the hole those two alone cannot: **only [`crate::main`] ever calls [`Watchdog::start`]**,
-//! never a command function a unit test can call directly.
+//! the owner's machine twice. Batch W0 built the real, non-test [`Watchdog::start`] onto the guards W0a
+//! already put in place (`may_spawn`, the `cfg(test)` `start`), plus the design-level guard that closes
+//! the hole those two alone cannot: **only [`crate::main`] ever calls [`Watchdog::start`]**, never a
+//! command function a unit test can call directly. This batch (W1) extends the same design to every
+//! writing command, widens D-3 to directories, and adds D-4's leftover scan; nothing about (a)-(d) below
+//! changes.
 //!
 //! - **(a) Only `main` starts a watchdog.** [`Guard`] is what every command function receives instead;
 //!   a unit test always passes [`Guard::disabled`], which can never start a process no matter how the
@@ -24,14 +26,29 @@
 //! and "less is more" design (review 207, correction `1cf6df0`).
 //!
 //! **The protocol** (one line per message, `\n`-terminated, written by brygge to the watchdog's stdin):
-//! `temp <path>` or `done <path>`, where `<path>` is percent-encoded with
-//! [`display::machine_value`]/[`display::machine_decode_bytes`] — "one encoding serves both" the
-//! machine-output format and this protocol (RFC 022 D-1). A line that does not parse is refused: skipped,
-//! and the state it would have changed is left untouched.
+//! `temp <path>` (a file), `tempdir <path>` (a directory, W1), or `done <path>` (either kind), where
+//! `<path>` is percent-encoded with [`display::machine_value`]/[`display::machine_decode_bytes`] — "one
+//! encoding serves both" the machine-output format and this protocol (RFC 022 D-1). A line that does not
+//! parse is refused: skipped, and the state it would have changed is left untouched.
 //!
 //! **The marker** (`BRYGGE_INTERNAL_WATCHDOG=<pid>`) carries brygge's own process id — not a fixed
 //! constant — because `std` has no portable way for a child to learn its parent's pid without `unsafe`.
 //! D-3's removal-safety check matches a registered path's temporary-name suffix against exactly this pid.
+//!
+//! **D-3, widened (W1):** a registered path is now either a file or a directory, told apart at
+//! registration time (the `temp`/`tempdir` verb above), never guessed from its name — the same name
+//! scheme (`<name>.partial-<pid>-<n>`) is used by `encode git` for both a directory (the partial
+//! repository) and a file (its report's temporary sibling), so the actual on-disk type is checked
+//! against the *registered* kind, and either mismatch (a file where a directory was registered, or the
+//! reverse) is refused, exactly as a symbolic link always is. **A directory is removed only once it has
+//! stopped changing** ([`stops_changing`]): unchanged for at least one second, checked for at most
+//! thirty — a tree still being written is left alone and named instead, never removed out from under a
+//! write that is still in progress.
+//!
+//! **D-4 (W1):** before writing, `decode`, `encode git`, `transform` and the built-in `transform authors`
+//! scan their output directory, one level deep, for brygge's own temporary forms carrying a *different*
+//! process id, and name each one on stderr ([`scan_for_leftovers`]) — purely informational, and it never
+//! deletes anything.
 //!
 //! When the pipe closes, brygge has ended, however it ended: Ctrl-C, `SIGTERM`, a closed terminal, a
 //! panic, an abort, the out-of-memory killer, or `kill -9` of brygge itself. The watchdog then removes
@@ -43,8 +60,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin};
 use std::sync::mpsc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use crate::cli::Command;
 use crate::{display, exit, output};
 
 /// The environment variable that marks brygge's own internal watchdog entry. Its value is the decoding
@@ -69,6 +87,15 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(2);
 #[cfg_attr(test, allow(dead_code))]
 const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
 
+/// D-3's "stops changing" rule (W1): a directory is removed only once it has looked unchanged for this
+/// long, continuously.
+const DIR_STABLE_IDLE: Duration = Duration::from_secs(1);
+/// D-3's ceiling (W1): the watchdog never waits longer than this for one directory to stop changing — past
+/// it, the directory is left alone and named instead of removed.
+const DIR_STABLE_CEILING: Duration = Duration::from_secs(30);
+/// How often the real wait polls the directory while waiting for it to stop changing.
+const DIR_STABLE_POLL_INTERVAL: Duration = Duration::from_millis(200);
+
 /// P-1(b): may this process start a watchdog? `false` whenever [`MARKER_ENV`] is already present in its
 /// own environment — meaning this process either *is* a watchdog, or was started by one (the marker is
 /// inherited by every child unless a caller deliberately clears it, which nothing in this crate does).
@@ -85,6 +112,33 @@ fn may_spawn() -> bool {
 /// environment — it exercises this pure function instead, which `may_spawn` is the only caller of.
 fn is_unmarked(marker: Option<std::ffi::OsString>) -> bool {
     marker.is_none()
+}
+
+/// D-7/§1 (W1): does `cmd` need a clean-stop watchdog at all? `true` for exactly the four writing forms —
+/// `decode`, `encode git`, `transform`, and the built-in `transform authors` (which shares `transform`'s
+/// own temp-file convention and so carries the identical risk, even though it is its own [`Command`]
+/// variant) — plus `verify` only when `--against-source` is given (the only case in which it re-derives
+/// anything at all; `--against-target` alone re-decodes only through the same already-exempt spill file
+/// `decode` itself uses, and registers nothing — see the request's evidence plan). Every other command
+/// is read-only with respect to this process's own temporary artifacts and starts no watchdog: `inspect`,
+/// `verify` without `--against-source`, `encode <target>` and `encode --list`, `transform --list`,
+/// `--help`, and `--version`. A pure function of the already-parsed command, with no I/O of its own, so a
+/// test can prove every arm without touching a real environment or filesystem.
+#[must_use]
+pub fn command_needs_watchdog(cmd: &Command) -> bool {
+    matches!(
+        cmd,
+        Command::Decode { .. }
+            | Command::EncodeGit { .. }
+            | Command::Transform { .. }
+            | Command::TransformAuthors { .. }
+    ) || matches!(
+        cmd,
+        Command::Verify {
+            against_source: Some(_),
+            ..
+        }
+    )
 }
 
 /// What a command receives instead of ever being able to start a watchdog itself (D-1a(a)). Only
@@ -106,16 +160,25 @@ impl Guard {
         Guard::Disabled
     }
 
-    /// Tell the watchdog that `path` now exists and, if brygge dies before [`release`](Self::release) is
-    /// called for it, should be removed. A no-op on [`Disabled`](Guard::Disabled).
+    /// Tell the watchdog that the *file* at `path` now exists and, if brygge dies before
+    /// [`release`](Self::release) is called for it, should be removed. A no-op on
+    /// [`Disabled`](Guard::Disabled).
     pub fn register(&mut self, path: &Path) {
         if let Guard::Active(w) = self {
             w.register(path);
         }
     }
 
-    /// Tell the watchdog that `path` is safely in its final place (or already removed) and no longer
-    /// needs protecting. A no-op on [`Disabled`](Guard::Disabled).
+    /// As [`register`](Self::register), for a *directory* that should be removed as a whole, only once
+    /// it has stopped changing (D-3, W1). A no-op on [`Disabled`](Guard::Disabled).
+    pub fn register_dir(&mut self, path: &Path) {
+        if let Guard::Active(w) = self {
+            w.register_dir(path);
+        }
+    }
+
+    /// Tell the watchdog that `path` (file or directory) is safely in its final place (or already
+    /// removed) and no longer needs protecting. A no-op on [`Disabled`](Guard::Disabled).
     pub fn release(&mut self, path: &Path) {
         if let Guard::Active(w) = self {
             w.release(path);
@@ -211,20 +274,30 @@ impl Watchdog {
         })
     }
 
-    /// Tell the watchdog that `path` now exists and, if brygge dies before [`release`] is called for it,
-    /// should be removed. R-4: when `path` cannot be registered at all (Windows only — see
+    /// Tell the watchdog that the file at `path` now exists and, if brygge dies before [`release`] is
+    /// called for it, should be removed. R-4: when `path` cannot be registered at all (Windows only — see
     /// [`encode_path`]), nothing is sent, and the one-line notice is printed instead; the write itself is
     /// unaffected, only this one file's clean-stop safety net is missing.
     pub fn register(&mut self, path: &Path) {
-        match registration_line_or_notice(path) {
+        self.register_as("temp", path);
+    }
+
+    /// As [`register`](Self::register), for a directory (W1).
+    pub fn register_dir(&mut self, path: &Path) {
+        self.register_as("tempdir", path);
+    }
+
+    fn register_as(&mut self, verb: &str, path: &Path) {
+        match registration_line_or_notice(verb, path) {
             Ok(line) => self.write_line(&line),
             Err(notice) => output::stderr(&notice),
         }
     }
 
     /// Tell the watchdog that `path` is safely in its final place (or already removed) and no longer
-    /// needs protecting. A no-op for a `path` that [`register`](Self::register) never managed to send in
-    /// the first place (R-4): there is nothing registered to release.
+    /// needs protecting. A no-op for a `path` that [`register`](Self::register)/
+    /// [`register_dir`](Self::register_dir) never managed to send in the first place (R-4): there is
+    /// nothing registered to release.
     pub fn release(&mut self, path: &Path) {
         if let Some(encoded) = encode_path(path) {
             self.write_line(&format!("done {encoded}\n"));
@@ -298,14 +371,14 @@ fn await_ready(
     }
 }
 
-/// What [`Watchdog::register`] should send for `path`: the `temp` line to write, or — only possible on
-/// Windows, where [`encode_path`] can fail — the one-line stderr notice that this path cannot be
-/// protected. Split out from `register` itself (R-4) so the decision is testable without a real pipe or
-/// child process, the same pure/impure split [`is_unmarked`]/[`may_spawn`] and
-/// [`classify_internal_entry`] use.
-fn registration_line_or_notice(path: &Path) -> Result<String, String> {
+/// What [`Watchdog::register_as`] should send for `path` under `verb` (`"temp"` or `"tempdir"`): the line
+/// to write, or — only possible on Windows, where [`encode_path`] can fail — the one-line stderr notice
+/// that this path cannot be protected. Split out (R-4) so the decision is testable without a real pipe or
+/// child process, the same pure/impure split [`is_unmarked`]/[`may_spawn`] and [`classify_internal_entry`]
+/// use.
+fn registration_line_or_notice(verb: &str, path: &Path) -> Result<String, String> {
     match encode_path(path) {
-        Some(encoded) => Ok(format!("temp {encoded}\n")),
+        Some(encoded) => Ok(format!("{verb} {encoded}\n")),
         None => Err(format!(
             "the watchdog cannot protect {}: its path is not valid Unicode, so this run continues \
              without a clean-stop safety net for it",
@@ -350,13 +423,24 @@ fn decode_path(s: &str) -> Option<PathBuf> {
     String::from_utf8(bytes).ok().map(PathBuf::from)
 }
 
+/// Which of the two D-3 removal rules a registered path gets (W1): told apart at registration time by
+/// the verb the protocol line carried (`temp` vs `tempdir`), never guessed from the path's name — see the
+/// module doc's note on `encode git`'s name collision between its partial repository (a directory) and
+/// its report's temporary sibling (a file), which share one naming scheme.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    File,
+    Dir,
+}
+
 /// One parsed protocol line (module doc). `None` for anything else: an unknown verb, a missing path, or
 /// a path that does not decode.
 fn parse_line(line: &str) -> Option<Message> {
     let (verb, rest) = line.split_once(' ')?;
     let path = decode_path(rest)?;
     match verb {
-        "temp" => Some(Message::Temp(path)),
+        "temp" => Some(Message::Temp(path, Kind::File)),
+        "tempdir" => Some(Message::Temp(path, Kind::Dir)),
         "done" => Some(Message::Done(path)),
         _ => None,
     }
@@ -364,7 +448,7 @@ fn parse_line(line: &str) -> Option<Message> {
 
 #[derive(Debug, PartialEq, Eq)]
 enum Message {
-    Temp(PathBuf),
+    Temp(PathBuf, Kind),
     Done(PathBuf),
 }
 
@@ -373,6 +457,11 @@ enum Message {
 /// dispatch). If it is not (the marker is absent), returns `None` so `main` can go on to parse ordinary
 /// arguments — the only way this function can affect a normal invocation at all is by checking one
 /// environment variable. Called from `main`, **before** argument parsing.
+///
+/// This is brygge's own internal entry point, not part of the command surface: it is reached only when
+/// [`MARKER_ENV`] is already set in the process's own environment, which nothing but [`Watchdog::start`]
+/// ever sets, on the one child it spawns — never from a shell, never documented as a command, and never
+/// reachable through `--help`. It is the one site `tools/check-self-exec.sh` lists for this crate.
 #[must_use]
 pub fn maybe_run_internal_entry() -> Option<i32> {
     // R-3: `var_os`, never `var`. `var(...).ok()` turns a *present but non-UTF-8* marker into `None`,
@@ -421,11 +510,15 @@ fn run_watchdog_loop(pid: u32) -> i32 {
     let _ = output::stdout(&format!("ready {own_pid}\n"));
     let stdin = std::io::stdin();
     let lines = stdin.lock().lines().map_while(Result::ok);
-    let (removed, not_removed, malformed) =
-        apply_registrations(lines, pid, |p: &Path| std::fs::remove_file(p));
-    // R-2: a skipped `done` is harmless, but a skipped `temp` leaves a file the watchdog was never told
-    // to protect, with no visible sign anything went wrong — so a malformed line is counted and
-    // reported, never merely dropped in silence.
+    let (removed, not_removed, malformed) = apply_registrations(
+        lines,
+        pid,
+        |p: &Path| std::fs::remove_file(p),
+        remove_dir_once_stable,
+    );
+    // R-2: a skipped `done` is harmless, but a skipped `temp`/`tempdir` leaves a path the watchdog was
+    // never told to protect, with no visible sign anything went wrong — so a malformed line is counted
+    // and reported, never merely dropped in silence.
     if let Some(notice) = malformed_registrations_notice(malformed) {
         output::stderr(&notice);
     }
@@ -448,23 +541,263 @@ fn malformed_registrations_notice(malformed: usize) -> Option<String> {
     }
 }
 
-/// The testable core of [`run_watchdog_loop`], over any line source and any removal function (so a test
+/// The real [`Dir`](Kind::Dir) removal function `run_watchdog_loop` hands to [`apply_registrations`]:
+/// waits for `path` to stop changing ([`stops_changing`], over the real clock and a real recursive
+/// snapshot — [`wait_for_dir_to_stop_changing`]), then removes it with [`std::fs::remove_dir_all`], which
+/// does not follow a symbolic link found *inside* the tree (fixed in Rust 1.58.1, below this project's
+/// MSRV, so no extra guard is needed for that here — the registered path itself is checked separately, by
+/// [`why_not_removable`], before this is ever called).
+fn remove_dir_once_stable(path: &Path) -> DirOutcome {
+    match std::fs::symlink_metadata(path) {
+        Err(e) if e.kind() == ErrorKind::NotFound => return DirOutcome::AlreadyGone,
+        Err(e) => return DirOutcome::Error(e.to_string()),
+        Ok(_) => {}
+    }
+    if !wait_for_dir_to_stop_changing(path) {
+        return DirOutcome::StillChanging;
+    }
+    match std::fs::remove_dir_all(path) {
+        Ok(()) => DirOutcome::Removed,
+        Err(e) if e.kind() == ErrorKind::NotFound => DirOutcome::AlreadyGone,
+        Err(e) => DirOutcome::Error(e.to_string()),
+    }
+}
+
+/// What trying to remove a registered directory came to — the production
+/// [`remove_dir_once_stable`]'s own return type, and what a test can inject directly into
+/// [`apply_registrations`] without any real waiting or filesystem state.
+#[derive(Debug, PartialEq, Eq)]
+enum DirOutcome {
+    /// Removed, just now.
+    Removed,
+    /// Already gone before this run even looked (not a failure — there is simply nothing left to do).
+    AlreadyGone,
+    /// Still changing after the full ceiling; left in place.
+    StillChanging,
+    /// Some other I/O error, named.
+    Error(String),
+}
+
+/// A cheap, best-effort summary of a directory tree's contents, recursive but never following a symbolic
+/// link found inside it (the same "never followed" rule [`why_not_removable`] applies to the registered
+/// path itself): the number of entries, their total byte length, and the newest modification time seen.
+/// Equality is all [`stops_changing`] needs — two equal snapshots mean "no visible change since the last
+/// check" — so this never needs to be exact or complete, only consistent from one call to the next.
+/// Best-effort throughout: an entry or a subdirectory that cannot be read (removed mid-scan, or a
+/// permission problem) is simply skipped, never treated as a reason to fail the check.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct DirSnapshot {
+    entries: u64,
+    total_bytes: u64,
+    newest_mtime: Option<std::time::SystemTime>,
+}
+
+fn dir_snapshot(root: &Path) -> DirSnapshot {
+    let mut snap = DirSnapshot::default();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(read) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in read.flatten() {
+            let path = entry.path();
+            let Ok(meta) = std::fs::symlink_metadata(&path) else {
+                continue;
+            };
+            snap.entries += 1;
+            if meta.file_type().is_symlink() {
+                // Never followed: its own target is not this tree's content.
+            } else if meta.is_dir() {
+                stack.push(path);
+            } else {
+                snap.total_bytes += meta.len();
+            }
+            if let Ok(m) = meta.modified() {
+                snap.newest_mtime = Some(snap.newest_mtime.map_or(m, |cur| cur.max(m)));
+            }
+        }
+    }
+    snap
+}
+
+/// D-3's "stops changing" rule (handoff §1/§2), over an injected clock and snapshot so a test can prove
+/// every one of its three clauses — "a tree that changes is not removed and is named", "a tree still for
+/// one second is removed", "the thirty-second ceiling" — with **no real wall-clock seconds spent at all**.
+///
+/// `initial` is the first `(timestamp_ms, snapshot)` sample, already taken; `poll` is called for every
+/// sample after that. In production ([`wait_for_dir_to_stop_changing`]), `poll` sleeps for one tick and
+/// takes a fresh [`DirSnapshot`]; a test instead pops from a fixed, pre-built sequence of fake timestamps
+/// and fake snapshots, so no real time passes and no real directory is touched. `S`'s equality is all this
+/// needs: two equal snapshots mean "no visible change between the two samples".
+///
+/// Removes (returns `true`) once the snapshot has read the same for at least `idle_ms` of elapsed time,
+/// continuously; gives up (returns `false`) once `ceiling_ms` has elapsed since `initial`'s own timestamp,
+/// whichever comes first.
+fn stops_changing<S: PartialEq>(
+    initial: (u64, S),
+    mut poll: impl FnMut() -> (u64, S),
+    idle_ms: u64,
+    ceiling_ms: u64,
+) -> bool {
+    let (start, mut last) = initial;
+    let mut last_changed_at = start;
+    let mut now = start;
+    loop {
+        if now.saturating_sub(last_changed_at) >= idle_ms {
+            return true;
+        }
+        if now.saturating_sub(start) >= ceiling_ms {
+            return false;
+        }
+        let (t, snap) = poll();
+        now = t;
+        if snap != last {
+            last = snap;
+            last_changed_at = now;
+        }
+    }
+}
+
+/// The real, impure wrapper around [`stops_changing`]: a real [`Instant`]-based clock (converted to
+/// milliseconds since this wait began) and a real, recursive [`dir_snapshot`] of `path`, polled every
+/// [`DIR_STABLE_POLL_INTERVAL`], for at most [`DIR_STABLE_CEILING`], requiring [`DIR_STABLE_IDLE`] of
+/// continuous quiet before it is willing to call `path` safe to remove.
+fn wait_for_dir_to_stop_changing(path: &Path) -> bool {
+    let clock_start = Instant::now();
+    let now_ms = || {
+        u64::try_from(Instant::now().duration_since(clock_start).as_millis()).unwrap_or(u64::MAX)
+    };
+    let initial = (now_ms(), dir_snapshot(path));
+    stops_changing(
+        initial,
+        || {
+            thread::sleep(DIR_STABLE_POLL_INTERVAL);
+            (now_ms(), dir_snapshot(path))
+        },
+        u64::try_from(DIR_STABLE_IDLE.as_millis()).unwrap_or(u64::MAX),
+        u64::try_from(DIR_STABLE_CEILING.as_millis()).unwrap_or(u64::MAX),
+    )
+}
+
+/// One of brygge's own temporary-name forms, parsed from a bare file name (never a full path — both
+/// [`why_not_removable`] and [`scan_for_leftovers`] call this only after `file_name()`), returning the
+/// process id the name itself carries, or `None` for anything that merely *resembles* one of these forms
+/// without actually matching it (D-4: "never names a path that only resembles a form").
+///
+/// Recognizes every writing command's own convention, as the actual code builds them (never a guessed or
+/// invented name):
+/// - `decode`'s/`verify`'s atomic-write temp artifact (`commands.rs::atomic_write`):
+///   `.<name>.brygge-tmp-<pid>`;
+/// - `transform`'s (and the built-in `transform authors`'s) own scratch output
+///   (`commands.rs::create_transform_temp`) — a **file**, despite the handoff's own checklist grouping it
+///   with the directory forms; grounded here against the real code, not the checklist's label:
+///   `.brygge-transform-<pid>-<nanos>-<attempt>`;
+/// - `encode git`'s partial output repository (a directory) or its report's temporary sibling (a file) —
+///   the two share one scheme, and are told apart only by what is registered and what is actually on
+///   disk, never by the name alone: `<name>.partial-<pid>-<attempt>`.
+fn classify_temp_name(name: &str) -> Option<u32> {
+    parse_atomic_write_name(name)
+        .or_else(|| parse_transform_scratch_name(name))
+        .or_else(|| parse_encode_git_partial_name(name))
+}
+
+fn parse_decimal(s: &str) -> Option<u32> {
+    if s.is_empty() || !s.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    s.parse::<u32>().ok()
+}
+
+fn parse_atomic_write_name(name: &str) -> Option<u32> {
+    let body = name.strip_prefix('.')?;
+    let (base, pid_str) = body.rsplit_once(".brygge-tmp-")?;
+    if base.is_empty() {
+        return None;
+    }
+    parse_decimal(pid_str)
+}
+
+fn parse_transform_scratch_name(name: &str) -> Option<u32> {
+    let rest = name.strip_prefix(".brygge-transform-")?;
+    let mut parts = rest.split('-');
+    let pid_str = parts.next()?;
+    let nanos_str = parts.next()?;
+    let attempt_str = parts.next()?;
+    if parts.next().is_some() {
+        return None; // exactly three numeric groups — pid, nanos, attempt — nothing more.
+    }
+    if nanos_str.is_empty() || !nanos_str.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    if attempt_str.is_empty() || !attempt_str.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    parse_decimal(pid_str)
+}
+
+fn parse_encode_git_partial_name(name: &str) -> Option<u32> {
+    let (base, rest) = name.rsplit_once(".partial-")?;
+    if base.is_empty() {
+        return None;
+    }
+    let (pid_str, attempt_str) = rest.split_once('-')?;
+    if attempt_str.is_empty() || !attempt_str.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    parse_decimal(pid_str)
+}
+
+/// D-3: may the watchdog remove `path`, which it must still believe is registered by `pid` as `kind`?
+/// `None` means yes; `Some(reason)` names why not — and `path` is left exactly as it was.
+///
+/// W1: `kind` is told apart from the registered verb, never guessed — `path`'s name is still checked
+/// against [`classify_temp_name`] (defense in depth: a registration this process did not actually send
+/// can never be acted on just because it arrived on the pipe), and then its *actual* on-disk type is
+/// checked against `kind`: a registered directory that is actually a file, or the reverse, is refused —
+/// exactly as a symbolic link always is.
+fn why_not_removable(path: &Path, pid: u32, kind: Kind) -> Option<String> {
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+        return Some("its name is not valid Unicode".to_string());
+    };
+    if classify_temp_name(name) != Some(pid) {
+        return Some(format!(
+            "{name} is not one of brygge's own temporary names for process {pid}"
+        ));
+    }
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            Some("a symbolic link, never followed".to_string())
+        }
+        Ok(meta) => match kind {
+            Kind::File if meta.is_file() => None,
+            Kind::File => Some("not a regular file".to_string()),
+            Kind::Dir if meta.is_dir() => None,
+            Kind::Dir => Some("not a directory".to_string()),
+        },
+        Err(e) if e.kind() == ErrorKind::NotFound => None,
+        Err(e) => Some(format!("its state cannot be checked ({e})")),
+    }
+}
+
+/// The testable core of [`run_watchdog_loop`], over any line source and any removal functions (so a test
 /// can observe exactly what would have been removed without touching the real filesystem, or can plant a
-/// fake failure). Replays `lines` into the registered-paths list exactly as the real loop does (a
-/// malformed line is refused: skipped, nothing it named is touched, but counted — R-2), then applies D-3
-/// to whatever is still registered when the source ends, returning the paths actually removed, the paths
-/// left alone with why (both in registration order), and how many lines could not be read at all.
+/// fake failure, or a fake "still changing" directory outcome, with no real waiting). Replays `lines` into
+/// the registered-paths list exactly as the real loop does (a malformed line is refused: skipped, nothing
+/// it named is touched, but counted — R-2), then applies D-3 to whatever is still registered when the
+/// source ends, returning the paths actually removed, the paths left alone with why (both in registration
+/// order), and how many lines could not be read at all.
 fn apply_registrations(
     lines: impl Iterator<Item = String>,
     pid: u32,
-    mut remove: impl FnMut(&Path) -> std::io::Result<()>,
+    mut remove_file: impl FnMut(&Path) -> std::io::Result<()>,
+    mut remove_dir: impl FnMut(&Path) -> DirOutcome,
 ) -> (Vec<PathBuf>, Vec<(PathBuf, String)>, usize) {
-    let mut registered: Vec<PathBuf> = Vec::new();
+    let mut registered: Vec<(PathBuf, Kind)> = Vec::new();
     let mut malformed = 0usize;
     for line in lines {
         match parse_line(&line) {
-            Some(Message::Temp(path)) => registered.push(path),
-            Some(Message::Done(path)) => registered.retain(|p| p != &path),
+            Some(Message::Temp(path, kind)) => registered.push((path, kind)),
+            Some(Message::Done(path)) => registered.retain(|(p, _)| p != &path),
             // R-2: a malformed line is still refused — skipped, nothing it named is touched — but it
             // can only come from a brygge bug (brygge itself always writes well-formed lines), so it is
             // counted instead of vanishing without a trace.
@@ -474,45 +807,31 @@ fn apply_registrations(
 
     let mut removed = Vec::new();
     let mut not_removed = Vec::new();
-    for path in registered {
-        match why_not_removable(&path, pid) {
-            None => match remove(&path) {
-                Ok(()) => removed.push(path),
-                Err(e) if e.kind() == ErrorKind::NotFound => {}
-                Err(e) => not_removed.push((path, e.to_string())),
-            },
+    for (path, kind) in registered {
+        match why_not_removable(&path, pid, kind) {
             Some(reason) => not_removed.push((path, reason)),
+            None => match kind {
+                Kind::File => match remove_file(&path) {
+                    Ok(()) => removed.push(path),
+                    Err(e) if e.kind() == ErrorKind::NotFound => {}
+                    Err(e) => not_removed.push((path, e.to_string())),
+                },
+                Kind::Dir => match remove_dir(&path) {
+                    DirOutcome::Removed => removed.push(path),
+                    DirOutcome::AlreadyGone => {}
+                    DirOutcome::StillChanging => not_removed.push((
+                        path,
+                        format!(
+                            "still changing after waiting up to {}s; left in place",
+                            DIR_STABLE_CEILING.as_secs()
+                        ),
+                    )),
+                    DirOutcome::Error(e) => not_removed.push((path, e)),
+                },
+            },
         }
     }
     (removed, not_removed, malformed)
-}
-
-/// D-3: may the watchdog remove `path`, which it must still believe is registered by `pid`? `None` means
-/// yes; `Some(reason)` names why not — and `path` is left exactly as it was.
-fn why_not_removable(path: &Path, pid: u32) -> Option<String> {
-    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-        return Some("its name is not valid Unicode".to_string());
-    };
-    let suffix = format!(".brygge-tmp-{pid}");
-    // Brygge's own temporary-artifact form (`commands.rs`'s `atomic_write`): a leading dot, the suffix
-    // exactly (never a different pid, and never a mere prefix of a longer suffix: `ends_with` compares
-    // the literal trailing bytes, so pid `12`'s suffix never matches a name actually suffixed `-123`),
-    // and at least one character of the original name in between.
-    if !(name.starts_with('.') && name.len() > 1 + suffix.len() && name.ends_with(suffix.as_str()))
-    {
-        return Some(format!(
-            "{name} is not one of brygge's own temporary names for process {pid}"
-        ));
-    }
-    match std::fs::symlink_metadata(path) {
-        Ok(meta) if meta.file_type().is_symlink() => {
-            Some("a symbolic link, never followed".to_string())
-        }
-        Ok(meta) if meta.is_file() => None,
-        Ok(_) => Some("not a regular file".to_string()),
-        Err(e) if e.kind() == ErrorKind::NotFound => None,
-        Err(e) => Some(format!("its state cannot be checked ({e})")),
-    }
 }
 
 /// D-2/D-3's one sentence. `removed`/`not_removed` are each in registration order; every path is rendered
@@ -542,6 +861,76 @@ fn sentence(removed: &[PathBuf], not_removed: &[(PathBuf, String)]) -> String {
     }
     s.push_str("; nothing was written");
     s
+}
+
+/// What [`scan_for_leftovers`] found at one path: enough to render [`leftover_notice`] without any
+/// further filesystem access, so the message itself stays testable as a pure function (the same
+/// pure/impure split every other rendering function in this module uses).
+enum LeftoverKind {
+    File { size: u64 },
+    Dir,
+}
+
+/// D-4 (handoff §1/§2): before writing, scan `dir` — the command's own output directory — one level
+/// deep, never recursively, for brygge's own temporary forms ([`classify_temp_name`]) that carry a
+/// process id other than `own_pid` (this run's own), and name each one on stderr. **Purely
+/// informational: this never deletes anything, under any circumstance.** `dir` not existing yet, or not
+/// being readable, is not an error here — there is simply nothing to scan.
+pub fn scan_for_leftovers(dir: &Path, own_pid: u32) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name_str) = name.to_str() else {
+            continue;
+        };
+        let Some(found_pid) = classify_temp_name(name_str) else {
+            continue;
+        };
+        if found_pid == own_pid {
+            continue;
+        }
+        let path = entry.path();
+        let kind = match std::fs::symlink_metadata(&path) {
+            Ok(meta) if meta.is_dir() && !meta.file_type().is_symlink() => LeftoverKind::Dir,
+            Ok(meta) => LeftoverKind::File { size: meta.len() },
+            Err(_) => continue, // gone between the listing and the stat; nothing to report.
+        };
+        output::stderr(&leftover_notice(&path, found_pid, &kind));
+    }
+}
+
+/// The pure half of [`scan_for_leftovers`]'s one message: given a path, the pid it carries, and whether
+/// it is a file (with its size) or a directory, render the exact D-4 line. `path` is rendered through
+/// [`display::human`], the same neutralization every other path gets before it reaches a terminal.
+fn leftover_notice(path: &Path, pid: u32, kind: &LeftoverKind) -> String {
+    let raw = path.display().to_string();
+    let shown = display::human(&raw);
+    match kind {
+        LeftoverKind::File { size } => {
+            let rm = if cfg!(windows) {
+                format!("del {shown}")
+            } else {
+                format!("rm {shown}")
+            };
+            format!(
+                "found {shown} ({size}), a temporary file of brygge process {pid}; if no brygge is \
+                 running, remove it with: {rm}"
+            )
+        }
+        LeftoverKind::Dir => {
+            let rm = if cfg!(windows) {
+                format!("rmdir /s {shown}")
+            } else {
+                format!("rm -r {shown}")
+            };
+            format!(
+                "found {shown}, a temporary directory of brygge process {pid}; if no brygge is \
+                 running, remove it with: {rm}"
+            )
+        }
+    }
 }
 
 #[cfg(test)]

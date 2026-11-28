@@ -45,6 +45,20 @@ brygge verify repo.ir --against-source /path/to/repo
 brygge encode <target> repo.ir                     # through an external encoder plugin
 ```
 
+## If a run is stopped
+
+Every command that writes something (`decode`, `encode git`, `transform`, and `verify --against-source`,
+which re-derives from the source) is watched by a small internal helper for exactly as long as it runs.
+If the command is stopped before it finishes — Ctrl-C, `kill`, a closed terminal, anything short of
+`kill -9`/`taskkill /F` on the helper itself — whatever that command's own temporary file or directory
+was is removed (or, if it is still being written by something else, named instead, never force-removed),
+and brygge prints one line to say so: `interrupted: removed <path>; nothing was written`. Nothing partial
+is ever left where the final artifact or repository was meant to go. The next time you run a writing
+command in the same directory, it first checks for any of its own temporary names left by another brygge
+process (one that was itself killed outright, including its helper) and names what it finds on stderr —
+purely as information, with the exact command to remove it yourself; brygge never deletes it for you. See
+[Machine-readable output](reference/machine-output.md) §4 for the exact exit status a stop leaves behind.
+
 ## Where to go next
 
 - **Importing a repository:** the user guide for your source. It says what is carried, what is not,
