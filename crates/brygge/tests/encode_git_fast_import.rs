@@ -25,6 +25,20 @@ fn scratch_dir(label: &str) -> PathBuf {
     dir
 }
 
+/// P-6 (RFC 022 incident 094): removes `dir` itself — for a path this file got directly from
+/// `scratch_dir(label)`, with no `.join()` onto it.
+fn cleanup_dir(dir: &Path) {
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// P-6 (RFC 022 incident 094): removes the scratch directory that contains `path` — for a path built as
+/// `scratch_dir(label).join(x)` (or a sibling file/dir computed the same way before the scratch dir's own
+/// value was moved elsewhere, e.g. into a decoder's `Source`). Removing the parent removes everything
+/// that label's fixture created there, not just the one entry named here.
+fn cleanup_scratch(path: &Path) {
+    let _ = std::fs::remove_dir_all(path.parent().unwrap_or(path));
+}
+
 fn git_available() -> bool {
     Command::new("git")
         .arg("--version")
@@ -322,6 +336,8 @@ fn the_git_round_trip_reproduces_tree_message_author_and_refs() {
     let report = std::fs::read_to_string(&report_path).unwrap();
     assert!(report.contains("encode_git.commits=4"), "{report}");
     assert!(report.contains("encode_git.tags=1"), "{report}");
+    cleanup_scratch(&artifact);
+    cleanup_scratch(&out);
 }
 
 /// RFC 021, batch G: the full pipeline for a submodule — a real repository decoded, `verify`,
@@ -394,6 +410,8 @@ fn a_submodule_round_trips_through_decode_verify_and_encode_git() {
         report.contains("encode_git.submodules.at_tips=1"),
         "{report}"
     );
+    cleanup_scratch(&artifact);
+    cleanup_scratch(&out);
 }
 
 #[test]
@@ -430,6 +448,8 @@ fn git_interpret_trailers_reads_back_the_block_brygge_wrote() {
     assert!(parsed_text.contains("Brygge-Encoded:"), "{parsed_text}");
     assert!(parsed_text.contains("Brygge-Source-Id:"), "{parsed_text}");
     assert!(parsed_text.contains("Brygge-Artifact:"), "{parsed_text}");
+    cleanup_scratch(&artifact);
+    cleanup_scratch(&out);
 }
 
 // ---- the other sources ---------------------------------------------------------------------------
@@ -495,6 +515,8 @@ fn an_hg_fixture_encodes_into_a_repository_git_accepted() {
         String::from_utf8_lossy(&encoded.stderr)
     );
     assert_eq!(git_out(&out, &["rev-list", "--count", "HEAD"]), "2");
+    cleanup_scratch(&artifact);
+    cleanup_scratch(&out);
 }
 
 fn svn_props(pairs: &[(&str, &str)]) -> Vec<u8> {
@@ -587,6 +609,9 @@ fn an_svn_fixture_with_no_trunk_layout_is_refused_not_silently_lost() {
     );
     let stderr = String::from_utf8_lossy(&result.stderr);
     assert!(stderr.contains("not reachable from any ref"), "{stderr}");
+    cleanup_dir(&dump_dir);
+    cleanup_scratch(&artifact);
+    cleanup_scratch(&out);
 }
 
 fn cvs_single_rev(author: &str, date: &str, log: &str, content: &str) -> Vec<u8> {
@@ -658,6 +683,9 @@ fn a_cvs_fixture_encodes_with_derived_trailers() {
     );
     assert!(message.contains("Brygge-Supplied:"), "{message}");
     assert!(message.contains("committer"), "{message}");
+    cleanup_scratch(&vfile);
+    cleanup_scratch(&artifact);
+    cleanup_scratch(&out);
 }
 
 /// Review 136 F-3 (request 071): a CVS fixture with a branch cut from the main line. `encode git`
@@ -710,6 +738,9 @@ desc\n@@\n\n\n\
     let head = git_out(&out, &["symbolic-ref", "HEAD"]);
     assert_eq!(head, "refs/heads/trunk");
     git_out(&out, &["fsck", "--strict"]);
+    cleanup_scratch(&vfile);
+    cleanup_scratch(&artifact);
+    cleanup_scratch(&out);
 }
 
 // ---- reachability (review 136 F-2) -------------------------------------------------------------------
@@ -756,6 +787,9 @@ fn an_artifact_with_zero_refs_is_refused_not_warned_about() {
     let stderr = String::from_utf8_lossy(&result.stderr);
     assert!(stderr.contains("not reachable from any ref"), "{stderr}");
     assert!(stderr.contains("--reconstruct-refs"), "{stderr}");
+    cleanup_scratch(&vfile);
+    cleanup_scratch(&artifact);
+    cleanup_scratch(&out);
 }
 
 // ---- refusals ---------------------------------------------------------------------------------------
@@ -783,6 +817,8 @@ fn a_corrupted_artifact_is_refused_before_any_output() {
         "nothing must be written at {}",
         out.display()
     );
+    cleanup_scratch(&artifact);
+    cleanup_scratch(&out);
 }
 
 #[test]
@@ -797,6 +833,8 @@ fn an_existing_out_directory_is_refused() {
         "{:?}",
         result
     );
+    cleanup_dir(&out);
+    cleanup_scratch(&artifact);
 }
 
 /// Review 136 F-4: `<dir>.brygge-report` is refused up front, exactly as `<dir>` is, rather than
@@ -824,6 +862,8 @@ fn an_existing_report_path_is_refused() {
         b"pre-existing report",
         "the pre-existing report must be left untouched"
     );
+    cleanup_dir(&dir);
+    cleanup_scratch(&artifact);
 }
 
 // ---- determinism (D-5) -------------------------------------------------------------------------------
@@ -853,6 +893,9 @@ fn encoding_the_same_fixture_twice_gives_byte_identical_refs() {
         &["for-each-ref", "--format=%(objectname) %(refname)"],
     );
     assert_eq!(refs1, refs2);
+    cleanup_scratch(&artifact);
+    cleanup_scratch(&out1);
+    cleanup_scratch(&out2);
 }
 
 #[test]
@@ -904,6 +947,11 @@ fn encoding_under_a_different_home_tz_and_locale_gives_the_same_ids() {
     // The hostile identity must not have leaked into the commit either.
     let author = git_out(&out, &["log", "-1", "--format=%an <%ae>", "main"]);
     assert_ne!(author, "Hostile <hostile@example.com>");
+    cleanup_scratch(&artifact);
+    cleanup_scratch(&baseline);
+    cleanup_dir(&hostile_home);
+    cleanup_dir(&hostile_template);
+    cleanup_scratch(&out);
 }
 
 // ---- review 137 F-7: a many-pair CVS id round-trips through git interpret-trailers --------------------
@@ -994,4 +1042,7 @@ fn a_forty_pair_cvs_changeset_id_round_trips_through_git_interpret_trailers() {
     // broken ones.
     let pair_count = source_id_line.matches(".c@1.1").count();
     assert_eq!(pair_count, 40, "{source_id_line}");
+    cleanup_scratch(&symbol_file);
+    cleanup_scratch(&artifact);
+    cleanup_scratch(&out);
 }

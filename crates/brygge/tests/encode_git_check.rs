@@ -26,6 +26,13 @@ fn scratch_dir(label: &str) -> PathBuf {
     dir
 }
 
+/// P-6 (RFC 022 incident 094): removes the scratch directory that contains `path` — for a path built as
+/// `scratch_dir(label).join(x)`. Removing the parent removes everything that label's fixture created
+/// there, not just the one entry named here.
+fn cleanup_scratch(path: &Path) {
+    let _ = std::fs::remove_dir_all(path.parent().unwrap_or(path));
+}
+
 fn git_available() -> bool {
     Command::new("git")
         .arg("--version")
@@ -219,7 +226,8 @@ fn a_real_encoded_repository_corresponds() {
         stdout.contains("verify.against_target=corresponds"),
         "{stdout}"
     );
-    let _ = std::fs::remove_dir_all(&repo);
+    cleanup_scratch(&artifact);
+    cleanup_scratch(&repo);
 }
 
 #[test]
@@ -261,8 +269,9 @@ fn an_amended_commit_message_does_not_correspond() {
         "{stdout}"
     );
     assert_eq!(out.status.code(), Some(50));
-    let _ = std::fs::remove_dir_all(&repo);
-    let _ = std::fs::remove_dir_all(&tampered);
+    cleanup_scratch(&artifact);
+    cleanup_scratch(&repo);
+    cleanup_scratch(&tampered);
 }
 
 /// RFC 021 D-6 (batch G): a submodule's pinned commit is compared like any other entry's state — moving
@@ -339,8 +348,9 @@ fn a_moved_submodule_pointer_does_not_correspond_naming_the_path() {
         "{stdout}"
     );
     assert_eq!(out.status.code(), Some(50));
-    let _ = std::fs::remove_dir_all(&repo);
-    let _ = std::fs::remove_dir_all(&tampered);
+    cleanup_scratch(&artifact);
+    cleanup_scratch(&repo);
+    cleanup_scratch(&tampered);
 }
 
 #[test]
@@ -366,8 +376,9 @@ fn an_added_branch_does_not_correspond_nothing_extra() {
         stdout.contains("extra") || stdout.contains("nothing+extra"),
         "{stdout}"
     );
-    let _ = std::fs::remove_dir_all(&repo);
-    let _ = std::fs::remove_dir_all(&tampered);
+    cleanup_scratch(&artifact);
+    cleanup_scratch(&repo);
+    cleanup_scratch(&tampered);
 }
 
 #[test]
@@ -392,8 +403,9 @@ fn a_moved_tag_does_not_correspond() {
         stdout.contains("verify.against_target=does-not-correspond"),
         "{stdout}"
     );
-    let _ = std::fs::remove_dir_all(&repo);
-    let _ = std::fs::remove_dir_all(&tampered);
+    cleanup_scratch(&artifact);
+    cleanup_scratch(&repo);
+    cleanup_scratch(&tampered);
 }
 
 #[test]
@@ -422,8 +434,9 @@ fn a_changed_head_does_not_correspond() {
         stdout.contains("verify.against_target=does-not-correspond"),
         "{stdout}"
     );
-    let _ = std::fs::remove_dir_all(&repo);
-    let _ = std::fs::remove_dir_all(&tampered);
+    cleanup_scratch(&artifact);
+    cleanup_scratch(&repo);
+    cleanup_scratch(&tampered);
 }
 
 #[test]
@@ -444,4 +457,5 @@ fn against_source_and_against_target_together_is_a_usage_error() {
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("one question per run"), "{stderr}");
+    cleanup_scratch(&artifact);
 }

@@ -25,6 +25,14 @@ fn scratch_dir(label: &str) -> PathBuf {
     dir
 }
 
+/// P-6 (RFC 022 incident 094): removes the scratch directory that contains `path` — for a path built as
+/// `scratch_dir(label).join(x)` (including `build_svn_repo`'s and `build_flat_svn_repo`'s own
+/// `root.join("repo")`). Removing the parent removes everything that label's fixture created there, not
+/// just the one entry named here.
+fn cleanup_scratch(path: &Path) {
+    let _ = std::fs::remove_dir_all(path.parent().unwrap_or(path));
+}
+
 fn git_available() -> bool {
     Command::new("git")
         .arg("--version")
@@ -269,6 +277,9 @@ fn a_flat_svn_repository_with_layout_trunk_dot_encodes_cleanly_to_git() {
         2,
         "expected both commits on the one trunk line"
     );
+    cleanup_scratch(&repo);
+    cleanup_scratch(&artifact);
+    cleanup_scratch(&out);
 }
 
 fn run_encode_git(artifact: &Path, out: &Path) -> std::process::Output {
@@ -353,6 +364,9 @@ fn a_real_svn_repository_with_a_deleted_branch_encodes_with_both_live_and_dead_r
         "git check-ref-format rejected {dead_ref}: {}",
         String::from_utf8_lossy(&check.stderr)
     );
+    cleanup_scratch(&repo);
+    cleanup_scratch(&artifact);
+    cleanup_scratch(&out);
 }
 
 /// Review 147 F-1: `brygge_decode_git`'s `carry_extra_namespaces` must make the check actually *read*
@@ -507,6 +521,9 @@ fn tampering_a_dead_lines_commit_is_caught_by_against_target() {
         report.contains("does-not-correspond") || report.contains("does not correspond"),
         "{report}"
     );
+    cleanup_scratch(&repo);
+    cleanup_scratch(&artifact);
+    cleanup_scratch(&out);
 }
 
 #[test]

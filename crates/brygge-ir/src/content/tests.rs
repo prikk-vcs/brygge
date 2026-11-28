@@ -116,6 +116,9 @@ fn equality_is_by_id_set_not_by_backing() {
 fn spilling_into_a_missing_directory_is_a_typed_error() {
     let dir = scratch_dir("spill-missing").join("does-not-exist");
     assert!(ContentStore::spilling(&dir).is_err());
+    // `dir` itself was never created (that's the point of the test); its parent is the scratch
+    // directory `scratch_dir` did create, and that is what must not leak (P-6, incident 094).
+    let _ = std::fs::remove_dir_all(dir.parent().unwrap());
 }
 
 #[test]

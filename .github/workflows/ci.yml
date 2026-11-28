@@ -128,6 +128,32 @@ jobs:
       - name: Prove the containment refuses a runaway before 300 processes
         run: ./tools/check-contained-test-self-test.sh
 
+  # The W0a handoff §3's own checks list ("the test suite through tools/contained-test.sh, summed, and
+  # the no-identity run inside it too") — proof, not just the synthetic self-test above, that the real
+  # test suite passes cleanly through P-5's containment and P-6's temp-leak check. `gates` and `msrv`
+  # above still run bare `cargo test` on every platform; this is the one job that proves the *contained*
+  # path too, on Linux, where contained-test.sh's real containment (systemd-run) is exercised — a single
+  # combined run, not a per-OS matrix, same as contained-test-self-test above.
+  contained-test:
+    name: cargo test, through tools/contained-test.sh (P-5, P-6)
+    runs-on: ubuntu-latest
+    # P-4 (RFC 022 incident 094): a build-and-test job, 30 minutes, same as gates/msrv.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: stable
+      - name: Install Mercurial, Subversion and CVS
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes mercurial subversion cvs
+      - name: Test
+        run: ./tools/contained-test.sh --workspace --locked --no-fail-fast
+
   # Checks of the repository itself, not of a platform: they run on Linux only.
   repository:
     name: links · book · release tools

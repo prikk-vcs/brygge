@@ -4543,6 +4543,10 @@ fn a_failed_check_removes_the_partial_directory_and_writes_nothing() {
         "a .partial directory was left behind: {entries:?}"
     );
     let _ = std::fs::remove_dir_all(&dir);
+    // P-6 (RFC 022 incident 094): `tmp_ir_path`'s own `.ir` file, unlike `scratch_dir`'s directory
+    // above, was never removed here either — the same leak review 198/285ef7a fixed for the passing
+    // case below, structurally the same helper, so the same fix.
+    let _ = std::fs::remove_file(&artifact_path);
 }
 
 /// The honest-copy path: when the injected check says `Corresponds`, the repository and report are

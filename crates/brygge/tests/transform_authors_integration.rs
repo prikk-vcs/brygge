@@ -154,6 +154,8 @@ fn a_cvs_authors_map_runs_through_inspect_transform_and_encode_git() {
     // No Brygge-Supplied for the field the map just filled in — review G1 F-1's own rule, which the
     // handoff's §4 asks this batch to prove still holds once an email now exists.
     assert!(!message.contains("Brygge-Supplied: author"), "{message}");
+    let _ = std::fs::remove_dir_all(&repo_dir);
+    let _ = std::fs::remove_dir_all(&work);
 }
 
 fn svn_props(pairs: &[(&str, &str)]) -> Vec<u8> {
@@ -290,4 +292,5 @@ fn an_svn_authors_map_runs_through_inspect_transform_and_encode_git() {
         message.contains("Brygge-Transformed: atom 0 authors"),
         "{message}"
     );
+    let _ = std::fs::remove_dir_all(&work);
 }
