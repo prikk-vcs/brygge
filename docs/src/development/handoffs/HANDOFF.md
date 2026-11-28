@@ -227,6 +227,34 @@ additive-fit confirmation → a new `brygge-decode-<src>` crate exposing `decode
 RFC 011's rules (a non-critical field is additive; a critical one is a contract version bump). Any
 contract change is a deliberate, owner-approved event, never a silent one.
 
+### 7a. Running code safely (the owner's rulings of 2026-11-28, after incident 094)
+
+**Incident 094:** a watchdog under development re-ran `std::env::current_exe()` from inside a function that unit tests
+call. Under `cargo test`, `current_exe()` is the test harness, which ran the whole suite again: a fork bomb that hung
+the owner's machine twice. These rules exist so that it cannot happen again.
+
+**Where code first runs, by risk:**
+
+| Kind of change | Where it first runs |
+|---|---|
+| it spawns or controls processes, deletes files, or can use unbounded resources | **CI first,** on a named proving branch (`prove/<batch>`). Only after CI shows its guards work does it run locally, under the limit below |
+| ordinary code and documentation | locally, always under the limit below |
+| corpus runs and timing measurements | locally, under the limit below, on a quiet machine (`uptime` under 16 at the start of every run) |
+
+**The rules:**
+- **Every local test run is contained:** use `tools/contained-test.sh …` instead of bare `cargo test`. It runs inside
+  `systemd-run --user --scope -p TasksMax=256 -p MemoryMax=8G`, or `ulimit -u 512 -v 8000000` where that is missing.
+  A breach then fails inside the limit, instead of taking the machine down.
+- **Proving branches are the one exception to "push only approved work":** a change in the first row may be pushed,
+  unreviewed, to its own `prove/<batch>` branch, **only so that CI can run it.** Such a branch is public. Nothing
+  reaches `main` without the architect's approval.
+- **A program that re-runs itself** (`current_exe()`) is allowed only at a site listed in
+  `tools/check-self-exec.sh`, which names each site's guard. CI fails on any unlisted site. **Under `cfg(test)`, no
+  such re-run is compiled in.**
+- **After any run that hangs or exhausts the machine:** stop, report at once, and never re-run it until the cause is
+  fixed in the code.
+- **Every CI job has a `timeout-minutes`.**
+
 ## 8. The backlog — what's next, prioritized and honest
 
 Nothing here is required for 0.1.0 to be correct; all of it is planned scope or gated work, recorded so
