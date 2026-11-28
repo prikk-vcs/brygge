@@ -100,7 +100,28 @@ const FIXTURE_FILE_COUNT: usize = 40;
 const FIXTURE_FILE_SIZE: usize = 4 * 1024 * 1024;
 
 fn svn_dump_fixture() -> Vec<u8> {
-    let mut buf = Vec::with_capacity(FIXTURE_FILE_COUNT * FIXTURE_FILE_SIZE + 4096);
+    svn_dump_fixture_sized(FIXTURE_FILE_COUNT, FIXTURE_FILE_SIZE)
+}
+
+/// As [`svn_dump_fixture`], but with `file_count` files of `file_size` bytes each instead of the
+/// handoff's own 40×4 MiB — used by the W1 cases below, which (unlike `decode`'s own cases) need no
+/// large, slow write of their own to poll for reliably (W1's stderr collection polls a growing buffer,
+/// never end of file, so there is no race to guard against by making the write itself slow): a much
+/// smaller fixture keeps their own `decode`/`verify`/`encode git` setup steps fast under CI contention,
+/// while still giving `encode git`'s partial repository real, non-empty content to work with.
+/// A lighter fixture for `encode git`'s own W1 stop case: 10 files of 1 MiB each (10 MiB total,
+/// one sixteenth of the handoff's own 40×4 MiB), which that case does not need in full — its own setup
+/// already pays for a `decode svn` and an internal re-verify of the artifact *before* `encode git`'s
+/// partial directory even exists, and W1's stderr collection polls a growing buffer rather than ever
+/// waiting for end of file, so there is no race over a slow *write* left to guard against by keeping the
+/// fixture huge. Still large enough that `git fast-import` cannot finish faster than this test can
+/// observe the partial directory and send its stop.
+fn encode_git_svn_dump_fixture() -> Vec<u8> {
+    svn_dump_fixture_sized(10, 1024 * 1024)
+}
+
+fn svn_dump_fixture_sized(file_count: usize, file_size: usize) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(file_count * file_size + 4096);
     buf.extend_from_slice(b"SVN-fs-dump-format-version: 2\n\n");
     buf.extend_from_slice(b"UUID: 00000000-0000-0000-0000-000000000000\n\n");
 
@@ -129,7 +150,7 @@ fn svn_dump_fixture() -> Vec<u8> {
     let r1_props = svn_props(&[
         ("svn:author", "stop-integration"),
         ("svn:date", "2024-01-01T00:00:00.000000Z"),
-        ("svn:log", "add 40 large files"),
+        ("svn:log", "add files"),
     ]);
     buf.extend_from_slice(
         format!(
@@ -143,8 +164,8 @@ fn svn_dump_fixture() -> Vec<u8> {
     buf.extend_from_slice(b"\n");
 
     let mut rng = Xorshift64::new(0xB4C6_9E55);
-    let mut content = vec![0u8; FIXTURE_FILE_SIZE];
-    for i in 0..FIXTURE_FILE_COUNT {
+    let mut content = vec![0u8; file_size];
+    for i in 0..file_count {
         rng.fill(&mut content);
         buf.extend_from_slice(
             format!(
@@ -817,7 +838,7 @@ fn run_encode_git_stopped_case(stop: impl FnOnce(u32)) {
     }
     let scratch = ScratchDir::new("stopped-encode-git");
     let dump = scratch.path().join("dump.svndump");
-    std::fs::write(&dump, svn_dump_fixture()).unwrap();
+    std::fs::write(&dump, encode_git_svn_dump_fixture()).unwrap();
     let artifact = decode_big_artifact(scratch.path(), &dump);
 
     let out = scratch.path().join("repo.git");
@@ -827,7 +848,7 @@ fn run_encode_git_stopped_case(stop: impl FnOnce(u32)) {
         .arg(&artifact)
         .arg("--out")
         .arg(&out);
-    let running = spawn_piped(cmd);
+    let mut running = spawn_piped(cmd);
     let pid = running.pid;
 
     // The partial repository directory is created, and registered with the watchdog, before `git
@@ -835,18 +856,29 @@ fn run_encode_git_stopped_case(stop: impl FnOnce(u32)) {
     // in an empty scratch directory it is always `-0`) rather than assuming it.
     let partial_prefix = format!("{out_name}.partial-{pid}-");
     let partial =
-        poll_for_entry_with_prefix(scratch.path(), &partial_prefix, Duration::from_secs(30))
-            .expect("the partial repository directory never appeared");
+        poll_for_entry_with_prefix(scratch.path(), &partial_prefix, Duration::from_secs(90));
+    let Some(partial) = partial else {
+        let exit_status = running.child.try_wait();
+        let seen = stderr_so_far(&running);
+        log_line(&format!(
+            "stop_integration: encode git's partial directory never appeared; child try_wait()={exit_status:?}; stderr so far: {seen:?}"
+        ));
+        panic!("the partial repository directory never appeared; stderr so far: {seen}");
+    };
 
     // R-5 (as the decode case above): poll for its content to be visibly growing, not merely for its
     // existence, so the kill lands while `git fast-import` is actually writing objects into it, never
     // in the narrow window right after `mkdir`/`git init` before any blob has been written.
     let grew = poll_until(Duration::from_secs(60), || dir_total_bytes(&partial) > 0);
-    assert!(
-        grew,
-        "the partial repository {} never grew; the test caught nothing",
-        partial.display()
-    );
+    if !grew {
+        let exit_status = running.child.try_wait();
+        let seen = stderr_so_far(&running);
+        panic!(
+            "the partial repository {} never grew; the test caught nothing; child \
+             try_wait()={exit_status:?}; stderr so far: {seen}",
+            partial.display()
+        );
+    }
 
     // The watchdog's own D-3 ceiling for a directory is 30 s; this stop case can legitimately take up
     // to that long to report, so its own wait allows a comfortable margin past it.
