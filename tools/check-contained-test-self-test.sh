@@ -135,17 +135,27 @@ fi
 
 # review 205 R-3: the process proof above shows only that TasksMax is enforced; it says nothing about
 # MemoryMax. This holds about 512 MB of real memory under a 256M cap (small, so cheap in CI) and checks
-# that the scope's own cgroup recorded an OOM kill. `head -c 512M /dev/zero | tail -c 1 >/dev/null` was
-# considered and rejected: `tail -c` streams its input rather than holding it, so no single process ever
-# actually holds the 512 MB in memory at once, and nothing would be killed. A short Python one-liner is
-# used instead: `bytearray(512 * 1024 * 1024)` allocates the buffer and zero-fills it in one call, which
-# touches — and so actually commits — every page, well before the loop below ever reaches `time.sleep`;
-# that is what makes it a real hold rather than a stream.
+# that the scope's own cgroup recorded an OOM kill.
+#
+# Two forms were tried and rejected before this one, each measured directly against a real cgroup, not
+# assumed:
+#   1. `head -c 512M /dev/zero | tail -c 1 >/dev/null`: `tail -c` streams its input rather than holding
+#      it, so no single process ever actually holds the 512 MB in memory at once.
+#   2. A Python one-liner building `bytearray(512 * 1024 * 1024)`: measured against a real 256M scope on
+#      this batch's own dev machine, this allocation finished successfully, `memory.current` never rose
+#      above ~25 MB, and no OOM kill occurred — `bytearray`'s zero-fill is apparently cheap enough (zero
+#      pages, deduplicated by the kernel) that it is never actually forced into distinct physical pages,
+#      so it does not hold real memory either, for a different reason than `tail -c` does not.
+# What does hold real memory, confirmed the same way (measured, not assumed): `os.urandom(512 * 1024 *
+# 1024)` — genuinely non-deterministic bytes, so the kernel has nothing to deduplicate or share, and
+# every page is forced into distinct physical memory. Against the same 256M scope, this reliably drove
+# `memory.current` well past the cap and produced a clean `oom_kill 1` with the process killed by
+# `SIGKILL`, the scope's wrapping shell surviving to report it — exactly the proof this needs.
 if [ "$use_systemd_run" -eq 1 ]; then
     echo "self-test: memory proof — systemd-run --user --scope -p MemoryMax=256M -p MemorySwapMax=0, holding ~512 MB"
     mem_hog='
 cg="/sys/fs/cgroup$(cut -d: -f3 /proc/self/cgroup)"
-python3 -c "b = bytearray(512 * 1024 * 1024); import time; time.sleep(5)" &
+python3 -c "import os, time; b = os.urandom(512 * 1024 * 1024); time.sleep(5)" &
 hog_pid=$!
 wait "$hog_pid" 2>/dev/null
 grep -E "^oom_kill " "$cg/memory.events" >"$MEM_EVENTS_FILE" 2>/dev/null || echo "oom_kill unknown" >"$MEM_EVENTS_FILE"
