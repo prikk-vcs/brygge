@@ -13,6 +13,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
 
 use std::io::Read as _;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -379,23 +380,16 @@ fn watchdog_is_present(_pid: u32, copy_name: &str) -> bool {
 const WATCHDOG_PRESENCE_POLL_INTERVAL: Duration = Duration::from_millis(200);
 
 /// Print `text` so it reaches the real CI log *even when the test passes*. `cargo test`'s harness
-/// captures `print!`/`eprintln!` — and even a direct `std::io::stderr()` write made from *this*
-/// process — and discards it for a test that does not fail, which would otherwise hide the exact
-/// evidence review 208 asks for regardless of outcome. A *child* process's own writes to its inherited
-/// stdio bypass that capture entirely: the harness can only redirect what this process's own API calls
-/// target, never another process's real file descriptors. `echo` is a real executable on Unix (not only
-/// a shell builtin), and `cmd /C echo` reaches the same real descriptor on Windows; every string this
-/// is called with is built from plain alphanumerics, hyphens and `:`/`()`, so neither needs any shell
-/// escaping.
+/// captures `print!`/`eprintln!`/`eprint!`/`println!` by checking a thread-local `OUTPUT_CAPTURE`
+/// override before any byte reaches the real descriptor — but that check lives in those macros alone.
+/// Writing directly through `std::io::stderr()`'s own [`Write`] implementation never consults that
+/// override at all, so it reaches the real file descriptor unconditionally, exactly as a child process's
+/// own writes to its inherited stdio would, and with nothing spawned (review 210, carried from W0: the
+/// previous form spawned `echo`/`cmd /C echo` per line — one needless process per line, and on Windows a
+/// real shell interpreting the text, so a `&` or `|` in a path would have run as a command inside a
+/// test).
 fn log_line(text: &str) {
-    #[cfg(unix)]
-    {
-        let _ = Command::new("echo").arg(text).status();
-    }
-    #[cfg(windows)]
-    {
-        let _ = Command::new("cmd").args(["/C", "echo", text]).status();
-    }
+    let _ = writeln!(std::io::stderr().lock(), "{text}");
 }
 
 /// R-1 point 4: prove the later absence check (`assert_no_watchdog_left`) is not vacuous — while the
