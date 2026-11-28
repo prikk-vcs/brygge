@@ -1120,6 +1120,14 @@ fn a_planted_leftover_from_another_pid_is_named_and_left_in_place() {
         .expect("run brygge transform");
     assert!(output.status.success(), "{output:?}");
     let stderr = String::from_utf8_lossy(&output.stderr);
+    // review 097 (RFC 022 batch W1): print D-4's own stderr lines so the request can quote exactly what
+    // CI itself saw, even though this test passes (the assertions below check its exact content; this
+    // is only so the raw text appears in the log for the review to cite directly).
+    for line in stderr.lines() {
+        log_line(&format!(
+            "stop_integration: D-4 planted-leftover stderr line: {line}"
+        ));
+    }
 
     // `display::human` (CR-19) doubles every literal backslash before a path reaches the sentence —
     // on Windows that means every path separator (the same transform the decode cases above apply to
