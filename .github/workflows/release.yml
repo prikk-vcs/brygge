@@ -423,9 +423,8 @@ jobs:
     # The `env` context is not available in a job-level `if:`; see verify's own note above.
     if: ${{ !cancelled() && ((github.event_name == 'workflow_dispatch' && inputs.aur_only) || needs.github-release.result == 'success') }}
     runs-on: ubuntu-24.04
-    # P-4 (RFC 022 incident 094): measured from this job's own last three successful runs (0.10.0,
-    # 0.9.0, 0.8.1: 7m13s, 6m13s, 5m34s), the worst (7m13s ≈ 7.2 min) plus 50% ≈ 10.8 min, rounded up.
-    timeout-minutes: 11
+    # P-4 (RFC 022 incident 094): a build job, 30 minutes.
+    timeout-minutes: 30
     environment: release
     permissions:
       contents: read
