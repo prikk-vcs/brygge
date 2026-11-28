@@ -4578,6 +4578,10 @@ fn a_passing_check_writes_the_repository_and_report_normally() {
     assert!(report.contains("encode_git.check=corresponds"), "{report}");
     assert_ne!(code, exit::FAILURE);
     let _ = std::fs::remove_dir_all(&dir);
+    // P-6 (RFC 022 incident 094): `tmp_ir_path`'s own `.ir` file, unlike `scratch_dir`'s directory
+    // above, was never removed — review 198 named this exact file as one the test suite leaves behind
+    // in the system temporary directory, every run.
+    let _ = std::fs::remove_file(&artifact_path);
 }
 
 /// RFC 019 D-6 §4 (batch G2): a self-measuring helper for the memory/time proof, run only when invoked
