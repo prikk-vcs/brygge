@@ -150,39 +150,46 @@ Track-B prikk-encoder RFC; its design begins when prikk's import foundations exi
 
 ## 7. Building, testing, and the gates
 
-```sh
-# The full gate suite — all must pass, all --locked (CI-enforced; mirror it locally before every commit):
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-tools/contained-test.sh --workspace --locked   # never bare `cargo test` (§7a): it runs inside verified limits
+**Local runs respect the machine (the owner, 2026-11-28, review 209):** CPU heat and the budget count, as well as
+correctness. **Locally, run only what CI cannot**, once, inside the limits of §7a, including a CPU cap. CI proves the
+rest on its own runners.
 
-# The no-identity run (a missing git identity has broken CI twice this way: request 068, then 074).
-# CI's runners carry no git config at all; a developer's own machine usually does, which lets a test
-# that commits into a scratch repository pass locally and fail only in CI. Run this once, before
-# filing any request, and report its sum:
+```sh
+# Locally, before filing a request. Heavy commands go through tools/contained.sh (§7a: tasks, memory, no swap, and a
+# CPU cap of a quarter of the cores).
+cargo fmt --all -- --check
+tools/contained.sh -- cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+
+# The test suite, ONCE, in the no-identity form (a missing git identity broke CI twice: requests 068 and 074).
 # RUSTUP_HOME and CARGO_HOME keep the toolchain reachable once HOME is emptied (request 095 r2).
 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null RUSTUP_HOME="$HOME/.rustup" CARGO_HOME="$HOME/.cargo" \
   HOME="$(mktemp -d)" tools/contained-test.sh --workspace --locked
 
-cargo deny check                  # advisories, licenses, banned/duplicate crates (INV-4)
-cargo audit                       # known vulnerabilities in the dependency tree
+# Portability (RFC 012 D-9): compile the other targets, `check` only. Their clippy and tests are CI's.
+tools/contained.sh -- cargo check --workspace --all-targets --locked --target x86_64-pc-windows-gnu
+tools/contained.sh -- cargo check --workspace --all-targets --locked --target x86_64-apple-darwin
+
+# Cheap checks:
 ./tools/check-ir-isolation.sh     # brygge-ir's dependency closure matches its allowlist (RFC 009 D-7)
 ./tools/check-links.sh            # relative links in every *.md file resolve
-./tools/test-release-tools.sh     # the release tools (RFC 012); needs the network and the `0.1.0` tag
-
-# Portability (RFC 012 D-9): CI proves Linux, macOS and Windows by running there. Before a commit, at least
-# compile the other targets (the test code included):
-cargo check --workspace --all-targets --locked --target x86_64-pc-windows-gnu
-cargo check --workspace --all-targets --locked --target x86_64-apple-darwin
-
-# The MSRV run. CI builds on the declared MSRV (1.87), not on your newer local toolchain, so a local
-# "green" says nothing about CI until these two pass too (use a scratch --target-dir):
-cargo +1.87 clippy --workspace --all-targets --all-features --locked -- -D warnings
-cargo +1.87 test --workspace --locked
-
-# The measurement harness (dev-only), before/after any RFC 010 increment:
-cargo run -p brygge-bench --release
+./tools/check-self-exec.sh        # every self re-run is a reviewed site (§7a)
 ```
+
+**CI's alone, never repeated locally:**
+- clippy and tests on Windows, macOS and arm64 Linux;
+- the MSRV (1.87) clippy and tests;
+- `contained-test.sh`'s self-test;
+- `cargo deny` and `cargo audit`;
+- the book and the release tools.
+
+Run one of them locally only to diagnose a CI failure that its log cannot explain, and say so in the request.
+
+**Independent verification** means reading the diffs and the CI logs, and re-running only what CI cannot see (a
+hand-run proof, for example). It never means running the suite a second time.
+
+**The measurement harness** (dev-only, before and after any RFC 010 increment) and the corpus timings
+(`release-corpus.py`, at release preparation only) run under `tools/contained.sh --no-cpu-cap`, so that timings stay
+comparable between releases. The memory and task limits still apply.
 
 **`cargo publish --workspace --dry-run` is not a per-push gate.** Once a version is actually on
 crates.io, packaging rewrites a dependency's `path =` away, so verifying it must resolve from a
@@ -244,11 +251,15 @@ the owner's machine twice. These rules exist so that it cannot happen again.
 | corpus runs and timing measurements | locally, under the limit below, on a quiet machine (`uptime` under 16 at the start of every run) |
 
 **The rules:**
-- **Every local test run is contained:** use `tools/contained-test.sh …` instead of bare `cargo test`. It runs inside
-  `systemd-run --user --scope -p TasksMax=256 -p MemoryMax=8G -p MemorySwapMax=0`, and reads the limits back to
-  prove they are enforced. Otherwise it uses `ulimit -u 512 -v 8000000`, which is weaker (it bounds each process, not
-  their total), and says so on its first line. A breach then fails inside the limit, instead of taking the machine
-  down.
+- **Every heavy local run is contained:** `tools/contained.sh -- <command>`, and `tools/contained-test.sh …` for the
+  test suite, instead of bare `cargo`. They run inside `systemd-run --user --scope` with:
+  - `TasksMax=256`;
+  - `MemoryMax=8G` and `MemorySwapMax=0`;
+  - `CPUQuota` at a quarter of the cores (minimum 2), with `CARGO_BUILD_JOBS` and `RUST_TEST_THREADS` set to match;
+  - each limit read back to prove it is enforced.
+
+  Otherwise they use `ulimit -u 512 -v 8000000` with the same job counts, which is weaker (no CPU or total-memory
+  cap), and say so on their first line. A breach then fails inside the limit, instead of taking the machine down.
 - **Proving branches are the one exception to "push only approved work":** a change in the first row may be pushed,
   unreviewed, to its own `prove/<batch>` branch, **only so that CI can run it.** Such a branch is public. Nothing
   reaches `main` without the architect's approval.

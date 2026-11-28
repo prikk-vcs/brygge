@@ -175,11 +175,14 @@ every process the user already has, so on a desktop it would refuse to start at 
 
 ## 5. Checks
 
-- fmt, and clippy `-D warnings` on stable, `x86_64-pc-windows-gnu`, `x86_64-apple-darwin` and 1.87;
-- **`tools/contained-test.sh --workspace --locked`,** summed, and the no-identity run (HANDOFF §7's command), after
-  CI is green;
-- `tools/check-self-exec.sh`, the isolation check, links, the book, the release tools, `cargo deny`;
-- the deep mutation sweep is not due (no parser changes), unless `mutation.yml`'s filter says so.
+**Revised by review 209 (CPU heat and the budget).** Locally, only HANDOFF §7's local list, once, after CI is green:
+- fmt;
+- native clippy, and `cargo check` for the two other targets, through `tools/contained.sh`;
+- one no-identity suite run, through `tools/contained-test.sh`;
+- the cheap checks.
+
+Clippy and tests on the other systems, 1.87, `deny`, `audit`, the book and the release tools are CI's. The deep
+mutation sweep is not due (no parser changes), unless `mutation.yml`'s filter says so.
 
 ## 6. Request
 
