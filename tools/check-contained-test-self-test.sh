@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# P-5's self-test (RFC 022 incident 094): proves `tools/contained-test.sh`'s own containment actually
+# P-5's self-test (RFC 022 incident 094): proves `tools/contained.sh`'s own containment actually
 # stops a runaway, rather than trusting that it would. **CI only — HANDOFF.md §7a's first row: this
 # starts up to 300 real processes, which this machine must never do outside a bound CI already applies
 # to the whole job.** Never run this locally.
 #
-# It picks the same containment `tools/contained-test.sh` would (systemd-run's cgroup scope, read back
+# It picks the same containment `tools/contained.sh` would (systemd-run's cgroup scope, read back
 # and verified exactly as that script does — review 205 R-2, below — or the `ulimit` fallback), then
 # tries, *inside* that containment, to start 300 background `sleep` processes — a hard cap this script
 # itself enforces (the loop below always attempts exactly 300, succeed or not, so this self-test can
@@ -13,13 +13,13 @@
 # small scope allows and checking that the scope's own cgroup recorded an OOM kill (review 205 R-3).
 #
 # review 205 R-1: `-p MemorySwapMax=0` on every scope below, for the same reason as
-# `tools/contained-test.sh`: without it, `MemoryMax` alone is not a real ceiling on this machine's zram
+# `tools/contained.sh`: without it, `MemoryMax` alone is not a real ceiling on this machine's zram
 # swap.
 #
-# review 205 R-2: the probe below reads back its own scope's pids.max, memory.max and memory.swap.max
-# and compares each to what it asked for, the same way `tools/contained-test.sh`'s probe does, and falls
-# back to `ulimit` on any mismatch rather than trusting that `systemd-run` accepting the properties means
-# they are enforced.
+# review 205 R-2: the probe below reads back its own scope's pids.max, memory.max, memory.swap.max and
+# (review 208 R-7) cpu.max, and compares each to what it asked for, the same way `tools/contained.sh`'s
+# probe does, and falls back to `ulimit` on any mismatch rather than trusting that `systemd-run` accepting
+# the properties means they are enforced.
 #
 # Two earlier versions of the *process-count* detection logic were both wrong, for related reasons, and
 # both are recorded here so a third rewrite does not repeat either:
@@ -54,32 +54,45 @@ mem_events_file=$(mktemp)
 cleanup() { rm -f "$progress_file" "$probe_file" "$mem_events_file"; }
 trap cleanup EXIT
 
-# review 205 R-2: the same probe-and-read-back `tools/contained-test.sh` uses, so this script picks the
+# review 205 R-2: the same probe-and-read-back `tools/contained.sh` uses, so this script picks the
 # identical containment that script would, rather than trusting `systemd-run`'s syntax acceptance alone.
+# review 208 R-7: `cpu.max` is read back too, against the same quarter-of-`nproc` (minimum 2) CPUQuota
+# `tools/contained.sh` computes.
 probe_read_back='
 cg="/sys/fs/cgroup$(cut -d: -f3 /proc/self/cgroup)"
 {
     cat "$cg/pids.max" 2>/dev/null || echo unknown
     cat "$cg/memory.max" 2>/dev/null || echo unknown
     cat "$cg/memory.swap.max" 2>/dev/null || echo unknown
+    cat "$cg/cpu.max" 2>/dev/null || echo unknown
 } >"$PROBE_FILE"
 '
+
+cores=$(nproc)
+cpu_n=$((cores / 4))
+if [ "$cpu_n" -lt 2 ]; then
+    cpu_n=2
+fi
+expected_cpu="$((cpu_n * 100000)) 100000"
 
 use_systemd_run=0
 enforcement_mismatch=""
 
 if command -v systemd-run >/dev/null 2>&1 &&
     systemd-run --user --scope -p TasksMax=8 -p MemoryMax=64M -p MemorySwapMax=0 \
+        -p "CPUQuota=$((cpu_n * 100))%" \
         --setenv="PROBE_FILE=$probe_file" -- bash -c "$probe_read_back" >/dev/null 2>&1; then
     probed_pids=$(sed -n '1p' "$probe_file" 2>/dev/null || echo unknown)
     probed_mem=$(sed -n '2p' "$probe_file" 2>/dev/null || echo unknown)
     probed_swap=$(sed -n '3p' "$probe_file" 2>/dev/null || echo unknown)
+    probed_cpu=$(sed -n '4p' "$probe_file" 2>/dev/null || echo unknown)
     expected_mem=$((64 * 1024 * 1024)) # 64M, as systemd resolves byte-size suffixes: 1024-based
 
     reasons=""
     [ "$probed_pids" = "8" ] || reasons="${reasons}pids.max=$probed_pids, "
     [ "$probed_mem" = "$expected_mem" ] || reasons="${reasons}memory.max=$probed_mem, "
     [ "$probed_swap" = "0" ] || reasons="${reasons}memory.swap.max=$probed_swap, "
+    [ "$probed_cpu" = "$expected_cpu" ] || reasons="${reasons}cpu.max=$probed_cpu, "
 
     if [ -z "$reasons" ]; then
         use_systemd_run=1
