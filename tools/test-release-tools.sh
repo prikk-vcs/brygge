@@ -608,4 +608,41 @@ for script in "${sibling_scripts[@]}"; do
 done
 pass "aur-in-container.sh: every sibling script it calls exists in tools/"
 
+# P-4 (RFC 022 incident 094): every job in every workflow has `timeout-minutes`, so a runaway in CI
+# fails inside a bound instead of running for the platform's own, much longer, default ceiling. A pure
+# text scan, not a YAML parser: a job is a line at exactly two-space indent ending in `:`, inside the
+# `jobs:` section (the same shape appears under `on:` for `push`/`pull_request`/etc., which this skips
+# by starting only after `jobs:`); a job's block runs to the next such line or EOF. A job that only
+# calls a reusable workflow (a bare `uses:` with no `runs-on:`) is exempt: GitHub Actions does not allow
+# `timeout-minutes` there at all — the called workflow's own jobs carry it instead.
+for wf in .github/workflows/*.yml; do
+    jobs_line=$(grep -n '^jobs:$' "$wf" | head -1 | cut -d: -f1)
+    [ -n "$jobs_line" ] || die "$wf: no top-level jobs: key found (the scan itself may be wrong)"
+    mapfile -t job_lines < <(
+        tail -n "+$jobs_line" "$wf" | grep -n '^  [a-zA-Z0-9_-]\+:$' |
+            awk -F: -v off="$jobs_line" '{print $1 + off - 1 ":" $2}'
+    )
+    [ "${#job_lines[@]}" -gt 0 ] || die "$wf: no job found under jobs: (the scan itself may be wrong)"
+    total_lines=$(wc -l <"$wf")
+    for i in "${!job_lines[@]}"; do
+        start_line=${job_lines[$i]%%:*}
+        job_name=${job_lines[$i]#*:}
+        job_name=${job_name%:}
+        job_name=${job_name# }
+        if [ "$((i + 1))" -lt "${#job_lines[@]}" ]; then
+            next_line=${job_lines[$((i + 1))]%%:*}
+            end_line=$((next_line - 1))
+        else
+            end_line=$total_lines
+        fi
+        block=$(sed -n "${start_line},${end_line}p" "$wf")
+        if echo "$block" | grep -q '^    uses:' && ! echo "$block" | grep -q 'runs-on:'; then
+            continue # a reusable-workflow call: timeout-minutes is not valid here at all
+        fi
+        echo "$block" | grep -q 'timeout-minutes:' ||
+            die "$wf: job '$job_name' (line $start_line) has no timeout-minutes"
+    done
+done
+pass "every job in every workflow has timeout-minutes, or is a reusable-workflow call that cannot (P-4, incident 094)"
+
 echo "all $passed release-tool checks passed"

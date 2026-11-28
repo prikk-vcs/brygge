@@ -25,6 +25,8 @@ jobs:
   cargo-audit:
     name: cargo audit (newest advisory database)
     runs-on: ubuntu-latest
+    # P-4 (RFC 022 incident 094): every job is bounded.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@v1

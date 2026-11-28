@@ -27,6 +27,9 @@ permissions:
 jobs:
   gates:
     name: fmt · clippy · test (${{ matrix.os }})
+    # P-4 (RFC 022 incident 094): every job is bounded, so a runaway (this one builds and tests, so 30
+    # minutes) fails the job instead of running for CI's own, much longer, default ceiling.
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -65,6 +68,8 @@ jobs:
   msrv:
     name: clippy · test (MSRV 1.87)
     runs-on: ubuntu-latest
+    # P-4 (RFC 022 incident 094): a build-and-test job, 30 minutes.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
         with:
@@ -87,6 +92,8 @@ jobs:
   supply-chain:
     name: cargo-deny · cargo-audit · ir-isolation
     runs-on: ubuntu-latest
+    # P-4 (RFC 022 incident 094): checks and audits, not a build-and-test job, 15 minutes.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
         with:
@@ -106,10 +113,28 @@ jobs:
       - name: brygge-ir dependency isolation (RFC 009 D-7)
         run: ./tools/check-ir-isolation.sh
 
+  # P-5's self-test (RFC 022 incident 094, HANDOFF.md §7a): starts up to 300 real processes to prove
+  # tools/contained-test.sh's own containment actually refuses a runaway. This is itself exactly the
+  # class of change HANDOFF.md §7a requires to prove in CI before any local run — so it runs only here,
+  # never through contained-test.sh locally, and never as part of any other job's own test run.
+  contained-test-self-test:
+    name: contained-test.sh self-test (P-5)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+      - name: Prove the containment refuses a runaway before 300 processes
+        run: ./tools/check-contained-test-self-test.sh
+
   # Checks of the repository itself, not of a platform: they run on Linux only.
   repository:
     name: links · book · release tools
     runs-on: ubuntu-latest
+    # P-4 (RFC 022 incident 094): checks, docs and release-tool tests, not the main build-and-test
+    # matrix, 15 minutes.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
         with:
@@ -118,6 +143,11 @@ jobs:
           fetch-depth: 0
       - name: Relative links in documentation
         run: ./tools/check-links.sh
+      # P-3 (RFC 022 incident 094): a program that re-runs its own executable is allowed only at a
+      # reviewed site; this fails on any other, so a future mistake like the watchdog's cannot reach
+      # `main` unnoticed.
+      - name: Self-exec sites (HANDOFF.md §7a)
+        run: ./tools/check-self-exec.sh
       # The tests of the release tools (RFC 012 §4), and the smoke test the release runs on the crates.io
       # build, run here on this tree's own build, so both are proven on every push and not only at a
       # release. A release run tests the tagged tree with the gates above and skips these: the tools it

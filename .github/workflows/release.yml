@@ -84,6 +84,8 @@ jobs:
     # the expression AUR_ONLY is built from, rather than reading env.AUR_ONLY.
     if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.aur_only) }}
     runs-on: ubuntu-latest
+    # P-4 (RFC 022 incident 094): `cargo publish --dry-run` resolves and builds, a build job's 30 minutes.
+    timeout-minutes: 30
     permissions:
       contents: read
     steps:
@@ -163,6 +165,8 @@ jobs:
           - target: x86_64-pc-windows-msvc
             os: windows-latest
     runs-on: ${{ matrix.os }}
+    # P-4 (RFC 022 incident 094): a build job, 30 minutes.
+    timeout-minutes: 30
     permissions:
       contents: read
     env:
@@ -242,6 +246,8 @@ jobs:
     # `build` is skipped when the binaries are off; it must not have failed.
     if: ${{ !cancelled() && needs.verify.result == 'success' && needs.gates.result == 'success' && (needs.build.result == 'success' || needs.build.result == 'skipped') }}
     runs-on: ubuntu-latest
+    # P-4 (RFC 022 incident 094): publishing only, not a build job, 15 minutes.
+    timeout-minutes: 15
     environment: release
     permissions:
       id-token: write
@@ -283,6 +289,8 @@ jobs:
     # job (and the release after it) would be skipped although publish-crates succeeded.
     if: ${{ !cancelled() && needs.publish-crates.result == 'success' }}
     runs-on: ubuntu-latest
+    # P-4 (RFC 022 incident 094): `cargo install` builds from source, a build job's 30 minutes.
+    timeout-minutes: 30
     permissions:
       contents: read
     steps:
@@ -321,6 +329,8 @@ jobs:
     needs: [verify-published, build]
     if: ${{ !cancelled() && needs.verify-published.result == 'success' && (needs.build.result == 'success' || needs.build.result == 'skipped') }}
     runs-on: ubuntu-latest
+    # P-4 (RFC 022 incident 094): no building, 15 minutes.
+    timeout-minutes: 15
     permissions:
       contents: write
       id-token: write
@@ -413,6 +423,9 @@ jobs:
     # The `env` context is not available in a job-level `if:`; see verify's own note above.
     if: ${{ !cancelled() && ((github.event_name == 'workflow_dispatch' && inputs.aur_only) || needs.github-release.result == 'success') }}
     runs-on: ubuntu-24.04
+    # P-4 (RFC 022 incident 094): measured from this job's own last three successful runs (0.10.0,
+    # 0.9.0, 0.8.1: 7m13s, 6m13s, 5m34s), the worst (7m13s ≈ 7.2 min) plus 50% ≈ 10.8 min, rounded up.
+    timeout-minutes: 11
     environment: release
     permissions:
       contents: read
@@ -552,6 +565,8 @@ jobs:
     needs: [verify, gates, build, publish-crates, verify-published, github-release, aur]
     if: ${{ always() }}
     runs-on: ubuntu-latest
+    # P-4 (RFC 022 incident 094): a summary of other jobs' results, 15 minutes.
+    timeout-minutes: 15
     permissions:
       contents: read
     env:

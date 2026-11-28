@@ -29,6 +29,8 @@ jobs:
   build:
     name: build the book
     runs-on: ubuntu-latest
+    # P-4 (RFC 022 incident 094): every job is bounded.
+    timeout-minutes: 15
     # `pages: read` lets configure-pages read the Pages settings; nothing here can write them.
     permissions:
       contents: read
@@ -61,6 +63,8 @@ jobs:
     name: deploy to GitHub Pages
     needs: build
     runs-on: ubuntu-latest
+    # P-4 (RFC 022 incident 094): every job is bounded.
+    timeout-minutes: 15
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
