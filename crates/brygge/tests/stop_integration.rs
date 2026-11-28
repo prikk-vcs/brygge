@@ -327,10 +327,11 @@ fn run_stopped_case(stop: impl FnOnce(u32)) {
         tmp.display()
     );
     assert!(!out.exists(), "no artifact may exist after a clean stop");
-    let expected_sentence = format!(
-        "interrupted: removed {}; nothing was written",
-        tmp.display()
-    );
+    // `display::human` (CR-19) doubles every literal backslash before a path reaches the sentence, so
+    // that an escape in the *output* is never ambiguous with one that arrived in the input — on Windows
+    // that means every path separator. These fixture paths contain nothing else `human` would escape.
+    let humanized = tmp.display().to_string().replace('\\', "\\\\");
+    let expected_sentence = format!("interrupted: removed {humanized}; nothing was written");
     assert!(
         stderr.trim_end().ends_with(&expected_sentence),
         "stderr does not end with the expected sentence.\nexpected suffix: {expected_sentence}\nactual: \
