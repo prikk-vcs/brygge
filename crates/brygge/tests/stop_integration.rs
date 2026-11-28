@@ -168,10 +168,10 @@ const SVN_FAITHFULNESS_STATEMENT: &str = "Subversion: revisions are carried as r
 tags are only a directory convention; with --reconstruct-refs they are reconstructed and marked derived. \
 Authorship is Unverifiable.";
 
-/// Poll `cond` every 10 ms, for at most `within`. Returns `true` the moment it holds, `false` if it never
-/// does — the caller asserts on that, so the test never passes vacuously (handoff §4: "never passes
-/// vacuously").
-fn poll_until(within: Duration, mut cond: impl FnMut() -> bool) -> bool {
+/// Poll `cond` every `interval`, for at most `within`. Returns `true` the moment it holds, `false` if it
+/// never does — the caller asserts on that, so the test never passes vacuously (handoff §4: "never
+/// passes vacuously").
+fn poll_every(within: Duration, interval: Duration, mut cond: impl FnMut() -> bool) -> bool {
     let start = Instant::now();
     loop {
         if cond() {
@@ -180,8 +180,14 @@ fn poll_until(within: Duration, mut cond: impl FnMut() -> bool) -> bool {
         if start.elapsed() >= within {
             return false;
         }
-        thread::sleep(Duration::from_millis(10));
+        thread::sleep(interval);
     }
+}
+
+/// [`poll_every`] at the suite's ordinary 10 ms resolution, for conditions that are cheap to check
+/// (a filesystem stat) and genuinely time-sensitive (catching the write phase in progress).
+fn poll_until(within: Duration, cond: impl FnMut() -> bool) -> bool {
+    poll_every(within, Duration::from_millis(10), cond)
 }
 
 fn tmp_artifact_path(dir: &Path, pid: u32) -> PathBuf {
@@ -337,26 +343,51 @@ fn watchdog_is_present(_pid: u32, copy_name: &str) -> bool {
     text.lines().any(|line| line.contains(copy_name))
 }
 
-/// R-1, Windows: `tasklist /FI "IMAGENAME eq <name>.exe" /NH` lists only processes with that exact image
-/// name (already includes `.exe`, from [`unique_copy_name`]); any output line naming it is a match.
+/// R-1, Windows: `tasklist /FI "IMAGENAME eq <name>.exe"` lists only processes with that exact image name
+/// (already includes `.exe`, from [`unique_copy_name`]); any output line naming it is a match.
+///
+/// `/FO CSV` (never the default `TABLE` format, even with `/NH`): `TABLE` truncates the Image Name
+/// column to a fixed display width (observed: a 26-character name like
+/// `brygge-stoptest-3472-2.exe` was already cut off), so a line could fail to contain the full name even
+/// while tasklist's own `/FI` filter had correctly matched and was displaying that exact process — a
+/// false "not found" from display truncation, not from the process being absent. `CSV` writes every
+/// field out in full, with no such limit.
 #[cfg(windows)]
 fn watchdog_is_present(_pid: u32, copy_name: &str) -> bool {
     let output = Command::new("tasklist")
-        .args(["/FI", &format!("IMAGENAME eq {copy_name}"), "/NH"])
+        .args([
+            "/FI",
+            &format!("IMAGENAME eq {copy_name}"),
+            "/FO",
+            "CSV",
+            "/NH",
+        ])
         .output()
-        .expect("run tasklist /FI ... /NH");
+        .expect("run tasklist /FI ... /FO CSV /NH");
     let text = String::from_utf8_lossy(&output.stdout);
     text.lines().any(|line| line.contains(copy_name))
 }
+
+/// How often [`assert_watchdog_is_running`]/[`assert_no_watchdog_left`] re-check. `watchdog_is_present`
+/// spawns a whole extra process (`ps -A` or `tasklist`, enumerating the system's entire process table) on
+/// every call, unlike the suite's other, cheap (stat-based) polls — polling that at [`poll_until`]'s 10 ms
+/// resolution measurably starved a concurrently running decode/watchdog of CPU on a loaded CI runner and
+/// caused a real, reproducible failure (not a flake): the watchdog's own cleanup-and-exit was delayed
+/// past the unrelated 10 s stderr-collection timeout in `stop_and_collect_stderr`. 200 ms still allows
+/// comfortably more than enough attempts within the 10 s budget below for either outcome, which in the
+/// un-starved case resolves within a few hundred milliseconds either way.
+const WATCHDOG_PRESENCE_POLL_INTERVAL: Duration = Duration::from_millis(200);
 
 /// R-1 point 4: prove the later absence check (`assert_no_watchdog_left`) is not vacuous — while the
 /// decode (and the watchdog it started, the same copy under `current_exe()`) is still running, the exact
 /// same query must find it. Logs the outcome with `eprintln!` (not captured by the test harness even on
 /// a pass) so CI's raw log carries direct evidence of this positive case.
 fn assert_watchdog_is_running(pid: u32, copy_name: &str) {
-    let found = poll_until(Duration::from_secs(10), || {
-        watchdog_is_present(pid, copy_name)
-    });
+    let found = poll_every(
+        Duration::from_secs(10),
+        WATCHDOG_PRESENCE_POLL_INTERVAL,
+        || watchdog_is_present(pid, copy_name),
+    );
     eprintln!(
         "stop_integration: while the decode (pid {pid}) was running, a process for {copy_name:?} was \
          {}",
@@ -377,9 +408,11 @@ fn assert_watchdog_is_running(pid: u32, copy_name: &str) {
 /// Logs the outcome with `eprintln!` (see [`assert_watchdog_is_running`]) so CI's raw log carries direct
 /// evidence of this negative case too.
 fn assert_no_watchdog_left(pid: u32, copy_name: &str) {
-    let gone = poll_until(Duration::from_secs(10), || {
-        !watchdog_is_present(pid, copy_name)
-    });
+    let gone = poll_every(
+        Duration::from_secs(10),
+        WATCHDOG_PRESENCE_POLL_INTERVAL,
+        || !watchdog_is_present(pid, copy_name),
+    );
     eprintln!(
         "stop_integration: within 10s of the stop, a process for {copy_name:?} is now {}",
         if gone {
