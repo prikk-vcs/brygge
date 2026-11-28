@@ -154,13 +154,15 @@ Track-B prikk-encoder RFC; its design begins when prikk's import foundations exi
 # The full gate suite — all must pass, all --locked (CI-enforced; mirror it locally before every commit):
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-cargo test --workspace --locked
+tools/contained-test.sh --workspace --locked   # never bare `cargo test` (§7a): it runs inside verified limits
 
 # The no-identity run (a missing git identity has broken CI twice this way: request 068, then 074).
 # CI's runners carry no git config at all; a developer's own machine usually does, which lets a test
 # that commits into a scratch repository pass locally and fail only in CI. Run this once, before
 # filing any request, and report its sum:
-GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null HOME="$(mktemp -d)" cargo test --workspace --locked
+# RUSTUP_HOME and CARGO_HOME keep the toolchain reachable once HOME is emptied (request 095 r2).
+GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null RUSTUP_HOME="$HOME/.rustup" CARGO_HOME="$HOME/.cargo" \
+  HOME="$(mktemp -d)" tools/contained-test.sh --workspace --locked
 
 cargo deny check                  # advisories, licenses, banned/duplicate crates (INV-4)
 cargo audit                       # known vulnerabilities in the dependency tree
@@ -243,8 +245,10 @@ the owner's machine twice. These rules exist so that it cannot happen again.
 
 **The rules:**
 - **Every local test run is contained:** use `tools/contained-test.sh …` instead of bare `cargo test`. It runs inside
-  `systemd-run --user --scope -p TasksMax=256 -p MemoryMax=8G`, or `ulimit -u 512 -v 8000000` where that is missing.
-  A breach then fails inside the limit, instead of taking the machine down.
+  `systemd-run --user --scope -p TasksMax=256 -p MemoryMax=8G -p MemorySwapMax=0`, and reads the limits back to
+  prove they are enforced. Otherwise it uses `ulimit -u 512 -v 8000000`, which is weaker (it bounds each process, not
+  their total), and says so on its first line. A breach then fails inside the limit, instead of taking the machine
+  down.
 - **Proving branches are the one exception to "push only approved work":** a change in the first row may be pushed,
   unreviewed, to its own `prove/<batch>` branch, **only so that CI can run it.** Such a branch is public. Nothing
   reaches `main` without the architect's approval.

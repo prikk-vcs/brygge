@@ -39,7 +39,8 @@ limits, so that W0 can follow safely.
   - **A self-test:** a planted unlisted `current_exe` makes it fail. Do not commit the planted line.
 - **P-4:** `timeout-minutes` on every job of every workflow.
   - **The defaults:** 30 for the test and build jobs, 15 for the rest;
-  - **`release.yml`'s AUR build:** measured from its last successful runs, plus 50%. State the figure;
+  - **`release.yml`'s AUR build:** 30, as a build job. (This said "measured, plus 50%" first; withdrawn by review
+    205 R-4, since that job runs after the irreversible crates.io publish);
   - a level-2 check in `tools/test-release-tools.sh`: every job in every workflow has `timeout-minutes`.
 - **P-5:** `tools/contained-test.sh <cargo test arguments…>`.
   - **Where `systemd-run --user --scope` works,** it runs `cargo test …` with `-p TasksMax=256 -p MemoryMax=8G`.

@@ -1,5 +1,7 @@
 # Handoff — RFC 022 batch W0: the watchdog, for `decode`, and its proof on three systems (request 094)
 
+**Superseded by [v2](w0-platform-proof-handoff-v2.md) (2026-11-28).** §1's instruction to spawn `current_exe()` from inside `decode` caused incident 094 (review 203). Do not build from this version.
+
 **Governing:** RFC 022 D-1, D-2 and D-3, accepted 2026-11-28. **W0 gates the release:** nothing else of RFC 022 is
 built until W0 shows the design works on Linux, macOS and Windows. **On a topic branch,** `batch-w0-watchdog`,
 because this is process and platform code. Push only after approval, and name the branch.
