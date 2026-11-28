@@ -52,11 +52,11 @@ Windows.
   - **D-1a:**
     - a unit-test build's `start` is `Unsupported` (already on `main`; keep it);
     - `Guard::disabled()` does nothing on `register`, `release` and `finish`;
-    - the handshake's parser accepts only `ready <the child's own pid>`.
+    - the handshake accepts only `ready <the child's own pid>` within 2 s (§2(d)).
 - **Level 2, in CI on all three systems (§4):**
   - a real `brygge decode`, stopped part-way;
   - a decode that is not stopped;
-  - **the handshake refusing a child that is not the watchdog** (§2).
+  - (the handshake's refusals are level 1, §2(d)).
 - **Level 2, by hand, on Linux, after CI is green:** Ctrl-C and Ctrl-Z through a pseudo-terminal under an interactive
   `bash` with job control, as review 200 did. Commit the script under `tools/`, and report its output. It is not a CI
   test.
@@ -95,12 +95,20 @@ Windows.
 - **Anything else** (a timeout, end of file, another line or another id): `Child::kill`, then `wait`, then return an
   error naming what was seen (for example `the watchdog did not answer within 2 s`). `main` then continues without
   one.
-- **A level-2 test:** start the real binary as the watchdog with stdout's first line forced wrong is not possible
-  from outside. Instead, unit-test the parser, and add one integration test that points the start at a program that
-  never answers. Put the program behind a `#[cfg(not(test))]`, test-only environment variable read by `start()`, such
-  as `BRYGGE_TEST_WATCHDOG_EXE`, honoured only in a debug build (`cfg!(debug_assertions)`). The test asserts that the
-  child was killed within 3 s and that the decode succeeded. **Say in the request** whether you chose this or
-  something better, and why.
+- **How it is proven, without spawning anything:**
+  - write the wait as its own function over any reader, for example
+    `fn await_ready(out: impl Read + Send + 'static, expected: u32, within: Duration) -> io::Result<()>`;
+  - level-1 tests feed it the reading end of an `std::io::pipe()` (stable since 1.87, our MSRV):
+    - a writer kept open that never writes: a timeout, in under 3 s;
+    - a writer closed at once: end of file;
+    - `ready <another id>`;
+    - another line;
+    - `ready <expected>`: accepted.
+  - No process is started, so these tests are safe in a unit-test build.
+  - **The kill on refusal** is the one line after `await_ready` fails. It is proven by review, and by the normal
+    and stopped cases, which prove the accepting path on all three systems.
+- **No environment variable or option may choose which program `start()` runs.** It is always `current_exe()`, so
+  brygge can never be made to execute another program through this path.
 
 **The encoding:** the machine-output alphabet's percent-encoding (`display::machine_value`), so one encoding serves
 both.
@@ -154,7 +162,6 @@ A new integration test, `crates/brygge/tests/stop_integration.rs`, on all three 
 **Plus:**
 - **the normal case:** a decode that is not stopped leaves no process, and its stderr is byte-identical to 0.10.0's
   for the same fixture;
-- **the handshake refusal** (§2(d)).
 
 **If the poll times out** (the write was too quick to catch), the test fails. It never passes vacuously.
 
