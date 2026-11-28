@@ -149,3 +149,28 @@ fn machine_bytes_round_trips_every_byte_value_exactly_once_encoded() {
     // The `&str` form is exactly the byte form of the same text.
     assert_eq!(machine_value("é ü"), machine_bytes("é ü".as_bytes()));
 }
+
+#[test]
+fn machine_decode_bytes_round_trips_every_byte_value() {
+    let all: Vec<u8> = (0..=255u8).collect();
+    let encoded = machine_bytes(&all);
+    assert_eq!(machine_decode_bytes(&encoded).unwrap(), all);
+    assert_eq!(
+        machine_decode_bytes(&machine_value("a path/with %, =, and é")).unwrap(),
+        b"a path/with %, =, and \xc3\xa9"
+    );
+}
+
+#[test]
+fn machine_decode_bytes_refuses_anything_not_validly_encoded() {
+    // A `%` with no hex digits following, or fewer than two.
+    assert_eq!(machine_decode_bytes("%"), None);
+    assert_eq!(machine_decode_bytes("%4"), None);
+    // `%` followed by something that is not hex.
+    assert_eq!(machine_decode_bytes("%ZZ"), None);
+    // lowercase hex is never produced by the encoder, and is refused rather than guessed at.
+    assert_eq!(machine_decode_bytes("%c3"), None);
+    // a raw byte outside the safe set that was never escaped at all — a space, literally.
+    assert_eq!(machine_decode_bytes("a b"), None);
+    assert_eq!(machine_decode_bytes("a=b"), None);
+}

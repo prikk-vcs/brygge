@@ -28,6 +28,14 @@ mod watchdog;
 use cli::Command;
 
 fn main() {
+    // RFC 022 D-2: brygge's own internal watchdog entry, checked before anything else — including
+    // argument parsing, so it is never reachable through the ordinary command surface, never in
+    // `--help`, and never confused with a usage error. D-1a(a): this is the only place that ever
+    // constructs the watchdog's half of the protocol; a command function never does.
+    if let Some(code) = watchdog::maybe_run_internal_entry() {
+        std::process::exit(code);
+    }
+
     let args: Vec<String> = std::env::args().skip(1).collect();
     let code = match cli::parse(&args) {
         Ok(cmd) => run(cmd),
@@ -70,19 +78,35 @@ fn run(cmd: Command) -> i32 {
             layout_tags,
             spill_dir,
             format,
-        } => commands::run_decode(
-            kind,
-            &source,
-            &out,
-            infer_renames,
-            reconstruct_refs,
-            branch_lines,
-            layout_trunk,
-            layout_branches,
-            layout_tags,
-            spill_dir.as_deref(),
-            format,
-        ),
+        } => {
+            // RFC 022 D-1a(a): only `main` ever calls `Watchdog::start()`. `run_decode` itself never
+            // does, and takes the guard by `&mut` instead, exactly as every one of its unit tests does
+            // with `Guard::disabled()` — a command function can never start a watchdog merely by being
+            // called, however a test calls it.
+            let mut guard = match watchdog::Watchdog::start() {
+                Ok(w) => watchdog::Guard::Active(w),
+                Err(e) => {
+                    output::stderr(&format!("note: no clean-stop watchdog for this run: {e}"));
+                    watchdog::Guard::Disabled
+                }
+            };
+            let code = commands::run_decode(
+                &mut guard,
+                kind,
+                &source,
+                &out,
+                infer_renames,
+                reconstruct_refs,
+                branch_lines,
+                layout_trunk,
+                layout_branches,
+                layout_tags,
+                spill_dir.as_deref(),
+                format,
+            );
+            guard.finish();
+            code
+        }
         Command::Inspect {
             artifact,
             atoms,

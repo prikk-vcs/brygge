@@ -130,6 +130,7 @@ fn spill_dir_missing_is_a_usage_error() {
     let out = repo.dir.join("out.ir");
     let missing = repo.dir.join("does-not-exist");
     let code = run_decode(
+        &mut Guard::disabled(),
         SourceKind::Git,
         repo.path(),
         &out,
@@ -157,6 +158,7 @@ fn spill_dir_a_file_not_a_directory_is_a_usage_error() {
     let file = repo.dir.join("a-plain-file");
     std::fs::write(&file, b"not a directory").unwrap();
     let code = run_decode(
+        &mut Guard::disabled(),
         SourceKind::Git,
         repo.path(),
         &out,
@@ -187,6 +189,7 @@ fn spill_dir_given_a_good_directory_is_used_and_the_artifact_is_byte_identical()
 
     assert_eq!(
         run_decode(
+            &mut Guard::disabled(),
             SourceKind::Git,
             repo.path(),
             &default_out,
@@ -203,6 +206,7 @@ fn spill_dir_given_a_good_directory_is_used_and_the_artifact_is_byte_identical()
     );
     assert_eq!(
         run_decode(
+            &mut Guard::disabled(),
             SourceKind::Git,
             repo.path(),
             &spill_out,
@@ -239,6 +243,7 @@ fn verify_spill_dir_missing_is_a_usage_error() {
     let out = repo.dir.join("out.ir");
     assert_eq!(
         run_decode(
+            &mut Guard::disabled(),
             SourceKind::Git,
             repo.path(),
             &out,
@@ -274,6 +279,7 @@ fn verify_spill_dir_a_file_not_a_directory_is_a_usage_error() {
     let out = repo.dir.join("out.ir");
     assert_eq!(
         run_decode(
+            &mut Guard::disabled(),
             SourceKind::Git,
             repo.path(),
             &out,
@@ -304,6 +310,7 @@ fn verify_spill_dir_given_a_good_directory_is_used_and_left_empty_and_the_verdic
     let out = repo.dir.join("out.ir");
     assert_eq!(
         run_decode(
+            &mut Guard::disabled(),
             SourceKind::Git,
             repo.path(),
             &out,
@@ -352,6 +359,7 @@ fn decode_inspect_verify_roundtrip() {
 
     assert_eq!(
         run_decode(
+            &mut Guard::disabled(),
             SourceKind::Git,
             repo.path(),
             &out,
@@ -390,6 +398,7 @@ fn verify_internal_catches_tamper_with_no_source() {
     let out = repo.dir.join("out.ir");
     assert_eq!(
         run_decode(
+            &mut Guard::disabled(),
             SourceKind::Git,
             repo.path(),
             &out,
@@ -428,6 +437,7 @@ fn verify_against_source_detects_a_mismatch() {
     let other_out = other.dir.join("o.ir");
     assert_eq!(
         run_decode(
+            &mut Guard::disabled(),
             SourceKind::Git,
             other.path(),
             &other_out,
@@ -460,6 +470,7 @@ fn a_failing_internal_check_with_a_corresponding_source_still_reports_against_so
     let out = repo.dir.join("out.ir");
     assert_eq!(
         run_decode(
+            &mut Guard::disabled(),
             SourceKind::Git,
             repo.path(),
             &out,
@@ -499,6 +510,7 @@ fn against_source_with_a_nonexistent_path_is_not_checked_not_a_mismatch() {
     let out = repo.dir.join("out.ir");
     assert_eq!(
         run_decode(
+            &mut Guard::disabled(),
             SourceKind::Git,
             repo.path(),
             &out,
@@ -598,6 +610,7 @@ fn decode_a_real_clone_succeeds_and_verifies_against_source() {
     let clone_out = clone_dir.join("out.ir");
     assert_eq!(
         run_decode(
+            &mut Guard::disabled(),
             SourceKind::Git,
             &clone_dir,
             &clone_out,
@@ -623,6 +636,7 @@ fn decode_a_real_clone_succeeds_and_verifies_against_source() {
     let origin_out = origin.dir.join("origin-out.ir");
     assert_eq!(
         run_decode(
+            &mut Guard::disabled(),
             SourceKind::Git,
             origin.path(),
             &origin_out,
@@ -704,6 +718,7 @@ fn decode_of_a_submodule_succeeds_and_reports_it() {
     let out = repo.dir.join("out.ir");
     assert_eq!(
         run_decode(
+            &mut Guard::disabled(),
             SourceKind::Git,
             repo.path(),
             &out,
@@ -860,6 +875,7 @@ fn a_pre_existing_artifact_survives_a_failing_decode_and_leaves_no_temp_file() {
     let out = repo.dir.join("out.ir");
     assert_eq!(
         run_decode(
+            &mut Guard::disabled(),
             SourceKind::Git,
             repo.path(),
             &out,
@@ -885,6 +901,7 @@ fn a_pre_existing_artifact_survives_a_failing_decode_and_leaves_no_temp_file() {
     .unwrap();
     assert_eq!(
         run_decode(
+            &mut Guard::disabled(),
             SourceKind::Git,
             repo.path(),
             &out,
@@ -921,6 +938,7 @@ fn a_successful_decode_replaces_the_existing_artifact_and_leaves_no_temp_file() 
     let out = repo.dir.join("out.ir");
     assert_eq!(
         run_decode(
+            &mut Guard::disabled(),
             SourceKind::Git,
             repo.path(),
             &out,
@@ -940,6 +958,7 @@ fn a_successful_decode_replaces_the_existing_artifact_and_leaves_no_temp_file() 
     repo.commit("a.txt", "a third state\n", "c3");
     assert_eq!(
         run_decode(
+            &mut Guard::disabled(),
             SourceKind::Git,
             repo.path(),
             &out,
@@ -971,6 +990,7 @@ fn inspect_default_equals_decodes_end_of_run_report() {
     let out = repo.dir.join("out.ir");
     assert_eq!(
         run_decode(
+            &mut Guard::disabled(),
             SourceKind::Git,
             repo.path(),
             &out,
@@ -1008,6 +1028,7 @@ fn inspect_atoms_adds_the_listing_and_reads_the_artifact_once() {
     let out = repo.dir.join("out.ir");
     assert_eq!(
         run_decode(
+            &mut Guard::disabled(),
             SourceKind::Git,
             repo.path(),
             &out,
@@ -1044,6 +1065,7 @@ fn inspect_report_says_unverifiable_never_unverified() {
     let out = repo.dir.join("out.ir");
     assert_eq!(
         run_decode(
+            &mut Guard::disabled(),
             SourceKind::Git,
             repo.path(),
             &out,
@@ -1076,6 +1098,7 @@ fn representation_drops_appear_only_on_the_not_history_line() {
     let out = repo.dir.join("out.ir");
     assert_eq!(
         run_decode(
+            &mut Guard::disabled(),
             SourceKind::Git,
             repo.path(),
             &out,
@@ -1987,6 +2010,7 @@ fn decode_svn_from_a_dumpfile_reconstructs_refs_and_verifies() {
     let out = tmp_ir_path("svn");
 
     let code = run_decode(
+        &mut Guard::disabled(),
         SourceKind::Svn,
         &dump,
         &out,
@@ -2039,6 +2063,7 @@ fn decode_svn_flat_layout_with_reconstruct_is_a_convention_violation() {
     let out = tmp_ir_path("svn-flat");
 
     let code = run_decode(
+        &mut Guard::disabled(),
         SourceKind::Svn,
         &dump,
         &out,
@@ -2092,6 +2117,7 @@ fn decode_svn_from_a_live_repository_via_svnadmin() {
 
     let out = repo.join("out.ir");
     let code = run_decode(
+        &mut Guard::disabled(),
         SourceKind::Svn,
         &repo,
         &out,
@@ -2129,6 +2155,7 @@ fn cr_07_6_verifying_a_dumpfile_decode_against_a_live_repository_is_not_checked(
     let dump = write_temp_dump(&svn_dump_with_branch());
     let out = tmp_ir_path("svn-form-mismatch");
     let code = run_decode(
+        &mut Guard::disabled(),
         SourceKind::Svn,
         &dump,
         &out,
@@ -2211,6 +2238,7 @@ fn cr_07_6_r1_an_svnadmin_version_difference_alone_does_not_fail_verification() 
     let dump = write_temp_dump(&svn_dump_with_branch());
     let out = tmp_ir_path("svn-version-note");
     let code = run_decode(
+        &mut Guard::disabled(),
         SourceKind::Svn,
         &dump,
         &out,
@@ -2360,6 +2388,7 @@ fn decode_cvs_reconstructs_derived_changesets_and_reproduces() {
     let out = repo.dir.join("out.ir");
 
     let code = run_decode(
+        &mut Guard::disabled(),
         SourceKind::Cvs,
         repo.path(),
         &out,
@@ -2414,6 +2443,7 @@ fn a_cvs_repository_with_a_branch_revision_verifies_its_own_artifact() {
     let out = repo.dir.join("out.ir");
 
     let code = run_decode(
+        &mut Guard::disabled(),
         SourceKind::Cvs,
         repo.path(),
         &out,
@@ -2493,6 +2523,7 @@ fn decode_cvs_nested_and_mixed_branches_reproduce_and_verify_against_source() {
     let two = repo.dir.join("two.ir");
     for out in [&one, &two] {
         let code = run_decode(
+            &mut Guard::disabled(),
             SourceKind::Cvs,
             repo.path(),
             out,
@@ -2544,6 +2575,7 @@ fn decode_cvs_whole_import_under_floor_is_refused() {
     }
     let out = repo.dir.join("out.ir");
     let code = run_decode(
+        &mut Guard::disabled(),
         SourceKind::Cvs,
         repo.path(),
         &out,
@@ -2591,6 +2623,7 @@ fn decode_cvs_partial_under_floor_imports_and_exits_convention_violation() {
 
     let out = repo.dir.join("out.ir");
     let code = run_decode(
+        &mut Guard::disabled(),
         SourceKind::Cvs,
         repo.path(),
         &out,
@@ -2629,6 +2662,7 @@ desc\n@@\n\n\n\
     write_vfile(&repo, "f.c", content);
     let out = repo.dir.join("out.ir");
     let code = run_decode(
+        &mut Guard::disabled(),
         SourceKind::Cvs,
         repo.path(),
         &out,
@@ -2758,6 +2792,7 @@ fn decode_hg_and_verify_a_good_artifact_from_every_decoder() {
     let out = tmp_ir_path("hg");
 
     let code = run_decode(
+        &mut Guard::disabled(),
         SourceKind::Hg,
         repo.path(),
         &out,
@@ -2821,7 +2856,8 @@ fn a_planted_symlink_at_the_temp_path_fails_the_write_and_its_target_is_untouche
     let tmp = planted_tmp_path(&dir, "out.ir");
     std::os::unix::fs::symlink(&victim, &tmp).unwrap();
 
-    let err = atomic_write(&out, write_bytes(b"artifact bytes")).unwrap_err();
+    let err =
+        atomic_write(&out, &mut Guard::disabled(), write_bytes(b"artifact bytes")).unwrap_err();
     assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
     assert_eq!(
         std::fs::read(&victim).unwrap(),
@@ -2846,7 +2882,7 @@ fn a_planted_regular_file_at_the_temp_path_is_not_truncated_or_removed() {
     let tmp = planted_tmp_path(&dir, "out.ir");
     std::fs::write(&tmp, b"planted").unwrap();
 
-    assert!(atomic_write(&out, write_bytes(b"artifact bytes")).is_err());
+    assert!(atomic_write(&out, &mut Guard::disabled(), write_bytes(b"artifact bytes")).is_err());
     assert_eq!(std::fs::read(&tmp).unwrap(), b"planted");
     assert!(!out.exists());
     let _ = std::fs::remove_dir_all(&dir);
@@ -2856,7 +2892,7 @@ fn a_planted_regular_file_at_the_temp_path_is_not_truncated_or_removed() {
 fn a_normal_write_still_succeeds_and_leaves_no_temp_file() {
     let dir = scratch_dir("ok");
     let out = dir.join("out.ir");
-    atomic_write(&out, write_bytes(b"artifact bytes")).unwrap();
+    atomic_write(&out, &mut Guard::disabled(), write_bytes(b"artifact bytes")).unwrap();
     assert_eq!(std::fs::read(&out).unwrap(), b"artifact bytes");
     assert!(tmp_siblings(&dir).is_empty());
     let _ = std::fs::remove_dir_all(&dir);
@@ -2870,7 +2906,7 @@ fn a_non_utf8_output_file_name_is_written_without_a_lossy_conversion() {
     use std::os::unix::ffi::OsStrExt;
     let dir = scratch_dir("nonutf8");
     let out = dir.join(std::ffi::OsStr::from_bytes(b"out-\xff.ir"));
-    atomic_write(&out, write_bytes(b"x")).unwrap();
+    atomic_write(&out, &mut Guard::disabled(), write_bytes(b"x")).unwrap();
     assert_eq!(std::fs::read(&out).unwrap(), b"x");
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -3305,6 +3341,7 @@ fn an_hg_artifacts_params_carry_no_rename_or_infer_keys() {
         .join(format!("brygge-hg-params-{}-{n}.ir", std::process::id()));
     assert_eq!(
         run_decode(
+            &mut Guard::disabled(),
             SourceKind::Hg,
             &repo,
             &out,
@@ -3980,6 +4017,7 @@ fn verify_against_source_root_corresponds_and_wrong_consumed_through_the_real_re
     let repo = simple_repo("transform-fixture");
     let out = tmp_ir_path("transform-root");
     let code = run_decode(
+        &mut Guard::disabled(),
         SourceKind::Git,
         repo.path(),
         &out,
@@ -4070,6 +4108,7 @@ fn verify_against_source_rejects_a_well_formed_artifact_that_lies_about_being_un
     let repo = simple_repo("transform-forgery");
     let out = tmp_ir_path("transform-forgery-base");
     let code = run_decode(
+        &mut Guard::disabled(),
         SourceKind::Git,
         repo.path(),
         &out,
@@ -4202,6 +4241,7 @@ fn verify_against_source_not_checked_when_recorded_version_differs_and_history_d
     let repo = simple_repo("version-mismatch");
     let out = tmp_ir_path("version-mismatch-base");
     let code = run_decode(
+        &mut Guard::disabled(),
         SourceKind::Git,
         repo.path(),
         &out,
@@ -4268,6 +4308,7 @@ fn verify_against_source_root_corresponds_with_both_notes_across_brygge_versions
     let repo = simple_repo("version-chain");
     let out = tmp_ir_path("version-chain-base");
     let code = run_decode(
+        &mut Guard::disabled(),
         SourceKind::Git,
         repo.path(),
         &out,
@@ -4338,6 +4379,7 @@ fn a_malformed_transform_chain_is_refused_by_the_reader_not_given_a_verdict() {
     let repo = simple_repo("transform-malformed");
     let out = tmp_ir_path("transform-malformed-base");
     let code = run_decode(
+        &mut Guard::disabled(),
         SourceKind::Git,
         repo.path(),
         &out,
@@ -4387,6 +4429,7 @@ fn verify_against_source_root_reproduces_for_cvs() {
     );
     let out = repo.dir.join("out.ir");
     let code = run_decode(
+        &mut Guard::disabled(),
         SourceKind::Cvs,
         repo.path(),
         &out,

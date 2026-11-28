@@ -29,7 +29,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 # file<TAB>expected-count<TAB>guard note
 reviewed=$(cat <<'EOF'
 crates/brygge-ir/src/artifact/tests.rs	1	review 103 P-3: re-run filtered with `--exact` to one named helper test, guarded by DEFLATE_BOMB_CHILD_ENV; the harness can never re-enter the parent test
-crates/brygge/src/watchdog.rs	0	P-1(a)/(d): the future watchdog's real, non-test form (W0) belongs here once written, guarded by may_spawn() and a ready-handshake; nothing to count yet
+crates/brygge/src/watchdog.rs	1	P-1: only `main` calls `start`; refused under the marker; compiled out under `cfg(test)`; `ready` handshake within 2 s
 tools/bench/src/main.rs	1	P-2: spawn_self_run, #[cfg(not(test))] only, refuses when BENCH_CHILD_ENV is already set
 tools/bench/src/profile.rs	1	P-2: run() learns this process's own path unconditionally (harmless by itself: only the later spawn is dangerous); spawn_self_profile_one, #[cfg(not(test))] only, takes that path as a parameter and does the actual spawning, refusing when BENCH_CHILD_ENV is already set
 tools/bench/src/real.rs	2	P-2 (spawn_self_decode_one, #[cfg(not(test))] only, refuses when BENCH_CHILD_ENV is already set); the second site is brygge_bin(), which only locates the sibling `brygge` binary's path and spawns nothing of its own

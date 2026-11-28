@@ -26,6 +26,7 @@ use crate::encode_git;
 use crate::exit;
 use crate::output;
 use crate::plugin;
+use crate::watchdog::Guard;
 
 // RFC 019 D-6 (batch G2): `verify.against_target`[.detail] is a new machine key.
 const VERIFY_VERSION: u32 = 5;
@@ -505,8 +506,14 @@ pub fn faithfulness_statement(kind: SourceKind) -> &'static str {
 /// file we created is removed and `out` is untouched. `write_body` is handed the temp file directly
 /// (not a buffer) so a caller can stream straight into it (RFC 015 D-2) rather than building the whole
 /// body in memory first.
+///
+/// RFC 022 D-1: `guard` is told about the temp path (`register`) as soon as it exists, and told again
+/// (`release`) once it is renamed into place or removed — whichever happens, in either order of success
+/// or failure below — so a watchdog that outlives this process never finds a path it was never told had
+/// already been handled.
 fn atomic_write(
     out: &Path,
+    guard: &mut Guard,
     write_body: impl FnOnce(&mut std::fs::File) -> std::io::Result<u64>,
 ) -> std::io::Result<u64> {
     let dir = out
@@ -522,6 +529,7 @@ fn atomic_write(
         .write(true)
         .create_new(true)
         .open(&tmp)?;
+    guard.register(&tmp);
     let result = (|| -> std::io::Result<u64> {
         let len = write_body(&mut f)?;
         f.sync_all()?;
@@ -537,6 +545,7 @@ fn atomic_write(
     if result.is_err() {
         let _ = std::fs::remove_file(&tmp);
     }
+    guard.release(&tmp);
     result
 }
 
@@ -544,9 +553,10 @@ fn atomic_write(
 /// D-3/D-3a). Content is always kept in a private spill file while decoding, never in memory: in
 /// `spill_dir` if given, else `out`'s own directory. `spill_dir`, if given, must already exist and be a
 /// directory — never created silently (a usage error, exit 2, otherwise).
-#[allow(clippy::too_many_arguments)] // one parameter per `Command::Decode` field (cli.rs); no fewer
-// would still say what each one means at the call site.
+#[allow(clippy::too_many_arguments)] // one parameter per `Command::Decode` field (cli.rs), plus the
+// watchdog guard; no fewer would still say what each one means at the call site.
 pub fn run_decode(
+    guard: &mut Guard,
     kind: SourceKind,
     source: &Path,
     out: &Path,
@@ -620,7 +630,7 @@ pub fn run_decode(
         }
     };
 
-    let written = atomic_write(out, |f| {
+    let written = atomic_write(out, guard, |f| {
         let mut w = std::io::BufWriter::new(f);
         brygge_ir::artifact::write_to(&ir, &mut w).map_err(std::io::Error::other)?;
         w.flush()?;

@@ -87,5 +87,39 @@ pub fn machine_bytes(bytes: &[u8]) -> String {
     out
 }
 
+/// The inverse of [`machine_bytes`] (RFC 022 D-1: "one encoding serves both" the machine-output format
+/// and the watchdog's own pipe protocol, so this is the one decoder either side can rely on). `None` for
+/// anything that is not validly encoded this way — a `%` not followed by exactly two uppercase hex
+/// digits, or a raw byte outside the safe set that was not escaped at all — never a guess: the watchdog's
+/// protocol refuses a line it cannot parse rather than acting on a misread path.
+#[must_use]
+pub fn machine_decode_bytes(s: &str) -> Option<Vec<u8>> {
+    fn hex_digit(b: u8) -> Option<u8> {
+        match b {
+            b'0'..=b'9' => Some(b - b'0'),
+            b'A'..=b'F' => Some(b - b'A' + 10),
+            _ => None,
+        }
+    }
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = *bytes.get(i)?;
+        if b == b'%' {
+            let hi = hex_digit(*bytes.get(i + 1)?)?;
+            let lo = hex_digit(*bytes.get(i + 2)?)?;
+            out.push((hi << 4) | lo);
+            i += 3;
+        } else if is_safe_machine_byte(b) {
+            out.push(b);
+            i += 1;
+        } else {
+            return None;
+        }
+    }
+    Some(out)
+}
+
 #[cfg(test)]
 mod tests;
