@@ -23,6 +23,7 @@ mod encode_git;
 mod exit;
 mod output;
 mod plugin;
+mod watchdog;
 
 use cli::Command;
 

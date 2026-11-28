@@ -53,6 +53,14 @@ mod corpus;
 mod profile;
 mod real;
 
+/// P-2 (RFC 022 incident 094, batch W0a): every site in this crate that re-runs `current_exe()` writes
+/// this into the child's environment, and refuses to spawn at all if it is already present in its own —
+/// so a bench process started as one of these children can never start another of its own. This bounds
+/// `brygge-bench`'s own three self-re-run sites (`real::run`, `run_matrix`, `profile::run`) the same way
+/// `brygge`'s own future watchdog marker bounds its recursion: none of these three can recurse, however
+/// they come to be called.
+pub(crate) const BENCH_CHILD_ENV: &str = "BRYGGE_BENCH_CHILD";
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Instant;
@@ -445,6 +453,33 @@ fn ir_equal(a_path: &Path, b_path: &Path) -> bool {
     true
 }
 
+/// P-2 (RFC 022 incident 094): the one point in [`run_matrix`] that re-runs this binary, narrowed to
+/// exactly the `Command` construction so that everything around it (`SCENARIOS`, the table printing,
+/// the pass/fail bookkeeping) stays identical, and reachable, in both builds. Refuses outright if this
+/// process is itself already one of these children (`BENCH_CHILD_ENV` already set) — that should never
+/// happen, so a panic here is a bug being caught, not a normal outcome to recover from.
+#[cfg(not(test))]
+fn spawn_self_run(scenario: &str, n: u64) -> std::process::Output {
+    assert!(
+        std::env::var_os(BENCH_CHILD_ENV).is_none(),
+        "refused: brygge-bench never re-runs itself from inside an already-spawned child (P-2, \
+         incident 094)"
+    );
+    let exe = std::env::current_exe().expect("current exe");
+    Command::new(&exe)
+        .args(["run", scenario, &n.to_string()])
+        .env(BENCH_CHILD_ENV, "1")
+        .output()
+        .expect("spawn self")
+}
+
+/// P-1(c)'s sibling for this crate (P-2, incident 094): under a unit-test build, this contains no
+/// [`std::process::Command`] at all, so calling it can never spawn anything, whatever the environment.
+#[cfg(test)]
+fn spawn_self_run(_scenario: &str, _n: u64) -> std::process::Output {
+    panic!("a self re-run is never compiled into a test build (P-2, incident 094)");
+}
+
 /// Run every (scenario, scale) as a subprocess and print a table. A scenario whose self-check fails (or that
 /// crashes) prints `FAILED`, and the run exits non-zero.
 fn run_matrix() {
@@ -453,14 +488,10 @@ fn run_matrix() {
         "{:<14} {:>8} {:>10} {:>9} {:>8} {:>8} {:>12}  check",
         "scenario", "scale", "peak_KiB", "time_ms", "atoms", "blobs", "content_B"
     );
-    let exe = std::env::current_exe().expect("current exe");
     let mut failed = false;
     for (scenario, scales) in SCENARIOS {
         for &n in *scales {
-            let out = Command::new(&exe)
-                .args(["run", scenario, &n.to_string()])
-                .output()
-                .expect("spawn self");
+            let out = spawn_self_run(scenario, n);
             let line = String::from_utf8_lossy(&out.stdout);
             let f = parse(&line);
             let ok = out.status.success() && f.get("check").is_none_or(|c| c == "ok");
@@ -971,4 +1002,25 @@ fn parse(line: &str) -> std::collections::BTreeMap<String, String> {
         .filter_map(|kv| kv.split_once('='))
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .collect()
+}
+
+// ---- P-2 tests (RFC 022 incident 094) -------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::{BENCH_CHILD_ENV, spawn_self_run};
+
+    #[test]
+    #[should_panic(expected = "a self re-run is never compiled into a test build")]
+    fn run_matrix_never_spawns_in_a_unit_test_build() {
+        spawn_self_run("svn-revs", 1);
+    }
+
+    // The marker is referenced only inside the three `#[cfg(not(test))]` self-exec sites, so a
+    // unit-test build has no other use for it; this keeps it from reading as dead code there, by
+    // checking the one property every one of those sites actually depends on: it is non-empty.
+    #[test]
+    fn the_bench_child_marker_is_a_real_name() {
+        assert!(!BENCH_CHILD_ENV.is_empty());
+    }
 }

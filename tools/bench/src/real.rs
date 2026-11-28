@@ -168,6 +168,49 @@ pub fn check(toml_path: &Path, cache_dir: &Path) -> bool {
     ok
 }
 
+/// P-2 (RFC 022 incident 094): the one point in [`run`] that re-runs this binary, narrowed to exactly
+/// the `Command` construction so that everything around it (parsing `real.toml`, the per-entry
+/// printing, the pass/fail bookkeeping) stays identical, and reachable, in both builds. Refuses outright
+/// if this process is itself already one of these children (`BENCH_CHILD_ENV` already set) — that
+/// should never happen, so a panic here is a bug being caught, not a normal outcome to recover from.
+#[cfg(not(test))]
+fn spawn_self_decode_one(
+    toml_path: &Path,
+    cache_dir: &Path,
+    name: &str,
+    variant: &str,
+) -> std::process::Output {
+    assert!(
+        std::env::var_os(crate::BENCH_CHILD_ENV).is_none(),
+        "refused: brygge-bench never re-runs itself from inside an already-spawned child (P-2, \
+         incident 094)"
+    );
+    let exe = std::env::current_exe().expect("current exe");
+    Command::new(&exe)
+        .args([
+            "real-decode-one",
+            &toml_path.display().to_string(),
+            &cache_dir.display().to_string(),
+            name,
+            variant,
+        ])
+        .env(crate::BENCH_CHILD_ENV, "1")
+        .output()
+        .expect("spawn self")
+}
+
+/// P-1(c)'s sibling for this crate (P-2, incident 094): under a unit-test build, this contains no
+/// [`std::process::Command`] at all, so calling it can never spawn anything, whatever the environment.
+#[cfg(test)]
+fn spawn_self_decode_one(
+    _toml_path: &Path,
+    _cache_dir: &Path,
+    _name: &str,
+    _variant: &str,
+) -> std::process::Output {
+    panic!("a self re-run is never compiled into a test build (P-2, incident 094)");
+}
+
 /// Check (never fetch: review 123 F-1) `entry` under `cache_dir/<kind>/<name>`, then decode each variant
 /// its kind supports **in its own subprocess** (`real-decode-one`), so the peak RSS printed for each is
 /// that one decode's own high-water mark, not a running total across every repository this process has
@@ -178,7 +221,6 @@ pub fn run(toml_path: &Path, cache_dir: &Path) -> bool {
     let src = std::fs::read_to_string(toml_path)
         .unwrap_or_else(|e| panic!("read {}: {e}", toml_path.display()));
     let entries = parse_toml(&src);
-    let exe = std::env::current_exe().expect("current exe");
     let mut ok = true;
     for entry in &entries {
         println!(
@@ -191,16 +233,7 @@ pub fn run(toml_path: &Path, cache_dir: &Path) -> bool {
         match check_entry(entry, cache_dir) {
             Ok(_path) => {
                 for variant in variant_names(&entry.kind) {
-                    let out = Command::new(&exe)
-                        .args([
-                            "real-decode-one",
-                            &toml_path.display().to_string(),
-                            &cache_dir.display().to_string(),
-                            &entry.name,
-                            variant,
-                        ])
-                        .output()
-                        .expect("spawn self");
+                    let out = spawn_self_decode_one(toml_path, cache_dir, &entry.name, variant);
                     print!("{}", String::from_utf8_lossy(&out.stdout));
                     if !out.status.success() {
                         ok = false;
@@ -1169,6 +1202,18 @@ mod tests {
     //! the CVS `rsync` source, and a real local SVN repository (`svnrdump` works against a `file://`
     //! URL with no network, the same as `svnadmin dump` would). No real network is used anywhere here.
     use super::*;
+
+    // P-2 (RFC 022 incident 094).
+    #[test]
+    #[should_panic(expected = "a self re-run is never compiled into a test build")]
+    fn run_never_spawns_in_a_unit_test_build() {
+        spawn_self_decode_one(
+            Path::new("/nonexistent.toml"),
+            Path::new("/nonexistent"),
+            "entry",
+            "default",
+        );
+    }
 
     fn scratch(label: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(

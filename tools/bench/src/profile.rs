@@ -119,6 +119,33 @@ pub struct Target {
 
 const PHASES: &[&str] = &["P1", "P2", "P3", "P4", "P5", "P6"];
 
+/// P-2 (RFC 022 incident 094): the one point that re-runs this binary (P1/P2 below; P3–P6 run the real
+/// `brygge` binary instead, a different binary, which is safe), narrowed to exactly the `Command`
+/// construction so that everything around it — `run`'s own loop, `PHASES`, `Target`, the measurement
+/// plumbing — stays identical, and reachable, in both builds. Refuses outright if this process is
+/// itself already one of these children (`BENCH_CHILD_ENV` already set) — that should never happen, so
+/// a panic here is a bug being caught, not a normal outcome to recover from.
+#[cfg(not(test))]
+fn spawn_self_profile_one(exe: &Path, phase: &str, kind: &str, path: &Path) -> Command {
+    assert!(
+        std::env::var_os(crate::BENCH_CHILD_ENV).is_none(),
+        "refused: brygge-bench never re-runs itself from inside an already-spawned child (P-2, \
+         incident 094)"
+    );
+    let mut c = Command::new(exe);
+    c.args(["profile-one", phase, kind, &path.display().to_string()]);
+    c.env(crate::BENCH_CHILD_ENV, "1");
+    c
+}
+
+/// P-1(c)'s sibling for this crate (P-2, incident 094): under a unit-test build, this never constructs
+/// a `Command` at all — it panics outright, so calling it can never spawn anything, whatever the
+/// environment.
+#[cfg(test)]
+fn spawn_self_profile_one(_exe: &Path, _phase: &str, _kind: &str, _path: &Path) -> Command {
+    panic!("a self re-run is never compiled into a test build (P-2, incident 094)");
+}
+
 /// Run every phase for every target, printing one machine line per (target, phase), plus the target's
 /// own content/metadata/artifact/atom counts (from P2, the only phase that serializes).
 pub fn run(targets: &[Target], out_dir: &Path) {
@@ -135,16 +162,8 @@ pub fn run(targets: &[Target], out_dir: &Path) {
 
         for &phase in PHASES {
             let mut cmd = match phase {
-                "P1" => {
-                    let mut c = Command::new(&exe);
-                    c.args(["profile-one", "p1", kind, &path.display().to_string()]);
-                    c
-                }
-                "P2" => {
-                    let mut c = Command::new(&exe);
-                    c.args(["profile-one", "p2", kind, &path.display().to_string()]);
-                    c
-                }
+                "P1" => spawn_self_profile_one(&exe, "p1", kind, path),
+                "P2" => spawn_self_profile_one(&exe, "p2", kind, path),
                 "P3" => {
                     let mut c = Command::new(&bin);
                     c.args([
@@ -400,4 +419,22 @@ pub fn run_spill(kind: &str, path: &Path, spill_dir: &Path) {
         write_peak.map_or_else(|| "n/a".to_string(), |k| k.to_string()),
         read_peak.map_or_else(|| "n/a".to_string(), |k| k.to_string()),
     );
+}
+
+// ---- P-2 tests (RFC 022 incident 094) -------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[should_panic(expected = "a self re-run is never compiled into a test build")]
+    fn run_never_spawns_in_a_unit_test_build() {
+        spawn_self_profile_one(
+            Path::new("/nonexistent"),
+            "p1",
+            "git",
+            Path::new("/nonexistent"),
+        );
+    }
 }
