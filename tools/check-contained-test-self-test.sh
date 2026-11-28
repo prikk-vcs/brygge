@@ -150,9 +150,20 @@ fi
 # 1024)` — genuinely non-deterministic bytes, so the kernel has nothing to deduplicate or share, and
 # every page is forced into distinct physical memory. Against the same 256M scope, this reliably drove
 # `memory.current` well past the cap and produced a clean `oom_kill 1` with the process killed by
-# `SIGKILL`, the scope's wrapping shell surviving to report it — exactly the proof this needs.
+# `SIGKILL`, the scope's wrapping shell surviving to report it.
+#
+# `-p OOMPolicy=continue` is also needed, and was not obvious from a local, otherwise-identical run:
+# this scope's *default* OOMPolicy (confirmed with `systemctl --user show -p OOMPolicy`) is `stop` —
+# once systemd itself observes the kernel's OOM kill (via this same memory.events), it reacts by
+# gracefully stopping the whole scope, SIGTERM first. That races our own wrapping shell's attempt to
+# read memory.events and write it to MEM_EVENTS_FILE before the scope exits: CI's two first attempts at
+# this (same code, both reruns of the same commit) show both outcomes — one run's shell won the race and
+# reported a clean oom_kill 1, the other's lost it, killed by that reactive SIGTERM (`Terminated`, not
+# `Killed`) before it could write anything, read back here as `unknown`. `OOMPolicy=continue` tells
+# systemd not to react to the OOM kill at all, so the only thing that can still end the scope is the
+# wrapping shell's own, deliberate exit once it has finished reading and writing the file — no more race.
 if [ "$use_systemd_run" -eq 1 ]; then
-    echo "self-test: memory proof — systemd-run --user --scope -p MemoryMax=256M -p MemorySwapMax=0, holding ~512 MB"
+    echo "self-test: memory proof — systemd-run --user --scope -p MemoryMax=256M -p MemorySwapMax=0 -p OOMPolicy=continue, holding ~512 MB"
     mem_hog='
 cg="/sys/fs/cgroup$(cut -d: -f3 /proc/self/cgroup)"
 python3 -c "import os, time; b = os.urandom(512 * 1024 * 1024); time.sleep(5)" &
@@ -160,9 +171,8 @@ hog_pid=$!
 wait "$hog_pid" 2>/dev/null
 grep -E "^oom_kill " "$cg/memory.events" >"$MEM_EVENTS_FILE" 2>/dev/null || echo "oom_kill unknown" >"$MEM_EVENTS_FILE"
 '
-    systemd-run --user --scope -p MemoryMax=256M -p MemorySwapMax=0 \
+    systemd-run --user --scope -p MemoryMax=256M -p MemorySwapMax=0 -p OOMPolicy=continue \
         --setenv="MEM_EVENTS_FILE=$mem_events_file" -- bash -c "$mem_hog"
-    mem_scope_rc=$?
 
     oom_kill_count=$(awk '{print $2}' "$mem_events_file" 2>/dev/null)
     echo "self-test: checked memory.events' oom_kill after holding ~512 MB under a 256M cap: ${oom_kill_count:-unknown}"
@@ -170,11 +180,6 @@ grep -E "^oom_kill " "$cg/memory.events" >"$MEM_EVENTS_FILE" 2>/dev/null || echo
         echo "OK: the containment's memory bound killed the process that exceeded it (memory proof)"
     else
         echo "FAILED: memory.events' oom_kill was not above 0 — the memory bound was not enforced" >&2
-        echo "DIAGNOSTIC (temporary, review 205 round 2): systemd-run exit code was $mem_scope_rc" >&2
-        echo "DIAGNOSTIC: recent user journal:" >&2
-        journalctl --user --no-pager -n 60 2>&1 | tail -n 60 >&2 || true
-        echo "DIAGNOSTIC: recent kernel log:" >&2
-        dmesg 2>&1 | tail -n 40 >&2 || true
         fail=1
     fi
 else
