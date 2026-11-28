@@ -378,25 +378,43 @@ fn watchdog_is_present(_pid: u32, copy_name: &str) -> bool {
 /// un-starved case resolves within a few hundred milliseconds either way.
 const WATCHDOG_PRESENCE_POLL_INTERVAL: Duration = Duration::from_millis(200);
 
+/// Print `text` so it reaches the real CI log *even when the test passes*. `cargo test`'s harness
+/// captures `print!`/`eprintln!` — and even a direct `std::io::stderr()` write made from *this*
+/// process — and discards it for a test that does not fail, which would otherwise hide the exact
+/// evidence review 208 asks for regardless of outcome. A *child* process's own writes to its inherited
+/// stdio bypass that capture entirely: the harness can only redirect what this process's own API calls
+/// target, never another process's real file descriptors. `echo` is a real executable on Unix (not only
+/// a shell builtin), and `cmd /C echo` reaches the same real descriptor on Windows; every string this
+/// is called with is built from plain alphanumerics, hyphens and `:`/`()`, so neither needs any shell
+/// escaping.
+fn log_line(text: &str) {
+    #[cfg(unix)]
+    {
+        let _ = Command::new("echo").arg(text).status();
+    }
+    #[cfg(windows)]
+    {
+        let _ = Command::new("cmd").args(["/C", "echo", text]).status();
+    }
+}
+
 /// R-1 point 4: prove the later absence check (`assert_no_watchdog_left`) is not vacuous — while the
 /// decode (and the watchdog it started, the same copy under `current_exe()`) is still running, the exact
-/// same query must find it. Logs the outcome with `eprintln!` (not captured by the test harness even on
-/// a pass) so CI's raw log carries direct evidence of this positive case.
+/// same query must find it.
 fn assert_watchdog_is_running(pid: u32, copy_name: &str) {
     let found = poll_every(
         Duration::from_secs(10),
         WATCHDOG_PRESENCE_POLL_INTERVAL,
         || watchdog_is_present(pid, copy_name),
     );
-    eprintln!(
-        "stop_integration: while the decode (pid {pid}) was running, a process for {copy_name:?} was \
-         {}",
+    log_line(&format!(
+        "stop_integration: while the decode (pid {pid}) was running, a process for {copy_name} was {}",
         if found {
             "found (expected)"
         } else {
             "NOT found"
         }
-    );
+    ));
     assert!(
         found,
         "the watchdog ({copy_name}) was never observed running while the decode was in progress; the \
@@ -405,22 +423,20 @@ fn assert_watchdog_is_running(pid: u32, copy_name: &str) {
 }
 
 /// Within 10 s of the stop, no process anywhere on the system may carry this run's watchdog identity.
-/// Logs the outcome with `eprintln!` (see [`assert_watchdog_is_running`]) so CI's raw log carries direct
-/// evidence of this negative case too.
 fn assert_no_watchdog_left(pid: u32, copy_name: &str) {
     let gone = poll_every(
         Duration::from_secs(10),
         WATCHDOG_PRESENCE_POLL_INTERVAL,
         || !watchdog_is_present(pid, copy_name),
     );
-    eprintln!(
-        "stop_integration: within 10s of the stop, a process for {copy_name:?} is now {}",
+    log_line(&format!(
+        "stop_integration: within 10s of the stop, a process for {copy_name} is now {}",
         if gone {
             "absent (expected)"
         } else {
             "STILL PRESENT"
         }
-    );
+    ));
     assert!(
         gone,
         "a process for {copy_name} is still present 10 s after the stop"
