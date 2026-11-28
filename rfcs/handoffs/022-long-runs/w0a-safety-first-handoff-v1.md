@@ -12,7 +12,8 @@ limits, so that W0 can follow safely.
 - The uncommitted W0 code on `batch-w0-watchdog` is the code that caused incident 094. **Do not run, build-and-test or
   commit it.**
 - **Set it aside:** `git stash push -u -m "w0-wip, incident 094: do not run"`. Then check that `git status` is clean.
-- **Start W0a from `main`** (at `bac6b10`, which holds HANDOFF §7a), on the proving branch `prove/w0a-safety`.
+- **Start W0a from `main`** (at `486e18c` or later, which holds HANDOFF §7a and this handoff), on the proving branch
+  `prove/w0a-safety`.
 
 ## 1. The measures in this batch
 

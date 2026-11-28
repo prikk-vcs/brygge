@@ -1,6 +1,18 @@
 # RFC 022 — Long runs: progress, and a clean stop (0.11.0)
 
 **Status.** **Accepted (2026-11-28)** by the owner: "Yes. Accepted." Handoffs: `rfcs/handoffs/022-long-runs/`.
+
+**Refinement D-1a (2026-11-28, after incident 094; owner-accepted).** W0's first implementation re-ran
+`std::env::current_exe()` from inside `decode`. Under `cargo test` that is the test harness, so the unit tests became
+a fork bomb that hung the owner's machine twice. D-1's watchdog is therefore started with four guards:
+- (a) only `main` starts it, and the commands receive a guard that unit tests pass disabled;
+- (b) a process carrying the watchdog marker never starts another;
+- (c) under `cfg(test)` the start is compiled out and returns `Unsupported`;
+- (d) the child must answer `ready <pid>` within 2 seconds, or it is killed and the run continues without a watchdog.
+
+**How the work runs safely** is in HANDOFF §7a: spawning code is proven in CI first on a `prove/<batch>` branch;
+every local test run goes through `tools/contained-test.sh`; CI checks every self re-run against a reviewed list;
+every CI job has a timeout. Batch **W0a** puts those safeguards in place before W0 resumes.
 Proposed (2026-11-27) by the architect. It follows the owner's rulings of
 2026-11-26 and 2026-11-27:
 - 0.11.0's theme (198);
